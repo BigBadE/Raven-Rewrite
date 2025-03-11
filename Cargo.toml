@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+
+members = [
+    "language/*",
+    "tests"
+]
+
+[workspace.package]
+version = "0.1.0"
+
+[workspace.dependencies]
+tokio = { version = "1.44.0", features = ["fs", "rt-multi-thread", "macros"] }
+async-recursion = "1.1.1"
+lazy_static = "1.5.0"
+thiserror = "2.0.12"
+lasso = { version = "0.7.3", features = ["multi-threaded"] }
+
+# Error handling
+anyhow = "1.0.71"
+
+parser = { path = "language/parser" }
+runner = { path = "language/runner" }
+syntax = { path = "language/syntax" }

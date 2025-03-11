@@ -1,0 +1,23 @@
+[package]
+name = "parser"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Handling async tasks
+tokio.workspace = true
+thiserror.workspace = true
+lasso.workspace = true
+async-recursion.workspace = true
+
+# Parsing
+# Using an earlier nom version for nom-supreme, will update when it does
+nom = "7.1.3"
+nom-supreme = "0.8.0"
+nom_locate = "4.2.0"
+
+# Util
+anyhow.workspace = true
+
+# Core
+syntax.workspace = true
