@@ -1,3 +1,9 @@
+import core::other::Other;
+
 pub fn test() {
     let value = 1;
+}
+
+struct Testing {
+    other: Other
 }

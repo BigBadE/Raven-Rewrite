@@ -6,3 +6,5 @@ edition = "2021"
 [dependencies]
 lazy_static.workspace = true
 lasso.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true

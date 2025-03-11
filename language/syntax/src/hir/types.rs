@@ -1,10 +1,18 @@
 use lasso::Spur;
-use crate::TypeRef;
+use crate::structure::Modifier;
+use crate::util::path::FilePath;
 
 #[derive(Debug)]
-pub enum Type {
+pub struct Type<S> {
+    pub name: Spur,
+    pub file: FilePath,
+    pub modifiers: Vec<Modifier>,
+    pub data: TypeData<S>
+}
+
+#[derive(Debug)]
+pub enum TypeData<S> {
     Struct {
-        name: Spur,
-        fields: Vec<(Spur, TypeRef)>,
+        fields: Vec<(Spur, S)>,
     }
 }

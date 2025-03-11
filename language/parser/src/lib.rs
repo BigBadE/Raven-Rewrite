@@ -1,5 +1,5 @@
 use crate::errors::error_message;
-use crate::function::parse_function;
+use crate::file::parse_top_element;
 use crate::util::ignored;
 use anyhow::Error;
 use async_recursion::async_recursion;
@@ -10,10 +10,13 @@ use nom_supreme::final_parser::final_parser;
 use nom_supreme::multi::collect_separated_terminated;
 use std::path::PathBuf;
 use std::sync::Arc;
+use nom::combinator::eof;
+use nom_supreme::ParserExt;
+use syntax::hir::types::Type;
 use syntax::hir::RawSource;
 use syntax::structure::function::RawFunction;
 use syntax::util::path::{get_path, FilePath};
-use thiserror::Error;
+use syntax::util::ParseError;
 use tokio::fs;
 
 mod code;
@@ -22,6 +25,8 @@ mod expressions;
 mod function;
 mod statements;
 mod util;
+mod file;
+mod structure;
 
 pub type IResult<I, O, E = ErrorTree<I>> = Result<(I, O), nom::Err<E>>;
 type Span<'a> = LocatedSpan<&'a str, ParseContext>;
@@ -38,42 +43,70 @@ impl ParseContext {
     }
 }
 
-#[derive(Error, Debug)]
-pub enum ParseError {
-    #[error("Internal error")]
-    InternalError(Error),
-    #[error("Parse error")]
-    ParseError(String),
-}
-
+#[derive(Default)]
 pub struct File {
     pub imports: Vec<FilePath>,
     pub functions: Vec<RawFunction>,
+    pub types: Vec<Type<Spur>>,
 }
 
-pub async fn parse_source(dir: PathBuf) -> Result<RawSource, ParseError> {
+pub enum TopLevelItem {
+    Function(RawFunction),
+    Type(Type<Spur>),
+    Import(FilePath),
+}
+
+impl Extend<TopLevelItem> for File {
+    fn extend<T: IntoIterator<Item=TopLevelItem>>(&mut self, iter: T) {
+        for item in iter {
+            match item {
+                TopLevelItem::Function(function) => {
+                    self.functions.push(function);
+                },
+                TopLevelItem::Import(path) => {
+                    self.imports.push(path);
+                },
+                TopLevelItem::Type(types) => {
+                    self.types.push(types)
+                }
+            }
+        }
+    }
+}
+
+pub async fn parse_source(dir: PathBuf) -> Result<RawSource, Vec<ParseError>> {
     let mut source = RawSource::default();
     let mut errors = Vec::new();
 
-    for path in read_recursive(&dir).await.map_err(|err| ParseError::InternalError(err))? {
-        let file_path = get_path(&source.syntax.symbols, &dir, &path);
+    for path in read_recursive(&dir).await.map_err(|err| vec!(ParseError::InternalError(err)))? {
+        let file_path = get_path(&source.syntax.symbols, &path, &dir);
         let file = match parse_file(&path, file_path.clone(), source.syntax.symbols.clone()).await {
             Ok(file) => file,
-            Err(ParseError::ParseError(err)) => {
+            Err(err) => {
                 errors.push(err);
                 continue;
-            },
-            Err(err) => return Err(err)
+            }
         };
+        
         for function in file.functions {
+            let mut path = file_path.clone();
+            path.push(function.name);
+            source.functions.insert(path, source.syntax.functions.len());
             source.syntax.functions.push(function);
         }
-        source.imports.insert(file_path,
-        file.imports);
+        
+        for types in file.types {
+            let mut path = file_path.clone();
+            path.push(types.name);
+            source.types.insert(path, source.syntax.types.len());
+            source.syntax.types.push(types);
+        }
+        
+        source.imports.insert(file_path, file.imports);
     }
 
     if !errors.is_empty() {
-        return Err(ParseError::ParseError(errors.join("\n")));
+        return Err(errors);
     }
 
     Ok(source)
@@ -82,21 +115,13 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, ParseError> {
 pub async fn parse_file(path: &PathBuf, file: FilePath, interner: Arc<ThreadedRodeo>) -> Result<File, ParseError> {
     let parsing = fs::read_to_string(&path).await.map_err(|err| ParseError::InternalError(err.into()))?;
 
-    let functions =
-        match final_parser(collect_separated_terminated(parse_function, ignored, ignored))(Span::new_extra(&parsing, ParseContext {
+    let file =
+        final_parser(collect_separated_terminated(parse_top_element, ignored, eof).context("Top"))(Span::new_extra(&parsing, ParseContext {
             interner,
             file
-        })) {
-            Ok(functions) => functions,
-            Err(errors) => {
-                return Err(ParseError::ParseError(error_message(errors)))
-            }
-        };
+        })).map_err(|err| ParseError::ParseError(error_message(err)))?;
 
-    Ok(File {
-        imports: vec![],
-        functions,
-    })
+    Ok(file)
 }
 
 #[async_recursion]

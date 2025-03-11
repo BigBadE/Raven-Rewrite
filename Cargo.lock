@@ -280,7 +280,6 @@ dependencies = [
  "nom-supreme",
  "nom_locate",
  "syntax",
- "thiserror",
  "tokio",
 ]
 
@@ -361,8 +360,10 @@ dependencies = [
 name = "syntax"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "lasso",
  "lazy_static",
+ "thiserror",
 ]
 
 [[package]]

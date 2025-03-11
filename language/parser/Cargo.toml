@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 # Handling async tasks
 tokio.workspace = true
-thiserror.workspace = true
 lasso.workspace = true
 async-recursion.workspace = true
 
