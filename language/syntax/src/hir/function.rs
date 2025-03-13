@@ -1,12 +1,11 @@
-use crate::code::statement::HighStatement;
 use crate::structure::visitor::{FileOwner, Translate};
 use crate::structure::Modifier;
 use crate::util::path::FilePath;
+use crate::util::translation::Translatable;
 use crate::util::ParseError;
 use crate::SyntaxLevel;
 use lasso::Spur;
 use std::fmt::Debug;
-use crate::util::translation::Translatable;
 
 pub trait Function: Debug {
     fn file(&self) -> &FilePath;
@@ -21,7 +20,7 @@ pub struct HighFunction<T: SyntaxLevel> {
     pub modifiers: Vec<Modifier>,
     pub parameters: Vec<(Spur, T::TypeReference)>,
     pub return_type: Option<T::TypeReference>,
-    pub body: HighStatement<T>,
+    pub body: T::Statement,
 }
 
 impl<T: SyntaxLevel> Function for HighFunction<T> {
@@ -39,7 +38,7 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Trans
             name: self.name,
             file: self.file.clone(),
             modifiers: self.modifiers.clone(),
-            body: Translate::translate(&self.body, context)?,
+            body: I::translate_stmt(&self.body, context)?,
             parameters: self
                 .parameters
                 .iter()

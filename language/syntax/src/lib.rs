@@ -1,15 +1,16 @@
-use crate::code::expression::Expression;
-use crate::code::statement::Statement;
 use crate::hir::types::{Type, TypeReference};
-use crate::structure::function::{Function, FunctionReference};
 use lasso::ThreadedRodeo;
 use std::fmt::Debug;
 use std::sync::Arc;
+use crate::hir::expression::Expression;
+use crate::hir::function::{Function, FunctionReference};
+use crate::hir::statement::Statement;
 
 pub mod code;
 pub mod structure;
 pub mod hir;
 pub mod util;
+pub mod mir;
 
 pub type TypeRef = usize;
 pub type FunctionRef = usize;

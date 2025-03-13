@@ -1,7 +1,6 @@
 use lazy_static::lazy_static;
 use std::collections::HashMap;
 
-pub mod function;
 pub mod visitor;
 
 lazy_static! {

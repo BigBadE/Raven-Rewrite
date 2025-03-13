@@ -1,15 +1,18 @@
-use crate::code::expression::HighExpression;
-use crate::code::statement::HighStatement;
 use crate::hir::types::{HighType, TypeReference};
-use crate::structure::function::{FunctionReference, HighFunction};
 use crate::structure::visitor::{FileOwner, Translate};
 use crate::util::path::FilePath;
 use crate::util::ParseError;
 use crate::{FunctionRef, Syntax, SyntaxLevel, TypeRef};
 use lasso::Spur;
 use std::collections::HashMap;
+use crate::hir::expression::HighExpression;
+use crate::hir::function::{FunctionReference, HighFunction};
+use crate::hir::statement::HighStatement;
 use crate::util::translation::Translatable;
 
+pub mod expression;
+pub mod function;
+pub mod statement;
 pub mod types;
 
 #[derive(Default)]
