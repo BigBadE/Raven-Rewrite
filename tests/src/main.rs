@@ -7,9 +7,7 @@ async fn main() -> Result<(), Error> {
     let syntax = match compile_source(PathBuf::from("tests/core")).await {
         Ok(syntax) => syntax,
         Err(errors) => {
-            for err in errors {
-                println!("{}", err);
-            }
+            println!("{}", errors);
             return Ok(());
         }
     };

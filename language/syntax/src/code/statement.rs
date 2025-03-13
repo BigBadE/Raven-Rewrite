@@ -1,36 +1,101 @@
-use crate::code::expression::Expression;
-use crate::{FunctionRef, TypeRef};
-use lasso::Spur;
+use crate::structure::visitor::{FileOwner, Translate};
+use crate::util::ParseError;
+use crate::SyntaxLevel;
+use std::fmt;
+use std::fmt::Debug;
+use crate::util::translation::Translatable;
 
-pub type RawStatement = Statement<Spur, Spur>;
-pub type LowStatement = Statement<TypeRef, FunctionRef>;
+pub trait Statement: Debug {}
 
-#[derive(Debug)]
-pub enum Statement<S, F> {
-    Expression(Expression<S, F>),
+pub enum HighStatement<T: SyntaxLevel> {
+    Expression(T::Expression),
     Return,
     Break,
     Continue,
     If {
-        conditions: Vec<Conditional<S, F>>,
-        else_branch: Option<Box<Statement<S, F>>>,
+        conditions: Vec<Conditional<T>>,
+        else_branch: Option<Box<T::Statement>>,
     },
     For {
-        iterator: Box<Expression<S, F>>,
-        body: Box<Statement<S, F>>,
+        iterator: T::Expression,
+        body: Box<T::Statement>,
     },
     While {
-        condition: Box<Conditional<S, F>>
+        condition: Conditional<T>,
     },
     Loop {
-        body: Box<Statement<S, F>>
+        body: Box<T::Statement>,
+    },
+}
+
+impl<T: SyntaxLevel> Statement for HighStatement<T> {}
+
+impl<T: SyntaxLevel> Debug for HighStatement<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HighStatement::Expression(_) => write!(f, "HighStatement::Expression(...)"),
+            HighStatement::Return => write!(f, "HighStatement::Return"),
+            HighStatement::Break => write!(f, "HighStatement::Break"),
+            HighStatement::Continue => write!(f, "HighStatement::Continue"),
+            HighStatement::If { .. } => write!(f, "HighStatement::If(...)"),
+            HighStatement::For { .. } => write!(f, "HighStatement::For(...)"),
+            HighStatement::While { .. } => write!(f, "HighStatement::While(...)"),
+            HighStatement::Loop { .. } => write!(f, "HighStatement::Loop(...)"),
+        }
     }
 }
 
-pub type RawConditional = Conditional<Spur, Spur>;
-
 #[derive(Debug)]
-pub struct Conditional<S, F> {
-    pub condition: Expression<S, F>,
-    pub branch: Statement<S, F>
+pub struct Conditional<T: SyntaxLevel> {
+    pub condition: T::Expression,
+    pub branch: Box<T::Statement>,
+}
+
+// Handle statement translation
+impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Translate<HighStatement<O>, C, I, O>
+    for HighStatement<I>
+{
+    fn translate(&self,
+        context: &mut C,
+    ) -> Result<HighStatement<O>, ParseError> {
+        Ok(match self {
+            HighStatement::Expression(expression) => {
+                HighStatement::Expression(I::translate_expr(expression, context)?)
+            }
+            HighStatement::Return => HighStatement::Return,
+            HighStatement::Break => HighStatement::Break,
+            HighStatement::Continue => HighStatement::Continue,
+            HighStatement::If {
+                conditions,
+                else_branch,
+            } => HighStatement::If {
+                conditions: conditions
+                    .iter()
+                    .map(|condition| {
+                        Ok::<_, ParseError>(Conditional {
+                            condition: I::translate_expr(&condition.condition, context)?,
+                            branch: Box::new(I::translate_stmt(&condition.branch, context)?),
+                        })
+                    })
+                    .collect::<Result<_, _>>()?,
+                else_branch: else_branch
+                    .as_ref()
+                    .map(|branch| Ok::<_, ParseError>(Box::new(I::translate_stmt(branch, context)?)))
+                    .transpose()?,
+            },
+            HighStatement::For { iterator, body } => HighStatement::For {
+                iterator: I::translate_expr(iterator, context)?,
+                body: Box::new(I::translate_stmt(body, context)?),
+            },
+            HighStatement::While { condition } => HighStatement::While {
+                condition: Conditional {
+                    condition: I::translate_expr(&condition.condition, context)?,
+                    branch: Box::new(I::translate_stmt(&condition.branch, context)?),
+                },
+            },
+            HighStatement::Loop { body } => HighStatement::Loop {
+                body: Box::new(I::translate_stmt(body, context)?),
+            },
+        })
+    }
 }

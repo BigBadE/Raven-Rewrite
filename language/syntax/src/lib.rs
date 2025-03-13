@@ -1,7 +1,10 @@
+use crate::code::expression::Expression;
+use crate::code::statement::Statement;
+use crate::hir::types::{Type, TypeReference};
+use crate::structure::function::{Function, FunctionReference};
+use lasso::ThreadedRodeo;
+use std::fmt::Debug;
 use std::sync::Arc;
-use crate::structure::function::Function;
-use lasso::{Spur, ThreadedRodeo};
-use crate::hir::types::Type;
 
 pub mod code;
 pub mod structure;
@@ -11,16 +14,27 @@ pub mod util;
 pub type TypeRef = usize;
 pub type FunctionRef = usize;
 
-pub type RawSyntax = Syntax<Spur, Spur>;
-pub type LowSyntax = Syntax<TypeRef, FunctionRef>;
-
-#[derive(Default)]
-pub struct Syntax<S, F> {
-    pub symbols: Arc<ThreadedRodeo>,
-    pub functions: Vec<Function<S, F>>,
-    pub types: Vec<Type<S>>
+pub trait SyntaxLevel: Debug {
+    type TypeReference: TypeReference;
+    type Type: Type;
+    type FunctionReference: FunctionReference;
+    type Function: Function;
+    type Statement: Statement;
+    type Expression: Expression;
 }
 
-impl<S, F> Syntax<S, F> {
+pub struct Syntax<T: SyntaxLevel> {
+    pub symbols: Arc<ThreadedRodeo>,
+    pub functions: Vec<T::Function>,
+    pub types: Vec<T::Type>
+}
 
+impl<T: SyntaxLevel> Default for Syntax<T> {
+    fn default() -> Self {
+        Self {
+            symbols: Arc::default(),
+            functions: Vec::default(),
+            types: Vec::default()
+        }
+    }
 }

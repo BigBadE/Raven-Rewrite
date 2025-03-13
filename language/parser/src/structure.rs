@@ -1,14 +1,14 @@
 use crate::util::{identifier, ignored, modifiers, parameter};
 use crate::{IResult, Span};
-use lasso::Spur;
 use nom::bytes::complete::tag;
 use nom::combinator::map;
 use nom::multi::many0;
 use nom::sequence::{delimited, preceded, tuple};
 use nom_supreme::ParserExt;
-use syntax::hir::types::{Type, TypeData};
+use syntax::hir::RawSyntaxLevel;
+use syntax::hir::types::{HighType, TypeData};
 
-pub fn parse_structure(input: Span) -> IResult<Span, Type<Spur>> {
+pub fn parse_structure(input: Span) -> IResult<Span, HighType<RawSyntaxLevel>> {
     map(
         tuple((
             modifiers.context("Modifiers"),
@@ -17,7 +17,7 @@ pub fn parse_structure(input: Span) -> IResult<Span, Type<Spur>> {
                       many0(delimited(ignored, parameter, ignored)),
                       delimited(ignored, tag("}"), ignored).context("Struct")
         ))).context("Structure"),
-        |(modifiers, name, fields)| Type {
+        |(modifiers, name, fields)| HighType {
             name,
             file: input.extra.file.clone(),
             modifiers,

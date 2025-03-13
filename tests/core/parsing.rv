@@ -1,6 +1,6 @@
 import core::other::Other;
 
-pub fn test() {
+pub fn test(parameter: Other) {
     let value = 1;
 }
 

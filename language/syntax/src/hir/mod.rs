@@ -1,48 +1,131 @@
-use crate::structure::visitor::{visit_syntax, Visitor};
+use crate::code::expression::HighExpression;
+use crate::code::statement::HighStatement;
+use crate::hir::types::{HighType, TypeReference};
+use crate::structure::function::{FunctionReference, HighFunction};
+use crate::structure::visitor::{FileOwner, Translate};
 use crate::util::path::FilePath;
-use crate::{FunctionRef, LowSyntax, Syntax, TypeRef};
+use crate::util::ParseError;
+use crate::{FunctionRef, Syntax, SyntaxLevel, TypeRef};
 use lasso::Spur;
 use std::collections::HashMap;
-use crate::util::ParseError;
+use crate::util::translation::Translatable;
 
 pub mod types;
 
 #[derive(Default)]
 pub struct RawSource {
-    pub syntax: Syntax<Spur, Spur>,
+    pub syntax: Syntax<RawSyntaxLevel>,
     pub imports: HashMap<FilePath, Vec<FilePath>>,
     pub types: HashMap<FilePath, TypeRef>,
     pub functions: HashMap<FilePath, FunctionRef>,
 }
 
-pub fn resolve_to_hir(source: RawSource) -> Result<LowSyntax, Vec<ParseError>> {
-    visit_syntax(&source.syntax, &mut HirVisitor {
-        syntax: &source,
+#[derive(Debug)]
+pub struct RawSyntaxLevel;
+
+impl SyntaxLevel for RawSyntaxLevel {
+    type TypeReference = RawTypeRef;
+    type Type = HighType<RawSyntaxLevel>;
+    type FunctionReference = RawFunctionRef;
+    type Function = HighFunction<RawSyntaxLevel>;
+    type Statement = HighStatement<RawSyntaxLevel>;
+    type Expression = HighExpression<RawSyntaxLevel>;
+}
+
+#[derive(Debug)]
+pub struct HighSyntaxLevel;
+
+impl SyntaxLevel for HighSyntaxLevel {
+    type TypeReference = TypeRef;
+    type Type = HighType<HighSyntaxLevel>;
+    type FunctionReference = FunctionRef;
+    type Function = HighFunction<HighSyntaxLevel>;
+    type Statement = HighStatement<HighSyntaxLevel>;
+    type Expression = HighExpression<HighSyntaxLevel>;
+}
+
+#[derive(Debug)]
+pub struct RawTypeRef(pub Spur);
+#[derive(Debug)]
+pub struct RawFunctionRef(pub Spur);
+
+impl TypeReference for RawTypeRef {}
+impl FunctionReference for RawFunctionRef {}
+impl TypeReference for TypeRef {}
+impl FunctionReference for FunctionRef {}
+
+pub fn resolve_to_hir(source: RawSource) -> Result<Syntax<HighSyntaxLevel>, ParseError> {
+    source.syntax.translate(&mut HirContext {
+        file: None,
+        imports: &source.imports,
+        types: &source.types,
         type_cache: HashMap::default(),
         func_cache: HashMap::default(),
     })
 }
 
-pub struct HirVisitor<'a> {
-    syntax: &'a RawSource,
-    type_cache: HashMap<Spur, TypeRef>,
-    func_cache: HashMap<Spur, FunctionRef>,
+pub struct HirContext<'a> {
+    pub file: Option<FilePath>,
+    pub imports: &'a HashMap<FilePath, Vec<FilePath>>,
+    pub types: &'a HashMap<FilePath, TypeRef>,
+    pub type_cache: HashMap<Spur, TypeRef>,
+    pub func_cache: HashMap<Spur, FunctionRef>,
 }
 
-impl<'a> Visitor<Spur, Spur, TypeRef, FunctionRef> for HirVisitor<'a> {
-    fn visit_type_ref(&mut self, node: &Spur, file: &FilePath) -> Result<TypeRef, ParseError> {
-        for import in &self.syntax.imports[file] {
-            if import.last().unwrap() == node {
-                if let Some(types) = self.syntax.types.get(import) {
+impl<'a> FileOwner for HirContext<'a> {
+    fn file(&self) -> &FilePath {
+        self.file.as_ref().unwrap()
+    }
+
+    fn set_file(&mut self, file: FilePath) {
+        self.file = Some(file);
+    }
+}
+
+// Handle reference translations
+impl<'a, I: SyntaxLevel, O: SyntaxLevel> Translate<TypeRef, HirContext<'a>, I, O> for RawTypeRef {
+    fn translate(&self, context: &mut HirContext) -> Result<TypeRef, ParseError> {
+        for import in &context.imports[context.file.as_ref().unwrap()] {
+            if import.last().unwrap() == &self.0 {
+                if let Some(types) = context.types.get(import) {
                     return Ok(*types);
                 }
-                
+
             }
         }
         todo!()
     }
+}
 
-    fn visit_function_ref(&mut self, node: &Spur, file: &FilePath) -> Result<FunctionRef, ParseError> {
+impl<'a, I: SyntaxLevel, O: SyntaxLevel> Translate<FunctionRef, HirContext<'a>, I, O> for RawFunctionRef
+{
+    fn translate(&self, context: &mut HirContext) -> Result<FunctionRef, ParseError> {
         todo!()
+    }
+}
+
+impl<'a> Translatable<HirContext<'a>, RawSyntaxLevel, HighSyntaxLevel> for RawSyntaxLevel {
+    fn translate_stmt(node: &HighStatement<RawSyntaxLevel>, context: &mut HirContext) -> Result<HighStatement<HighSyntaxLevel>, ParseError> {
+        Translate::translate(node, context)
+    }
+
+    fn translate_expr(node: &HighExpression<RawSyntaxLevel>, context: &mut HirContext) -> Result<HighExpression<HighSyntaxLevel>, ParseError> {
+        Translate::translate(node, context)
+    }
+
+    fn translate_type_ref(node: &RawTypeRef, context: &mut HirContext) -> Result<TypeRef, ParseError> {
+        Translate::<_, _, RawSyntaxLevel, HighSyntaxLevel>::translate(node, context)
+    }
+
+    fn translate_func_ref(node: &RawFunctionRef, context: &mut HirContext) -> Result<FunctionRef, ParseError> {
+        Translate::<_, _, RawSyntaxLevel, HighSyntaxLevel>::translate(node, context)
+    }
+
+    fn translate_type(node: &HighType<RawSyntaxLevel>, context: &mut HirContext) -> Result<HighType<HighSyntaxLevel>, ParseError> {
+        Translate::translate(node, context)
+    }
+
+    fn translate_func(node: &HighFunction<RawSyntaxLevel>, context: &mut HirContext) -> Result<HighFunction<HighSyntaxLevel>, ParseError> {
+        Translate::translate(node, context)
     }
 }

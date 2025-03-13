@@ -5,11 +5,12 @@ use nom::bytes::complete::tag;
 use nom::multi::many0;
 use nom::sequence::{delimited, terminated};
 use nom::Parser;
-use syntax::code::expression::Expression;
-use syntax::code::statement::{RawStatement, Statement};
+use syntax::code::expression::HighExpression;
+use syntax::code::statement::HighStatement;
+use syntax::hir::RawSyntaxLevel;
 
 // Parser for function bodies
-pub fn function_body(input: Span) -> IResult<Span, RawStatement> {
+pub fn function_body(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     delimited(
         delimited(ignored, tag("{"), ignored),
         parse_code, //very basic body parser
@@ -17,6 +18,6 @@ pub fn function_body(input: Span) -> IResult<Span, RawStatement> {
     )(input).map(|(remaining, body)| (remaining, body))
 }
 
-pub fn parse_code(input: Span) -> IResult<Span, RawStatement> {
-    many0(terminated(statement, ignored)).map(|statement| Statement::Expression(Expression::CodeBlock(statement))).parse(input)
+pub fn parse_code(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
+    many0(terminated(statement, ignored)).map(|statement| HighStatement::Expression(HighExpression::CodeBlock(statement))).parse(input)
 }

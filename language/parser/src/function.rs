@@ -7,10 +7,11 @@ use nom::combinator::{map, opt};
 use nom::multi::separated_list0;
 use nom::sequence::{delimited, preceded, tuple};
 use nom_supreme::ParserExt;
-use syntax::structure::function::RawFunction;
+use syntax::hir::{RawSyntaxLevel, RawTypeRef};
+use syntax::structure::function::HighFunction;
 
 // Parser for function declarations
-pub fn parse_function(input: Span) -> IResult<Span, RawFunction> {
+pub fn parse_function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {
     map(
         tuple((
             modifiers.context("Modifiers"),
@@ -19,7 +20,7 @@ pub fn parse_function(input: Span) -> IResult<Span, RawFunction> {
             return_type.context("Return"),
             function_body.context("Code"),
         )).context("Function"),
-        |(modifiers, name, parameters, return_type, body)| RawFunction {
+        |(modifiers, name, parameters, return_type, body)| HighFunction {
             file: input.extra.file.clone(),
             modifiers,
             name,
@@ -31,7 +32,7 @@ pub fn parse_function(input: Span) -> IResult<Span, RawFunction> {
 }
 
 // Parser for parameter lists
-fn parameter_list(input: Span) -> IResult<Span, Vec<(Spur, Spur)>> {
+fn parameter_list(input: Span) -> IResult<Span, Vec<(Spur, RawTypeRef)>> {
     delimited(
         delimited(ignored, tag("("), ignored),
         separated_list0(delimited(ignored, tag(","), ignored), parameter).context("Parameter"),
@@ -40,6 +41,6 @@ fn parameter_list(input: Span) -> IResult<Span, Vec<(Spur, Spur)>> {
 }
 
 // Parser for return type (optional)
-fn return_type(input: Span) -> IResult<Span, Option<Spur>> {
-    opt(preceded(delimited(ignored, tag("->"), ignored), identifier))(input)
+fn return_type(input: Span) -> IResult<Span, Option<RawTypeRef>> {
+    opt(preceded(delimited(ignored, tag("->"), ignored), map(identifier, |spur| RawTypeRef(spur))))(input)
 }

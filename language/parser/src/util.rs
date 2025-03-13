@@ -10,6 +10,7 @@ use nom::Err::Error;
 use nom::{error, Parser};
 use nom_supreme::error::{BaseErrorKind, ErrorTree};
 use nom_supreme::ParserExt;
+use syntax::hir::RawTypeRef;
 use syntax::structure::{Modifier, MODIFIERS};
 use syntax::util::path::FilePath;
 
@@ -32,13 +33,13 @@ pub fn identifier(input: Span) -> IResult<Span, Spur> {
 }
 
 // Parser for parameter declarations (identifier: type)
-pub fn parameter(input: Span) -> IResult<Span, (Spur, Spur)> {
+pub fn parameter(input: Span) -> IResult<Span, (Spur, RawTypeRef)> {
     tuple((
         identifier,
         delimited(ignored, tag(":"), ignored),
         identifier,
     ))(input)
-        .map(|(remaining, (name, _, type_name))| (remaining, (name, type_name)))
+        .map(|(remaining, (name, _, type_name))| (remaining, (name, RawTypeRef(type_name))))
 }
 
 // Parser for modifiers

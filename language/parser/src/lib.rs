@@ -12,12 +12,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use nom::combinator::eof;
 use nom_supreme::ParserExt;
-use syntax::hir::types::Type;
-use syntax::hir::RawSource;
-use syntax::structure::function::RawFunction;
+use syntax::hir::types::HighType;
+use syntax::hir::{RawSource, RawSyntaxLevel};
 use syntax::util::path::{get_path, FilePath};
 use syntax::util::ParseError;
 use tokio::fs;
+use syntax::structure::function::HighFunction;
 
 mod code;
 mod errors;
@@ -46,13 +46,13 @@ impl ParseContext {
 #[derive(Default)]
 pub struct File {
     pub imports: Vec<FilePath>,
-    pub functions: Vec<RawFunction>,
-    pub types: Vec<Type<Spur>>,
+    pub functions: Vec<HighFunction<RawSyntaxLevel>>,
+    pub types: Vec<HighType<RawSyntaxLevel>>,
 }
 
 pub enum TopLevelItem {
-    Function(RawFunction),
-    Type(Type<Spur>),
+    Function(HighFunction<RawSyntaxLevel>),
+    Type(HighType<RawSyntaxLevel>),
     Import(FilePath),
 }
 
@@ -74,11 +74,11 @@ impl Extend<TopLevelItem> for File {
     }
 }
 
-pub async fn parse_source(dir: PathBuf) -> Result<RawSource, Vec<ParseError>> {
+pub async fn parse_source(dir: PathBuf) -> Result<RawSource, ParseError> {
     let mut source = RawSource::default();
     let mut errors = Vec::new();
 
-    for path in read_recursive(&dir).await.map_err(|err| vec!(ParseError::InternalError(err)))? {
+    for path in read_recursive(&dir).await.map_err(|err| ParseError::InternalError(err))? {
         let file_path = get_path(&source.syntax.symbols, &path, &dir);
         let file = match parse_file(&path, file_path.clone(), source.syntax.symbols.clone()).await {
             Ok(file) => file,
@@ -106,7 +106,7 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, Vec<ParseError>> {
     }
 
     if !errors.is_empty() {
-        return Err(errors);
+        return Err(ParseError::MultiError(errors));
     }
 
     Ok(source)

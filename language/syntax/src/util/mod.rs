@@ -2,6 +2,7 @@ use anyhow::Error;
 use thiserror::Error;
 
 pub mod path;
+pub mod translation;
 
 #[derive(Error, Debug)]
 pub enum ParseError {
@@ -9,6 +10,8 @@ pub enum ParseError {
     InternalError(Error),
     #[error("{0}")]
     ParseError(String),
+    #[error("{0:?}")]
+    MultiError(Vec<ParseError>)
 }
 
 pub fn collect_results<T, E, I>(iter: I) -> Result<Vec<T>, Vec<E>>
