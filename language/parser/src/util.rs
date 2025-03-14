@@ -18,10 +18,9 @@ use syntax::util::path::FilePath;
 pub fn file_path(input: Span) -> IResult<Span, FilePath> {
     separated_list1(
         tag("::"),
-        map(
-            recognize(pair(alpha1, many0(alphanumeric1))),
-            |s: Span| s.extra.intern(s.to_string())
-        )
+        map(recognize(pair(alpha1, many0(alphanumeric1))), |s: Span| {
+            s.extra.intern(s.to_string())
+        }),
     )(input)
 }
 
@@ -39,7 +38,7 @@ pub fn parameter(input: Span) -> IResult<Span, (Spur, RawTypeRef)> {
         delimited(ignored, tag(":"), ignored),
         identifier,
     ))(input)
-        .map(|(remaining, (name, _, type_name))| (remaining, (name, RawTypeRef(type_name))))
+    .map(|(remaining, (name, _, type_name))| (remaining, (name, RawTypeRef(type_name))))
 }
 
 // Parser for modifiers
@@ -56,7 +55,10 @@ fn modifier(input: Span) -> IResult<Span, Modifier> {
         Ok((i, modif))
     } else {
         // Return an error without consuming input.
-        Err(Error(ErrorTree::Base { location: i, kind: BaseErrorKind::Kind(error::ErrorKind::Tag) }))
+        Err(Error(ErrorTree::Base {
+            location: i,
+            kind: BaseErrorKind::Kind(error::ErrorKind::Tag),
+        }))
     }
 }
 
@@ -78,11 +80,13 @@ fn whitespace_or_comment(input: Span) -> IResult<Span, ()> {
     alt((
         value((), multispace1), // Matches whitespace (including newlines)
         single_line_comment,
-        multi_line_comment
+        multi_line_comment,
     ))(input)
 }
 
 // Parser that consumes any amount of whitespace and comments
 pub fn ignored(input: Span) -> IResult<Span, ()> {
-    value((), many0(whitespace_or_comment)).context("Ignored").parse(input)
+    value((), many0(whitespace_or_comment))
+        .context("Ignored")
+        .parse(input)
 }

@@ -5,24 +5,26 @@ use nom::combinator::map;
 use nom::multi::many0;
 use nom::sequence::{delimited, preceded, tuple};
 use nom_supreme::ParserExt;
-use syntax::hir::RawSyntaxLevel;
 use syntax::hir::types::{HighType, TypeData};
+use syntax::hir::RawSyntaxLevel;
 
 pub fn parse_structure(input: Span) -> IResult<Span, HighType<RawSyntaxLevel>> {
     map(
         tuple((
             modifiers.context("Modifiers"),
             preceded(delimited(ignored, tag("struct"), ignored), identifier).context("Keyword"),
-            delimited(delimited(ignored, tag("{"), ignored),
-                      many0(delimited(ignored, parameter, ignored)),
-                      delimited(ignored, tag("}"), ignored).context("Struct")
-        ))).context("Structure"),
+            delimited(
+                delimited(ignored, tag("{"), ignored),
+                many0(delimited(ignored, parameter, ignored)),
+                delimited(ignored, tag("}"), ignored).context("Struct"),
+            ),
+        ))
+        .context("Structure"),
         |(modifiers, name, fields)| HighType {
             name,
             file: input.extra.file.clone(),
             modifiers,
-            data: TypeData::Struct {
-                fields
-            }
-        })(input.clone())
+            data: TypeData::Struct { fields },
+        },
+    )(input.clone())
 }

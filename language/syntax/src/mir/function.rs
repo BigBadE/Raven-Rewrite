@@ -1,12 +1,12 @@
-use lasso::Spur;
 use crate::hir::function::{Function, HighFunction};
 use crate::mir::MirContext;
-use crate::structure::Modifier;
 use crate::structure::visitor::{FileOwner, Translate};
-use crate::SyntaxLevel;
-use crate::util::ParseError;
+use crate::structure::Modifier;
 use crate::util::path::FilePath;
 use crate::util::translation::Translatable;
+use crate::util::ParseError;
+use crate::SyntaxLevel;
+use lasso::Spur;
 
 #[derive(Debug)]
 pub struct MediumFunction<T: SyntaxLevel> {
@@ -15,7 +15,7 @@ pub struct MediumFunction<T: SyntaxLevel> {
     pub modifiers: Vec<Modifier>,
     pub parameters: Vec<(Spur, T::TypeReference)>,
     pub return_type: Option<T::TypeReference>,
-    pub body: T::Statement,
+    pub body: Vec<T::Statement>,
 }
 
 impl<T: SyntaxLevel> Function for MediumFunction<T> {
@@ -25,15 +25,20 @@ impl<T: SyntaxLevel> Function for MediumFunction<T> {
 }
 
 // Handle type translation
-impl<I: SyntaxLevel + Translatable<MirContext, I, O>, O: SyntaxLevel> Translate<MediumFunction<O>, MirContext, I, O>
-for HighFunction<I> {
+impl<I: SyntaxLevel + Translatable<MirContext, I, O>, O: SyntaxLevel>
+    Translate<MediumFunction<O>, MirContext, I, O> for HighFunction<I>
+{
     fn translate(&self, context: &mut MirContext) -> Result<MediumFunction<O>, ParseError> {
         context.set_file(self.file.clone());
+        context.next_block = 1;
+        // The tree must be flattened into a list with a depth-first traversal
+        let mut body = vec!(I::translate_stmt(&self.body, context)?);
+        body.append(&mut context.adding_blocks);
         Ok(MediumFunction {
             name: self.name,
             file: self.file.clone(),
             modifiers: self.modifiers.clone(),
-            body: I::translate_stmt(&self.body, context)?,
+            body,
             parameters: self
                 .parameters
                 .iter()

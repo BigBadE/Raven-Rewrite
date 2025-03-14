@@ -1,15 +1,15 @@
 use crate::structure::visitor::{FileOwner, Translate};
+use crate::util::translation::Translatable;
 use crate::util::ParseError;
 use crate::SyntaxLevel;
 use std::fmt;
 use std::fmt::Debug;
-use crate::util::translation::Translatable;
 
 pub trait Statement: Debug {}
 
 pub enum HighStatement<T: SyntaxLevel> {
     Expression(T::Expression),
-    Return,
+    Return(Option<T::Expression>),
     Break,
     Continue,
     If {
@@ -34,7 +34,7 @@ impl<T: SyntaxLevel> Debug for HighStatement<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             HighStatement::Expression(_) => write!(f, "HighStatement::Expression(...)"),
-            HighStatement::Return => write!(f, "HighStatement::Return"),
+            HighStatement::Return(_) => write!(f, "HighStatement::Return"),
             HighStatement::Break => write!(f, "HighStatement::Break"),
             HighStatement::Continue => write!(f, "HighStatement::Continue"),
             HighStatement::If { .. } => write!(f, "HighStatement::If(...)"),
@@ -52,17 +52,17 @@ pub struct Conditional<T: SyntaxLevel> {
 }
 
 // Handle statement translation
-impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Translate<HighStatement<O>, C, I, O>
-    for HighStatement<I>
+impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
+    Translate<HighStatement<O>, C, I, O> for HighStatement<I>
 {
-    fn translate(&self,
-        context: &mut C,
-    ) -> Result<HighStatement<O>, ParseError> {
+    fn translate(&self, context: &mut C) -> Result<HighStatement<O>, ParseError> {
         Ok(match self {
             HighStatement::Expression(expression) => {
                 HighStatement::Expression(I::translate_expr(expression, context)?)
             }
-            HighStatement::Return => HighStatement::Return,
+            HighStatement::Return(expression) => {
+                HighStatement::Return(I::translate_expr(expression, context)?)
+            }
             HighStatement::Break => HighStatement::Break,
             HighStatement::Continue => HighStatement::Continue,
             HighStatement::If {
@@ -80,7 +80,9 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Trans
                     .collect::<Result<_, _>>()?,
                 else_branch: else_branch
                     .as_ref()
-                    .map(|branch| Ok::<_, ParseError>(Box::new(I::translate_stmt(branch, context)?)))
+                    .map(|branch| {
+                        Ok::<_, ParseError>(Box::new(I::translate_stmt(branch, context)?))
+                    })
                     .transpose()?,
             },
             HighStatement::For { iterator, body } => HighStatement::For {

@@ -1,4 +1,3 @@
-pub mod expression;
 pub mod function;
 pub mod statement;
 
@@ -7,7 +6,6 @@ use crate::hir::function::HighFunction;
 use crate::hir::statement::HighStatement;
 use crate::hir::types::HighType;
 use crate::hir::HighSyntaxLevel;
-use crate::mir::expression::MediumExpression;
 use crate::mir::function::MediumFunction;
 use crate::mir::statement::MediumStatement;
 use crate::structure::visitor::{FileOwner, Translate};
@@ -25,11 +23,19 @@ impl SyntaxLevel for MediumSyntaxLevel {
     type FunctionReference = FunctionRef;
     type Function = MediumFunction<MediumSyntaxLevel>;
     type Statement = MediumStatement<MediumSyntaxLevel>;
-    type Expression = MediumExpression<MediumSyntaxLevel>;
+    type Expression = HighExpression<MediumSyntaxLevel>;
 }
 
+#[derive(Default)]
 pub struct MirContext {
-    file: Option<FilePath>
+    file: Option<FilePath>,
+    next_block: usize,
+    // All the blocks added by the current statement
+    adding_blocks: Vec<MediumFunction<MediumSyntaxLevel>>,
+    // The parent blocks. Used for breaks and continues
+    parents: Vec<usize>,
+    // Holds if a return was declared, and where the next jump is
+    expr_data: (Option<MediumSyntaxLevel::Expression>, usize),
 }
 
 impl FileOwner for MirContext {
@@ -42,18 +48,24 @@ impl FileOwner for MirContext {
     }
 }
 
-pub fn resolve_to_mir(source: Syntax<HighSyntaxLevel>) -> Result<Syntax<MediumSyntaxLevel>, ParseError> {
-    source.translate(&mut MirContext {
-        file: None
-    })
+pub fn resolve_to_mir(
+    source: Syntax<HighSyntaxLevel>,
+) -> Result<Syntax<MediumSyntaxLevel>, ParseError> {
+    source.translate(&mut MirContext::default())
 }
 
 impl Translatable<MirContext, HighSyntaxLevel, MediumSyntaxLevel> for MediumSyntaxLevel {
-    fn translate_stmt(node: &HighStatement<HighSyntaxLevel>, context: &mut MirContext) -> Result<MediumStatement<MediumSyntaxLevel>, ParseError> {
+    fn translate_stmt(
+        node: &HighStatement<HighSyntaxLevel>,
+        context: &mut MirContext,
+    ) -> Result<MediumStatement<MediumSyntaxLevel>, ParseError> {
         Translate::translate(node, context)
     }
 
-    fn translate_expr(node: &HighExpression<HighSyntaxLevel>, context: &mut MirContext) -> Result<MediumExpression<MediumSyntaxLevel>, ParseError> {
+    fn translate_expr(
+        node: &HighExpression<HighSyntaxLevel>,
+        context: &mut MirContext,
+    ) -> Result<HighExpression<MediumSyntaxLevel>, ParseError> {
         Translate::translate(node, context)
     }
 
@@ -61,15 +73,24 @@ impl Translatable<MirContext, HighSyntaxLevel, MediumSyntaxLevel> for MediumSynt
         Translate::<_, _, HighSyntaxLevel, MediumSyntaxLevel>::translate(node, context)
     }
 
-    fn translate_func_ref(node: &FunctionRef, context: &mut MirContext) -> Result<FunctionRef, ParseError> {
+    fn translate_func_ref(
+        node: &FunctionRef,
+        context: &mut MirContext,
+    ) -> Result<FunctionRef, ParseError> {
         Translate::<_, _, HighSyntaxLevel, MediumSyntaxLevel>::translate(node, context)
     }
 
-    fn translate_type(node: &HighType<HighSyntaxLevel>, context: &mut MirContext) -> Result<HighType<MediumSyntaxLevel>, ParseError> {
+    fn translate_type(
+        node: &HighType<HighSyntaxLevel>,
+        context: &mut MirContext,
+    ) -> Result<HighType<MediumSyntaxLevel>, ParseError> {
         Translate::translate(node, context)
     }
 
-    fn translate_func(node: &HighFunction<HighSyntaxLevel>, context: &mut MirContext) -> Result<MediumFunction<MediumSyntaxLevel>, ParseError> {
+    fn translate_func(
+        node: &HighFunction<HighSyntaxLevel>,
+        context: &mut MirContext,
+    ) -> Result<MediumFunction<MediumSyntaxLevel>, ParseError> {
         Translate::translate(node, context)
     }
 }

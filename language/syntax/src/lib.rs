@@ -1,16 +1,16 @@
+use crate::hir::expression::Expression;
+use crate::hir::function::{Function, FunctionReference};
+use crate::hir::statement::Statement;
 use crate::hir::types::{Type, TypeReference};
 use lasso::ThreadedRodeo;
 use std::fmt::Debug;
 use std::sync::Arc;
-use crate::hir::expression::Expression;
-use crate::hir::function::{Function, FunctionReference};
-use crate::hir::statement::Statement;
 
 pub mod code;
-pub mod structure;
 pub mod hir;
-pub mod util;
 pub mod mir;
+pub mod structure;
+pub mod util;
 
 pub type TypeRef = usize;
 pub type FunctionRef = usize;
@@ -27,7 +27,7 @@ pub trait SyntaxLevel: Debug {
 pub struct Syntax<T: SyntaxLevel> {
     pub symbols: Arc<ThreadedRodeo>,
     pub functions: Vec<T::Function>,
-    pub types: Vec<T::Type>
+    pub types: Vec<T::Type>,
 }
 
 impl<T: SyntaxLevel> Default for Syntax<T> {
@@ -35,7 +35,7 @@ impl<T: SyntaxLevel> Default for Syntax<T> {
         Self {
             symbols: Arc::default(),
             functions: Vec::default(),
-            types: Vec::default()
+            types: Vec::default(),
         }
     }
 }

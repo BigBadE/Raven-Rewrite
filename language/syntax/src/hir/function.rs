@@ -30,8 +30,9 @@ impl<T: SyntaxLevel> Function for HighFunction<T> {
 }
 
 // Handle type translation
-impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Translate<HighFunction<O>, C, I, O>
-    for HighFunction<I> {
+impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
+    Translate<HighFunction<O>, C, I, O> for HighFunction<I>
+{
     fn translate(&self, context: &mut C) -> Result<HighFunction<O>, ParseError> {
         context.set_file(self.file.clone());
         Ok(HighFunction {

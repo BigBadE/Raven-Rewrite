@@ -11,23 +11,30 @@ use syntax::code::statement::{Conditional, HighStatement};
 use syntax::hir::RawSyntaxLevel;
 
 pub fn statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
-    let (input, statement) = delimited(ignored, alt((
-        flow_changer,
-        if_statement,
-        for_statement,
-        while_statement,
-        loop_statement,
-        map(expression, HighStatement::Expression),
-    )), ignored)(input)?;
-    
+    let (input, statement) = delimited(
+        ignored,
+        alt((
+            flow_changer,
+            if_statement,
+            for_statement,
+            while_statement,
+            loop_statement,
+            map(expression, HighStatement::Expression),
+        )),
+        ignored,
+    )(input)?;
+
     let (input, _) = opt(delimited(ignored, tag(";"), ignored))(input)?;
     Ok((input, statement))
 }
 
 pub fn flow_changer(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
-    alt((tag("return").map(|_| HighStatement::Return),
-         tag("break").map(|_| HighStatement::Break),
-         tag("continue").map(|_| HighStatement::Continue))).parse(input)
+    alt((
+        tag("return").map(|_| HighStatement::Return),
+        tag("break").map(|_| HighStatement::Break),
+        tag("continue").map(|_| HighStatement::Continue),
+    ))
+    .parse(input)
 }
 
 pub fn if_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
@@ -71,12 +78,7 @@ pub fn while_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLeve
     let (input, _) = tag("while")(input)?;
     let (input, condition) = parse_conditional(input)?;
 
-    Ok((
-        input,
-        HighStatement::While {
-            condition
-        },
-    ))
+    Ok((input, HighStatement::While { condition }))
 }
 
 pub fn loop_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
@@ -86,7 +88,7 @@ pub fn loop_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel
     Ok((
         input,
         HighStatement::Loop {
-            body: Box::new(condition)
+            body: Box::new(condition),
         },
     ))
 }
@@ -99,7 +101,13 @@ fn parse_conditional(input: Span) -> IResult<Span, Conditional<RawSyntaxLevel>> 
     let (input, _) = ignored(input)?;
     // Parse the branch statement
     let (input, branch) = statement(input)?;
-    Ok((input, Conditional { condition, branch: Box::new(branch) }))
+    Ok((
+        input,
+        Conditional {
+            condition,
+            branch: Box::new(branch),
+        },
+    ))
 }
 
 /// Parses an "else if" clause.

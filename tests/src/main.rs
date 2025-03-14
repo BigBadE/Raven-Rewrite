@@ -1,6 +1,6 @@
-use std::path::PathBuf;
 use anyhow::Error;
 use runner::compile_source;
+use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {

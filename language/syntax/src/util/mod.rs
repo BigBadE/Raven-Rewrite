@@ -11,15 +11,15 @@ pub enum ParseError {
     #[error("{0}")]
     ParseError(String),
     #[error("{0:?}")]
-    MultiError(Vec<ParseError>)
+    MultiError(Vec<ParseError>),
 }
 
 pub fn collect_results<T, E, I>(iter: I) -> Result<Vec<T>, Vec<E>>
 where
     I: IntoIterator<Item = Result<T, E>>,
 {
-    iter.into_iter().fold(Ok(Vec::new()), |acc, item| {
-        match (acc, item) {
+    iter.into_iter()
+        .fold(Ok(Vec::new()), |acc, item| match (acc, item) {
             (Ok(mut oks), Ok(value)) => {
                 oks.push(value);
                 Ok(oks)
@@ -30,6 +30,5 @@ where
                 errs.push(e);
                 Err(errs)
             }
-        }
-    })
+        })
 }

@@ -86,7 +86,8 @@ impl<T: SyntaxLevel> Debug for HighExpression<T> {
 
 // Handle expression translation
 impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
-    Translate<HighExpression<O>, C, I, O> for HighExpression<I> {
+    Translate<HighExpression<O>, C, I, O> for HighExpression<I>
+{
     fn translate(&self, context: &mut C) -> Result<HighExpression<O>, ParseError> {
         Ok(match self {
             HighExpression::Literal(literal) => HighExpression::Literal(*literal),

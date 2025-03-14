@@ -15,9 +15,12 @@ pub fn function_body(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>
         delimited(ignored, tag("{"), ignored),
         parse_code, //very basic body parser
         delimited(ignored, tag("}"), ignored),
-    )(input).map(|(remaining, body)| (remaining, body))
+    )(input)
+    .map(|(remaining, body)| (remaining, body))
 }
 
 pub fn parse_code(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
-    many0(terminated(statement, ignored)).map(|statement| HighStatement::Expression(HighExpression::CodeBlock(statement))).parse(input)
+    many0(terminated(statement, ignored))
+        .map(|statement| HighStatement::Expression(HighExpression::CodeBlock(statement)))
+        .parse(input)
 }
