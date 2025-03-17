@@ -7,9 +7,9 @@ use nom::character::complete::{alphanumeric1, digit1};
 use nom::combinator::{map, opt};
 use nom::multi::{many0, separated_list0};
 use nom::sequence::{delimited, preceded, terminated, tuple};
-use syntax::code::expression::HighExpression;
 use syntax::code::literal::Literal;
 use syntax::hir::{RawFunctionRef, RawSyntaxLevel, RawTypeRef};
+use syntax::hir::expression::HighExpression;
 
 pub fn expression(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     delimited(

@@ -1,96 +1,64 @@
-use crate::hir::statement::{Conditional, HighStatement, Statement};
-use crate::mir::MirContext;
-use crate::structure::visitor::{FileOwner, Translate};
+use crate::code::literal::Literal;
+use crate::hir::statement::{HighStatement, Statement};
+use crate::mir::{LocalVar, MediumExpression, MediumSyntaxLevel, MediumTerminator, MirContext, Place};
+use crate::structure::visitor::Translate;
 use crate::util::translation::Translatable;
 use crate::util::ParseError;
 use crate::SyntaxLevel;
-use std::fmt;
 use std::fmt::Debug;
 
 /// The MIR is made up of a series of nodes, each terminated with a jump expression.
+#[derive(Debug)]
 pub enum MediumStatement<T: SyntaxLevel> {
-    Block {
-        body: Vec<T::Expression>,
-        next: usize,
-        condition: Option<T::Expression>,
+    Assign {
+        place: Place,
+        rvalue: MediumExpression<T>,
     },
-    Return {
-        body: Vec<T::Expression>,
-        returning: Option<T::Expression>,
-    },
+    StorageLive(LocalVar),
+    StorageDead(LocalVar),
+    Noop,
 }
 
 impl<T: SyntaxLevel> Statement for MediumStatement<T> {}
 
-impl<T: SyntaxLevel> Debug for MediumStatement<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MediumStatement::Block { .. } => write!(f, "MediumStatement::Block(...)"),
-            MediumStatement::Return { .. } => write!(f, "MediumStatement::Return(...)"),
-        }
-    }
-}
-
 // Handle statement translation
-impl<I: SyntaxLevel + Translatable<MirContext, I, O>, O: SyntaxLevel>
-    Translate<MediumStatement<O>, MirContext, I, O> for HighStatement<I>
+impl<I: SyntaxLevel + Translatable<MirContext, I, MediumSyntaxLevel>>
+    Translate<MediumStatement<MediumSyntaxLevel>, MirContext, I, MediumSyntaxLevel> for HighStatement<I>
 {
-    fn translate(&self, context: &mut MirContext) -> Result<MediumStatement<O>, ParseError> {
-        Ok(match self {
+    fn translate(&self, context: &mut MirContext) -> Result<MediumStatement<MediumSyntaxLevel>, ParseError> {
+        match self {
             HighStatement::Expression(expression) => {
-                let mut parents = context.parents.clone();
-                parents.push(context.next_block);
-                let mut context = MirContext {
-                    file: context.file.clone(),
-                    next_block: context.next_block + 1,
-                    adding_blocks: vec!(),
-                    parents,
-                    expr_data: (None, 0),
-                };
-                let mut body = vec![I::translate_expr(expression, &mut context)?];
-                body.append(&mut context.adding_blocks);
-                MediumStatement::Block {
-                    body,
-                    condition: context.expr_data.0,
-                    next: context.expr_data.1,
-                }
+                I::translate_expr(expression, context)?;
             },
-            HighStatement::Return(returning) => HighStatement::Return,
-            HighStatement::Break => HighStatement::Break,
-            HighStatement::Continue => HighStatement::Continue,
             HighStatement::If {
                 conditions,
                 else_branch,
-            } => HighStatement::If {
-                conditions: conditions
-                    .iter()
-                    .map(|condition| {
-                        Ok::<_, ParseError>(Conditional {
-                            condition: I::translate_expr(&condition.condition, context)?,
-                            branch: Box::new(I::translate_stmt(&condition.branch, context)?),
-                        })
-                    })
-                    .collect::<Result<_, _>>()?,
-                else_branch: else_branch
-                    .as_ref()
-                    .map(|branch| {
-                        Ok::<_, ParseError>(Box::new(I::translate_stmt(branch, context)?))
-                    })
-                    .transpose()?,
+            } => {
+                todo!()
             },
-            HighStatement::For { iterator, body } => HighStatement::For {
-                iterator: I::translate_expr(iterator, context)?,
-                body: Box::new(I::translate_stmt(body, context)?),
+            HighStatement::For { iterator, body } => {
+                todo!()
             },
-            HighStatement::While { condition } => HighStatement::While {
-                condition: Conditional {
-                    condition: I::translate_expr(&condition.condition, context)?,
-                    branch: Box::new(I::translate_stmt(&condition.branch, context)?),
-                },
+            HighStatement::While { condition } => {
+                todo!()
+            }
+            HighStatement::Loop { body } => {
+                let top = context.create_block();
+                let end = context.create_block();
+                context.switch_to_block(top);
+                context.parent_loop = Some(top);
+                context.parent_end = Some(end);
+                I::translate_stmt(body, context)?;
+                // Whatever block ends up at the end should jump back to the top.
+                context.set_terminator(MediumTerminator::Goto(top));
             },
-            HighStatement::Loop { body } => HighStatement::Loop {
-                body: Box::new(I::translate_stmt(body, context)?),
-            },
-        })
+            HighStatement::Terminator(terminator) => {
+                let terminator = I::translate_terminator(terminator, context)?;
+                context.set_terminator(terminator)
+            }
+        }
+        // Due to the nature of translating a tree to a graph, we ignore the return type for traversal
+        // and instead add whatever we return to the context (since it's not one to one).
+        Ok(MediumStatement::Noop)
     }
 }

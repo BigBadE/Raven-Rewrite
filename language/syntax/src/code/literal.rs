@@ -11,4 +11,5 @@ pub enum Literal {
     U32(u32),
     Bool(bool),
     Char(char),
+    Void
 }

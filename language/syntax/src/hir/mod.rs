@@ -1,5 +1,5 @@
 use crate::hir::expression::HighExpression;
-use crate::hir::function::{FunctionReference, HighFunction};
+use crate::hir::function::{FunctionReference, HighFunction, HighTerminator};
 use crate::hir::statement::HighStatement;
 use crate::hir::types::{HighType, TypeReference};
 use crate::structure::visitor::{FileOwner, Translate};
@@ -33,6 +33,7 @@ impl SyntaxLevel for RawSyntaxLevel {
     type Function = HighFunction<RawSyntaxLevel>;
     type Statement = HighStatement<RawSyntaxLevel>;
     type Expression = HighExpression<RawSyntaxLevel>;
+    type Terminator = HighTerminator<RawSyntaxLevel>;
 }
 
 #[derive(Debug)]
@@ -45,6 +46,7 @@ impl SyntaxLevel for HighSyntaxLevel {
     type Function = HighFunction<HighSyntaxLevel>;
     type Statement = HighStatement<HighSyntaxLevel>;
     type Expression = HighExpression<HighSyntaxLevel>;
+    type Terminator = HighTerminator<HighSyntaxLevel>;
 }
 
 #[derive(Debug)]
@@ -147,6 +149,10 @@ impl<'a> Translatable<HirContext<'a>, RawSyntaxLevel, HighSyntaxLevel> for RawSy
         node: &HighFunction<RawSyntaxLevel>,
         context: &mut HirContext,
     ) -> Result<HighFunction<HighSyntaxLevel>, ParseError> {
+        Translate::translate(node, context)
+    }
+
+    fn translate_terminator(node: &HighTerminator<RawSyntaxLevel>, context: &mut HirContext<'a>) -> Result<HighTerminator<HighSyntaxLevel>, ParseError> {
         Translate::translate(node, context)
     }
 }

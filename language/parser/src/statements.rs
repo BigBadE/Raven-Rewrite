@@ -7,8 +7,9 @@ use nom::combinator::{map, opt};
 use nom::multi::many0;
 use nom::sequence::delimited;
 use nom::Parser;
-use syntax::code::statement::{Conditional, HighStatement};
+use syntax::hir::function::HighTerminator;
 use syntax::hir::RawSyntaxLevel;
+use syntax::hir::statement::{Conditional, HighStatement};
 
 pub fn statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     let (input, statement) = delimited(
@@ -30,9 +31,9 @@ pub fn statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
 
 pub fn flow_changer(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     alt((
-        tag("return").map(|_| HighStatement::Return),
-        tag("break").map(|_| HighStatement::Break),
-        tag("continue").map(|_| HighStatement::Continue),
+        tag("return").map(|_| HighStatement::Terminator(HighTerminator::Return(None))),
+        tag("break").map(|_| HighStatement::Terminator(HighTerminator::Break)),
+        tag("continue").map(|_| HighStatement::Terminator(HighTerminator::Continue)),
     ))
     .parse(input)
 }

@@ -12,11 +12,12 @@ use nom_supreme::multi::collect_separated_terminated;
 use nom_supreme::ParserExt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use syntax::hir::function::HighFunction;
 use syntax::hir::types::HighType;
 use syntax::hir::{RawSource, RawSyntaxLevel};
-use syntax::structure::function::HighFunction;
 use syntax::util::path::{get_path, FilePath};
 use syntax::util::ParseError;
+use syntax::{FunctionRef, TypeRef};
 use tokio::fs;
 
 mod code;
@@ -92,14 +93,14 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, ParseError> {
         for function in file.functions {
             let mut path = file_path.clone();
             path.push(function.name);
-            source.functions.insert(path, source.syntax.functions.len());
+            source.functions.insert(path, FunctionRef(source.syntax.functions.len()));
             source.syntax.functions.push(function);
         }
 
         for types in file.types {
             let mut path = file_path.clone();
             path.push(types.name);
-            source.types.insert(path, source.syntax.types.len());
+            source.types.insert(path, TypeRef(source.syntax.types.len()));
             source.syntax.types.push(types);
         }
 

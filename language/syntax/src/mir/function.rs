@@ -1,12 +1,15 @@
-use crate::hir::function::{Function, HighFunction};
-use crate::mir::MirContext;
+use crate::hir::function::{CodeBlock, Function, HighFunction};
+use crate::mir::{MediumSyntaxLevel, MediumTerminator, MirContext};
 use crate::structure::visitor::{FileOwner, Translate};
-use crate::structure::Modifier;
-use crate::util::path::FilePath;
 use crate::util::translation::Translatable;
 use crate::util::ParseError;
 use crate::SyntaxLevel;
+use std::mem;
 use lasso::Spur;
+use crate::code::literal::Literal;
+use crate::mir::expression::MediumExpression;
+use crate::structure::Modifier;
+use crate::util::path::FilePath;
 
 #[derive(Debug)]
 pub struct MediumFunction<T: SyntaxLevel> {
@@ -15,30 +18,35 @@ pub struct MediumFunction<T: SyntaxLevel> {
     pub modifiers: Vec<Modifier>,
     pub parameters: Vec<(Spur, T::TypeReference)>,
     pub return_type: Option<T::TypeReference>,
-    pub body: Vec<T::Statement>,
+    pub body: Vec<CodeBlock<T>>,
 }
 
 impl<T: SyntaxLevel> Function for MediumFunction<T> {
     fn file(&self) -> &FilePath {
-        &self.file
+        self.file.as_ref()
     }
 }
 
 // Handle type translation
-impl<I: SyntaxLevel + Translatable<MirContext, I, O>, O: SyntaxLevel>
-    Translate<MediumFunction<O>, MirContext, I, O> for HighFunction<I>
+impl<I: SyntaxLevel + Translatable<MirContext, I, MediumSyntaxLevel>>
+    Translate<MediumFunction<MediumSyntaxLevel>, MirContext, I, MediumSyntaxLevel> for HighFunction<I>
 {
-    fn translate(&self, context: &mut MirContext) -> Result<MediumFunction<O>, ParseError> {
+    fn translate(&self, context: &mut MirContext) -> Result<MediumFunction<MediumSyntaxLevel>, ParseError> {
         context.set_file(self.file.clone());
-        context.next_block = 1;
-        // The tree must be flattened into a list with a depth-first traversal
-        let mut body = vec!(I::translate_stmt(&self.body, context)?);
-        body.append(&mut context.adding_blocks);
+        for statement in &self.body.statements {
+            I::translate_stmt(statement, context)?;
+        }
+
+        // Return void if we have no return at the very end
+        if let MediumTerminator::Unreachable = context.code_blocks[context.current_block].terminator {
+            context.set_terminator(MediumTerminator::Return(MediumExpression::Literal(Literal::Void)));
+        }
+
         Ok(MediumFunction {
             name: self.name,
             file: self.file.clone(),
             modifiers: self.modifiers.clone(),
-            body,
+            body: mem::take(&mut context.code_blocks),
             parameters: self
                 .parameters
                 .iter()

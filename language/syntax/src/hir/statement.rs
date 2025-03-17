@@ -9,9 +9,7 @@ pub trait Statement: Debug {}
 
 pub enum HighStatement<T: SyntaxLevel> {
     Expression(T::Expression),
-    Return(Option<T::Expression>),
-    Break,
-    Continue,
+    Terminator(T::Terminator),
     If {
         conditions: Vec<Conditional<T>>,
         else_branch: Option<Box<T::Statement>>,
@@ -34,13 +32,11 @@ impl<T: SyntaxLevel> Debug for HighStatement<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             HighStatement::Expression(_) => write!(f, "HighStatement::Expression(...)"),
-            HighStatement::Return(_) => write!(f, "HighStatement::Return"),
-            HighStatement::Break => write!(f, "HighStatement::Break"),
-            HighStatement::Continue => write!(f, "HighStatement::Continue"),
             HighStatement::If { .. } => write!(f, "HighStatement::If(...)"),
             HighStatement::For { .. } => write!(f, "HighStatement::For(...)"),
             HighStatement::While { .. } => write!(f, "HighStatement::While(...)"),
             HighStatement::Loop { .. } => write!(f, "HighStatement::Loop(...)"),
+            HighStatement::Terminator(terminator) => write!(f, "HighStatement::Terminator({:?})", terminator)
         }
     }
 }
@@ -60,11 +56,6 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
             HighStatement::Expression(expression) => {
                 HighStatement::Expression(I::translate_expr(expression, context)?)
             }
-            HighStatement::Return(expression) => {
-                HighStatement::Return(I::translate_expr(expression, context)?)
-            }
-            HighStatement::Break => HighStatement::Break,
-            HighStatement::Continue => HighStatement::Continue,
             HighStatement::If {
                 conditions,
                 else_branch,
@@ -98,6 +89,9 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
             HighStatement::Loop { body } => HighStatement::Loop {
                 body: Box::new(I::translate_stmt(body, context)?),
             },
+            HighStatement::Terminator(terminator) => HighStatement::Terminator(
+                I::translate_terminator(terminator, context)?,
+            ),
         })
     }
 }
