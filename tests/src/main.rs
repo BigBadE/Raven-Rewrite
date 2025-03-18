@@ -23,7 +23,7 @@ async fn main() -> Result<(), Error> {
     }
     let mut compiler = LowCompiler::new();
     let mut generator = compiler.create_code_generator()?;
-    generator.generate(syntax);
+    generator.generate(&syntax);
     unsafe {
         let value: i32 = generator.execute::<Main>("test")?.call();
     }

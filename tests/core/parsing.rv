@@ -1,3 +1,4 @@
+use other::Other;
 pub fn test() {
     let value = 1;
 }

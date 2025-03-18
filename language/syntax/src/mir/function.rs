@@ -16,7 +16,7 @@ pub struct MediumFunction<T: SyntaxLevel> {
     pub name: Spur,
     pub file: FilePath,
     pub modifiers: Vec<Modifier>,
-    pub parameters: Vec<(Spur, T::TypeReference)>,
+    pub parameters: Vec<T::TypeReference>,
     pub return_type: Option<T::TypeReference>,
     pub body: Vec<CodeBlock<T>>,
 }
@@ -26,8 +26,6 @@ impl<T: SyntaxLevel> Function for MediumFunction<T> {
         self.file.as_ref()
     }
 }
-
-// Handle type translation
 impl<I: SyntaxLevel + Translatable<MirContext, I, MediumSyntaxLevel>>
     Translate<MediumFunction<MediumSyntaxLevel>, MirContext, I, MediumSyntaxLevel> for HighFunction<I>
 {
@@ -51,7 +49,7 @@ impl<I: SyntaxLevel + Translatable<MirContext, I, MediumSyntaxLevel>>
                 .parameters
                 .iter()
                 .map(|(name, ty)| {
-                    Ok::<_, ParseError>((name.clone(), I::translate_type_ref(ty, context)?))
+                    Ok::<_, ParseError>(I::translate_type_ref(ty, context)?)
                 })
                 .collect::<Result<_, _>>()?,
             return_type: self

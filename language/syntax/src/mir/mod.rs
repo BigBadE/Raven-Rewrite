@@ -1,6 +1,7 @@
 pub mod function;
 pub mod statement;
-mod expression;
+pub mod expression;
+pub mod types;
 
 use std::collections::HashMap;
 use lasso::Spur;
@@ -18,13 +19,14 @@ use crate::{FunctionRef, Syntax, SyntaxLevel, TypeRef};
 use crate::code::literal::Literal;
 use crate::mir::expression::MediumExpression;
 use crate::mir::function::MediumFunction;
+use crate::mir::types::MediumType;
 
 #[derive(Debug)]
 pub struct MediumSyntaxLevel;
 
 impl SyntaxLevel for MediumSyntaxLevel {
     type TypeReference = TypeRef;
-    type Type = HighType<MediumSyntaxLevel>;
+    type Type = MediumType<MediumSyntaxLevel>;
     type FunctionReference = FunctionRef;
     type Function = MediumFunction<MediumSyntaxLevel>;
     type Statement = MediumStatement<MediumSyntaxLevel>;
@@ -186,7 +188,7 @@ impl Translatable<MirContext, HighSyntaxLevel, MediumSyntaxLevel> for HighSyntax
     fn translate_type(
         node: &HighType<HighSyntaxLevel>,
         context: &mut MirContext,
-    ) -> Result<HighType<MediumSyntaxLevel>, ParseError> {
+    ) -> Result<MediumType<MediumSyntaxLevel>, ParseError> {
         Translate::translate(node, context)
     }
 

@@ -14,7 +14,7 @@ pub mod mir;
 pub mod structure;
 pub mod util;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Hash, Ord, PartialOrd, PartialEq, Eq)]
 pub struct TypeRef(pub usize);
 
 #[derive(Debug, Copy, Clone)]
