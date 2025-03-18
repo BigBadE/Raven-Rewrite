@@ -51,22 +51,21 @@ pub enum Operand {
     Constant(Literal),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Place {
     local: LocalVar,
     projection: Vec<PlaceElem>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum PlaceElem {
     Deref,
-    Field(FieldId),
+    Field(Spur),
     Index(LocalVar),
 }
 
 pub type LocalVar = usize;
 pub type CodeBlockId = usize;
-pub type FieldId = usize;
 
 impl<T: SyntaxLevel> Terminator for MediumTerminator<T> {}
 

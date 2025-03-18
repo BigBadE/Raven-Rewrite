@@ -1,6 +1,7 @@
-use crate::code::literal::Literal;
 use crate::hir::statement::{HighStatement, Statement};
-use crate::mir::{LocalVar, MediumExpression, MediumSyntaxLevel, MediumTerminator, MirContext, Place};
+use crate::mir::{
+    LocalVar, MediumExpression, MediumSyntaxLevel, MediumTerminator, MirContext, Place,
+};
 use crate::structure::visitor::Translate;
 use crate::util::translation::Translatable;
 use crate::util::ParseError;
@@ -12,7 +13,7 @@ use std::fmt::Debug;
 pub enum MediumStatement<T: SyntaxLevel> {
     Assign {
         place: Place,
-        rvalue: MediumExpression<T>,
+        value: MediumExpression<T>,
     },
     StorageLive(LocalVar),
     StorageDead(LocalVar),
@@ -23,22 +24,30 @@ impl<T: SyntaxLevel> Statement for MediumStatement<T> {}
 
 // Handle statement translation
 impl<I: SyntaxLevel + Translatable<MirContext, I, MediumSyntaxLevel>>
-    Translate<MediumStatement<MediumSyntaxLevel>, MirContext, I, MediumSyntaxLevel> for HighStatement<I>
+    Translate<MediumStatement<MediumSyntaxLevel>, MirContext, I, MediumSyntaxLevel>
+    for HighStatement<I>
 {
-    fn translate(&self, context: &mut MirContext) -> Result<MediumStatement<MediumSyntaxLevel>, ParseError> {
+    fn translate(
+        &self,
+        context: &mut MirContext,
+    ) -> Result<MediumStatement<MediumSyntaxLevel>, ParseError> {
         match self {
             HighStatement::Expression(expression) => {
-                I::translate_expr(expression, context)?;
-            },
+                let statement = MediumStatement::Assign {
+                    place: Place { local: context.create_temp(), projection: vec![] },
+                    value: I::translate_expr(expression, context)?,
+                };
+                context.push_statement(statement);
+            }
             HighStatement::If {
                 conditions,
                 else_branch,
             } => {
                 todo!()
-            },
+            }
             HighStatement::For { iterator, body } => {
                 todo!()
-            },
+            }
             HighStatement::While { condition } => {
                 todo!()
             }
@@ -51,7 +60,7 @@ impl<I: SyntaxLevel + Translatable<MirContext, I, MediumSyntaxLevel>>
                 I::translate_stmt(body, context)?;
                 // Whatever block ends up at the end should jump back to the top.
                 context.set_terminator(MediumTerminator::Goto(top));
-            },
+            }
             HighStatement::Terminator(terminator) => {
                 let terminator = I::translate_terminator(terminator, context)?;
                 context.set_terminator(terminator)

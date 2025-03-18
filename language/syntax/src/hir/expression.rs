@@ -5,7 +5,6 @@ use crate::util::translation::Translatable;
 use crate::util::ParseError;
 use crate::SyntaxLevel;
 use lasso::Spur;
-use std::fmt;
 use std::fmt::Debug;
 
 pub trait Expression: Debug {}
@@ -13,7 +12,10 @@ pub trait Expression: Debug {}
 pub enum HighExpression<T: SyntaxLevel> {
     // No input one output
     Literal(Literal),
-    CodeBlock(Vec<T::Statement>),
+    CodeBlock {
+        body: Vec<T::Statement>,
+        value: Box<T::Expression>,
+    },
     Variable(Spur),
     // One input one output
     Assignment {
@@ -35,50 +37,44 @@ pub enum HighExpression<T: SyntaxLevel> {
 
 impl<T: SyntaxLevel> Expression for HighExpression<T> {}
 
-impl<T: SyntaxLevel> Debug for HighExpression<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // HighExpression is a type alias for InnerHighExpression<TR, HighFunction<TR, FR>>
+impl<T: SyntaxLevel> std::fmt::Debug for HighExpression<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HighExpression::Literal(lit) => {
-                write!(f, "HighExpression::Literal({:?})", lit)
+                f.debug_tuple("HighExpression::Literal")
+                    .field(lit)
+                    .finish()
             }
-            HighExpression::CodeBlock(_) => {
-                write!(f, "HighExpression::CodeBlock(...)")
+            HighExpression::CodeBlock { body, value } => {
+                f.debug_struct("HighExpression::CodeBlock")
+                    .field("body", body)
+                    .field("value", value)
+                    .finish()
             }
             HighExpression::Variable(var) => {
-                write!(f, "HighExpression::Variable({:?})", var)
+                f.debug_tuple("HighExpression::Variable")
+                    .field(var)
+                    .finish()
             }
-            HighExpression::Assignment {
-                declaration,
-                variable,
-                value: _,
-            } => {
-                write!(
-                    f,
-                    "HighExpression::Assignment {{ declaration: {:?}, variable: {:?}, value: ... }}",
-                    declaration, variable
-                )
+            HighExpression::Assignment { declaration, variable, value } => {
+                f.debug_struct("HighExpression::Assignment")
+                    .field("declaration", declaration)
+                    .field("variable", variable)
+                    .field("value", value)
+                    .finish()
             }
-            HighExpression::FunctionCall {
-                function,
-                target: _,
-                arguments: _,
-            } => {
-                write!(
-                    f,
-                    "HighExpression::FunctionCall {{ function: {:?}, target: ..., arguments: ... }}",
-                    function
-                )
+            HighExpression::FunctionCall { function, target, arguments } => {
+                f.debug_struct("HighExpression::FunctionCall")
+                    .field("function", function)
+                    .field("target", target)
+                    .field("arguments", arguments)
+                    .finish()
             }
-            HighExpression::CreateStruct {
-                target_struct,
-                fields: _,
-            } => {
-                write!(
-                    f,
-                    "HighExpression::CreateStruct {{ target_struct: {:?}, fields: ... }}",
-                    target_struct
-                )
+            HighExpression::CreateStruct { target_struct, fields } => {
+                f.debug_struct("HighExpression::CreateStruct")
+                    .field("target_struct", target_struct)
+                    .field("fields", fields)
+                    .finish()
             }
         }
     }
@@ -91,12 +87,13 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
     fn translate(&self, context: &mut C) -> Result<HighExpression<O>, ParseError> {
         Ok(match self {
             HighExpression::Literal(literal) => HighExpression::Literal(*literal),
-            HighExpression::CodeBlock(block) => HighExpression::CodeBlock(
-                block
+            HighExpression::CodeBlock { body, value } => HighExpression::CodeBlock {
+                body: body
                     .iter()
                     .map(|statement| I::translate_stmt(statement, context))
                     .collect::<Result<_, _>>()?,
-            ),
+                value: Box::new(I::translate_expr(&value, context)?),
+            },
             HighExpression::Variable(variable) => HighExpression::Variable(*variable),
             HighExpression::Assignment {
                 declaration,

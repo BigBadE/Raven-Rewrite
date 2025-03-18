@@ -3,7 +3,7 @@ use crate::util::translation::Translatable;
 use crate::util::ParseError;
 use crate::SyntaxLevel;
 use std::fmt;
-use std::fmt::Debug;
+use std::fmt::{Debug, Formatter};
 
 pub trait Statement: Debug {}
 
@@ -29,14 +29,37 @@ pub enum HighStatement<T: SyntaxLevel> {
 impl<T: SyntaxLevel> Statement for HighStatement<T> {}
 
 impl<T: SyntaxLevel> Debug for HighStatement<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            HighStatement::Expression(_) => write!(f, "HighStatement::Expression(...)"),
-            HighStatement::If { .. } => write!(f, "HighStatement::If(...)"),
-            HighStatement::For { .. } => write!(f, "HighStatement::For(...)"),
-            HighStatement::While { .. } => write!(f, "HighStatement::While(...)"),
-            HighStatement::Loop { .. } => write!(f, "HighStatement::Loop(...)"),
-            HighStatement::Terminator(terminator) => write!(f, "HighStatement::Terminator({:?})", terminator)
+            HighStatement::Expression(expr) => f
+                .debug_tuple("HighStatement::Expression")
+                .field(expr)
+                .finish(),
+            HighStatement::If {
+                conditions,
+                else_branch,
+            } => f
+                .debug_struct("HighStatement::If")
+                .field("conditions", conditions)
+                .field("else_branch", else_branch)
+                .finish(),
+            HighStatement::For { iterator, body } => f
+                .debug_struct("HighStatement::For")
+                .field("iterator", iterator)
+                .field("body", body)
+                .finish(),
+            HighStatement::While { condition } => f
+                .debug_struct("HighStatement::While")
+                .field("condition", condition)
+                .finish(),
+            HighStatement::Loop { body } => f
+                .debug_struct("HighStatement::Loop")
+                .field("body", body)
+                .finish(),
+            HighStatement::Terminator(terminator) => f
+                .debug_tuple("HighStatement::Terminator")
+                .field(terminator)
+                .finish(),
         }
     }
 }
@@ -89,9 +112,9 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
             HighStatement::Loop { body } => HighStatement::Loop {
                 body: Box::new(I::translate_stmt(body, context)?),
             },
-            HighStatement::Terminator(terminator) => HighStatement::Terminator(
-                I::translate_terminator(terminator, context)?,
-            ),
+            HighStatement::Terminator(terminator) => {
+                HighStatement::Terminator(I::translate_terminator(terminator, context)?)
+            }
         })
     }
 }

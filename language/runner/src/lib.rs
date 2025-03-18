@@ -1,6 +1,5 @@
 use parser::parse_source;
 use std::path::PathBuf;
-
 use syntax::hir::resolve_to_hir;
 use syntax::mir::{resolve_to_mir, MediumSyntaxLevel};
 use syntax::util::ParseError;
@@ -11,8 +10,6 @@ pub async fn compile_source(dir: PathBuf) -> Result<Syntax<MediumSyntaxLevel>, P
 
     let hir = resolve_to_hir(raw_source)?;
     let mir = resolve_to_mir(hir)?;
-    // Need a SSA
-    // Need LLVMIR
 
     Ok(mir)
 }

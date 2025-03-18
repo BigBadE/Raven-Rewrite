@@ -45,7 +45,10 @@ pub fn literal(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
 pub fn block(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     delimited(
         tag("{"),
-        map(many0(statement), |stmts| HighExpression::CodeBlock(stmts)),
+        map(many0(statement), |stmts| HighExpression::CodeBlock {
+            body: stmts,
+            value: Box::new(HighExpression::Literal(Literal::Void))
+        }),
         tag("}"),
     )(input)
 }
