@@ -27,9 +27,9 @@ impl<T: SyntaxLevel> Function for MediumFunction<T> {
     }
 }
 impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
-    Translate<MediumFunction<MediumSyntaxLevel>, MirContext<'_>, I, MediumSyntaxLevel> for HighFunction<I>
+    Translate<MediumFunction<MediumSyntaxLevel>, MirContext<'a>, I, MediumSyntaxLevel> for HighFunction<I>
 {
-    fn translate(&self, context: &mut MirContext) -> Result<MediumFunction<MediumSyntaxLevel>, ParseError> {
+    fn translate(&self, context: &mut MirContext<'a>) -> Result<MediumFunction<MediumSyntaxLevel>, ParseError> {
         context.set_file(self.file.clone());
         for statement in &self.body.statements {
             I::translate_stmt(statement, context)?;
@@ -49,7 +49,7 @@ impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
             parameters: self
                 .parameters
                 .iter()
-                .map(|(name, ty)| {
+                .map(|(_, ty)| {
                     Ok::<_, ParseError>(I::translate_type_ref(ty, context)?)
                 })
                 .collect::<Result<_, _>>()?,

@@ -41,9 +41,9 @@ impl<T: SyntaxLevel<FunctionReference=FunctionRef, TypeReference=TypeRef>> Mediu
 
 // Handle statement translation
 impl<'a, I: SyntaxLevel<Terminator=HighTerminator<I>> + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
-Translate<MediumExpression<MediumSyntaxLevel>, MirContext<'_>, I, MediumSyntaxLevel> for HighExpression<I>
+Translate<MediumExpression<MediumSyntaxLevel>, MirContext<'a>, I, MediumSyntaxLevel> for HighExpression<I>
 {
-    fn translate(&self, context: &mut MirContext) -> Result<MediumExpression<MediumSyntaxLevel>, ParseError> {
+    fn translate(&self, context: &mut MirContext<'a>) -> Result<MediumExpression<MediumSyntaxLevel>, ParseError> {
         // Helper conversion: converts a translated expression to an operand.
         let convert_expr = |expr: MediumExpression<MediumSyntaxLevel>| -> Operand {
             match expr {
@@ -73,26 +73,30 @@ Translate<MediumExpression<MediumSyntaxLevel>, MirContext<'_>, I, MediumSyntaxLe
                 I::translate_expr(value, context)?
             }
             // A variable is translated to a use of a local place.
-            HighExpression::Variable(var) =>
+            HighExpression::Variable(var) => {
+                let local = context.get_local(*var).cloned();
                 MediumExpression::Use(Operand::Copy(Place {
-                    local: context.get_or_create_local(*var),
+                    local: local.ok_or_else(|| ParseError::ParseError(
+                        format!("Unknown variable: {}", context.syntax.symbols.resolve(var))))?,
                     projection: vec!(),
-                })),
+                }))
+            },
             // For assignment, translate the right-hand side, emit an assign statement,
             // then return a use of the target variable.
             HighExpression::Assignment { declaration, variable, value } => {
-                if context.local_vars.contains_key(variable) && !declaration {
+                if !context.local_vars.contains_key(variable) && !declaration {
                     return Err(ParseError::ParseError("Unknown variable!".to_string()));
                 }
 
+                let value = I::translate_expr(value, context)?;
+                let types = value.get_type(context);
                 let place = Place {
-                    local: context.get_or_create_local(*variable),
+                    local: context.get_or_create_local(*variable, types),
                     projection: Vec::new(),
                 };
 
-                let value = I::translate_expr(value, context)?;
-                if declaration {
-                    context.push_statement(MediumStatement::StorageLive(place.local, value.get_type(context.local_vars)))
+                if *declaration {
+                    context.push_statement(MediumStatement::StorageLive(place.local, types))
                 }
 
                 // Emit the assignment as a side-effect.

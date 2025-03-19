@@ -69,7 +69,10 @@ impl<'ctx> CodeGenerator<'ctx> {
                 variables: HashMap::default(),
                 blocks
             };
-            for block in &function.body {
+
+            for (position, block) in function.body.iter().enumerate() {
+                let target = function_generator.blocks[position];
+                function_generator.builder().position_at_end(target);
                 compile_block(&mut function_generator, block)?;
             }
         }

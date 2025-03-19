@@ -94,23 +94,32 @@ pub struct MirContext<'a> {
     parent_loop: Option<CodeBlockId>,
     // The end of the parent control block, if any
     parent_end: Option<CodeBlockId>,
-    syntax: &'a Syntax<MediumSyntaxLevel>
+    syntax: &'a Syntax<HighSyntaxLevel>
 }
 
-impl MirContext<'_> {
-    fn new(syntax: &Syntax<MediumSyntaxLevel>) -> Self {
+impl<'a> MirContext<'a> {
+    fn new(syntax: &'a Syntax<HighSyntaxLevel>) -> Self {
         Self {
             code_blocks: vec!(CodeBlock {
                 statements: vec!(),
                 terminator: MediumTerminator::Unreachable
             }),
             syntax,
-            ..Default::default()
+            file: None,
+            current_block: 0,
+            local_vars: HashMap::default(),
+            var_types: vec!(),
+            parent_loop: None,
+            parent_end: None,
         }
     }
 
-    pub fn translate(place: &Place) -> TypeRef {
-        todo!()
+    pub fn translate(&self, place: &Place) -> TypeRef {
+        let local = self.var_types[place.local];
+        for projection in &place.projection {
+            todo!()
+        }
+        local
     }
 
     // Create a new basic block and return its ID
@@ -144,6 +153,10 @@ impl MirContext<'_> {
         self.var_types.len() - 1
     }
 
+    pub fn get_local(&mut self, name: Spur) -> Option<&LocalVar> {
+        self.local_vars.get(&name)
+    }
+
     // Get or create a local variable for a named variable
     pub fn get_or_create_local(&mut self, name: Spur, types: TypeRef) -> LocalVar {
         if let Some(local) = self.local_vars.get(&name) {
@@ -169,7 +182,7 @@ impl FileOwner for MirContext<'_> {
 pub fn resolve_to_mir(
     source: Syntax<HighSyntaxLevel>,
 ) -> Result<Syntax<MediumSyntaxLevel>, ParseError> {
-    source.translate(&mut MirContext::new())
+    source.translate(&mut MirContext::new(&source))
 }
 
 impl Translatable<MirContext<'_>, HighSyntaxLevel, MediumSyntaxLevel> for HighSyntaxLevel {
@@ -218,9 +231,9 @@ impl Translatable<MirContext<'_>, HighSyntaxLevel, MediumSyntaxLevel> for HighSy
 }
 
 impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
-Translate<MediumTerminator<MediumSyntaxLevel>, MirContext<'_>, I, MediumSyntaxLevel> for HighTerminator<I>
+Translate<MediumTerminator<MediumSyntaxLevel>, MirContext<'a>, I, MediumSyntaxLevel> for HighTerminator<I>
 {
-    fn translate(&self, context: &mut MirContext) -> Result<MediumTerminator<MediumSyntaxLevel>, ParseError> {
+    fn translate(&self, context: &mut MirContext<'a>) -> Result<MediumTerminator<MediumSyntaxLevel>, ParseError> {
         Ok(match self {
             HighTerminator::Return(returning) => {
                 MediumTerminator::Return(

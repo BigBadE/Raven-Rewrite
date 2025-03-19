@@ -5,11 +5,11 @@ use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::combinator::{map, opt};
 use nom::multi::many0;
-use nom::sequence::delimited;
+use nom::sequence::{delimited, preceded};
 use nom::Parser;
 use syntax::hir::function::HighTerminator;
-use syntax::hir::RawSyntaxLevel;
 use syntax::hir::statement::{Conditional, HighStatement};
+use syntax::hir::RawSyntaxLevel;
 
 pub fn statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     let (input, statement) = delimited(
@@ -31,6 +31,8 @@ pub fn statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
 
 pub fn flow_changer(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     alt((
+        preceded(tag("return"), delimited(ignored, expression, ignored))
+            .map(|expression| HighStatement::Terminator(HighTerminator::Return(Some(expression)))),
         tag("return").map(|_| HighStatement::Terminator(HighTerminator::Return(None))),
         tag("break").map(|_| HighStatement::Terminator(HighTerminator::Break)),
         tag("continue").map(|_| HighStatement::Terminator(HighTerminator::Continue)),

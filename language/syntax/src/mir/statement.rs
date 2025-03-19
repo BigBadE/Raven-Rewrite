@@ -24,21 +24,22 @@ impl<T: SyntaxLevel> Statement for MediumStatement<T> {}
 
 // Handle statement translation
 impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
-    Translate<MediumStatement<MediumSyntaxLevel>, MirContext<'_>, I, MediumSyntaxLevel>
+    Translate<MediumStatement<MediumSyntaxLevel>, MirContext<'a>, I, MediumSyntaxLevel>
     for HighStatement<I>
 {
     fn translate(
         &self,
-        context: &mut MirContext,
+        context: &mut MirContext<'a>,
     ) -> Result<MediumStatement<MediumSyntaxLevel>, ParseError> {
         match self {
             HighStatement::Expression(expression) => {
                 let value = I::translate_expr(expression, context)?;
-                let statement = MediumStatement::Assign {
-                    place: Place { local: context.create_temp(value.get_type(&context)), projection: vec![] },
+                let local = context.create_temp(value.get_type(&context));
+                context.push_statement(MediumStatement::StorageLive(local, value.get_type(context)));
+                context.push_statement(MediumStatement::Assign {
+                    place: Place { local, projection: vec![] },
                     value,
-                };
-                context.push_statement(statement);
+                });
             }
             HighStatement::If {
                 conditions,

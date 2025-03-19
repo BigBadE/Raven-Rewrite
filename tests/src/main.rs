@@ -3,7 +3,7 @@ use runner::compile_source;
 use std::path::PathBuf;
 use compiler_llvm::LowCompiler;
 
-type Main = unsafe extern "C" fn () -> ();
+type Main = unsafe extern "C" fn () -> i32;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -15,12 +15,6 @@ async fn main() -> Result<(), Error> {
         }
     };
 
-    for types in &syntax.types {
-        println!("{:#?}", types);
-    }
-    for function in &syntax.functions {
-        println!("{:#?}", function);
-    }
 
     let compiler = LowCompiler::new();
     let mut generator = compiler.create_code_generator()?;
@@ -28,7 +22,7 @@ async fn main() -> Result<(), Error> {
 
     // SAFETY: Running external code is always unsafe.
     unsafe {
-        generator.execute::<Main>("test")?.call();
+        println!("{}", generator.execute::<Main>("test")?.call());
     }
     Ok(())
 }

@@ -1,7 +1,8 @@
+use crate::hir::RawSyntaxLevel;
 use crate::hir::expression::Expression;
 use crate::hir::function::{Function, FunctionReference, Terminator};
 use crate::hir::statement::Statement;
-use crate::hir::types::{Type, TypeReference};
+use crate::hir::types::{HighType, Type, TypeReference};
 use crate::structure::visitor::Translate;
 use crate::util::ParseError;
 use lasso::ThreadedRodeo;
@@ -36,12 +37,24 @@ pub struct Syntax<T: SyntaxLevel> {
     pub types: Vec<T::Type>,
 }
 
-impl<T: SyntaxLevel> Default for Syntax<T> {
+impl Default for Syntax<RawSyntaxLevel> {
     fn default() -> Self {
+        let symbols = Arc::new(ThreadedRodeo::new());
         Self {
-            symbols: Arc::default(),
             functions: Vec::default(),
-            types: Vec::default(),
+            types: vec![
+                HighType::internal(symbols.get_or_intern("void")),
+                HighType::internal(symbols.get_or_intern("str")),
+                HighType::internal(symbols.get_or_intern("f64")),
+                HighType::internal(symbols.get_or_intern("f32")),
+                HighType::internal(symbols.get_or_intern("i64")),
+                HighType::internal(symbols.get_or_intern("i32")),
+                HighType::internal(symbols.get_or_intern("u64")),
+                HighType::internal(symbols.get_or_intern("u32")),
+                HighType::internal(symbols.get_or_intern("bool")),
+                HighType::internal(symbols.get_or_intern("char")),
+            ],
+            symbols,
         }
     }
 }

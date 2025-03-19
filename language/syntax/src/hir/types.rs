@@ -7,6 +7,7 @@ use crate::util::ParseError;
 use crate::SyntaxLevel;
 use lasso::Spur;
 use std::fmt::Debug;
+use crate::hir::RawSyntaxLevel;
 
 pub trait Type: Debug {
     fn file(&self) -> &FilePath;
@@ -20,6 +21,19 @@ pub struct HighType<T: SyntaxLevel> {
     pub file: FilePath,
     pub modifiers: Vec<Modifier>,
     pub data: TypeData<T>,
+}
+
+impl HighType<RawSyntaxLevel> {
+    pub fn internal(name: Spur) -> Self {
+        Self {
+            name,
+            file: FilePath::default(),
+            modifiers: vec![Modifier::PUBLIC],
+            data: TypeData::Struct {
+                fields: vec![],
+            }
+        }
+    }
 }
 
 impl<T: SyntaxLevel> Type for HighType<T> {

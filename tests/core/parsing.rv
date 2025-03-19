@@ -1,7 +1,8 @@
 import core::other::Other;
 
-pub fn test() {
+pub fn test() -> i32 {
     let value = 1;
+    return 12;
 }
 
 struct Testing {

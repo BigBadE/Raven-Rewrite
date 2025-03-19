@@ -14,8 +14,8 @@ inkwell = { version = "0.5.0", features = ["llvm18-0-no-llvm-linking"] }
 anyhow.workspace = true
 lazy_static.workspace = true
 
-cc = "1.1.13"
+cc = "1.2.16"
 regex-lite = "0.1.6"
-semver = "1.0.23"
-reqwest = { version = "0.12.7", features = ["blocking", "json"] }
-zip = { version = "2.2.0", default-features = false, features = ["deflate"] }
+semver = "1.0.26"
+reqwest = { version = "0.12.15", features = ["blocking", "json"] }
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }

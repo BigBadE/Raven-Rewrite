@@ -56,7 +56,7 @@ pub fn compile_block<'ctx>(function_generator: &mut FunctionGenerator, block: &C
             }
         }
         MediumTerminator::Unreachable => {
-            todo!()
+            function_generator.builder().build_unreachable()?;
         }
     }
     Ok(())
