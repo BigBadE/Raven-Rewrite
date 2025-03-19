@@ -4,6 +4,7 @@ use crate::util::ParseError;
 use crate::SyntaxLevel;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
+use crate::hir::function::CodeBlock;
 
 pub trait Statement: Debug {}
 
@@ -67,7 +68,7 @@ impl<T: SyntaxLevel> Debug for HighStatement<T> {
 #[derive(Debug)]
 pub struct Conditional<T: SyntaxLevel> {
     pub condition: T::Expression,
-    pub branch: Box<T::Statement>,
+    pub branch: CodeBlock<T>,
 }
 
 // Handle statement translation

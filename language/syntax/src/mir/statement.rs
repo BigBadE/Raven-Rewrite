@@ -7,6 +7,7 @@ use crate::util::translation::Translatable;
 use crate::util::ParseError;
 use crate::{SyntaxLevel, TypeRef};
 use std::fmt::Debug;
+use crate::code::literal::Literal;
 
 /// The MIR is made up of a series of nodes, each terminated with a jump expression.
 #[derive(Debug)]
@@ -45,13 +46,31 @@ impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
                 conditions,
                 else_branch,
             } => {
+
+                for condition in conditions {
+
+                }
                 todo!()
             }
             HighStatement::For { iterator, body } => {
                 todo!()
             }
             HighStatement::While { condition } => {
-                todo!()
+                let top = context.create_block();
+                let body = context.create_block();
+                let end = context.create_block();
+                context.switch_to_block(top);
+                // Jump to end if condition is false
+                let discriminant = I::translate_expr(&condition.condition, context)?;
+                context.set_terminator(MediumTerminator::Switch {
+                    discriminant,
+                    targets: vec!((Literal::U64(0), end)),
+                    fallback: body
+                });
+                context.switch_to_block(body);
+                context.parent_loop = Some(top);
+                context.parent_end = Some(end);
+
             }
             HighStatement::Loop { body } => {
                 let top = context.create_block();
