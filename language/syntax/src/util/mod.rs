@@ -14,6 +14,21 @@ pub enum ParseError {
     MultiError(Vec<ParseError>),
 }
 
+impl ParseError {
+    pub fn print(&self) {
+        match self {
+            ParseError::ParseError(_) | ParseError::InternalError(_) => {
+                println!("{}", self);
+            },
+            ParseError::MultiError(errors) => {
+                for error in errors {
+                    error.print();
+                }
+            }
+        }
+    }
+}
+
 pub fn collect_results<T, E, I>(iter: I) -> Result<Vec<T>, Vec<E>>
 where
     I: IntoIterator<Item = Result<T, E>>,

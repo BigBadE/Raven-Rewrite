@@ -22,8 +22,8 @@ impl<T: SyntaxLevel> Type for MediumType<T> {
     }
 }
 
-impl<I: SyntaxLevel + Translatable<MirContext, I, MediumSyntaxLevel>>
-Translate<MediumType<MediumSyntaxLevel>, MirContext, I, MediumSyntaxLevel> for HighType<I>
+impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
+Translate<MediumType<MediumSyntaxLevel>, MirContext<'_>, I, MediumSyntaxLevel> for HighType<I>
 {
     fn translate(&self, context: &mut MirContext) -> Result<MediumType<MediumSyntaxLevel>, ParseError> {
         Ok(match &self.data {

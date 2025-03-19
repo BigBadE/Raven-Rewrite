@@ -1,18 +1,19 @@
 mod function;
-mod type_manager;
+mod types;
 mod statement;
+mod expression;
 
-use crate::type_manager::TypeManager;
+use crate::statement::{compile_block, FunctionGenerator};
+use crate::types::TypeManager;
 use anyhow::Error;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
 use inkwell::module::Module;
-use inkwell::types::BasicType;
 use inkwell::OptimizationLevel;
 use std::collections::HashMap;
 use syntax::mir::MediumSyntaxLevel;
-use syntax::Syntax;
+use syntax::{FunctionRef, Syntax};
 
 pub struct LowCompiler {
     context: Context
@@ -46,31 +47,33 @@ impl LowCompiler {
 pub struct LowSyntaxLevel;
 
 impl<'ctx> CodeGenerator<'ctx> {
-    pub fn generate(&mut self, code: &'ctx Syntax<MediumSyntaxLevel>) {
+    pub fn generate(&mut self, code: &'ctx Syntax<MediumSyntaxLevel>) -> Result<(), Error> {
         let mut type_manager = TypeManager {
             syntax: code,
             context: &self.context,
-            types: HashMap::default()
+            module: &self.module,
+            builder: &self.builder,
+            types: HashMap::default(),
+            functions: HashMap::default()
         };
-        for function in &code.functions {
-            let parameters = function.parameters.iter()
-                .map(|param| type_manager.convert_type(*param).into())
-                .collect::<Vec<_>>();
-            let parameters = parameters.as_slice();
-            let function_val = self.module.add_function(code.symbols.resolve(&function.name),
-                                     function.return_type
-                                         .map(|inner| type_manager.convert_type(inner).fn_type(parameters, false))
-                                         .unwrap_or(self.context.void_type().fn_type(parameters, false)), None);
 
+        for (reference, function) in code.functions.iter().enumerate() {
             let mut blocks = Vec::new();
-            for (position, _) in &function.body.iter().enumerate() {
-                blocks.push(self.context.append_basic_block(function_val, &format!("{position}")));
+            for (position, _) in function.body.iter().enumerate() {
+                let function = type_manager.function_type(&FunctionRef(reference));
+                blocks.push(type_manager.context.append_basic_block(function, &format!("{position}")));
             }
-            for (position, block) in &function.body.iter().enumerate() {
-                self.builder.position_at_end(block[position]);
 
+            let mut function_generator = FunctionGenerator {
+                type_manager: &mut type_manager,
+                variables: HashMap::default(),
+                blocks
+            };
+            for block in &function.body {
+                compile_block(&mut function_generator, block)?;
             }
         }
+        Ok(())
     }
 
     pub fn execute<F: UnsafeFunctionPointer>(&mut self, function: &str) -> Result<JitFunction<F>, Error> {

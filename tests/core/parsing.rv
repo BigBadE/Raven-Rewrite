@@ -1,4 +1,5 @@
-use other::Other;
+import core::other::Other;
+
 pub fn test() {
     let value = 1;
 }

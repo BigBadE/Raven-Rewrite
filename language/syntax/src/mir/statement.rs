@@ -5,7 +5,7 @@ use crate::mir::{
 use crate::structure::visitor::Translate;
 use crate::util::translation::Translatable;
 use crate::util::ParseError;
-use crate::SyntaxLevel;
+use crate::{SyntaxLevel, TypeRef};
 use std::fmt::Debug;
 
 /// The MIR is made up of a series of nodes, each terminated with a jump expression.
@@ -15,7 +15,7 @@ pub enum MediumStatement<T: SyntaxLevel> {
         place: Place,
         value: MediumExpression<T>,
     },
-    StorageLive(LocalVar),
+    StorageLive(LocalVar, TypeRef),
     StorageDead(LocalVar),
     Noop,
 }
@@ -23,8 +23,8 @@ pub enum MediumStatement<T: SyntaxLevel> {
 impl<T: SyntaxLevel> Statement for MediumStatement<T> {}
 
 // Handle statement translation
-impl<I: SyntaxLevel + Translatable<MirContext, I, MediumSyntaxLevel>>
-    Translate<MediumStatement<MediumSyntaxLevel>, MirContext, I, MediumSyntaxLevel>
+impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
+    Translate<MediumStatement<MediumSyntaxLevel>, MirContext<'_>, I, MediumSyntaxLevel>
     for HighStatement<I>
 {
     fn translate(
@@ -33,9 +33,10 @@ impl<I: SyntaxLevel + Translatable<MirContext, I, MediumSyntaxLevel>>
     ) -> Result<MediumStatement<MediumSyntaxLevel>, ParseError> {
         match self {
             HighStatement::Expression(expression) => {
+                let value = I::translate_expr(expression, context)?;
                 let statement = MediumStatement::Assign {
-                    place: Place { local: context.create_temp(), projection: vec![] },
-                    value: I::translate_expr(expression, context)?,
+                    place: Place { local: context.create_temp(value.get_type(&context)), projection: vec![] },
+                    value,
                 };
                 context.push_statement(statement);
             }

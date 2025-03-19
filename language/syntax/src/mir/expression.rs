@@ -6,7 +6,7 @@ use crate::mir::{MediumSyntaxLevel, MediumTerminator, MirContext, Operand, Place
 use crate::structure::visitor::Translate;
 use crate::util::translation::Translatable;
 use crate::util::ParseError;
-use crate::SyntaxLevel;
+use crate::{FunctionRef, SyntaxLevel, TypeRef};
 use lasso::Spur;
 
 #[derive(Debug)]
@@ -25,9 +25,23 @@ pub enum MediumExpression<T: SyntaxLevel> {
 
 impl<T: SyntaxLevel> Expression for MediumExpression<T> {}
 
+impl<T: SyntaxLevel<FunctionReference=FunctionRef, TypeReference=TypeRef>> MediumExpression<T> {
+    pub fn get_type(&self, context: &MirContext) -> TypeRef {
+        match self {
+            MediumExpression::Use(op) => op.get_type(context),
+            MediumExpression::Literal(lit) => lit.get_type(),
+            MediumExpression::FunctionCall { func, .. } => {
+                context.syntax.functions[func.0].return_type.unwrap_or(Literal::Void.get_type())
+            }
+            MediumExpression::CreateStruct { struct_type, .. } => struct_type.clone(),
+        }
+    }
+}
+
+
 // Handle statement translation
-impl<I: SyntaxLevel<Terminator=HighTerminator<I>> + Translatable<MirContext, I, MediumSyntaxLevel>>
-Translate<MediumExpression<MediumSyntaxLevel>, MirContext, I, MediumSyntaxLevel> for HighExpression<I>
+impl<'a, I: SyntaxLevel<Terminator=HighTerminator<I>> + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
+Translate<MediumExpression<MediumSyntaxLevel>, MirContext<'_>, I, MediumSyntaxLevel> for HighExpression<I>
 {
     fn translate(&self, context: &mut MirContext) -> Result<MediumExpression<MediumSyntaxLevel>, ParseError> {
         // Helper conversion: converts a translated expression to an operand.
@@ -76,12 +90,17 @@ Translate<MediumExpression<MediumSyntaxLevel>, MirContext, I, MediumSyntaxLevel>
                     projection: Vec::new(),
                 };
 
+                let value = I::translate_expr(value, context)?;
+                if declaration {
+                    context.push_statement(MediumStatement::StorageLive(place.local, value.get_type(context.local_vars)))
+                }
+
                 // Emit the assignment as a side-effect.
-                let assign = MediumStatement::Assign {
+                context.push_statement(MediumStatement::Assign {
                     place: place.clone(),
-                    value: I::translate_expr(value, context)?,
-                };
-                context.push_statement(assign);
+                    value,
+                });
+
                 MediumExpression::Use(Operand::Move(place))
             }
             // For function calls, translate the function reference and arguments.

@@ -7,7 +7,9 @@ use crate::SyntaxLevel;
 use lasso::Spur;
 use std::fmt::Debug;
 
-pub trait Expression: Debug {}
+pub trait Expression: Debug {
+
+}
 
 pub enum HighExpression<T: SyntaxLevel> {
     // No input one output

@@ -17,7 +17,7 @@ pub mod util;
 #[derive(Debug, Copy, Clone, Hash, Ord, PartialOrd, PartialEq, Eq)]
 pub struct TypeRef(pub usize);
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Hash, Ord, PartialOrd, PartialEq, Eq)]
 pub struct FunctionRef(pub usize);
 
 pub trait SyntaxLevel: Debug {

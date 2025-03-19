@@ -42,7 +42,7 @@ pub enum MediumTerminator<T: SyntaxLevel> {
         targets: Vec<(Literal, CodeBlockId)>,
         fallback: CodeBlockId,
     },
-    Return(T::Expression),
+    Return(Option<T::Expression>),
     Unreachable,
 }
 
@@ -53,17 +53,27 @@ pub enum Operand {
     Constant(Literal),
 }
 
+impl Operand {
+    pub fn get_type(&self, context: &MirContext) -> TypeRef {
+        match self {
+            Operand::Copy(place) => context.translate(place),
+            Operand::Move(place) => context.translate(place),
+            Operand::Constant(literal) => literal.get_type(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Place {
-    local: LocalVar,
-    projection: Vec<PlaceElem>,
+    pub local: LocalVar,
+    pub projection: Vec<PlaceElem>,
 }
 
 #[derive(Debug, Copy, Clone)]
 pub enum PlaceElem {
     Deref,
     Field(Spur),
-    Index(LocalVar),
+    Index(usize),
 }
 
 pub type LocalVar = usize;
@@ -74,28 +84,33 @@ impl<T: SyntaxLevel> Terminator for MediumTerminator<T> {}
 /// The context for compiling code to MIR. This flattens the syntax tree structure for code
 /// into a control-flow graph. Since this means statements and expressions won't map one-to-one,
 /// they are instead added to this structure.
-#[derive(Default)]
-pub struct MirContext {
+pub struct MirContext<'a> {
     file: Option<FilePath>,
     code_blocks: Vec<CodeBlock<MediumSyntaxLevel>>,
     current_block: usize,
-    temp_counter: usize,
     local_vars: HashMap<Spur, LocalVar>,
+    var_types: Vec<TypeRef>,
     // The looping condition of the parent control block, if any
     parent_loop: Option<CodeBlockId>,
     // The end of the parent control block, if any
-    parent_end: Option<CodeBlockId>
+    parent_end: Option<CodeBlockId>,
+    syntax: &'a Syntax<MediumSyntaxLevel>
 }
 
-impl MirContext {
-    fn new() -> Self {
+impl MirContext<'_> {
+    fn new(syntax: &Syntax<MediumSyntaxLevel>) -> Self {
         Self {
             code_blocks: vec!(CodeBlock {
                 statements: vec!(),
                 terminator: MediumTerminator::Unreachable
             }),
-            ..Self::default()
+            syntax,
+            ..Default::default()
         }
+    }
+
+    pub fn translate(place: &Place) -> TypeRef {
+        todo!()
     }
 
     // Create a new basic block and return its ID
@@ -124,26 +139,24 @@ impl MirContext {
     }
 
     // Create a new temporary variable
-    pub fn create_temp(&mut self) -> LocalVar {
-        let temp = self.temp_counter;
-        self.temp_counter += 1;
-        temp
+    pub fn create_temp(&mut self, type_ref: TypeRef) -> LocalVar {
+        self.var_types.push(type_ref);
+        self.var_types.len() - 1
     }
 
     // Get or create a local variable for a named variable
-    pub fn get_or_create_local(&mut self, name: Spur) -> LocalVar {
+    pub fn get_or_create_local(&mut self, name: Spur, types: TypeRef) -> LocalVar {
         if let Some(local) = self.local_vars.get(&name) {
             *local
         } else {
-            let local = self.temp_counter;
-            self.temp_counter += 1;
-            self.local_vars.insert(name, local);
-            local
+            self.local_vars.insert(name, self.var_types.len());
+            self.var_types.push(types);
+            self.var_types.len() - 1
         }
     }
 }
 
-impl FileOwner for MirContext {
+impl FileOwner for MirContext<'_> {
     fn file(&self) -> &FilePath {
         self.file.as_ref().unwrap()
     }
@@ -159,7 +172,7 @@ pub fn resolve_to_mir(
     source.translate(&mut MirContext::new())
 }
 
-impl Translatable<MirContext, HighSyntaxLevel, MediumSyntaxLevel> for HighSyntaxLevel {
+impl Translatable<MirContext<'_>, HighSyntaxLevel, MediumSyntaxLevel> for HighSyntaxLevel {
     fn translate_stmt(
         node: &HighStatement<HighSyntaxLevel>,
         context: &mut MirContext,
@@ -204,15 +217,15 @@ impl Translatable<MirContext, HighSyntaxLevel, MediumSyntaxLevel> for HighSyntax
     }
 }
 
-impl<I: SyntaxLevel + Translatable<MirContext, I, MediumSyntaxLevel>>
-Translate<MediumTerminator<MediumSyntaxLevel>, MirContext, I, MediumSyntaxLevel> for HighTerminator<I>
+impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
+Translate<MediumTerminator<MediumSyntaxLevel>, MirContext<'_>, I, MediumSyntaxLevel> for HighTerminator<I>
 {
     fn translate(&self, context: &mut MirContext) -> Result<MediumTerminator<MediumSyntaxLevel>, ParseError> {
         Ok(match self {
             HighTerminator::Return(returning) => {
                 MediumTerminator::Return(
-                    returning.as_ref().map(|inner| I::translate_expr(inner, context))
-                        .transpose()?.unwrap_or(MediumExpression::Literal(Literal::Void)))
+                    Some(returning.as_ref().map(|inner| I::translate_expr(inner, context))
+                        .transpose()?.unwrap_or(MediumExpression::Literal(Literal::Void))))
             }
             HighTerminator::Break => MediumTerminator::Goto(*context.parent_end.as_ref().ok_or(
                 ParseError::ParseError("Expected to be inside a control block to break from".to_string()))?),

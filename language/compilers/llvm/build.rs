@@ -378,8 +378,7 @@ fn target_dylib_extension() -> &'static str {
 /// Get the library that must be linked for C++, if any.
 fn get_system_libcpp() -> Option<&'static str> {
     if target_env_is("msvc") {
-        // MSVC doesn't need an explicit one.
-        None
+        Some("msvcprt")
     } else if target_os_is("macos") {
         // On OS X 10.9 and later, LLVM's libc++ is the default. On earlier
         // releases GCC's libstdc++ is default. Unfortunately we can't
