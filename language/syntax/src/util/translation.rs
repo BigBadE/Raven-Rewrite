@@ -18,6 +18,7 @@ pub trait Translatable<C, I: SyntaxLevel, O: SyntaxLevel> {
     fn translate_stmt(node: &I::Statement, context: &mut C) -> Result<O::Statement, ParseError>;
 
     fn translate_expr(node: &I::Expression, context: &mut C) -> Result<O::Expression, ParseError>;
+
     fn translate_type_ref(
         node: &I::TypeReference,
         context: &mut C,
@@ -28,4 +29,5 @@ pub trait Translatable<C, I: SyntaxLevel, O: SyntaxLevel> {
     ) -> Result<O::FunctionReference, ParseError>;
     fn translate_type(node: &I::Type, context: &mut C) -> Result<O::Type, ParseError>;
     fn translate_func(node: &I::Function, context: &mut C) -> Result<O::Function, ParseError>;
+    fn translate_terminator(node: &I::Terminator, context: &mut C) -> Result<O::Terminator, ParseError>;
 }

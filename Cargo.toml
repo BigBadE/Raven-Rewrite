@@ -1,13 +1,19 @@
 [workspace]
 resolver = "3"
 
+exclude = [
+    "language/compilers"
+]
+
 members = [
     "language/*",
+    "language/compilers/llvm",
     "tests"
 ]
 
 [workspace.package]
 version = "0.1.0"
+edition = "2021"
 
 [workspace.dependencies]
 tokio = { version = "1.44.0", features = ["fs", "rt-multi-thread", "macros"] }
@@ -22,3 +28,12 @@ anyhow = "1.0.71"
 parser = { path = "language/parser" }
 runner = { path = "language/runner" }
 syntax = { path = "language/syntax" }
+compiler-llvm = { path = "language/compilers/llvm" }
+
+# Enable a small amount of optimization in the dev profile.
+[profile.dev]
+opt-level = 1
+
+# Enable a large amount of optimization in the dev profile for dependencies.
+[profile.dev.package."*"]
+opt-level = 3

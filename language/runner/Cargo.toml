@@ -1,12 +1,7 @@
 [package]
 name = "runner"
-version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-anyhow.workspace = true
-tokio.workspace = true
-lasso.workspace = true
-
 parser.workspace = true
 syntax.workspace = true

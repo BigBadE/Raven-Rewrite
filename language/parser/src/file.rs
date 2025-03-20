@@ -11,11 +11,18 @@ use nom_supreme::ParserExt;
 use syntax::util::path::FilePath;
 
 pub fn parse_top_element(input: Span) -> IResult<Span, TopLevelItem> {
-    alt((map(parse_import, |import| TopLevelItem::Import(import)),
+    alt((
+        map(parse_import, |import| TopLevelItem::Import(import)),
         map(parse_function, |function| TopLevelItem::Function(function)),
-         map(parse_structure, |types| TopLevelItem::Type(types)))).context("Top").parse(input)
+        map(parse_structure, |types| TopLevelItem::Type(types)),
+    ))
+    .context("Top")
+    .parse(input)
 }
 
 pub fn parse_import(input: Span) -> IResult<Span, FilePath> {
-    tag("import").precedes(delimited(ignored, file_path, ignored)).terminated(tag(";")).parse(input)
+    tag("import")
+        .precedes(delimited(ignored, file_path, ignored))
+        .terminated(tag(";"))
+        .parse(input)
 }

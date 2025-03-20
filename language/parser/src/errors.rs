@@ -5,7 +5,7 @@ use std::error::Error;
 pub fn error_message<E: Error + ?Sized>(
     error: GenericErrorTree<Span, &str, &str, Box<E>>,
 ) -> String {
-    error_message_recursive(error, &vec!())
+    error_message_recursive(error, &vec![])
 }
 
 pub fn error_message_recursive<E: Error + ?Sized>(
@@ -13,17 +13,20 @@ pub fn error_message_recursive<E: Error + ?Sized>(
     context: &Vec<(Span, StackContext<&str>)>,
 ) -> String {
     match error {
-        GenericErrorTree::Base { location, kind } => {
-            display_error(location, context, kind)
-        }
+        GenericErrorTree::Base { location, kind } => display_error(location, context, kind),
         GenericErrorTree::Stack { base, mut contexts } => {
             let mut context = context.clone();
             context.append(&mut contexts);
             error_message_recursive(*base, &context)
-        },
-        GenericErrorTree::Alt(errors) => format!("Possible:\n{}", 
-                                                 errors.into_iter().map(|err| error_message_recursive(err, context))
-                                                     .collect::<Vec<_>>().join("\n")),
+        }
+        GenericErrorTree::Alt(errors) => format!(
+            "Possible:\n{}",
+            errors
+                .into_iter()
+                .map(|err| error_message_recursive(err, context))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
     }
 }
 

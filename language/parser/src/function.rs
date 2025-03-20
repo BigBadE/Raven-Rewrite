@@ -8,7 +8,7 @@ use nom::multi::separated_list0;
 use nom::sequence::{delimited, preceded, tuple};
 use nom_supreme::ParserExt;
 use syntax::hir::{RawSyntaxLevel, RawTypeRef};
-use syntax::structure::function::HighFunction;
+use syntax::hir::function::HighFunction;
 
 // Parser for function declarations
 pub fn parse_function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {
@@ -19,7 +19,8 @@ pub fn parse_function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>
             parameter_list.context("Params"),
             return_type.context("Return"),
             function_body.context("Code"),
-        )).context("Function"),
+        ))
+        .context("Function"),
         |(modifiers, name, parameters, return_type, body)| HighFunction {
             file: input.extra.file.clone(),
             modifiers,
@@ -42,5 +43,8 @@ fn parameter_list(input: Span) -> IResult<Span, Vec<(Spur, RawTypeRef)>> {
 
 // Parser for return type (optional)
 fn return_type(input: Span) -> IResult<Span, Option<RawTypeRef>> {
-    opt(preceded(delimited(ignored, tag("->"), ignored), map(identifier, |spur| RawTypeRef(spur))))(input)
+    opt(preceded(
+        delimited(ignored, tag("->"), ignored),
+        map(identifier, |spur| RawTypeRef(spur)),
+    ))(input)
 }

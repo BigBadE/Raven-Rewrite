@@ -7,9 +7,9 @@ use nom::character::complete::{alphanumeric1, digit1};
 use nom::combinator::{map, opt};
 use nom::multi::{many0, separated_list0};
 use nom::sequence::{delimited, preceded, terminated, tuple};
-use syntax::code::expression::HighExpression;
 use syntax::code::literal::Literal;
 use syntax::hir::{RawFunctionRef, RawSyntaxLevel, RawTypeRef};
+use syntax::hir::expression::HighExpression;
 
 pub fn expression(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     delimited(
@@ -28,7 +28,9 @@ pub fn expression(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> 
 
 /// Parses a variable name into an Expression::Variable.
 pub fn variable(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
-    map(alphanumeric1, |ident: Span| HighExpression::Variable(input.extra.intern(ident.to_string())))(input.clone())
+    map(alphanumeric1, |ident: Span| {
+        HighExpression::Variable(input.extra.intern(ident.to_string()))
+    })(input.clone())
 }
 
 /// Parses a digit literal into an Expression::Literal.
@@ -43,7 +45,10 @@ pub fn literal(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
 pub fn block(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     delimited(
         tag("{"),
-        map(many0(statement), |stmts| HighExpression::CodeBlock(stmts)),
+        map(many0(statement), |stmts| HighExpression::CodeBlock {
+            body: stmts,
+            value: Box::new(HighExpression::Literal(Literal::Void))
+        }),
         tag("}"),
     )(input)
 }
@@ -79,7 +84,11 @@ pub fn function(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     )(input)?;
     let expression = HighExpression::FunctionCall {
         function: RawFunctionRef(input.extra.intern(func_name.to_string())),
-        target: target_id.map(|span| Box::new(HighExpression::Variable(input.extra.intern(span.to_string())))),
+        target: target_id.map(|span| {
+            Box::new(HighExpression::Variable(
+                input.extra.intern(span.to_string()),
+            ))
+        }),
         arguments: args,
     };
     Ok((input, expression))
@@ -103,10 +112,9 @@ pub fn create_struct(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel
         ),
         tag("}"),
     )(input.clone())?;
-    let expression =
-        HighExpression::CreateStruct {
-            target_struct: RawTypeRef(input.extra.intern(struct_name.to_string())),
-            fields,
-        };
+    let expression = HighExpression::CreateStruct {
+        target_struct: RawTypeRef(input.extra.intern(struct_name.to_string())),
+        fields,
+    };
     Ok((input, expression))
 }

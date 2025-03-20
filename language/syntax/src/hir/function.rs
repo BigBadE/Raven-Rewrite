@@ -11,7 +11,27 @@ pub trait Function: Debug {
     fn file(&self) -> &FilePath;
 }
 
+pub trait Terminator: Debug {
+
+}
+
 pub trait FunctionReference: Debug {}
+
+#[derive(Debug)]
+pub struct CodeBlock<T: SyntaxLevel> {
+    pub statements: Vec<T::Statement>,
+    pub terminator: T::Terminator
+}
+
+#[derive(Debug)]
+pub enum HighTerminator<T: SyntaxLevel> {
+    Return(Option<T::Expression>),
+    Break,
+    Continue,
+    None
+}
+
+impl<T: SyntaxLevel> Terminator for HighTerminator<T> {}
 
 #[derive(Debug)]
 pub struct HighFunction<T: SyntaxLevel> {
@@ -20,7 +40,7 @@ pub struct HighFunction<T: SyntaxLevel> {
     pub modifiers: Vec<Modifier>,
     pub parameters: Vec<(Spur, T::TypeReference)>,
     pub return_type: Option<T::TypeReference>,
-    pub body: T::Statement,
+    pub body: CodeBlock<T>,
 }
 
 impl<T: SyntaxLevel> Function for HighFunction<T> {
@@ -30,15 +50,20 @@ impl<T: SyntaxLevel> Function for HighFunction<T> {
 }
 
 // Handle type translation
-impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Translate<HighFunction<O>, C, I, O>
-    for HighFunction<I> {
+impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
+    Translate<HighFunction<O>, C, I, O> for HighFunction<I>
+{
     fn translate(&self, context: &mut C) -> Result<HighFunction<O>, ParseError> {
         context.set_file(self.file.clone());
         Ok(HighFunction {
             name: self.name,
             file: self.file.clone(),
             modifiers: self.modifiers.clone(),
-            body: I::translate_stmt(&self.body, context)?,
+            body: CodeBlock {
+                statements: self.body.statements.iter().map(|statement| I::translate_stmt(&statement, context))
+                    .collect::<Result<_, _>>()?,
+                terminator: I::translate_terminator(&self.body.terminator, context)?,
+            },
             parameters: self
                 .parameters
                 .iter()
@@ -51,6 +76,24 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Trans
                 .as_ref()
                 .map(|ty| I::translate_type_ref(ty, context))
                 .transpose()?,
+        })
+    }
+}
+
+impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
+Translate<HighTerminator<O>, C, I, O> for HighTerminator<I>
+{
+    fn translate(&self, context: &mut C) -> Result<HighTerminator<O>, ParseError> {
+        Ok(match self {
+            HighTerminator::Return(expression) => HighTerminator::Return(
+                expression
+                    .as_ref()
+                    .map(|expr| I::translate_expr(expr, context))
+                    .transpose()?,
+            ),
+            HighTerminator::Break => HighTerminator::Break,
+            HighTerminator::Continue => HighTerminator::Continue,
+            HighTerminator::None => HighTerminator::None
         })
     }
 }

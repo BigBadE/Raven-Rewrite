@@ -1,0 +1,21 @@
+[package]
+name = "compiler-llvm"
+edition = "2024"
+
+build = "build.rs"
+
+[dependencies]
+syntax.workspace = true
+anyhow.workspace = true
+
+inkwell = { version = "0.5.0", features = ["llvm18-0-no-llvm-linking"] }
+
+[build-dependencies]
+anyhow.workspace = true
+lazy_static.workspace = true
+
+cc = "1.2.16"
+regex-lite = "0.1.6"
+semver = "1.0.26"
+reqwest = { version = "0.12.15", features = ["blocking", "json"] }
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
