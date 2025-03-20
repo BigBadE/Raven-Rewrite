@@ -1,14 +1,15 @@
 use std::collections::HashMap;
-use crate::hir::function::{CodeBlock, Function, HighFunction};
-use crate::mir::{LocalVar, MediumSyntaxLevel, MediumTerminator, MirContext};
-use crate::structure::visitor::{FileOwner, Translate};
-use crate::util::translation::Translatable;
-use crate::util::ParseError;
-use crate::SyntaxLevel;
+use hir::function::{CodeBlock, HighFunction};
+use crate::{LocalVar, MediumSyntaxLevel, MediumTerminator, MirContext};
+use syntax::structure::visitor::Translate;
+use syntax::util::translation::Translatable;
+use syntax::util::ParseError;
+use syntax::SyntaxLevel;
 use std::mem;
 use lasso::Spur;
-use crate::structure::Modifier;
-use crate::util::path::FilePath;
+use syntax::structure::{FileOwner, Modifier};
+use syntax::structure::traits::Function;
+use syntax::util::path::FilePath;
 
 #[derive(Debug)]
 pub struct MediumFunction<T: SyntaxLevel> {

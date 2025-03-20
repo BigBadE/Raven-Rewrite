@@ -7,9 +7,19 @@ pub fn translate_fields<C, I, O, F: Fn(&I, &mut C) -> Result<O, ParseError>>(
     context: &mut C,
     translator: F,
 ) -> Result<Vec<(Spur, O)>, ParseError> {
+    translate_vec(fields, context, |(name, value), context| {
+        Ok::<_, ParseError>((*name, translator(value, context)?))
+    })
+}
+
+pub fn translate_vec<C, I, O, F: Fn(&I, &mut C) -> Result<O, ParseError>>(
+    fields: &Vec<I>,
+    context: &mut C,
+    translator: F,
+) -> Result<Vec<O>, ParseError> {
     fields
         .iter()
-        .map(|(name, value)| Ok::<_, ParseError>((*name, translator(value, context)?)))
+        .map(|input| Ok::<_, ParseError>(translator(input, context)?))
         .collect::<Result<_, _>>()
 }
 

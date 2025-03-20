@@ -1,9 +1,9 @@
 use crate::statement::FunctionGenerator;
 use anyhow::{Context, Error};
 use inkwell::values::BasicValueEnum;
-use syntax::code::literal::Literal;
-use syntax::mir::expression::MediumExpression;
-use syntax::mir::{MediumSyntaxLevel, Operand};
+use mir::expression::MediumExpression;
+use mir::{MediumSyntaxLevel, Operand};
+use syntax::structure::literal::Literal;
 
 pub fn compile_expression<'a, 'b, 'ctx>(
     function_generator: &mut FunctionGenerator<'a, 'b, 'ctx>,

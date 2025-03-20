@@ -10,7 +10,7 @@ use nom::Err::Error;
 use nom::{error, Parser};
 use nom_supreme::error::{BaseErrorKind, ErrorTree};
 use nom_supreme::ParserExt;
-use syntax::hir::RawTypeRef;
+use hir::RawTypeRef;
 use syntax::structure::{Modifier, MODIFIERS};
 use syntax::util::path::FilePath;
 

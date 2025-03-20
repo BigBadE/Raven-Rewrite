@@ -5,9 +5,9 @@ use nom::bytes::complete::tag;
 use nom::multi::many0;
 use nom::sequence::{delimited, terminated};
 use nom::Parser;
-use syntax::hir::function::{CodeBlock, HighTerminator};
-use syntax::hir::RawSyntaxLevel;
-use syntax::hir::statement::HighStatement;
+use hir::function::{CodeBlock, HighTerminator};
+use hir::RawSyntaxLevel;
+use hir::statement::HighStatement;
 
 // Parser for function bodies
 pub fn function_body(input: Span) -> IResult<Span, CodeBlock<RawSyntaxLevel>> {

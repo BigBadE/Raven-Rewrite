@@ -1,12 +1,13 @@
 use lasso::Spur;
-use crate::hir::types::{HighType, Type, TypeData};
-use crate::mir::{MediumSyntaxLevel, MirContext};
-use crate::structure::Modifier;
-use crate::structure::visitor::Translate;
-use crate::SyntaxLevel;
-use crate::util::ParseError;
-use crate::util::path::FilePath;
-use crate::util::translation::Translatable;
+use hir::types::{HighType, TypeData};
+use crate::{MediumSyntaxLevel, MirContext};
+use syntax::structure::Modifier;
+use syntax::structure::traits::Type;
+use syntax::structure::visitor::Translate;
+use syntax::SyntaxLevel;
+use syntax::util::ParseError;
+use syntax::util::path::FilePath;
+use syntax::util::translation::Translatable;
 
 #[derive(Debug)]
 pub struct MediumType<T: SyntaxLevel> {

@@ -7,9 +7,9 @@ use nom::character::complete::{alphanumeric1, digit1};
 use nom::combinator::{map, opt};
 use nom::multi::{many0, separated_list0};
 use nom::sequence::{delimited, preceded, terminated, tuple};
-use syntax::code::literal::Literal;
-use syntax::hir::{RawFunctionRef, RawSyntaxLevel, RawTypeRef};
-use syntax::hir::expression::HighExpression;
+use hir::expression::HighExpression;
+use hir::{RawFunctionRef, RawSyntaxLevel, RawTypeRef};
+use syntax::structure::literal::Literal;
 
 pub fn expression(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     delimited(
@@ -34,9 +34,9 @@ pub fn variable(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
 }
 
 /// Parses a digit literal into an Expression::Literal.
+/// TODO handle more literals
 pub fn literal(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     map(digit1, |digits: Span| {
-        // Note: unwrap is used for simplicity.
         HighExpression::Literal(Literal::I64(digits.parse().unwrap()))
     })(input)
 }

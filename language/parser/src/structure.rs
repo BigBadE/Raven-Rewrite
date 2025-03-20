@@ -5,8 +5,8 @@ use nom::combinator::map;
 use nom::multi::many0;
 use nom::sequence::{delimited, preceded, tuple};
 use nom_supreme::ParserExt;
-use syntax::hir::types::{HighType, TypeData};
-use syntax::hir::RawSyntaxLevel;
+use hir::RawSyntaxLevel;
+use hir::types::{HighType, TypeData};
 
 pub fn parse_structure(input: Span) -> IResult<Span, HighType<RawSyntaxLevel>> {
     map(

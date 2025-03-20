@@ -1,21 +1,12 @@
-use crate::structure::visitor::{FileOwner, Translate};
-use crate::structure::Modifier;
-use crate::util::path::FilePath;
-use crate::util::translation::Translatable;
-use crate::util::ParseError;
-use crate::SyntaxLevel;
+use syntax::structure::visitor::Translate;
+use syntax::structure::{FileOwner, Modifier};
+use syntax::util::path::FilePath;
+use syntax::util::translation::Translatable;
+use syntax::util::ParseError;
+use syntax::SyntaxLevel;
 use lasso::Spur;
 use std::fmt::Debug;
-
-pub trait Function: Debug {
-    fn file(&self) -> &FilePath;
-}
-
-pub trait Terminator: Debug {
-
-}
-
-pub trait FunctionReference: Debug {}
+use syntax::structure::traits::{Function, Terminator};
 
 #[derive(Debug)]
 pub struct CodeBlock<T: SyntaxLevel> {

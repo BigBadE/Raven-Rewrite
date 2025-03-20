@@ -1,0 +1,9 @@
+[package]
+name = "hir"
+edition = "2024"
+
+[dependencies]
+syntax.workspace = true
+type_system.workspace = true
+
+lasso.workspace = true

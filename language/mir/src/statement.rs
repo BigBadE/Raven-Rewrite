@@ -1,13 +1,14 @@
-use crate::code::literal::Literal;
-use crate::hir::statement::{HighStatement, Statement};
-use crate::mir::{
+use hir::statement::HighStatement;
+use crate::{
     LocalVar, MediumExpression, MediumSyntaxLevel, MediumTerminator, MirContext, Place,
 };
-use crate::structure::visitor::Translate;
-use crate::util::ParseError;
-use crate::util::translation::Translatable;
-use crate::{SyntaxLevel, TypeRef};
+use syntax::structure::visitor::Translate;
+use syntax::util::ParseError;
+use syntax::util::translation::Translatable;
+use syntax::{SyntaxLevel, TypeRef};
 use std::fmt::Debug;
+use syntax::structure::literal::Literal;
+use syntax::structure::traits::Statement;
 
 /// The MIR is made up of a series of nodes, each terminated with a jump expression.
 #[derive(Debug)]
@@ -85,7 +86,7 @@ impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
                 }
                 context.switch_to_block(end);
             }
-            HighStatement::For { condition } => {
+            HighStatement::For { condition: _condition } => {
                 todo!()
             }
             HighStatement::While { condition } => {

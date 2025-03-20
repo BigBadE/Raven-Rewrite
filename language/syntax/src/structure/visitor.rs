@@ -1,16 +1,9 @@
-use crate::util::path::FilePath;
 use crate::util::translation::Translatable;
 use crate::util::{collect_results, ParseError};
 use crate::{Syntax, SyntaxLevel};
 
 pub trait Translate<T, C, I: SyntaxLevel, O: SyntaxLevel> {
     fn translate(&self, context: &mut C) -> Result<T, ParseError>;
-}
-
-pub trait FileOwner {
-    fn file(&self) -> &FilePath;
-
-    fn set_file(&mut self, file: FilePath);
 }
 
 impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Translate<Syntax<O>, C, I, O>

@@ -7,8 +7,8 @@ use nom::combinator::{map, opt};
 use nom::multi::separated_list0;
 use nom::sequence::{delimited, preceded, tuple};
 use nom_supreme::ParserExt;
-use syntax::hir::{RawSyntaxLevel, RawTypeRef};
-use syntax::hir::function::HighFunction;
+use hir::function::HighFunction;
+use hir::{RawSyntaxLevel, RawTypeRef};
 
 // Parser for function declarations
 pub fn parse_function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {

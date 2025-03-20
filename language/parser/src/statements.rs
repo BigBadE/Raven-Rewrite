@@ -9,9 +9,9 @@ use nom::combinator::{map, opt};
 use nom::multi::many0;
 use nom::sequence::{delimited, preceded, tuple};
 use nom_supreme::ParserExt;
-use syntax::hir::RawSyntaxLevel;
-use syntax::hir::function::HighTerminator;
-use syntax::hir::statement::{Conditional, HighStatement};
+use hir::function::HighTerminator;
+use hir::RawSyntaxLevel;
+use hir::statement::{Conditional, HighStatement};
 
 pub fn statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     delimited(

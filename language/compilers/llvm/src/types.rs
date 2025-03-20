@@ -5,8 +5,8 @@ use inkwell::types::BasicTypeEnum;
 use inkwell::values::FunctionValue;
 use std::collections::HashMap;
 use inkwell::builder::Builder;
-use syntax::mir::types::MediumType;
-use syntax::mir::MediumSyntaxLevel;
+use mir::types::MediumType;
+use mir::MediumSyntaxLevel;
 use syntax::{FunctionRef, Syntax, TypeRef};
 
 pub struct TypeManager<'a, 'ctx> {

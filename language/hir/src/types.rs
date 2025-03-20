@@ -1,19 +1,14 @@
-use crate::structure::visitor::{FileOwner, Translate};
-use crate::structure::Modifier;
-use crate::util::path::FilePath;
-use crate::util::translation::translate_fields;
-use crate::util::translation::Translatable;
-use crate::util::ParseError;
-use crate::SyntaxLevel;
+use syntax::structure::visitor::Translate;
+use syntax::structure::{FileOwner, Modifier};
+use syntax::util::path::FilePath;
+use syntax::util::translation::translate_fields;
+use syntax::util::translation::Translatable;
+use syntax::util::ParseError;
+use syntax::SyntaxLevel;
 use lasso::Spur;
 use std::fmt::Debug;
-use crate::hir::RawSyntaxLevel;
-
-pub trait Type: Debug {
-    fn file(&self) -> &FilePath;
-}
-
-pub trait TypeReference: Debug {}
+use syntax::structure::traits::Type;
+use crate::RawSyntaxLevel;
 
 #[derive(Debug)]
 pub struct HighType<T: SyntaxLevel> {

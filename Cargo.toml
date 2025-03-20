@@ -25,9 +25,13 @@ lasso = { version = "0.7.3", features = ["multi-threaded"] }
 # Error handling
 anyhow = "1.0.71"
 
+hir = { path = "language/hir" }
+mir = { path = "language/mir" }
 parser = { path = "language/parser" }
 runner = { path = "language/runner" }
 syntax = { path = "language/syntax" }
+type_system = { path = "language/type_system" }
+
 compiler-llvm = { path = "language/compilers/llvm" }
 
 # Enable a small amount of optimization in the dev profile.

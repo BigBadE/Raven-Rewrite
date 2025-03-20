@@ -1,15 +1,14 @@
-use crate::code::literal::Literal;
-use crate::structure::visitor::{FileOwner, Translate};
-use crate::util::translation::translate_fields;
-use crate::util::translation::Translatable;
-use crate::util::ParseError;
-use crate::SyntaxLevel;
+use std::fmt;
+use syntax::structure::visitor::Translate;
+use syntax::util::translation::{translate_fields, translate_vec};
+use syntax::util::translation::Translatable;
+use syntax::util::ParseError;
 use lasso::Spur;
-use std::fmt::Debug;
-
-pub trait Expression: Debug {
-
-}
+use std::fmt::{Debug, Formatter};
+use syntax::structure::FileOwner;
+use syntax::structure::literal::Literal;
+use syntax::structure::traits::Expression;
+use syntax::SyntaxLevel;
 
 pub enum HighExpression<T: SyntaxLevel> {
     // No input one output
@@ -39,8 +38,8 @@ pub enum HighExpression<T: SyntaxLevel> {
 
 impl<T: SyntaxLevel> Expression for HighExpression<T> {}
 
-impl<T: SyntaxLevel> std::fmt::Debug for HighExpression<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<T: SyntaxLevel> Debug for HighExpression<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             HighExpression::Literal(lit) => {
                 f.debug_tuple("HighExpression::Literal")
@@ -90,10 +89,7 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
         Ok(match self {
             HighExpression::Literal(literal) => HighExpression::Literal(*literal),
             HighExpression::CodeBlock { body, value } => HighExpression::CodeBlock {
-                body: body
-                    .iter()
-                    .map(|statement| I::translate_stmt(statement, context))
-                    .collect::<Result<_, _>>()?,
+                body: translate_vec(&body, context, I::translate_stmt)?,
                 value: Box::new(I::translate_expr(&value, context)?),
             },
             HighExpression::Variable(variable) => HighExpression::Variable(*variable),
@@ -116,10 +112,7 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
                     .as_ref()
                     .map(|inner| Ok::<_, ParseError>(Box::new(I::translate_expr(inner, context)?)))
                     .transpose()?,
-                arguments: arguments
-                    .iter()
-                    .map(|arg| Ok::<_, ParseError>(I::translate_expr(arg, context)?))
-                    .collect::<Result<_, _>>()?,
+                arguments: translate_vec(&arguments, context, I::translate_expr)?,
             },
             HighExpression::CreateStruct {
                 target_struct,

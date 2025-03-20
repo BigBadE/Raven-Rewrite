@@ -1,0 +1,6 @@
+[package]
+name = "type_system"
+edition = "2024"
+
+[dependencies]
+syntax.workspace = true

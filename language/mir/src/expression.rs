@@ -1,13 +1,14 @@
-use crate::code::literal::Literal;
-use crate::hir::expression::{Expression, HighExpression};
-use crate::hir::function::HighTerminator;
-use crate::mir::statement::MediumStatement;
-use crate::mir::{MediumSyntaxLevel, MediumTerminator, MirContext, Operand, Place};
-use crate::structure::visitor::Translate;
-use crate::util::translation::Translatable;
-use crate::util::ParseError;
-use crate::{FunctionRef, SyntaxLevel, TypeRef};
+use syntax::structure::visitor::Translate;
+use syntax::util::translation::Translatable;
+use syntax::util::ParseError;
+use syntax::{FunctionRef, SyntaxLevel, TypeRef};
 use lasso::Spur;
+use hir::expression::HighExpression;
+use hir::function::HighTerminator;
+use syntax::structure::literal::Literal;
+use syntax::structure::traits::Expression;
+use crate::{MediumSyntaxLevel, MediumTerminator, MirContext, Operand, Place};
+use crate::statement::MediumStatement;
 
 #[derive(Debug)]
 pub enum MediumExpression<T: SyntaxLevel> {

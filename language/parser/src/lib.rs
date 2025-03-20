@@ -12,13 +12,13 @@ use nom_supreme::multi::collect_separated_terminated;
 use nom_supreme::ParserExt;
 use std::path::PathBuf;
 use std::sync::Arc;
-use syntax::hir::function::HighFunction;
-use syntax::hir::types::HighType;
-use syntax::hir::{RawSource, RawSyntaxLevel};
 use syntax::util::path::{get_path, FilePath};
 use syntax::util::ParseError;
 use syntax::{FunctionRef, TypeRef};
 use tokio::fs;
+use hir::function::HighFunction;
+use hir::{create_syntax, RawSource, RawSyntaxLevel};
+use hir::types::HighType;
 
 mod code;
 mod errors;
@@ -74,7 +74,12 @@ impl Extend<TopLevelItem> for File {
 }
 
 pub async fn parse_source(dir: PathBuf) -> Result<RawSource, ParseError> {
-    let mut source = RawSource::default();
+    let mut source = RawSource {
+        syntax: create_syntax(),
+        imports: Default::default(),
+        types: Default::default(),
+        functions: Default::default(),
+    };
     let mut errors = Vec::new();
 
     for path in read_recursive(&dir)
