@@ -5,5 +5,6 @@ edition = "2024"
 [dependencies]
 hir.workspace = true
 syntax.workspace = true
+serde.workspace = true
 
 lasso.workspace = true

@@ -3,6 +3,7 @@ use crate::util::ParseError;
 use lasso::ThreadedRodeo;
 use std::fmt::Debug;
 use std::sync::Arc;
+use serde::{Serialize, Deserialize};
 use crate::structure::traits::{Expression, Function, FunctionReference, Statement, Terminator, Type, TypeReference};
 
 pub mod structure;

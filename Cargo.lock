@@ -415,6 +415,7 @@ checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 dependencies = [
  "ahash",
  "allocator-api2",
+ "serde",
 ]
 
 [[package]]
@@ -760,6 +761,7 @@ checksum = "6e14eda50a3494b3bf7b9ce51c52434a761e383d7238ce1dd5dcec2fbc13e9fb"
 dependencies = [
  "dashmap",
  "hashbrown 0.14.5",
+ "serde",
 ]
 
 [[package]]
@@ -866,6 +868,7 @@ version = "0.0.0"
 dependencies = [
  "hir",
  "lasso",
+ "serde",
  "syntax",
 ]
 
@@ -1384,6 +1387,7 @@ dependencies = [
  "anyhow",
  "lasso",
  "lazy_static",
+ "serde",
  "thiserror 2.0.12",
 ]
 
