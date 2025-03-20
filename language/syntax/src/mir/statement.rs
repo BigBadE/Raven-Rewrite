@@ -1,13 +1,13 @@
+use crate::code::literal::Literal;
 use crate::hir::statement::{HighStatement, Statement};
 use crate::mir::{
     LocalVar, MediumExpression, MediumSyntaxLevel, MediumTerminator, MirContext, Place,
 };
 use crate::structure::visitor::Translate;
-use crate::util::translation::Translatable;
 use crate::util::ParseError;
+use crate::util::translation::Translatable;
 use crate::{SyntaxLevel, TypeRef};
 use std::fmt::Debug;
-use crate::code::literal::Literal;
 
 /// The MIR is made up of a series of nodes, each terminated with a jump expression.
 #[derive(Debug)]
@@ -36,9 +36,13 @@ impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
             HighStatement::Expression(expression) => {
                 let value = I::translate_expr(expression, context)?;
                 let local = context.create_temp(value.get_type(&context));
-                context.push_statement(MediumStatement::StorageLive(local, value.get_type(context)));
+                context
+                    .push_statement(MediumStatement::StorageLive(local, value.get_type(context)));
                 context.push_statement(MediumStatement::Assign {
-                    place: Place { local, projection: vec![] },
+                    place: Place {
+                        local,
+                        projection: vec![],
+                    },
                     value,
                 });
             }
@@ -46,13 +50,42 @@ impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
                 conditions,
                 else_branch,
             } => {
-
+                let mut current = context.create_block();
+                let end = context.create_block();
                 for condition in conditions {
+                    context.switch_to_block(current);
+                    let discriminant = I::translate_expr(&condition.condition, context)?;
+                    let next = context.create_block();
+                    current = context.create_block();
+                    context.set_terminator(MediumTerminator::Switch {
+                        discriminant,
+                        targets: vec![(Literal::U64(0), next)],
+                        fallback: current,
+                    });
 
+                    // Translate the if body
+                    context.switch_to_block(next);
+                    for statement in &condition.branch {
+                        I::translate_stmt(statement, context)?;
+                    }
+                    if let MediumTerminator::Unreachable = context.code_blocks[context.current_block].terminator
+                    {
+                        context.set_terminator(MediumTerminator::Goto(end));
+                    }
                 }
-                todo!()
+                context.switch_to_block(current);
+                if let Some(else_branch) = else_branch {
+                    for statement in else_branch {
+                        I::translate_stmt(statement, context)?;
+                    }
+                }
+                if let MediumTerminator::Unreachable = context.code_blocks[context.current_block].terminator
+                {
+                    context.set_terminator(MediumTerminator::Goto(end));
+                }
+                context.switch_to_block(end);
             }
-            HighStatement::For { iterator, body } => {
+            HighStatement::For { condition } => {
                 todo!()
             }
             HighStatement::While { condition } => {
@@ -64,13 +97,21 @@ impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
                 let discriminant = I::translate_expr(&condition.condition, context)?;
                 context.set_terminator(MediumTerminator::Switch {
                     discriminant,
-                    targets: vec!((Literal::U64(0), end)),
-                    fallback: body
+                    targets: vec![(Literal::U64(0), end)],
+                    fallback: body,
                 });
+                // Translate the body
                 context.switch_to_block(body);
                 context.parent_loop = Some(top);
                 context.parent_end = Some(end);
-
+                for statement in &condition.branch {
+                    I::translate_stmt(statement, context)?;
+                }
+                if let MediumTerminator::Unreachable = context.code_blocks[context.current_block].terminator
+                {
+                    context.set_terminator(MediumTerminator::Goto(top));
+                }
+                context.switch_to_block(end);
             }
             HighStatement::Loop { body } => {
                 let top = context.create_block();
@@ -78,9 +119,16 @@ impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
                 context.switch_to_block(top);
                 context.parent_loop = Some(top);
                 context.parent_end = Some(end);
-                I::translate_stmt(body, context)?;
-                // Whatever block ends up at the end should jump back to the top.
-                context.set_terminator(MediumTerminator::Goto(top));
+
+                // Translate the body
+                for statement in body {
+                    I::translate_stmt(statement, context)?;
+                }
+                if let MediumTerminator::Unreachable = context.code_blocks[context.current_block].terminator
+                {
+                    context.set_terminator(MediumTerminator::Goto(top));
+                }
+                context.switch_to_block(end);
             }
             HighStatement::Terminator(terminator) => {
                 let terminator = I::translate_terminator(terminator, context)?;

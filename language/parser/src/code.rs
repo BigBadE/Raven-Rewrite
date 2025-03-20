@@ -7,19 +7,19 @@ use nom::sequence::{delimited, terminated};
 use nom::Parser;
 use syntax::hir::function::{CodeBlock, HighTerminator};
 use syntax::hir::RawSyntaxLevel;
+use syntax::hir::statement::HighStatement;
 
 // Parser for function bodies
 pub fn function_body(input: Span) -> IResult<Span, CodeBlock<RawSyntaxLevel>> {
-    delimited(
-        delimited(ignored, tag("{"), ignored),
-        parse_code, //very basic body parser
-        delimited(ignored, tag("}"), ignored),
-    )(input)
-    .map(|(remaining, body)| (remaining, body))
+    parse_code.map(|statements| CodeBlock {
+        statements,
+        terminator: HighTerminator::None,
+    }).parse(input)
 }
 
-pub fn parse_code(input: Span) -> IResult<Span, CodeBlock<RawSyntaxLevel>> {
-    many0(terminated(statement, ignored))
-        .map(|statements| CodeBlock { statements, terminator: HighTerminator::None })
+pub fn parse_code(input: Span) -> IResult<Span, Vec<HighStatement<RawSyntaxLevel>>> {
+    delimited(delimited(ignored, tag("{"), ignored),
+              many0(terminated(statement, ignored)),
+              delimited(ignored, tag("}"), ignored))
         .parse(input)
 }
