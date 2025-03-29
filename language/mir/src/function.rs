@@ -7,11 +7,13 @@ use syntax::util::ParseError;
 use syntax::SyntaxLevel;
 use std::mem;
 use lasso::Spur;
+use serde::{Deserialize, Serialize};
 use syntax::structure::{FileOwner, Modifier};
 use syntax::structure::traits::Function;
 use syntax::util::path::FilePath;
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub struct MediumFunction<T: SyntaxLevel> {
     pub name: Spur,
     pub file: FilePath,
@@ -27,6 +29,7 @@ impl<T: SyntaxLevel> Function for MediumFunction<T> {
         self.file.as_ref()
     }
 }
+
 impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
     Translate<MediumFunction<MediumSyntaxLevel>, MirContext<'a>, I, MediumSyntaxLevel> for HighFunction<I>
 {

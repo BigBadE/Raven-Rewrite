@@ -1,5 +1,6 @@
 use std::fmt::{Debug, Formatter};
 use std::fmt;
+use serde::{Deserialize, Serialize};
 use syntax::structure::FileOwner;
 use syntax::structure::traits::Statement;
 use syntax::structure::visitor::Translate;
@@ -7,6 +8,8 @@ use syntax::SyntaxLevel;
 use syntax::util::ParseError;
 use syntax::util::translation::{translate_vec, Translatable};
 
+#[derive(Serialize, Deserialize)]
+#[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub enum HighStatement<T: SyntaxLevel> {
     Expression(T::Expression),
     Terminator(T::Terminator),
@@ -62,7 +65,7 @@ impl<T: SyntaxLevel> Debug for HighStatement<T> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Conditional<T: SyntaxLevel> {
     pub condition: T::Expression,
     pub branch: Vec<T::Statement>,

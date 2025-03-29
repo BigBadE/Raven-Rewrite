@@ -1,7 +1,8 @@
 use lasso::Spur;
+use serde::{Deserialize, Serialize};
 use crate::TypeRef;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 pub enum Literal {
     Void,
     String(Spur),
@@ -16,6 +17,7 @@ pub enum Literal {
 }
 
 impl Literal {
+    /// This is expected to be kept in sync with the Type list creation
     pub fn get_type(&self) -> TypeRef {
         TypeRef(match self {
             Literal::Void => 0,

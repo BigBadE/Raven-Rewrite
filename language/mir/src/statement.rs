@@ -7,11 +7,13 @@ use syntax::util::ParseError;
 use syntax::util::translation::Translatable;
 use syntax::{SyntaxLevel, TypeRef};
 use std::fmt::Debug;
+use serde::{Deserialize, Serialize};
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Statement;
 
 /// The MIR is made up of a series of nodes, each terminated with a jump expression.
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub enum MediumStatement<T: SyntaxLevel> {
     Assign {
         place: Place,

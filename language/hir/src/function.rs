@@ -6,15 +6,16 @@ use syntax::util::ParseError;
 use syntax::SyntaxLevel;
 use lasso::Spur;
 use std::fmt::Debug;
+use serde::{Deserialize, Serialize};
 use syntax::structure::traits::{Function, Terminator};
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct CodeBlock<T: SyntaxLevel> {
     pub statements: Vec<T::Statement>,
     pub terminator: T::Terminator
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum HighTerminator<T: SyntaxLevel> {
     Return(Option<T::Expression>),
     Break,
@@ -24,7 +25,8 @@ pub enum HighTerminator<T: SyntaxLevel> {
 
 impl<T: SyntaxLevel> Terminator for HighTerminator<T> {}
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub struct HighFunction<T: SyntaxLevel> {
     pub name: Spur,
     pub file: FilePath,

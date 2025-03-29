@@ -7,10 +7,12 @@ use syntax::util::ParseError;
 use syntax::SyntaxLevel;
 use lasso::Spur;
 use std::fmt::Debug;
+use serde::{Deserialize, Serialize};
 use syntax::structure::traits::Type;
 use crate::RawSyntaxLevel;
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub struct HighType<T: SyntaxLevel> {
     pub name: Spur,
     pub file: FilePath,
@@ -37,7 +39,7 @@ impl<T: SyntaxLevel> Type for HighType<T> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum TypeData<T: SyntaxLevel> {
     Struct {
         fields: Vec<(Spur, T::TypeReference)>,

@@ -3,27 +3,28 @@ pub mod statement;
 pub mod expression;
 pub mod types;
 
-use std::collections::HashMap;
-use lasso::Spur;
-use hir::expression::HighExpression;
-use hir::function::{CodeBlock, HighFunction, HighTerminator};
-use hir::HighSyntaxLevel;
-use hir::statement::HighStatement;
-use hir::types::HighType;
-use syntax::structure::visitor::Translate;
-use syntax::util::path::FilePath;
-use syntax::util::translation::Translatable;
-use syntax::util::ParseError;
-use syntax::{FunctionRef, Syntax, SyntaxLevel, TypeRef};
-use syntax::structure::FileOwner;
-use syntax::structure::literal::Literal;
-use syntax::structure::traits::Terminator;
 use crate::expression::MediumExpression;
 use crate::function::MediumFunction;
 use crate::statement::MediumStatement;
 use crate::types::MediumType;
+use hir::expression::HighExpression;
+use hir::function::{CodeBlock, HighFunction, HighTerminator};
+use hir::statement::HighStatement;
+use hir::types::HighType;
+use hir::HighSyntaxLevel;
+use lasso::Spur;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use syntax::structure::literal::Literal;
+use syntax::structure::traits::Terminator;
+use syntax::structure::visitor::Translate;
+use syntax::structure::FileOwner;
+use syntax::util::path::FilePath;
+use syntax::util::translation::Translatable;
+use syntax::util::ParseError;
+use syntax::{FunctionRef, Syntax, SyntaxLevel, TypeRef};
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct MediumSyntaxLevel;
 
 impl SyntaxLevel for MediumSyntaxLevel {
@@ -36,7 +37,8 @@ impl SyntaxLevel for MediumSyntaxLevel {
     type Terminator = MediumTerminator<MediumSyntaxLevel>;
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub enum MediumTerminator<T: SyntaxLevel> {
     Goto(CodeBlockId),
     Switch {
@@ -48,7 +50,7 @@ pub enum MediumTerminator<T: SyntaxLevel> {
     Unreachable,
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum Operand {
     Copy(Place),
     Move(Place),
@@ -65,13 +67,13 @@ impl Operand {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Place {
     pub local: LocalVar,
     pub projection: Vec<PlaceElem>,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 pub enum PlaceElem {
     Deref,
     Field(Spur),

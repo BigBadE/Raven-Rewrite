@@ -1,5 +1,6 @@
 use lazy_static::lazy_static;
 use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
 use crate::util::path::FilePath;
 
 pub mod literal;
@@ -11,7 +12,7 @@ lazy_static! {
         HashMap::from([("pub", Modifier::PUBLIC)]);
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug)]
 pub enum Modifier {
     PUBLIC = 0b1,
 }

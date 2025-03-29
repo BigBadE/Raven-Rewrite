@@ -1,4 +1,5 @@
 use lasso::Spur;
+use serde::{Deserialize, Serialize};
 use hir::types::{HighType, TypeData};
 use crate::{MediumSyntaxLevel, MirContext};
 use syntax::structure::Modifier;
@@ -9,7 +10,7 @@ use syntax::util::ParseError;
 use syntax::util::path::FilePath;
 use syntax::util::translation::Translatable;
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct MediumType<T: SyntaxLevel> {
     pub name: Spur,
     pub file: FilePath,

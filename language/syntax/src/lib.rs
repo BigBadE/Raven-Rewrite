@@ -3,21 +3,21 @@ use crate::util::ParseError;
 use lasso::ThreadedRodeo;
 use std::fmt::Debug;
 use std::sync::Arc;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use crate::structure::traits::{Expression, Function, FunctionReference, Statement, Terminator, Type, TypeReference};
 
 pub mod structure;
 pub mod util;
 
-#[derive(Debug, Copy, Clone, Hash, Ord, PartialOrd, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, Ord, PartialOrd, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeRef(pub usize);
 impl TypeReference for TypeRef {}
 
-#[derive(Debug, Copy, Clone, Hash, Ord, PartialOrd, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, Ord, PartialOrd, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionRef(pub usize);
 impl FunctionReference for FunctionRef {}
 
-pub trait SyntaxLevel: Debug {
+pub trait SyntaxLevel: Serialize + for<'a> Deserialize<'a> + Debug {
     type TypeReference: TypeReference;
     type Type: Type;
     type FunctionReference: FunctionReference;
@@ -27,6 +27,7 @@ pub trait SyntaxLevel: Debug {
     type Terminator: Terminator;
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Syntax<T: SyntaxLevel> {
     pub symbols: Arc<ThreadedRodeo>,
     pub functions: Vec<T::Function>,

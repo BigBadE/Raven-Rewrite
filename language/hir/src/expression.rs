@@ -5,11 +5,13 @@ use syntax::util::translation::Translatable;
 use syntax::util::ParseError;
 use lasso::Spur;
 use std::fmt::{Debug, Formatter};
+use serde::{Deserialize, Serialize};
 use syntax::structure::FileOwner;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Expression;
 use syntax::SyntaxLevel;
 
+#[derive(Serialize, Deserialize)]
 pub enum HighExpression<T: SyntaxLevel> {
     // No input one output
     Literal(Literal),

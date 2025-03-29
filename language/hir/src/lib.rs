@@ -5,6 +5,7 @@ use crate::types::HighType;
 use lasso::{Spur, ThreadedRodeo};
 use std::collections::HashMap;
 use std::sync::Arc;
+use serde::{Deserialize, Serialize};
 use syntax::structure::traits::{FunctionReference, TypeReference};
 use syntax::util::path::FilePath;
 use syntax::{FunctionRef, Syntax, SyntaxLevel, TypeRef};
@@ -25,7 +26,7 @@ pub struct RawSource {
     pub functions: HashMap<FilePath, FunctionRef>,
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct RawSyntaxLevel;
 
 impl SyntaxLevel for RawSyntaxLevel {
@@ -58,7 +59,7 @@ pub fn create_syntax() -> Syntax<RawSyntaxLevel> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct HighSyntaxLevel;
 
 impl SyntaxLevel for HighSyntaxLevel {
@@ -71,9 +72,9 @@ impl SyntaxLevel for HighSyntaxLevel {
     type Terminator = HighTerminator<HighSyntaxLevel>;
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct RawTypeRef(pub Spur);
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct RawFunctionRef(pub Spur);
 
 impl TypeReference for RawTypeRef {}
