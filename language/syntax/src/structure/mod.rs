@@ -9,12 +9,13 @@ pub mod traits;
 
 lazy_static! {
     pub static ref MODIFIERS: HashMap<&'static str, Modifier> =
-        HashMap::from([("pub", Modifier::PUBLIC)]);
+        HashMap::from([("pub", Modifier::PUBLIC), ("operation", Modifier::OPERATION)]);
 }
 
-#[derive(Serialize, Deserialize, Copy, Clone, Debug)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Modifier {
     PUBLIC = 0b1,
+    OPERATION = 0b10,
 }
 
 pub trait FileOwner {

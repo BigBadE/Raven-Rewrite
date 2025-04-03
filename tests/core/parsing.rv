@@ -8,3 +8,9 @@ pub fn test() -> i32 {
 struct Testing {
     other: Other
 }
+
+trait Add {
+    pub fn +(first: i64, second: i64) -> i64 {
+
+    }
+}

@@ -1,3 +1,4 @@
+use std::io::read_to_string;
 use crate::errors::error_message;
 use crate::file::parse_top_element;
 use crate::util::ignored;
@@ -18,7 +19,8 @@ use syntax::{FunctionRef, TypeRef};
 use tokio::fs;
 use hir::function::HighFunction;
 use hir::{create_syntax, RawSource, RawSyntaxLevel};
-use hir::types::HighType;
+use hir::types::{HighType, TypeData};
+use syntax::structure::Modifier;
 
 mod code;
 mod errors;
@@ -79,6 +81,9 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, ParseError> {
         imports: Default::default(),
         types: Default::default(),
         functions: Default::default(),
+        pre_unary_operations: Default::default(),
+        post_unary_operations: Default::default(),
+        binary_operations: Default::default(),
     };
     let mut errors = Vec::new();
 
@@ -98,7 +103,15 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, ParseError> {
         for function in file.functions {
             let mut path = file_path.clone();
             path.push(function.name);
-            source.functions.insert(path, FunctionRef(source.syntax.functions.len()));
+            let reference = FunctionRef(source.syntax.functions.len());
+            if function.modifiers.contains(&Modifier::OPERATION) {
+                match function.parameters.len() {
+                    1 => source.pre_unary_operations.entry(function.name).or_default().push(reference),
+                    2 => source.binary_operations.entry(function.name).or_default().push(reference),
+                    _ => return Err(ParseError::ParseError("Expected operation to only have 1 or 2 args".to_string()))
+                }
+            }
+            source.functions.insert(path, reference);
             source.syntax.functions.push(function);
         }
 

@@ -24,6 +24,9 @@ pub struct RawSource {
     pub imports: HashMap<FilePath, Vec<FilePath>>,
     pub types: HashMap<FilePath, TypeRef>,
     pub functions: HashMap<FilePath, FunctionRef>,
+    pub pre_unary_operations: HashMap<Spur, Vec<FunctionRef>>,
+    pub post_unary_operations: HashMap<Spur, Vec<FunctionRef>>,
+    pub binary_operations: HashMap<Spur, Vec<FunctionRef>>
 }
 
 #[derive(Serialize, Deserialize, Debug)]
