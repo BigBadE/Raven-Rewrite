@@ -11,7 +11,7 @@ use hir::function::HighFunction;
 use hir::{RawSyntaxLevel, RawTypeRef};
 
 // Parser for function declarations
-pub fn parse_function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {
+pub fn function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {
     map(
         tuple((
             modifiers.context("Modifiers"),

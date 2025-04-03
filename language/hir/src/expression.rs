@@ -26,11 +26,20 @@ pub enum HighExpression<T: SyntaxLevel> {
         variable: Spur,
         value: Box<T::Expression>,
     },
+    UnaryOperation {
+        symbol: char,
+        value: Box<T::Expression>,
+    },
     // Multiple inputs one output
     FunctionCall {
         function: T::FunctionReference,
         target: Option<Box<T::Expression>>,
         arguments: Vec<T::Expression>,
+    },
+    BinaryOperation {
+        symbol: char,
+        first: Box<T::Expression>,
+        second: Box<T::Expression>,
     },
     CreateStruct {
         target_struct: T::TypeReference,
@@ -79,13 +88,26 @@ impl<T: SyntaxLevel> Debug for HighExpression<T> {
                     .field("fields", fields)
                     .finish()
             }
+            HighExpression::UnaryOperation { symbol, value } => {
+                f.debug_struct("HighExpression::UnaryOperation")
+                    .field("symbol", symbol)
+                    .field("value", value)
+                    .finish()
+            }
+            HighExpression::BinaryOperation { symbol, first, second } => {
+                f.debug_struct("HighExpression::BinaryOperation")
+                    .field("symbol", symbol)
+                    .field("first", first)
+                    .field("second", second)
+                    .finish()
+            }
         }
     }
 }
 
 // Handle expression translation
 impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
-    Translate<HighExpression<O>, C, I, O> for HighExpression<I>
+Translate<HighExpression<O>, C, I, O> for HighExpression<I>
 {
     fn translate(&self, context: &mut C) -> Result<HighExpression<O>, ParseError> {
         Ok(match self {
@@ -123,6 +145,15 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
                 target_struct: I::translate_type_ref(target_struct, context)?,
                 fields: translate_fields(fields, context, I::translate_expr)?,
             },
+            HighExpression::UnaryOperation { symbol, value } => HighExpression::UnaryOperation {
+                symbol: *symbol,
+                value: Box::new(I::translate_expr(value, context)?),
+            },
+            HighExpression::BinaryOperation { symbol, first, second } => HighExpression::BinaryOperation {
+                symbol: *symbol,
+                first: Box::new(I::translate_expr(first, context)?),
+                second: Box::new(I::translate_expr(second, context)?),
+            }
         })
     }
 }

@@ -3,9 +3,10 @@ use crate::util::ignored;
 use crate::{IResult, Span};
 use nom::branch::alt;
 use nom::bytes::complete::tag;
-use nom::character::complete::{alphanumeric1, digit1};
+use nom::character::complete::{alphanumeric1, anychar, digit1};
 use nom::combinator::{map, opt};
 use nom::multi::{many0, separated_list0};
+use nom::Parser;
 use nom::sequence::{delimited, preceded, terminated, tuple};
 use hir::expression::HighExpression;
 use hir::{RawFunctionRef, RawSyntaxLevel, RawTypeRef};
@@ -18,9 +19,10 @@ pub fn expression(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> 
             literal,
             block,
             assignment,
-            function,
+            function_call,
             create_struct,
             variable,
+            operation
         )),
         ignored,
     )(input)
@@ -47,7 +49,7 @@ pub fn block(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
         tag("{"),
         map(many0(statement), |stmts| HighExpression::CodeBlock {
             body: stmts,
-            value: Box::new(HighExpression::Literal(Literal::Void))
+            value: Box::new(HighExpression::Literal(Literal::Void)),
         }),
         tag("}"),
     )(input)
@@ -74,7 +76,7 @@ pub fn assignment(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> 
 /// Parses a function call expression with a target identifier,
 /// a dot, a function name, and a parenthesized, comma-separated list of expressions.
 /// Grammar: identifier \".\" identifier \"(\" [expression {\",\" expression}] \")\"
-pub fn function(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
+pub fn function_call(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     let (input, target_id) = opt(terminated(alphanumeric1, tag(".")))(input)?;
     let (input, func_name) = alphanumeric1(input)?;
     let (input, args) = delimited(
@@ -117,4 +119,26 @@ pub fn create_struct(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel
         fields,
     };
     Ok((input, expression))
+}
+
+pub fn operation(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
+    alt((map(tuple((opt(expression), anychar, expression)), |(first, symbol, second)|
+        match first {
+            Some(first) => HighExpression::BinaryOperation {
+                symbol,
+                first: Box::new(first),
+                second: Box::new(second),
+            },
+            None => HighExpression::UnaryOperation {
+                symbol,
+                value: Box::new(second),
+            }
+        },
+    ),
+         map(tuple((expression, anychar)), |(value, symbol)|
+             HighExpression::UnaryOperation {
+                 symbol,
+                 value: Box::new(value),
+             },
+         ))).parse(input)
 }

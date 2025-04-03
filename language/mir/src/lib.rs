@@ -218,7 +218,7 @@ impl Translatable<MirContext<'_>, HighSyntaxLevel, MediumSyntaxLevel> for HighSy
     fn translate_type(
         node: &HighType<HighSyntaxLevel>,
         context: &mut MirContext,
-    ) -> Result<MediumType<MediumSyntaxLevel>, ParseError> {
+    ) -> Result<Option<MediumType<MediumSyntaxLevel>>, ParseError> {
         Translate::translate(node, context)
     }
 

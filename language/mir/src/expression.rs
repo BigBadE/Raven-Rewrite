@@ -129,7 +129,9 @@ Translate<MediumExpression<MediumSyntaxLevel>, MirContext<'a>, I, MediumSyntaxLe
                     fields: fields.iter()
                         .map(|(name, expression)| Ok((*name, convert_expr(I::translate_expr(expression, context)?))))
                         .collect::<Result<_, _>>()?,
-            }
+            },
+            HighExpression::UnaryOperation { .. } => todo!(),
+            HighExpression::BinaryOperation { .. } => todo!()
         })
     }
 }

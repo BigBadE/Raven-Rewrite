@@ -16,7 +16,9 @@ impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Translate<Syntax
                 .map(|function| I::translate_func(function, context)),
         );
 
-        let types = collect_results(self.types.iter().map(|ty| I::translate_type(ty, context)));
+        let types = collect_results(self.types.iter()
+            .map(|ty| I::translate_type(ty, context))
+            .filter_map(|ty| ty.transpose()));
 
         match (functions, types) {
             (Ok(functions), Ok(types)) => Ok(Syntax {

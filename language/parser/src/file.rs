@@ -1,4 +1,4 @@
-use crate::function::parse_function;
+use crate::function::function;
 use crate::structure::parse_structure;
 use crate::util::{file_path, ignored};
 use crate::{IResult, Span, TopLevelItem};
@@ -13,7 +13,7 @@ use syntax::util::path::FilePath;
 pub fn parse_top_element(input: Span) -> IResult<Span, TopLevelItem> {
     alt((
         map(parse_import, |import| TopLevelItem::Import(import)),
-        map(parse_function, |function| TopLevelItem::Function(function)),
+        map(function, |function| TopLevelItem::Function(function)),
         map(parse_structure, |types| TopLevelItem::Type(types)),
     ))
     .context("Top")

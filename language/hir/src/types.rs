@@ -1,7 +1,7 @@
 use syntax::structure::visitor::Translate;
 use syntax::structure::{FileOwner, Modifier};
 use syntax::util::path::FilePath;
-use syntax::util::translation::translate_fields;
+use syntax::util::translation::{translate_fields, translate_vec};
 use syntax::util::translation::Translatable;
 use syntax::util::ParseError;
 use syntax::SyntaxLevel;
@@ -44,23 +44,29 @@ pub enum TypeData<T: SyntaxLevel> {
     Struct {
         fields: Vec<(Spur, T::TypeReference)>,
     },
+    Trait {
+        functions: Vec<T::Function>
+    }
 }
 
 // Handle type translations
 impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
-    Translate<HighType<O>, C, I, O> for HighType<I>
+    Translate<Option<HighType<O>>, C, I, O> for HighType<I>
 {
-    fn translate(&self, context: &mut C) -> Result<HighType<O>, ParseError> {
+    fn translate(&self, context: &mut C) -> Result<Option<HighType<O>>, ParseError> {
         context.set_file(self.file().clone());
-        Ok(HighType {
+        Ok(Some(HighType {
             name: self.name.clone(),
             file: self.file.clone(),
             modifiers: self.modifiers.clone(),
             data: match &self.data {
                 TypeData::Struct { fields } => TypeData::Struct {
-                    fields: translate_fields(fields, context, I::translate_type_ref)?,
+                    fields: translate_fields(fields, context, I::translate_type_ref)?
                 },
+                TypeData::Trait { functions } => TypeData::Trait {
+                    functions: translate_vec(functions, context, I::translate_func)?
+                }
             },
-        })
+        }))
     }
 }

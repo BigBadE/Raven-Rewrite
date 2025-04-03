@@ -179,7 +179,7 @@ impl<'a> Translatable<HirContext<'a>, RawSyntaxLevel, HighSyntaxLevel> for RawSy
     fn translate_type(
         node: &HighType<RawSyntaxLevel>,
         context: &mut HirContext,
-    ) -> Result<HighType<HighSyntaxLevel>, ParseError> {
+    ) -> Result<Option<HighType<HighSyntaxLevel>>, ParseError> {
         Translate::translate(node, context)
     }
 

@@ -25,17 +25,18 @@ impl<T: SyntaxLevel> Type for MediumType<T> {
 }
 
 impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
-Translate<MediumType<MediumSyntaxLevel>, MirContext<'a>, I, MediumSyntaxLevel> for HighType<I>
+Translate<Option<MediumType<MediumSyntaxLevel>>, MirContext<'a>, I, MediumSyntaxLevel> for HighType<I>
 {
-    fn translate(&self, context: &mut MirContext<'a>) -> Result<MediumType<MediumSyntaxLevel>, ParseError> {
-        Ok(match &self.data {
+    fn translate(&self, context: &mut MirContext<'a>) -> Result<Option<MediumType<MediumSyntaxLevel>>, ParseError> {
+        Ok(Some(match &self.data {
             TypeData::Struct { fields } => MediumType {
                 name: self.name,
                 file: self.file.clone(),
                 modifiers: self.modifiers.clone(),
                 fields: fields.iter().map(|(_, types)| I::translate_type_ref(types, context))
                     .collect::<Result<_, _>>()?,
-            }
-        })
+            },
+            TypeData::Trait { .. } => return Ok(None)
+        }))
     }
 }
