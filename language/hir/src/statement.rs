@@ -12,6 +12,7 @@ use syntax::util::translation::{translate_vec, Translatable};
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub enum HighStatement<T: SyntaxLevel> {
     Expression(T::Expression),
+    CodeBlock(Vec<T::Statement>),
     Terminator(T::Terminator),
     If {
         conditions: Vec<Conditional<T>>,
@@ -34,6 +35,10 @@ impl<T: SyntaxLevel> Debug for HighStatement<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             HighStatement::Expression(expr) => f
+                .debug_tuple("HighStatement::Expression")
+                .field(expr)
+                .finish(),
+            HighStatement::CodeBlock(expr) => f
                 .debug_tuple("HighStatement::Expression")
                 .field(expr)
                 .finish(),
@@ -89,14 +94,16 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
             HighStatement::Expression(expression) => {
                 HighStatement::Expression(I::translate_expr(expression, context)?)
             }
+            HighStatement::CodeBlock(expressions) => {
+                HighStatement::CodeBlock(
+                    translate_vec(expressions, context, I::translate_stmt)?
+                )
+            }
             HighStatement::If {
                 conditions,
                 else_branch,
             } => HighStatement::If {
-                conditions: conditions
-                    .iter()
-                    .map(|condition| condition.translate(context))
-                    .collect::<Result<_, _>>()?,
+                conditions: translate_vec(conditions, context, Translate::translate)?,
                 else_branch: else_branch
                     .as_ref()
                     .map(|inner| translate_vec(&inner, context, I::translate_stmt))

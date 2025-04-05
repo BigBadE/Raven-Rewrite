@@ -1,7 +1,7 @@
 import core::other::Other;
 
 pub fn test() -> i32 {
-    let value = 1;
+    let value = 1 + 2;
     return 12;
 }
 
@@ -10,7 +10,7 @@ struct Testing {
 }
 
 trait Add {
-    pub fn +(first: i64, second: i64) -> i64 {
+    pub operation fn +(first: i64, second: i64) -> i64 {
 
     }
 }

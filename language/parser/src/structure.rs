@@ -14,21 +14,22 @@ pub fn parse_structure(input: Span) -> IResult<Span, HighType<RawSyntaxLevel>> {
     map(
         tuple((
             modifiers.context("Modifiers"),
-            alt((tuple((preceded(delimited(ignored, tag("struct"), ignored), identifier).context("Keyword"),
+            alt((tuple((preceded(delimited(ignored, tag("struct"), ignored), identifier),
                        map(delimited(
-                           delimited(ignored, tag("{"), ignored),
+                           delimited(ignored, tag("{"), ignored).context("Opening"),
                            many0(delimited(ignored, parameter, ignored)),
-                           delimited(ignored, tag("}"), ignored).context("Struct"),
-                       ), |fields| TypeData::Struct { fields }))),
-                tuple((preceded(delimited(ignored, tag("trait"), ignored), identifier).context("Keyword"),
+                           delimited(ignored, tag("}"), ignored).context("Closing"),
+                       ), |fields| TypeData::Struct { fields }).context("Struct"))),
+                tuple((preceded(delimited(ignored, tag("trait"), ignored), identifier),
                        map(delimited(
-                           delimited(ignored, tag("{"), ignored),
+                           delimited(ignored, tag("{"), ignored).context("Opening"),
                            many0(delimited(ignored, function, ignored)),
-                           delimited(ignored, tag("}"), ignored).context("Struct"),
-                       ), |functions| TypeData::Trait { functions })))
+                           delimited(ignored, tag("}"), ignored).context("Closing"),
+                       ), |functions| TypeData::Trait { functions })
+                .context("Trait"))),
             )),
         ))
-            .context("Structure"),
+            .context("Type"),
         |(modifiers, (name, data))| HighType {
             name,
             file: input.extra.file.clone(),

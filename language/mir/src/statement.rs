@@ -38,16 +38,23 @@ impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
         match self {
             HighStatement::Expression(expression) => {
                 let value = I::translate_expr(expression, context)?;
-                let local = context.create_temp(value.get_type(&context));
-                context
-                    .push_statement(MediumStatement::StorageLive(local, value.get_type(context)));
-                context.push_statement(MediumStatement::Assign {
-                    place: Place {
-                        local,
-                        projection: vec![],
-                    },
-                    value,
-                });
+                if let Some(types) = value.get_type(context) {
+                    let local = context.create_temp(types);
+                    context
+                        .push_statement(MediumStatement::StorageLive(local, types));
+                    context.push_statement(MediumStatement::Assign {
+                        place: Place {
+                            local,
+                            projection: vec![],
+                        },
+                        value,
+                    });
+                }
+            }
+            HighStatement::CodeBlock(expressions) => {
+                for expression in expressions {
+                    I::translate_stmt(expression, context)?;
+                }
             }
             HighStatement::If {
                 conditions,

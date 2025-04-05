@@ -11,7 +11,7 @@ use hir::expression::HighExpression;
 use hir::function::{CodeBlock, HighFunction, HighTerminator};
 use hir::statement::HighStatement;
 use hir::types::HighType;
-use hir::HighSyntaxLevel;
+use hir::{HighSyntaxLevel, HirSource};
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -98,17 +98,17 @@ pub struct MirContext<'a> {
     parent_loop: Option<CodeBlockId>,
     // The end of the parent control block, if any
     parent_end: Option<CodeBlockId>,
-    syntax: &'a Syntax<HighSyntaxLevel>
+    source: &'a HirSource
 }
 
 impl<'a> MirContext<'a> {
-    fn new(syntax: &'a Syntax<HighSyntaxLevel>) -> Self {
+    fn new(source: &'a HirSource) -> Self {
         Self {
             code_blocks: vec!(CodeBlock {
                 statements: vec!(),
                 terminator: MediumTerminator::Unreachable
             }),
-            syntax,
+            source,
             file: None,
             current_block: 0,
             local_vars: HashMap::default(),
@@ -184,9 +184,9 @@ impl FileOwner for MirContext<'_> {
 }
 
 pub fn resolve_to_mir(
-    source: Syntax<HighSyntaxLevel>,
+    source: HirSource,
 ) -> Result<Syntax<MediumSyntaxLevel>, ParseError> {
-    source.translate(&mut MirContext::new(&source))
+    source.syntax.translate(&mut MirContext::new(&source))
 }
 
 impl Translatable<MirContext<'_>, HighSyntaxLevel, MediumSyntaxLevel> for HighSyntaxLevel {
@@ -241,8 +241,8 @@ Translate<MediumTerminator<MediumSyntaxLevel>, MirContext<'a>, I, MediumSyntaxLe
         Ok(match self {
             HighTerminator::Return(returning) => {
                 MediumTerminator::Return(
-                    Some(returning.as_ref().map(|inner| I::translate_expr(inner, context))
-                        .transpose()?.unwrap_or(MediumExpression::Literal(Literal::Void))))
+                    returning.as_ref().map(|inner| I::translate_expr(inner, context))
+                        .transpose()?)
             }
             HighTerminator::Break => MediumTerminator::Goto(*context.parent_end.as_ref().ok_or(
                 ParseError::ParseError("Expected to be inside a control block to break from".to_string()))?),

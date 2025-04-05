@@ -1,15 +1,15 @@
-use syntax::structure::visitor::Translate;
-use syntax::util::translation::Translatable;
-use syntax::util::ParseError;
-use syntax::{FunctionRef, SyntaxLevel, TypeRef};
-use lasso::Spur;
-use serde::{Deserialize, Serialize};
+use crate::statement::MediumStatement;
+use crate::{MediumSyntaxLevel, MediumTerminator, MirContext, Operand, Place};
 use hir::expression::HighExpression;
 use hir::function::HighTerminator;
+use lasso::Spur;
+use serde::{Deserialize, Serialize};
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Expression;
-use crate::{MediumSyntaxLevel, MediumTerminator, MirContext, Operand, Place};
-use crate::statement::MediumStatement;
+use syntax::structure::visitor::Translate;
+use syntax::util::ParseError;
+use syntax::util::translation::Translatable;
+use syntax::{FunctionRef, SyntaxLevel, TypeRef};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum MediumExpression<T: SyntaxLevel> {
@@ -27,34 +27,84 @@ pub enum MediumExpression<T: SyntaxLevel> {
 
 impl<T: SyntaxLevel> Expression for MediumExpression<T> {}
 
-impl<T: SyntaxLevel<FunctionReference=FunctionRef, TypeReference=TypeRef>> MediumExpression<T> {
-    pub fn get_type(&self, context: &MirContext) -> TypeRef {
+impl<T: SyntaxLevel<FunctionReference = FunctionRef, TypeReference = TypeRef>> MediumExpression<T> {
+    pub fn get_type(&self, context: &MirContext) -> Option<TypeRef> {
         match self {
-            MediumExpression::Use(op) => op.get_type(context),
-            MediumExpression::Literal(lit) => lit.get_type(),
+            MediumExpression::Use(op) => Some(op.get_type(context)),
+            MediumExpression::Literal(lit) => Some(lit.get_type()),
             MediumExpression::FunctionCall { func, .. } => {
-                context.syntax.functions[func.0].return_type.unwrap_or(Literal::Void.get_type())
+                context.source.syntax.functions[func.0].return_type
             }
-            MediumExpression::CreateStruct { struct_type, .. } => struct_type.clone(),
+            MediumExpression::CreateStruct { struct_type, .. } => Some(struct_type.clone()),
         }
     }
 }
 
+/// Convert an expression into an operand.
+pub fn get_operand(expr: MediumExpression<MediumSyntaxLevel>, context: &mut MirContext) -> Operand {
+    match expr {
+        MediumExpression::Literal(lit) => Operand::Constant(lit),
+        MediumExpression::Use(op) => op,
+        value => {
+            let ty = value
+                .get_type(context)
+                .unwrap_or_else(|| panic!("Expected non-void type in convert_expr"));
+            let temp = context.create_temp(ty);
+            context.push_statement(MediumStatement::Assign {
+                place: Place {
+                    local: temp,
+                    projection: vec![],
+                },
+                value,
+            });
+            Operand::Copy(Place {
+                local: temp,
+                projection: vec![],
+            })
+        }
+    }
+}
 
-// Handle statement translation
-impl<'a, I: SyntaxLevel<Terminator=HighTerminator<I>> + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
-Translate<MediumExpression<MediumSyntaxLevel>, MirContext<'a>, I, MediumSyntaxLevel> for HighExpression<I>
+pub fn translate_function<
+    'a,
+    I: SyntaxLevel<Terminator = HighTerminator<I>>
+        + Translatable<MirContext<'a>, I, MediumSyntaxLevel>,
+>(
+    function: &I::FunctionReference,
+    target: Option<&Box<I::Expression>>,
+    arguments: Vec<&I::Expression>,
+    context: &mut MirContext<'a>,
+) -> Result<MediumExpression<MediumSyntaxLevel>, ParseError> {
+    let mut args = Vec::new();
+    // If there is a target (as in a method call), translate and prepend it.
+    if let Some(target_expr) = target {
+        args.push(get_operand(
+            I::translate_expr(target_expr, context)?,
+            context,
+        ));
+    }
+    // Translate the remaining arguments.
+    for arg in arguments {
+        args.push(get_operand(I::translate_expr(arg, context)?, context));
+    }
+    Ok(MediumExpression::FunctionCall {
+        func: I::translate_func_ref(function, context)?,
+        args,
+    })
+}
+
+/// Handle statement translation
+impl<
+    'a,
+    I: SyntaxLevel<Terminator = HighTerminator<I>, FunctionReference = FunctionRef>
+        + Translatable<MirContext<'a>, I, MediumSyntaxLevel>,
+> Translate<MediumExpression<MediumSyntaxLevel>, MirContext<'a>, I, MediumSyntaxLevel>
+    for HighExpression<I>
 {
-    fn translate(&self, context: &mut MirContext<'a>) -> Result<MediumExpression<MediumSyntaxLevel>, ParseError> {
-        // Helper conversion: converts a translated expression to an operand.
-        let convert_expr = |expr: MediumExpression<MediumSyntaxLevel>| -> Operand {
-            match expr {
-                MediumExpression::Literal(l) => Operand::Constant(l),
-                MediumExpression::Use(op) => op,
-                _ => Operand::Constant(Literal::Void),
-            }
-        };
-
+    fn translate(
+        &self,
+        context: &mut MirContext<'a>,
+    ) -> Result<MediumExpression<MediumSyntaxLevel>, ParseError> {
         Ok(match self {
             // Translate literal directly.
             HighExpression::Literal(lit) => MediumExpression::Literal(*lit),
@@ -78,20 +128,34 @@ Translate<MediumExpression<MediumSyntaxLevel>, MirContext<'a>, I, MediumSyntaxLe
             HighExpression::Variable(var) => {
                 let local = context.get_local(*var).cloned();
                 MediumExpression::Use(Operand::Copy(Place {
-                    local: local.ok_or_else(|| ParseError::ParseError(
-                        format!("Unknown variable: {}", context.syntax.symbols.resolve(var))))?,
-                    projection: vec!(),
+                    local: local.ok_or_else(|| {
+                        ParseError::ParseError(format!(
+                            "Unknown variable: {}",
+                            context.source.syntax.symbols.resolve(var)
+                        ))
+                    })?,
+                    projection: vec![],
                 }))
-            },
+            }
             // For assignment, translate the right-hand side, emit an assign statement,
             // then return a use of the target variable.
-            HighExpression::Assignment { declaration, variable, value } => {
+            HighExpression::Assignment {
+                declaration,
+                variable,
+                value,
+            } => {
                 if !context.local_vars.contains_key(variable) && !declaration {
                     return Err(ParseError::ParseError("Unknown variable!".to_string()));
                 }
 
                 let value = I::translate_expr(value, context)?;
                 let types = value.get_type(context);
+                let Some(types) = types else {
+                    return Err(ParseError::ParseError(
+                        "Expected non-void type!".to_string(),
+                    ));
+                };
+
                 let place = Place {
                     local: context.get_or_create_local(*variable, types),
                     projection: Vec::new(),
@@ -110,28 +174,57 @@ Translate<MediumExpression<MediumSyntaxLevel>, MirContext<'a>, I, MediumSyntaxLe
                 MediumExpression::Use(Operand::Move(place))
             }
             // For function calls, translate the function reference and arguments.
-            HighExpression::FunctionCall { function, target, arguments } => {
-                let mut args = Vec::new();
-                // If there is a target (as in a method call), translate and prepend it.
-                if let Some(target_expr) = target {
-                    args.push(convert_expr(I::translate_expr(target_expr, context)?));
-                }
-                // Translate the remaining arguments.
-                for arg in arguments {
-                    args.push(convert_expr(I::translate_expr(arg, context)?));
-                }
-                MediumExpression::FunctionCall { func: I::translate_func_ref(function, context)?, args }
-            }
+            HighExpression::FunctionCall {
+                function,
+                target,
+                arguments,
+            } => translate_function::<I>(
+                function,
+                target.as_ref(),
+                arguments.iter().collect(),
+                context,
+            )?,
             // For create-struct, translate the type and each field.
-            HighExpression::CreateStruct { target_struct, fields } =>
-                MediumExpression::CreateStruct {
-                    struct_type: I::translate_type_ref(target_struct, context)?,
-                    fields: fields.iter()
-                        .map(|(name, expression)| Ok((*name, convert_expr(I::translate_expr(expression, context)?))))
-                        .collect::<Result<_, _>>()?,
+            HighExpression::CreateStruct {
+                target_struct,
+                fields,
+            } => MediumExpression::CreateStruct {
+                struct_type: I::translate_type_ref(target_struct, context)?,
+                fields: fields
+                    .iter()
+                    .map(|(name, expression)| {
+                        Ok((
+                            *name,
+                            get_operand(I::translate_expr(expression, context)?, context),
+                        ))
+                    })
+                    .collect::<Result<_, _>>()?,
             },
-            HighExpression::UnaryOperation { .. } => todo!(),
-            HighExpression::BinaryOperation { .. } => todo!()
+            HighExpression::UnaryOperation { pre, symbol, value } => translate_function::<I>(
+                // TODO type check to get the right one
+                &if *pre {
+                    &context.source.pre_unary_operations
+                } else {
+                    &context.source.post_unary_operations
+                }
+                .get(symbol).ok_or_else(|| ParseError::ParseError(format!("Unknown operation {}", context.source.syntax.symbols.resolve(symbol))))?[0],
+                // Doesn't matter if it's the target or start of arguments
+                None,
+                vec![value],
+                context,
+            )?,
+            HighExpression::BinaryOperation {
+                symbol,
+                first,
+                second,
+            } => translate_function::<I>(
+                &context.source.binary_operations.get(symbol)
+                    .ok_or_else(|| ParseError::ParseError(format!("Unknown operation {}", context.source.syntax.symbols.resolve(symbol))))?[0],
+                // Doesn't matter if it's the target or start of arguments
+                None,
+                vec![first, second],
+                context,
+            )?
         })
     }
 }

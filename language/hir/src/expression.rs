@@ -1,14 +1,14 @@
-use std::fmt;
-use syntax::structure::visitor::Translate;
-use syntax::util::translation::{translate_fields, translate_vec};
-use syntax::util::translation::Translatable;
-use syntax::util::ParseError;
+use crate::HirContext;
 use lasso::Spur;
-use std::fmt::{Debug, Formatter};
 use serde::{Deserialize, Serialize};
-use syntax::structure::FileOwner;
+use std::fmt;
+use std::fmt::{Debug, Formatter};
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Expression;
+use syntax::structure::visitor::Translate;
+use syntax::util::translation::Translatable;
+use syntax::util::translation::{translate_fields, translate_vec};
+use syntax::util::ParseError;
 use syntax::SyntaxLevel;
 
 #[derive(Serialize, Deserialize)]
@@ -17,6 +17,7 @@ pub enum HighExpression<T: SyntaxLevel> {
     Literal(Literal),
     CodeBlock {
         body: Vec<T::Statement>,
+        // A returning value at the end
         value: Box<T::Expression>,
     },
     Variable(Spur),
@@ -27,7 +28,8 @@ pub enum HighExpression<T: SyntaxLevel> {
         value: Box<T::Expression>,
     },
     UnaryOperation {
-        symbol: char,
+        pre: bool,
+        symbol: Spur,
         value: Box<T::Expression>,
     },
     // Multiple inputs one output
@@ -37,7 +39,7 @@ pub enum HighExpression<T: SyntaxLevel> {
         arguments: Vec<T::Expression>,
     },
     BinaryOperation {
-        symbol: char,
+        symbol: Spur,
         first: Box<T::Expression>,
         second: Box<T::Expression>,
     },
@@ -88,8 +90,9 @@ impl<T: SyntaxLevel> Debug for HighExpression<T> {
                     .field("fields", fields)
                     .finish()
             }
-            HighExpression::UnaryOperation { symbol, value } => {
+            HighExpression::UnaryOperation { pre, symbol, value } => {
                 f.debug_struct("HighExpression::UnaryOperation")
+                    .field("pre", pre)
                     .field("symbol", symbol)
                     .field("value", value)
                     .finish()
@@ -105,16 +108,16 @@ impl<T: SyntaxLevel> Debug for HighExpression<T> {
     }
 }
 
-// Handle expression translation
-impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
-Translate<HighExpression<O>, C, I, O> for HighExpression<I>
+/// Handle expression translation
+impl<'a, I: SyntaxLevel + Translatable<HirContext, I, O>, O: SyntaxLevel>
+Translate<HighExpression<O>, HirContext, I, O> for HighExpression<I>
 {
-    fn translate(&self, context: &mut C) -> Result<HighExpression<O>, ParseError> {
+    fn translate(&self, context: &mut HirContext) -> Result<HighExpression<O>, ParseError> {
         Ok(match self {
             HighExpression::Literal(literal) => HighExpression::Literal(*literal),
             HighExpression::CodeBlock { body, value } => HighExpression::CodeBlock {
                 body: translate_vec(&body, context, I::translate_stmt)?,
-                value: Box::new(I::translate_expr(&value, context)?),
+                value: Box::new(I::translate_expr(value, context)?)
             },
             HighExpression::Variable(variable) => HighExpression::Variable(*variable),
             HighExpression::Assignment {
@@ -145,7 +148,8 @@ Translate<HighExpression<O>, C, I, O> for HighExpression<I>
                 target_struct: I::translate_type_ref(target_struct, context)?,
                 fields: translate_fields(fields, context, I::translate_expr)?,
             },
-            HighExpression::UnaryOperation { symbol, value } => HighExpression::UnaryOperation {
+            HighExpression::UnaryOperation { pre, symbol, value } => HighExpression::UnaryOperation {
+                pre: *pre,
                 symbol: *symbol,
                 value: Box::new(I::translate_expr(value, context)?),
             },

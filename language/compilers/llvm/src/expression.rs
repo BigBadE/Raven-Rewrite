@@ -144,6 +144,5 @@ pub fn compile_literal<'a, 'b, 'ctx>(
             .i8_type()
             .const_int(*char as u64, false)
             .into(),
-        Literal::Void => panic!("Tried to compile a void literal!"),
     })
 }

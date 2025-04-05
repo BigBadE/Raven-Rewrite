@@ -23,7 +23,8 @@ pub fn translate_vec<C, I, O, F: Fn(&I, &mut C) -> Result<O, ParseError>>(
         .collect::<Result<_, _>>()
 }
 
-// This trait is used to say a Syntax can be translated from one type to another
+/// This trait is used to say a Syntax can be translated from one type to another
+/// MUST be manually implemented to prevent recursive loops
 pub trait Translatable<C, I: SyntaxLevel, O: SyntaxLevel> {
     fn translate_stmt(node: &I::Statement, context: &mut C) -> Result<O::Statement, ParseError>;
 

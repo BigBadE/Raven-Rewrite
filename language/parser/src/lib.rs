@@ -1,9 +1,11 @@
-use std::io::read_to_string;
 use crate::errors::error_message;
 use crate::file::parse_top_element;
 use crate::util::ignored;
 use anyhow::Error;
 use async_recursion::async_recursion;
+use hir::function::HighFunction;
+use hir::types::HighType;
+use hir::{create_syntax, RawSource, RawSyntaxLevel};
 use lasso::{Spur, ThreadedRodeo};
 use nom::combinator::eof;
 use nom_locate::LocatedSpan;
@@ -13,14 +15,11 @@ use nom_supreme::multi::collect_separated_terminated;
 use nom_supreme::ParserExt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use syntax::structure::Modifier;
 use syntax::util::path::{get_path, FilePath};
 use syntax::util::ParseError;
 use syntax::{FunctionRef, TypeRef};
 use tokio::fs;
-use hir::function::HighFunction;
-use hir::{create_syntax, RawSource, RawSyntaxLevel};
-use hir::types::{HighType, TypeData};
-use syntax::structure::Modifier;
 
 mod code;
 mod errors;
@@ -75,6 +74,7 @@ impl Extend<TopLevelItem> for File {
     }
 }
 
+/// Parses a source directory into a `RawSource`.
 pub async fn parse_source(dir: PathBuf) -> Result<RawSource, ParseError> {
     let mut source = RawSource {
         syntax: create_syntax(),
@@ -91,6 +91,7 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, ParseError> {
         .await
         .map_err(|err| ParseError::InternalError(err))?
     {
+        // Parse a single file
         let file_path = get_path(&source.syntax.symbols, &path, &dir);
         let file = match parse_file(&path, file_path.clone(), source.syntax.symbols.clone()).await {
             Ok(file) => file,
@@ -100,6 +101,7 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, ParseError> {
             }
         };
 
+        // Add the functions to the output
         for function in file.functions {
             let mut path = file_path.clone();
             path.push(function.name);
@@ -142,7 +144,7 @@ pub async fn parse_file(
         .map_err(|err| ParseError::InternalError(err.into()))?;
 
     let file = final_parser(
-        collect_separated_terminated(parse_top_element, ignored, eof).context("Top"),
+        collect_separated_terminated(parse_top_element, ignored, eof).context("Ignored"),
     )(Span::new_extra(&parsing, ParseContext { interner, file }))
     .map_err(|err| ParseError::ParseError(error_message(err)))?;
 

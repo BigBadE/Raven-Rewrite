@@ -36,6 +36,7 @@ Translate<Option<MediumType<MediumSyntaxLevel>>, MirContext<'a>, I, MediumSyntax
                 fields: fields.iter().map(|(_, types)| I::translate_type_ref(types, context))
                     .collect::<Result<_, _>>()?,
             },
+            // Raw -> High should get rid of traits
             TypeData::Trait { .. } => unreachable!()
         }))
     }
