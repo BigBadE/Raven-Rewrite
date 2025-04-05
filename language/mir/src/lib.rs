@@ -104,10 +104,7 @@ pub struct MirContext<'a> {
 impl<'a> MirContext<'a> {
     fn new(source: &'a HirSource) -> Self {
         Self {
-            code_blocks: vec!(CodeBlock {
-                statements: vec!(),
-                terminator: MediumTerminator::Unreachable
-            }),
+            code_blocks: vec!(),
             source,
             file: None,
             current_block: 0,
@@ -116,6 +113,18 @@ impl<'a> MirContext<'a> {
             parent_loop: None,
             parent_end: None,
         }
+    }
+
+    fn reset(&mut self) {
+        self.code_blocks = vec!(CodeBlock {
+            statements: vec!(),
+            terminator: MediumTerminator::Unreachable
+        });
+        self.current_block = 0;
+        self.var_types = vec!();
+        self.local_vars = HashMap::default();
+        self.parent_loop = None;
+        self.parent_end = None;
     }
 
     pub fn translate(&self, place: &Place) -> TypeRef {

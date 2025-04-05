@@ -9,8 +9,10 @@ struct Testing {
     other: Other
 }
 
-trait Add {
-    pub operation fn +(first: i64, second: i64) -> i64 {
+pub operation fn +(first: i64, second: i64) -> i64 {
 
-    }
+}
+
+trait Add {
+
 }

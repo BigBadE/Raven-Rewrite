@@ -35,6 +35,7 @@ impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
 {
     fn translate(&self, context: &mut MirContext<'a>) -> Result<MediumFunction<MediumSyntaxLevel>, ParseError> {
         context.set_file(self.file.clone());
+        context.reset();
         for statement in &self.body.statements {
             I::translate_stmt(statement, context)?;
         }
