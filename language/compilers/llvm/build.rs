@@ -15,6 +15,8 @@ use std::{env, fs, io};
 use reqwest::blocking::Client;
 use zip::ZipArchive;
 
+static CFLAGS: &'static str = "CFLAGS";
+
 /// To automatically keep up to date with LLVM, this will download and link a binary from a seperate repo.
 /// Linking code is taken from llvm-sys.
 fn main() {
@@ -472,7 +474,7 @@ fn build(llvm_path: PathBuf) {
     let llvm_config_path = locate_llvm_config(&llvm_path);
 
     unsafe {
-        env::set_var("CFLAGS", get_llvm_cflags(&llvm_config_path));
+        env::set_var(CFLAGS, get_llvm_cflags(&llvm_config_path));
     }
 
     cc::Build::new()
