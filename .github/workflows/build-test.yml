@@ -15,6 +15,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  ZSTD_LIB_DIR: /opt/homebrew/Cellar/zstd/1.5.6/lib
 
 jobs:
   build:
