@@ -3,6 +3,9 @@ use crate::file::parse_top_element;
 use crate::util::ignored;
 use anyhow::Error;
 use async_recursion::async_recursion;
+use hir::function::HighFunction;
+use hir::types::HighType;
+use hir::{create_syntax, RawSource, RawSyntaxLevel};
 use lasso::{Spur, ThreadedRodeo};
 use nom::combinator::eof;
 use nom_locate::LocatedSpan;
@@ -12,9 +15,7 @@ use nom_supreme::multi::collect_separated_terminated;
 use nom_supreme::ParserExt;
 use std::path::PathBuf;
 use std::sync::Arc;
-use syntax::hir::function::HighFunction;
-use syntax::hir::types::HighType;
-use syntax::hir::{RawSource, RawSyntaxLevel};
+use syntax::structure::Modifier;
 use syntax::util::path::{get_path, FilePath};
 use syntax::util::ParseError;
 use syntax::{FunctionRef, TypeRef};
@@ -73,14 +74,24 @@ impl Extend<TopLevelItem> for File {
     }
 }
 
+/// Parses a source directory into a `RawSource`.
 pub async fn parse_source(dir: PathBuf) -> Result<RawSource, ParseError> {
-    let mut source = RawSource::default();
+    let mut source = RawSource {
+        syntax: create_syntax(),
+        imports: Default::default(),
+        types: Default::default(),
+        functions: Default::default(),
+        pre_unary_operations: Default::default(),
+        post_unary_operations: Default::default(),
+        binary_operations: Default::default(),
+    };
     let mut errors = Vec::new();
 
     for path in read_recursive(&dir)
         .await
         .map_err(|err| ParseError::InternalError(err))?
     {
+        // Parse a single file
         let file_path = get_path(&source.syntax.symbols, &path, &dir);
         let file = match parse_file(&path, file_path.clone(), source.syntax.symbols.clone()).await {
             Ok(file) => file,
@@ -90,10 +101,19 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, ParseError> {
             }
         };
 
+        // Add the functions to the output
         for function in file.functions {
             let mut path = file_path.clone();
             path.push(function.name);
-            source.functions.insert(path, FunctionRef(source.syntax.functions.len()));
+            let reference = FunctionRef(source.syntax.functions.len());
+            if function.modifiers.contains(&Modifier::OPERATION) {
+                match function.parameters.len() {
+                    1 => source.pre_unary_operations.entry(function.name).or_default().push(reference),
+                    2 => source.binary_operations.entry(function.name).or_default().push(reference),
+                    _ => return Err(ParseError::ParseError("Expected operation to only have 1 or 2 args".to_string()))
+                }
+            }
+            source.functions.insert(path, reference);
             source.syntax.functions.push(function);
         }
 
@@ -124,7 +144,7 @@ pub async fn parse_file(
         .map_err(|err| ParseError::InternalError(err.into()))?;
 
     let file = final_parser(
-        collect_separated_terminated(parse_top_element, ignored, eof).context("Top"),
+        collect_separated_terminated(parse_top_element, ignored, eof).context("Ignored"),
     )(Span::new_extra(&parsing, ParseContext { interner, file }))
     .map_err(|err| ParseError::ParseError(error_message(err)))?;
 

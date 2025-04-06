@@ -12,7 +12,7 @@ use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPoin
 use inkwell::module::Module;
 use inkwell::OptimizationLevel;
 use std::collections::HashMap;
-use syntax::mir::MediumSyntaxLevel;
+use mir::MediumSyntaxLevel;
 use syntax::{FunctionRef, Syntax};
 
 pub struct LowCompiler {

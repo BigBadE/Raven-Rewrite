@@ -3,7 +3,10 @@ name = "syntax"
 edition = "2024"
 
 [dependencies]
-lazy_static.workspace = true
 lasso.workspace = true
+
+lazy_static.workspace = true
+serde.workspace = true
+
 thiserror.workspace = true
 anyhow.workspace = true

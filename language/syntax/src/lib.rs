@@ -1,27 +1,23 @@
-use crate::hir::RawSyntaxLevel;
-use crate::hir::expression::Expression;
-use crate::hir::function::{Function, FunctionReference, Terminator};
-use crate::hir::statement::Statement;
-use crate::hir::types::{HighType, Type, TypeReference};
 use crate::structure::visitor::Translate;
 use crate::util::ParseError;
 use lasso::ThreadedRodeo;
 use std::fmt::Debug;
 use std::sync::Arc;
+use serde::{Deserialize, Serialize};
+use crate::structure::traits::{Expression, Function, FunctionReference, Statement, Terminator, Type, TypeReference};
 
-pub mod code;
-pub mod hir;
-pub mod mir;
 pub mod structure;
 pub mod util;
 
-#[derive(Debug, Copy, Clone, Hash, Ord, PartialOrd, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, Ord, PartialOrd, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeRef(pub usize);
+impl TypeReference for TypeRef {}
 
-#[derive(Debug, Copy, Clone, Hash, Ord, PartialOrd, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Hash, Ord, PartialOrd, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionRef(pub usize);
+impl FunctionReference for FunctionRef {}
 
-pub trait SyntaxLevel: Debug {
+pub trait SyntaxLevel: Serialize + for<'a> Deserialize<'a> + Debug {
     type TypeReference: TypeReference;
     type Type: Type;
     type FunctionReference: FunctionReference;
@@ -31,32 +27,11 @@ pub trait SyntaxLevel: Debug {
     type Terminator: Terminator;
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Syntax<T: SyntaxLevel> {
     pub symbols: Arc<ThreadedRodeo>,
     pub functions: Vec<T::Function>,
     pub types: Vec<T::Type>,
-}
-
-impl Default for Syntax<RawSyntaxLevel> {
-    fn default() -> Self {
-        let symbols = Arc::new(ThreadedRodeo::new());
-        Self {
-            functions: Vec::default(),
-            types: vec![
-                HighType::internal(symbols.get_or_intern("void")),
-                HighType::internal(symbols.get_or_intern("str")),
-                HighType::internal(symbols.get_or_intern("f64")),
-                HighType::internal(symbols.get_or_intern("f32")),
-                HighType::internal(symbols.get_or_intern("i64")),
-                HighType::internal(symbols.get_or_intern("i32")),
-                HighType::internal(symbols.get_or_intern("u64")),
-                HighType::internal(symbols.get_or_intern("u32")),
-                HighType::internal(symbols.get_or_intern("bool")),
-                HighType::internal(symbols.get_or_intern("char")),
-            ],
-            symbols,
-        }
-    }
 }
 
 impl<C, I: SyntaxLevel, O: SyntaxLevel> Translate<TypeRef, C, I, O> for TypeRef {

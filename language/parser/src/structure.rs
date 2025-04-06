@@ -1,30 +1,77 @@
-use crate::util::{identifier, ignored, modifiers, parameter};
+use crate::function::function;
+use crate::util::{identifier, ignored, modifiers, parameter, type_ref};
 use crate::{IResult, Span};
+use hir::types::{HighType, TypeData};
+use hir::{RawSyntaxLevel, RawTypeRef};
+use lasso::Spur;
+use nom::Parser;
+use nom::branch::alt;
 use nom::bytes::complete::tag;
-use nom::combinator::map;
-use nom::multi::many0;
+use nom::combinator::{map, opt};
+use nom::multi::{many0, separated_list0, separated_list1};
 use nom::sequence::{delimited, preceded, tuple};
 use nom_supreme::ParserExt;
-use syntax::hir::types::{HighType, TypeData};
-use syntax::hir::RawSyntaxLevel;
 
 pub fn parse_structure(input: Span) -> IResult<Span, HighType<RawSyntaxLevel>> {
     map(
         tuple((
             modifiers.context("Modifiers"),
-            preceded(delimited(ignored, tag("struct"), ignored), identifier).context("Keyword"),
-            delimited(
-                delimited(ignored, tag("{"), ignored),
-                many0(delimited(ignored, parameter, ignored)),
-                delimited(ignored, tag("}"), ignored).context("Struct"),
-            ),
+            alt((
+                tuple((
+                    preceded(delimited(ignored, tag("struct"), ignored), identifier),
+                    opt(generics),
+                    map(
+                        delimited(
+                            delimited(ignored, tag("{"), ignored).context("Opening"),
+                            separated_list0(tag(","), delimited(ignored, parameter, ignored)),
+                            delimited(ignored, tag("}"), ignored).context("Closing"),
+                        ),
+                        |fields| TypeData::Struct { fields },
+                    )
+                    .context("Struct"),
+                )),
+                tuple((
+                    preceded(delimited(ignored, tag("trait"), ignored), identifier),
+                    opt(generics),
+                    map(
+                        delimited(
+                            delimited(ignored, tag("{"), ignored).context("Opening"),
+                            many0(delimited(ignored, function, ignored)),
+                            delimited(ignored, tag("}"), ignored).context("Closing"),
+                        ),
+                        |functions| TypeData::Trait { functions },
+                    )
+                    .context("Trait"),
+                )),
+            )),
         ))
-        .context("Structure"),
-        |(modifiers, name, fields)| HighType {
+        .context("Type"),
+        |(modifiers, (name, generics, data))| HighType {
             name,
             file: input.extra.file.clone(),
+            generics: generics.unwrap_or_default(),
             modifiers,
-            data: TypeData::Struct { fields },
+            data,
         },
     )(input.clone())
+}
+
+/// Parses generics
+pub fn generics(input: Span) -> IResult<Span, Vec<(Spur, Vec<RawTypeRef>)>> {
+    delimited(
+        delimited(ignored, tag("<"), ignored),
+        separated_list1(
+            delimited(ignored, tag(","), ignored),
+            tuple((
+                identifier,
+                map(
+                    opt(preceded(tag(":"), separated_list0(tag("+"), type_ref))),
+                    |generics| generics.unwrap_or_default(),
+                ),
+            )),
+        ),
+        delimited(ignored, tag(">"), ignored),
+    )
+    .context("Generics")
+    .parse(input)
 }

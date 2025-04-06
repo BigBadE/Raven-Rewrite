@@ -1,21 +1,23 @@
-use crate::code::literal::Literal;
-use crate::structure::visitor::{FileOwner, Translate};
-use crate::util::translation::translate_fields;
-use crate::util::translation::Translatable;
-use crate::util::ParseError;
-use crate::SyntaxLevel;
+use crate::HirContext;
 use lasso::Spur;
-use std::fmt::Debug;
+use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::fmt::{Debug, Formatter};
+use syntax::structure::literal::Literal;
+use syntax::structure::traits::Expression;
+use syntax::structure::visitor::Translate;
+use syntax::util::translation::Translatable;
+use syntax::util::translation::{translate_fields, translate_vec};
+use syntax::util::ParseError;
+use syntax::SyntaxLevel;
 
-pub trait Expression: Debug {
-
-}
-
+#[derive(Serialize, Deserialize)]
 pub enum HighExpression<T: SyntaxLevel> {
     // No input one output
     Literal(Literal),
     CodeBlock {
         body: Vec<T::Statement>,
+        // A returning value at the end
         value: Box<T::Expression>,
     },
     Variable(Spur),
@@ -25,11 +27,21 @@ pub enum HighExpression<T: SyntaxLevel> {
         variable: Spur,
         value: Box<T::Expression>,
     },
+    UnaryOperation {
+        pre: bool,
+        symbol: Spur,
+        value: Box<T::Expression>,
+    },
     // Multiple inputs one output
     FunctionCall {
         function: T::FunctionReference,
         target: Option<Box<T::Expression>>,
         arguments: Vec<T::Expression>,
+    },
+    BinaryOperation {
+        symbol: Spur,
+        first: Box<T::Expression>,
+        second: Box<T::Expression>,
     },
     CreateStruct {
         target_struct: T::TypeReference,
@@ -39,8 +51,8 @@ pub enum HighExpression<T: SyntaxLevel> {
 
 impl<T: SyntaxLevel> Expression for HighExpression<T> {}
 
-impl<T: SyntaxLevel> std::fmt::Debug for HighExpression<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<T: SyntaxLevel> Debug for HighExpression<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             HighExpression::Literal(lit) => {
                 f.debug_tuple("HighExpression::Literal")
@@ -78,23 +90,34 @@ impl<T: SyntaxLevel> std::fmt::Debug for HighExpression<T> {
                     .field("fields", fields)
                     .finish()
             }
+            HighExpression::UnaryOperation { pre, symbol, value } => {
+                f.debug_struct("HighExpression::UnaryOperation")
+                    .field("pre", pre)
+                    .field("symbol", symbol)
+                    .field("value", value)
+                    .finish()
+            }
+            HighExpression::BinaryOperation { symbol, first, second } => {
+                f.debug_struct("HighExpression::BinaryOperation")
+                    .field("symbol", symbol)
+                    .field("first", first)
+                    .field("second", second)
+                    .finish()
+            }
         }
     }
 }
 
-// Handle expression translation
-impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
-    Translate<HighExpression<O>, C, I, O> for HighExpression<I>
+/// Handle expression translation
+impl<'a, I: SyntaxLevel + Translatable<HirContext, I, O>, O: SyntaxLevel>
+Translate<HighExpression<O>, HirContext, I, O> for HighExpression<I>
 {
-    fn translate(&self, context: &mut C) -> Result<HighExpression<O>, ParseError> {
+    fn translate(&self, context: &mut HirContext) -> Result<HighExpression<O>, ParseError> {
         Ok(match self {
             HighExpression::Literal(literal) => HighExpression::Literal(*literal),
             HighExpression::CodeBlock { body, value } => HighExpression::CodeBlock {
-                body: body
-                    .iter()
-                    .map(|statement| I::translate_stmt(statement, context))
-                    .collect::<Result<_, _>>()?,
-                value: Box::new(I::translate_expr(&value, context)?),
+                body: translate_vec(&body, context, I::translate_stmt)?,
+                value: Box::new(I::translate_expr(value, context)?)
             },
             HighExpression::Variable(variable) => HighExpression::Variable(*variable),
             HighExpression::Assignment {
@@ -116,10 +139,7 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
                     .as_ref()
                     .map(|inner| Ok::<_, ParseError>(Box::new(I::translate_expr(inner, context)?)))
                     .transpose()?,
-                arguments: arguments
-                    .iter()
-                    .map(|arg| Ok::<_, ParseError>(I::translate_expr(arg, context)?))
-                    .collect::<Result<_, _>>()?,
+                arguments: translate_vec(&arguments, context, I::translate_expr)?,
             },
             HighExpression::CreateStruct {
                 target_struct,
@@ -128,6 +148,16 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
                 target_struct: I::translate_type_ref(target_struct, context)?,
                 fields: translate_fields(fields, context, I::translate_expr)?,
             },
+            HighExpression::UnaryOperation { pre, symbol, value } => HighExpression::UnaryOperation {
+                pre: *pre,
+                symbol: *symbol,
+                value: Box::new(I::translate_expr(value, context)?),
+            },
+            HighExpression::BinaryOperation { symbol, first, second } => HighExpression::BinaryOperation {
+                symbol: *symbol,
+                first: Box::new(I::translate_expr(first, context)?),
+                second: Box::new(I::translate_expr(second, context)?),
+            }
         })
     }
 }

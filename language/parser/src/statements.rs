@@ -1,4 +1,4 @@
-use crate::code::parse_code;
+use crate::code::code_block_returnless;
 use crate::expressions::expression;
 use crate::util::ignored;
 use crate::{IResult, Span};
@@ -9,9 +9,9 @@ use nom::combinator::{map, opt};
 use nom::multi::many0;
 use nom::sequence::{delimited, preceded, tuple};
 use nom_supreme::ParserExt;
-use syntax::hir::RawSyntaxLevel;
-use syntax::hir::function::HighTerminator;
-use syntax::hir::statement::{Conditional, HighStatement};
+use hir::function::HighTerminator;
+use hir::RawSyntaxLevel;
+use hir::statement::{Conditional, HighStatement};
 
 pub fn statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     delimited(
@@ -79,13 +79,13 @@ pub fn while_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLeve
 
 pub fn loop_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     tag("loop")
-        .precedes(parse_code.map(|body| HighStatement::Loop { body }))
+        .precedes(code_block_returnless.map(|body| HighStatement::Loop { body }))
         .parse(input)
 }
 
 /// Parses a conditional block: a condition and its branch.
 fn parse_conditional(input: Span) -> IResult<Span, Conditional<RawSyntaxLevel>> {
-    tuple((delimited(ignored, expression, ignored), parse_code))
+    tuple((delimited(ignored, expression, ignored), code_block_returnless))
         .map(|(condition, branch)| Conditional { condition, branch })
         .parse(input)
 }
@@ -100,5 +100,5 @@ fn parse_else_if(input: Span) -> IResult<Span, Conditional<RawSyntaxLevel>> {
 
 /// Parses an "else" clause.
 fn parse_else(input: Span) -> IResult<Span, Vec<HighStatement<RawSyntaxLevel>>> {
-    tag("else").precedes(parse_code).parse(input)
+    tag("else").precedes(code_block_returnless).parse(input)
 }

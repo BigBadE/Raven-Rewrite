@@ -5,28 +5,36 @@ use std::error::Error;
 pub fn error_message<E: Error + ?Sized>(
     error: GenericErrorTree<Span, &str, &str, Box<E>>,
 ) -> String {
-    error_message_recursive(error, &vec![])
+    error_message_recursive(error, &vec![]).1
 }
 
 pub fn error_message_recursive<E: Error + ?Sized>(
     error: GenericErrorTree<Span, &str, &str, Box<E>>,
     context: &Vec<(Span, StackContext<&str>)>,
-) -> String {
+) -> (usize, String) {
     match error {
-        GenericErrorTree::Base { location, kind } => display_error(location, context, kind),
+        GenericErrorTree::Base { location, kind } => (context.len(), display_error(location, context, kind)),
         GenericErrorTree::Stack { base, mut contexts } => {
             let mut context = context.clone();
             context.append(&mut contexts);
             error_message_recursive(*base, &context)
         }
-        GenericErrorTree::Alt(errors) => format!(
-            "Possible:\n{}",
-            errors
+        GenericErrorTree::Alt(errors) => {
+            let errors = errors
                 .into_iter()
                 .map(|err| error_message_recursive(err, context))
-                .collect::<Vec<_>>()
-                .join("\n")
-        ),
+                .collect::<Vec<_>>();
+            let max = errors.iter().map(|(context, _)| *context).max().unwrap_or(0);
+            (max, format!(
+                "{}",
+                errors
+                    .into_iter()
+                    .filter(|(len, _)| *len == max)
+                    .map(|(_, err)| err)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ))
+        }
     }
 }
 
@@ -38,8 +46,8 @@ fn display_error<E: Error + ?Sized>(
     let context = context
         .iter()
         .map(|(_, context)| match context {
-            StackContext::Context(context) => *context,
-            StackContext::Kind(_) => todo!(),
+            StackContext::Context(context) => context.to_string(),
+            StackContext::Kind(kind) => format!("{kind:?}"),
         })
         .collect::<Vec<_>>()
         .join(", ");

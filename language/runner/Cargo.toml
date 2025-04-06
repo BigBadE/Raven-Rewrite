@@ -4,4 +4,6 @@ edition = "2024"
 
 [dependencies]
 parser.workspace = true
+hir.workspace = true
+mir.workspace = true
 syntax.workspace = true

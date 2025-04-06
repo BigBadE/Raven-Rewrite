@@ -1,24 +1,25 @@
 use crate::code::function_body;
-use crate::util::{identifier, ignored, modifiers, parameter};
+use crate::util::{identifier_symbolic, ignored, modifiers, parameter, type_ref};
 use crate::{IResult, Span};
 use lasso::Spur;
 use nom::bytes::complete::tag;
 use nom::combinator::{map, opt};
 use nom::multi::separated_list0;
+use nom::Parser;
 use nom::sequence::{delimited, preceded, tuple};
 use nom_supreme::ParserExt;
-use syntax::hir::{RawSyntaxLevel, RawTypeRef};
-use syntax::hir::function::HighFunction;
+use hir::function::HighFunction;
+use hir::{RawSyntaxLevel, RawTypeRef};
 
-// Parser for function declarations
-pub fn parse_function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {
+/// Parser for function declarations
+pub fn function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {
     map(
         tuple((
-            modifiers.context("Modifiers"),
-            preceded(delimited(ignored, tag("fn"), ignored), identifier).context("Keyword"),
-            parameter_list.context("Params"),
-            return_type.context("Return"),
-            function_body.context("Code"),
+            modifiers,
+            preceded(delimited(ignored, tag("fn"), ignored), identifier_symbolic).context("Keyword"),
+            parameter_list,
+            return_type,
+            function_body,
         ))
         .context("Function"),
         |(modifiers, name, parameters, return_type, body)| HighFunction {
@@ -32,19 +33,19 @@ pub fn parse_function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>
     )(input.clone())
 }
 
-// Parser for parameter lists
+/// Parser for parameter lists
 fn parameter_list(input: Span) -> IResult<Span, Vec<(Spur, RawTypeRef)>> {
     delimited(
         delimited(ignored, tag("("), ignored),
-        separated_list0(delimited(ignored, tag(","), ignored), parameter).context("Parameter"),
+        separated_list0(delimited(ignored, tag(","), ignored), parameter),
         delimited(ignored, tag(")"), ignored),
-    )(input)
+    ).context("Parameters").parse(input)
 }
 
-// Parser for return type (optional)
+/// Parser for return type (optional)
 fn return_type(input: Span) -> IResult<Span, Option<RawTypeRef>> {
     opt(preceded(
         delimited(ignored, tag("->"), ignored),
-        map(identifier, |spur| RawTypeRef(spur)),
-    ))(input)
+        type_ref,
+    )).context("ReturnType").parse(input)
 }

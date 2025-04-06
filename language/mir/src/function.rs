@@ -1,16 +1,19 @@
-use std::collections::HashMap;
-use crate::hir::function::{CodeBlock, Function, HighFunction};
-use crate::mir::{LocalVar, MediumSyntaxLevel, MediumTerminator, MirContext};
-use crate::structure::visitor::{FileOwner, Translate};
-use crate::util::translation::Translatable;
-use crate::util::ParseError;
-use crate::SyntaxLevel;
-use std::mem;
+use crate::{LocalVar, MediumSyntaxLevel, MediumTerminator, MirFunctionContext};
+use hir::function::{CodeBlock, HighFunction};
 use lasso::Spur;
-use crate::structure::Modifier;
-use crate::util::path::FilePath;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::mem;
+use syntax::structure::traits::Function;
+use syntax::structure::visitor::Translate;
+use syntax::structure::Modifier;
+use syntax::util::path::FilePath;
+use syntax::util::translation::Translatable;
+use syntax::util::ParseError;
+use syntax::SyntaxLevel;
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub struct MediumFunction<T: SyntaxLevel> {
     pub name: Spur,
     pub file: FilePath,
@@ -26,11 +29,12 @@ impl<T: SyntaxLevel> Function for MediumFunction<T> {
         self.file.as_ref()
     }
 }
-impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
-    Translate<MediumFunction<MediumSyntaxLevel>, MirContext<'a>, I, MediumSyntaxLevel> for HighFunction<I>
+
+impl<'a, 'b, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>>
+    Translate<MediumFunction<MediumSyntaxLevel>, MirFunctionContext<'a>, I, MediumSyntaxLevel> for HighFunction<I>
 {
-    fn translate(&self, context: &mut MirContext<'a>) -> Result<MediumFunction<MediumSyntaxLevel>, ParseError> {
-        context.set_file(self.file.clone());
+    fn translate(&self, context: &mut MirFunctionContext<'a>) -> Result<MediumFunction<MediumSyntaxLevel>, ParseError> {
+        context.file = Some(self.file.clone());
         for statement in &self.body.statements {
             I::translate_stmt(statement, context)?;
         }

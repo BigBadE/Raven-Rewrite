@@ -1,41 +1,43 @@
-use crate::util::path::FilePath;
-use crate::util::translation::Translatable;
-use crate::util::{collect_results, ParseError};
+use crate::structure::FileOwner;
+use crate::util::translation::{translate_vec, Translatable};
+use crate::util::ParseError;
 use crate::{Syntax, SyntaxLevel};
 
 pub trait Translate<T, C, I: SyntaxLevel, O: SyntaxLevel> {
     fn translate(&self, context: &mut C) -> Result<T, ParseError>;
 }
 
-pub trait FileOwner {
-    fn file(&self) -> &FilePath;
-
-    fn set_file(&mut self, file: FilePath);
-}
-
-impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Translate<Syntax<O>, C, I, O>
+impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Translate<Syntax<O>, C, I, O>
     for Syntax<I>
 {
     fn translate(&self, context: &mut C) -> Result<Syntax<O>, ParseError> {
-        let functions = collect_results(
-            self.functions
-                .iter()
-                .map(|function| I::translate_func(function, context)),
+        let functions = translate_vec(
+            &self.functions,
+            context,
+            I::translate_func,
         );
 
-        let types = collect_results(self.types.iter().map(|ty| I::translate_type(ty, context)));
+        let types = translate_vec(
+            &self.types,
+            context,
+            I::translate_type,
+        );
 
-        match (functions, types) {
-            (Ok(functions), Ok(types)) => Ok(Syntax {
-                symbols: self.symbols.clone(),
-                functions,
-                types,
-            }),
-            (Err(functions), Err(types)) => Err(ParseError::MultiError(
-                functions.into_iter().chain(types).collect(),
-            )),
-            (Err(functions), Ok(_)) => Err(ParseError::MultiError(functions)),
-            (Ok(_), Err(types)) => Err(ParseError::MultiError(types)),
-        }
+        let (functions, types) = merge_result(functions, types)?;
+
+        Ok(Syntax {
+            symbols: self.symbols.clone(),
+            functions,
+            types: types.into_iter().filter_map(|ty| ty).collect(),
+        })
+    }
+}
+
+pub fn merge_result<A, B>(first: Result<A, ParseError>, second: Result<B, ParseError>) -> Result<(A, B), ParseError> {
+    match (first, second) {
+        (Err(functions), Err(types)) => Err(ParseError::MultiError(
+            vec![functions, types]
+        )),
+        (first, second) => Ok((first?, second?))
     }
 }

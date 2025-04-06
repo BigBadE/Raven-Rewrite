@@ -6,9 +6,9 @@ use inkwell::builder::Builder;
 use inkwell::values::{BasicValue, PointerValue};
 use std::collections::HashMap;
 use inkwell::types::BasicTypeEnum;
-use syntax::hir::function::CodeBlock;
-use syntax::mir::statement::MediumStatement;
-use syntax::mir::{LocalVar, MediumSyntaxLevel, MediumTerminator};
+use hir::function::CodeBlock;
+use mir::statement::MediumStatement;
+use mir::{LocalVar, MediumSyntaxLevel, MediumTerminator};
 
 pub struct FunctionGenerator<'a, 'b, 'ctx> {
     pub type_manager: &'a mut TypeManager<'b, 'ctx>,

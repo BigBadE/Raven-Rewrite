@@ -1,16 +1,17 @@
-use crate::code::literal::Literal;
-use crate::hir::statement::{HighStatement, Statement};
-use crate::mir::{
-    LocalVar, MediumExpression, MediumSyntaxLevel, MediumTerminator, MirContext, Place,
-};
-use crate::structure::visitor::Translate;
-use crate::util::ParseError;
-use crate::util::translation::Translatable;
-use crate::{SyntaxLevel, TypeRef};
+use hir::statement::HighStatement;
+use crate::{LocalVar, MediumExpression, MediumSyntaxLevel, MediumTerminator, MirFunctionContext, Place};
+use syntax::structure::visitor::Translate;
+use syntax::util::ParseError;
+use syntax::util::translation::Translatable;
+use syntax::{SyntaxLevel, TypeRef};
 use std::fmt::Debug;
+use serde::{Deserialize, Serialize};
+use syntax::structure::literal::Literal;
+use syntax::structure::traits::Statement;
 
 /// The MIR is made up of a series of nodes, each terminated with a jump expression.
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub enum MediumStatement<T: SyntaxLevel> {
     Assign {
         place: Place,
@@ -24,27 +25,34 @@ pub enum MediumStatement<T: SyntaxLevel> {
 impl<T: SyntaxLevel> Statement for MediumStatement<T> {}
 
 // Handle statement translation
-impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
-    Translate<MediumStatement<MediumSyntaxLevel>, MirContext<'a>, I, MediumSyntaxLevel>
+impl<'a, 'b, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>>
+    Translate<MediumStatement<MediumSyntaxLevel>, MirFunctionContext<'a>, I, MediumSyntaxLevel>
     for HighStatement<I>
 {
     fn translate(
         &self,
-        context: &mut MirContext<'a>,
+        context: &mut MirFunctionContext<'a>,
     ) -> Result<MediumStatement<MediumSyntaxLevel>, ParseError> {
         match self {
             HighStatement::Expression(expression) => {
                 let value = I::translate_expr(expression, context)?;
-                let local = context.create_temp(value.get_type(&context));
-                context
-                    .push_statement(MediumStatement::StorageLive(local, value.get_type(context)));
-                context.push_statement(MediumStatement::Assign {
-                    place: Place {
-                        local,
-                        projection: vec![],
-                    },
-                    value,
-                });
+                if let Some(types) = value.get_type(context) {
+                    let local = context.create_temp(types);
+                    context
+                        .push_statement(MediumStatement::StorageLive(local, types));
+                    context.push_statement(MediumStatement::Assign {
+                        place: Place {
+                            local,
+                            projection: vec![],
+                        },
+                        value,
+                    });
+                }
+            }
+            HighStatement::CodeBlock(expressions) => {
+                for expression in expressions {
+                    I::translate_stmt(expression, context)?;
+                }
             }
             HighStatement::If {
                 conditions,
@@ -85,7 +93,7 @@ impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
                 }
                 context.switch_to_block(end);
             }
-            HighStatement::For { condition } => {
+            HighStatement::For { condition: _condition } => {
                 todo!()
             }
             HighStatement::While { condition } => {

@@ -1,27 +1,29 @@
+pub mod expression;
 pub mod function;
 pub mod statement;
-pub mod expression;
 pub mod types;
 
-use std::collections::HashMap;
+use crate::expression::MediumExpression;
+use crate::function::MediumFunction;
+use crate::statement::MediumStatement;
+use crate::types::MediumType;
+use hir::expression::HighExpression;
+use hir::function::{CodeBlock, HighFunction, HighTerminator};
+use hir::statement::HighStatement;
+use hir::types::HighType;
+use hir::{HighSyntaxLevel, HirSource};
 use lasso::Spur;
-use crate::hir::expression::HighExpression;
-use crate::hir::function::{CodeBlock, HighFunction, HighTerminator, Terminator};
-use crate::hir::statement::HighStatement;
-use crate::hir::types::HighType;
-use crate::hir::HighSyntaxLevel;
-use crate::mir::statement::MediumStatement;
-use crate::structure::visitor::{FileOwner, Translate};
-use crate::util::path::FilePath;
-use crate::util::translation::Translatable;
-use crate::util::ParseError;
-use crate::{FunctionRef, Syntax, SyntaxLevel, TypeRef};
-use crate::code::literal::Literal;
-use crate::mir::expression::MediumExpression;
-use crate::mir::function::MediumFunction;
-use crate::mir::types::MediumType;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use syntax::structure::literal::Literal;
+use syntax::structure::traits::Terminator;
+use syntax::structure::visitor::{merge_result, Translate};
+use syntax::util::path::FilePath;
+use syntax::util::translation::{translate_vec, Translatable};
+use syntax::util::ParseError;
+use syntax::{FunctionRef, Syntax, SyntaxLevel, TypeRef};
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct MediumSyntaxLevel;
 
 impl SyntaxLevel for MediumSyntaxLevel {
@@ -34,7 +36,8 @@ impl SyntaxLevel for MediumSyntaxLevel {
     type Terminator = MediumTerminator<MediumSyntaxLevel>;
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub enum MediumTerminator<T: SyntaxLevel> {
     Goto(CodeBlockId),
     Switch {
@@ -46,7 +49,7 @@ pub enum MediumTerminator<T: SyntaxLevel> {
     Unreachable,
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum Operand {
     Copy(Place),
     Move(Place),
@@ -54,7 +57,7 @@ pub enum Operand {
 }
 
 impl Operand {
-    pub fn get_type(&self, context: &MirContext) -> TypeRef {
+    pub fn get_type(&self, context: &MirFunctionContext) -> TypeRef {
         match self {
             Operand::Copy(place) => context.translate(place),
             Operand::Move(place) => context.translate(place),
@@ -63,13 +66,13 @@ impl Operand {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Place {
     pub local: LocalVar,
     pub projection: Vec<PlaceElem>,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 pub enum PlaceElem {
     Deref,
     Field(Spur),
@@ -81,10 +84,14 @@ pub type CodeBlockId = usize;
 
 impl<T: SyntaxLevel> Terminator for MediumTerminator<T> {}
 
+pub struct MirContext<'a> {
+    source: &'a HirSource,
+}
+
 /// The context for compiling code to MIR. This flattens the syntax tree structure for code
 /// into a control-flow graph. Since this means statements and expressions won't map one-to-one,
 /// they are instead added to this structure.
-pub struct MirContext<'a> {
+pub struct MirFunctionContext<'a> {
     file: Option<FilePath>,
     code_blocks: Vec<CodeBlock<MediumSyntaxLevel>>,
     current_block: usize,
@@ -94,29 +101,35 @@ pub struct MirContext<'a> {
     parent_loop: Option<CodeBlockId>,
     // The end of the parent control block, if any
     parent_end: Option<CodeBlockId>,
-    syntax: &'a Syntax<HighSyntaxLevel>
+    source: &'a HirSource,
 }
 
 impl<'a> MirContext<'a> {
-    fn new(syntax: &'a Syntax<HighSyntaxLevel>) -> Self {
+    fn new(source: &'a HirSource) -> Self {
+        Self { source }
+    }
+}
+
+impl<'a> MirFunctionContext<'a> {
+    fn new(context: &mut MirContext<'a>) -> Self {
         Self {
-            code_blocks: vec!(CodeBlock {
-                statements: vec!(),
-                terminator: MediumTerminator::Unreachable
-            }),
-            syntax,
             file: None,
+            code_blocks: vec![CodeBlock {
+                statements: vec![],
+                terminator: MediumTerminator::Unreachable,
+            }],
             current_block: 0,
+            var_types: vec![],
             local_vars: HashMap::default(),
-            var_types: vec!(),
             parent_loop: None,
             parent_end: None,
+            source: &context.source,
         }
     }
 
     pub fn translate(&self, place: &Place) -> TypeRef {
         let local = self.var_types[place.local];
-        for projection in &place.projection {
+        for _projection in &place.projection {
             todo!()
         }
         local
@@ -139,7 +152,9 @@ impl<'a> MirContext<'a> {
 
     // Add a statement to the current block
     pub fn push_statement(&mut self, statement: MediumStatement<MediumSyntaxLevel>) {
-        self.code_blocks[self.current_block].statements.push(statement);
+        self.code_blocks[self.current_block]
+            .statements
+            .push(statement);
     }
 
     // Set the terminator for the current block
@@ -169,82 +184,113 @@ impl<'a> MirContext<'a> {
     }
 }
 
-impl FileOwner for MirContext<'_> {
-    fn file(&self) -> &FilePath {
-        self.file.as_ref().unwrap()
-    }
+pub fn resolve_to_mir(source: HirSource) -> Result<Syntax<MediumSyntaxLevel>, ParseError> {
+    source.syntax.translate(&mut MirContext::new(&source))
+}
 
-    fn set_file(&mut self, file: FilePath) {
-        self.file = Some(file);
+impl<'a, 'b: 'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, O>, O: SyntaxLevel>
+    Translate<Syntax<O>, MirContext<'b>, I, O> for Syntax<I>
+{
+    fn translate(&self, context: &mut MirContext<'b>) -> Result<Syntax<O>, ParseError> {
+        let functions = translate_vec(
+            &self.functions,
+            context,
+            |input, context| I::translate_func(input, &mut MirFunctionContext::new(context)),
+        );
+
+        let types = translate_vec(
+            &self.types,
+            context,
+            |input, context| I::translate_type(input, &mut MirFunctionContext::new(context)),
+        );
+
+        let (functions, types) = merge_result(functions, types)?;
+
+        Ok(Syntax {
+            symbols: self.symbols.clone(),
+            functions,
+            types: types.into_iter().filter_map(|ty| ty).collect(),
+        })
     }
 }
 
-pub fn resolve_to_mir(
-    source: Syntax<HighSyntaxLevel>,
-) -> Result<Syntax<MediumSyntaxLevel>, ParseError> {
-    source.translate(&mut MirContext::new(&source))
-}
-
-impl Translatable<MirContext<'_>, HighSyntaxLevel, MediumSyntaxLevel> for HighSyntaxLevel {
+impl Translatable<MirFunctionContext<'_>, HighSyntaxLevel, MediumSyntaxLevel> for HighSyntaxLevel {
     fn translate_stmt(
         node: &HighStatement<HighSyntaxLevel>,
-        context: &mut MirContext,
+        context: &mut MirFunctionContext,
     ) -> Result<MediumStatement<MediumSyntaxLevel>, ParseError> {
         Translate::translate(node, context)
     }
 
     fn translate_expr(
         node: &HighExpression<HighSyntaxLevel>,
-        context: &mut MirContext,
+        context: &mut MirFunctionContext,
     ) -> Result<MediumExpression<MediumSyntaxLevel>, ParseError> {
         Translate::translate(node, context)
     }
 
-    fn translate_type_ref(node: &TypeRef, context: &mut MirContext) -> Result<TypeRef, ParseError> {
+    fn translate_type_ref(
+        node: &TypeRef,
+        context: &mut MirFunctionContext,
+    ) -> Result<TypeRef, ParseError> {
         Translate::<_, _, HighSyntaxLevel, MediumSyntaxLevel>::translate(node, context)
     }
 
     fn translate_func_ref(
         node: &FunctionRef,
-        context: &mut MirContext,
+        context: &mut MirFunctionContext,
     ) -> Result<FunctionRef, ParseError> {
         Translate::<_, _, HighSyntaxLevel, MediumSyntaxLevel>::translate(node, context)
     }
 
     fn translate_type(
         node: &HighType<HighSyntaxLevel>,
-        context: &mut MirContext,
-    ) -> Result<MediumType<MediumSyntaxLevel>, ParseError> {
+        context: &mut MirFunctionContext,
+    ) -> Result<Option<MediumType<MediumSyntaxLevel>>, ParseError> {
         Translate::translate(node, context)
     }
 
     fn translate_func(
         node: &HighFunction<HighSyntaxLevel>,
-        context: &mut MirContext,
+        context: &mut MirFunctionContext,
     ) -> Result<MediumFunction<MediumSyntaxLevel>, ParseError> {
         Translate::translate(node, context)
     }
 
-    fn translate_terminator(node: &HighTerminator<HighSyntaxLevel>, context: &mut MirContext) -> Result<MediumTerminator<MediumSyntaxLevel>, ParseError> {
+    fn translate_terminator(
+        node: &HighTerminator<HighSyntaxLevel>,
+        context: &mut MirFunctionContext,
+    ) -> Result<MediumTerminator<MediumSyntaxLevel>, ParseError> {
         Translate::translate(node, context)
     }
 }
 
-impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
-Translate<MediumTerminator<MediumSyntaxLevel>, MirContext<'a>, I, MediumSyntaxLevel> for HighTerminator<I>
+impl<'a, 'b, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>>
+    Translate<MediumTerminator<MediumSyntaxLevel>, MirFunctionContext<'a>, I, MediumSyntaxLevel>
+    for HighTerminator<I>
 {
-    fn translate(&self, context: &mut MirContext<'a>) -> Result<MediumTerminator<MediumSyntaxLevel>, ParseError> {
+    fn translate(
+        &self,
+        context: &mut MirFunctionContext<'a>,
+    ) -> Result<MediumTerminator<MediumSyntaxLevel>, ParseError> {
         Ok(match self {
-            HighTerminator::Return(returning) => {
-                MediumTerminator::Return(
-                    Some(returning.as_ref().map(|inner| I::translate_expr(inner, context))
-                        .transpose()?.unwrap_or(MediumExpression::Literal(Literal::Void))))
-            }
+            HighTerminator::Return(returning) => MediumTerminator::Return(
+                returning
+                    .as_ref()
+                    .map(|inner| I::translate_expr(inner, context))
+                    .transpose()?,
+            ),
             HighTerminator::Break => MediumTerminator::Goto(*context.parent_end.as_ref().ok_or(
-                ParseError::ParseError("Expected to be inside a control block to break from".to_string()))?),
-            HighTerminator::Continue => MediumTerminator::Goto(*context.parent_loop.as_ref().ok_or(
-                ParseError::ParseError("Expected to be inside a control block to continue".to_string()))?),
-            HighTerminator::None => panic!("Failed to set terminator for code block")
+                ParseError::ParseError(
+                    "Expected to be inside a control block to break from".to_string(),
+                ),
+            )?),
+            HighTerminator::Continue => MediumTerminator::Goto(
+                *context.parent_loop.as_ref().ok_or(ParseError::ParseError(
+                    "Expected to be inside a control block to continue".to_string(),
+                ))?,
+            ),
+            HighTerminator::None => panic!("Failed to set terminator for code block"),
         })
     }
 }

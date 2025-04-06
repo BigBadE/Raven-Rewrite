@@ -20,14 +20,19 @@ tokio = { version = "1.44.0", features = ["fs", "rt-multi-thread", "macros"] }
 async-recursion = "1.1.1"
 lazy_static = "1.5.0"
 thiserror = "2.0.12"
-lasso = { version = "0.7.3", features = ["multi-threaded"] }
+lasso = { version = "0.7.3", features = ["multi-threaded", "serialize"] }
+serde = { version = "1.0.219", features = ["derive", "rc"] }
 
 # Error handling
 anyhow = "1.0.71"
 
+hir = { path = "language/hir" }
+mir = { path = "language/mir" }
 parser = { path = "language/parser" }
 runner = { path = "language/runner" }
 syntax = { path = "language/syntax" }
+type_system = { path = "language/type_system" }
+
 compiler-llvm = { path = "language/compilers/llvm" }
 
 # Enable a small amount of optimization in the dev profile.

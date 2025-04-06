@@ -154,8 +154,10 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "cc",
+ "hir",
  "inkwell",
  "lazy_static",
+ "mir",
  "regex-lite",
  "reqwest",
  "semver",
@@ -413,6 +415,7 @@ checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 dependencies = [
  "ahash",
  "allocator-api2",
+ "serde",
 ]
 
 [[package]]
@@ -420,6 +423,16 @@ name = "hashbrown"
 version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf151400ff0baff5465007dd2f3e717f3fe502074ca563069ce3a6629d07b289"
+
+[[package]]
+name = "hir"
+version = "0.0.0"
+dependencies = [
+ "lasso",
+ "serde",
+ "syntax",
+ "type_system",
+]
 
 [[package]]
 name = "http"
@@ -749,6 +762,7 @@ checksum = "6e14eda50a3494b3bf7b9ce51c52434a761e383d7238ce1dd5dcec2fbc13e9fb"
 dependencies = [
  "dashmap",
  "hashbrown 0.14.5",
+ "serde",
 ]
 
 [[package]]
@@ -847,6 +861,16 @@ dependencies = [
  "libc",
  "wasi 0.11.0+wasi-snapshot-preview1",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "mir"
+version = "0.0.0"
+dependencies = [
+ "hir",
+ "lasso",
+ "serde",
+ "syntax",
 ]
 
 [[package]]
@@ -978,6 +1002,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-recursion",
+ "hir",
  "lasso",
  "nom",
  "nom-supreme",
@@ -1112,6 +1137,8 @@ dependencies = [
 name = "runner"
 version = "0.0.0"
 dependencies = [
+ "hir",
+ "mir",
  "parser",
  "syntax",
 ]
@@ -1361,6 +1388,7 @@ dependencies = [
  "anyhow",
  "lasso",
  "lazy_static",
+ "serde",
  "thiserror 2.0.12",
 ]
 
@@ -1569,6 +1597,14 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "type_system"
+version = "0.0.0"
+dependencies = [
+ "lasso",
+ "syntax",
+]
 
 [[package]]
 name = "unicode-ident"
