@@ -1,5 +1,5 @@
 use crate::code::function_body;
-use crate::util::{file_path, identifier_symbolic, ignored, modifiers, parameter};
+use crate::util::{identifier_symbolic, ignored, modifiers, parameter, type_ref};
 use crate::{IResult, Span};
 use lasso::Spur;
 use nom::bytes::complete::tag;
@@ -46,6 +46,6 @@ fn parameter_list(input: Span) -> IResult<Span, Vec<(Spur, RawTypeRef)>> {
 fn return_type(input: Span) -> IResult<Span, Option<RawTypeRef>> {
     opt(preceded(
         delimited(ignored, tag("->"), ignored),
-        map(file_path, |spur| RawTypeRef(spur)),
+        type_ref,
     )).context("ReturnType").parse(input)
 }

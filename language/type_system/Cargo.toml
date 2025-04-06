@@ -4,3 +4,4 @@ edition = "2024"
 
 [dependencies]
 syntax.workspace = true
+lasso.workspace = true

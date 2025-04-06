@@ -6,8 +6,8 @@ use nom::branch::alt;
 use nom::bytes::complete::{tag, take_till, take_until, take_while1};
 use nom::character::complete::{alpha1, alphanumeric1, multispace0, multispace1};
 use nom::combinator::{eof, map, peek, recognize, value};
-use nom::multi::{many0, separated_list1};
-use nom::sequence::{delimited, pair, terminated, tuple};
+use nom::multi::{many0, separated_list0, separated_list1};
+use nom::sequence::{delimited, pair, preceded, terminated, tuple};
 use nom::{Parser, error};
 use nom_supreme::ParserExt;
 use nom_supreme::error::{BaseErrorKind, ErrorTree};
@@ -16,9 +16,17 @@ use syntax::util::path::FilePath;
 
 /// For parsing file paths like foo::bar::baz
 pub fn file_path(input: Span) -> IResult<Span, FilePath> {
-    separated_list1(
-        tag("::"),
-        identifier,
+    separated_list1(tag("::"), identifier)(input)
+}
+
+/// Parses a type ref like foo::bar::Baz<Trait, Trait>
+pub fn type_ref(input: Span) -> IResult<Span, RawTypeRef> {
+    map(
+        tuple((
+            file_path,
+            separated_list0(delimited(ignored, tag(","), ignored), type_ref),
+        )),
+        |(path, generics)| RawTypeRef { path, generics },
     )(input)
 }
 
@@ -50,11 +58,9 @@ pub fn symbolic(input: Span) -> IResult<Span, Spur> {
 pub fn parameter(input: Span) -> IResult<Span, (Spur, RawTypeRef)> {
     tuple((
         identifier,
-        delimited(ignored, tag(":"), ignored),
-        file_path,
+        preceded(delimited(ignored, tag(":"), ignored), type_ref),
     ))
     .context("Parameter")
-    .map(|(name, _, type_name)| (name, RawTypeRef(type_name)))
     .parse(input)
 }
 

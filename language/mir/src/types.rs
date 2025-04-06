@@ -1,14 +1,14 @@
+use crate::{MediumSyntaxLevel, MirFunctionContext};
+use hir::types::{HighType, TypeData};
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
-use hir::types::{HighType, TypeData};
-use crate::{MediumSyntaxLevel, MirContext};
-use syntax::structure::Modifier;
 use syntax::structure::traits::Type;
 use syntax::structure::visitor::Translate;
-use syntax::SyntaxLevel;
-use syntax::util::ParseError;
+use syntax::structure::Modifier;
 use syntax::util::path::FilePath;
 use syntax::util::translation::Translatable;
+use syntax::util::ParseError;
+use syntax::SyntaxLevel;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MediumType<T: SyntaxLevel> {
@@ -24,10 +24,10 @@ impl<T: SyntaxLevel> Type for MediumType<T> {
     }
 }
 
-impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
-Translate<Option<MediumType<MediumSyntaxLevel>>, MirContext<'a>, I, MediumSyntaxLevel> for HighType<I>
+impl<'a, 'b, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>>
+Translate<Option<MediumType<MediumSyntaxLevel>>, MirFunctionContext<'a>, I, MediumSyntaxLevel> for HighType<I>
 {
-    fn translate(&self, context: &mut MirContext<'a>) -> Result<Option<MediumType<MediumSyntaxLevel>>, ParseError> {
+    fn translate(&self, context: &mut MirFunctionContext<'a>) -> Result<Option<MediumType<MediumSyntaxLevel>>, ParseError> {
         Ok(Some(match &self.data {
             TypeData::Struct { fields } => MediumType {
                 name: self.name,

@@ -1,13 +1,13 @@
 use crate::statements::statement;
-use crate::util::{file_path, identifier, ignored, symbolic};
+use crate::util::{file_path, identifier, ignored, symbolic, type_ref};
 use crate::{IResult, Span};
 use hir::expression::HighExpression;
-use hir::{RawFunctionRef, RawSyntaxLevel, RawTypeRef};
+use hir::{RawFunctionRef, RawSyntaxLevel};
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::character::complete::{alphanumeric1, digit1};
 use nom::combinator::{map, opt};
-use nom::multi::{many0, separated_list0};
+use nom::multi::{many0, separated_list0, separated_list1};
 use nom::sequence::{delimited, preceded, terminated, tuple};
 use nom::Parser;
 use nom_supreme::ParserExt;
@@ -51,7 +51,7 @@ pub fn block(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
         tag("{"),
         map(tuple((many0(statement), expression)), |(body, value)| HighExpression::CodeBlock {
             body,
-            value: Box::new(value)
+            value: Box::new(value),
         }),
         tag("}"),
     )(input)
@@ -72,8 +72,8 @@ pub fn assignment(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> 
             value: Box::new(value),
         },
     )
-    .context("Assign")
-    .parse(input)
+        .context("Assign")
+        .parse(input)
 }
 
 /// Parses a function call expression with a target identifier,
@@ -82,19 +82,20 @@ pub fn assignment(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> 
 pub fn function_call(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     map(
         tuple((
-            opt(terminated(identifier, tag("."))),
-            file_path,
-            delimited(
-                tag("("),
-                separated_list0(tag(","), preceded(ignored, expression)),
-                tag(")"),
-            ),
+                  opt(terminated(identifier, tag("."))),
+                  file_path,
+                  opt(separated_list1(tag("+"), delimited(ignored, type_ref, ignored))),
+              delimited(
+                  tag("("),
+                  separated_list0(tag(","), preceded(ignored, expression)),
+                  tag(")"),
+              ),
         )),
-        |(target, function, args)| HighExpression::FunctionCall {
-            function: RawFunctionRef(function),
-            target: target.map(|span| Box::new(HighExpression::Variable(span))),
-            arguments: args,
-        },
+    |(target, function, generics, args)| HighExpression::FunctionCall {
+        function: RawFunctionRef { path: function, generics: generics.unwrap_or_default() },
+        target: target.map(|span| Box::new(HighExpression::Variable(span))),
+        arguments: args,
+    },
     )(input)
 }
 
@@ -103,21 +104,21 @@ pub fn function_call(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel
 pub fn create_struct(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     map(
         tuple((
-            file_path,
+            type_ref,
             delimited(
                 delimited(ignored, tag("{"), ignored),
                 separated_list0(
                     tag(","),
                     tuple((
-                            preceded(ignored, identifier),
-                            preceded(preceded(ignored, tag(":")), preceded(ignored, expression)),
-                        )),
+                        preceded(ignored, identifier),
+                        preceded(preceded(ignored, tag(":")), preceded(ignored, expression)),
+                    )),
                 ),
                 delimited(ignored, tag("}"), ignored),
             ),
         )),
         |(target_struct, fields)| HighExpression::CreateStruct {
-            target_struct: RawTypeRef(target_struct),
+            target_struct,
             fields,
         },
     )(input)
@@ -151,5 +152,5 @@ pub fn operation(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
             }
         }),
     ))
-    .parse(input)
+        .parse(input)
 }

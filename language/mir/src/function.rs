@@ -1,16 +1,16 @@
-use std::collections::HashMap;
+use crate::{LocalVar, MediumSyntaxLevel, MediumTerminator, MirFunctionContext};
 use hir::function::{CodeBlock, HighFunction};
-use crate::{LocalVar, MediumSyntaxLevel, MediumTerminator, MirContext};
+use lasso::Spur;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::mem;
+use syntax::structure::traits::Function;
 use syntax::structure::visitor::Translate;
+use syntax::structure::Modifier;
+use syntax::util::path::FilePath;
 use syntax::util::translation::Translatable;
 use syntax::util::ParseError;
 use syntax::SyntaxLevel;
-use std::mem;
-use lasso::Spur;
-use serde::{Deserialize, Serialize};
-use syntax::structure::{FileOwner, Modifier};
-use syntax::structure::traits::Function;
-use syntax::util::path::FilePath;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
@@ -30,12 +30,11 @@ impl<T: SyntaxLevel> Function for MediumFunction<T> {
     }
 }
 
-impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
-    Translate<MediumFunction<MediumSyntaxLevel>, MirContext<'a>, I, MediumSyntaxLevel> for HighFunction<I>
+impl<'a, 'b, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>>
+    Translate<MediumFunction<MediumSyntaxLevel>, MirFunctionContext<'a>, I, MediumSyntaxLevel> for HighFunction<I>
 {
-    fn translate(&self, context: &mut MirContext<'a>) -> Result<MediumFunction<MediumSyntaxLevel>, ParseError> {
-        context.set_file(self.file.clone());
-        context.reset();
+    fn translate(&self, context: &mut MirFunctionContext<'a>) -> Result<MediumFunction<MediumSyntaxLevel>, ParseError> {
+        context.file = Some(self.file.clone());
         for statement in &self.body.statements {
             I::translate_stmt(statement, context)?;
         }

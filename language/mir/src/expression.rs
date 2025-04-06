@@ -1,5 +1,5 @@
 use crate::statement::MediumStatement;
-use crate::{MediumSyntaxLevel, MediumTerminator, MirContext, Operand, Place};
+use crate::{MediumSyntaxLevel, MediumTerminator, MirFunctionContext, Operand, Place};
 use hir::expression::HighExpression;
 use hir::function::HighTerminator;
 use lasso::Spur;
@@ -28,7 +28,7 @@ pub enum MediumExpression<T: SyntaxLevel> {
 impl<T: SyntaxLevel> Expression for MediumExpression<T> {}
 
 impl<T: SyntaxLevel<FunctionReference = FunctionRef, TypeReference = TypeRef>> MediumExpression<T> {
-    pub fn get_type(&self, context: &MirContext) -> Option<TypeRef> {
+    pub fn get_type(&self, context: &MirFunctionContext) -> Option<TypeRef> {
         match self {
             MediumExpression::Use(op) => Some(op.get_type(context)),
             MediumExpression::Literal(lit) => Some(lit.get_type()),
@@ -41,7 +41,7 @@ impl<T: SyntaxLevel<FunctionReference = FunctionRef, TypeReference = TypeRef>> M
 }
 
 /// Convert an expression into an operand.
-pub fn get_operand(expr: MediumExpression<MediumSyntaxLevel>, context: &mut MirContext) -> Operand {
+pub fn get_operand(expr: MediumExpression<MediumSyntaxLevel>, context: &mut MirFunctionContext) -> Operand {
     match expr {
         MediumExpression::Literal(lit) => Operand::Constant(lit),
         MediumExpression::Use(op) => op,
@@ -66,14 +66,14 @@ pub fn get_operand(expr: MediumExpression<MediumSyntaxLevel>, context: &mut MirC
 }
 
 pub fn translate_function<
-    'a,
+    'a, 'b,
     I: SyntaxLevel<Terminator = HighTerminator<I>>
-        + Translatable<MirContext<'a>, I, MediumSyntaxLevel>,
+        + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
 >(
     function: &I::FunctionReference,
     target: Option<&Box<I::Expression>>,
     arguments: Vec<&I::Expression>,
-    context: &mut MirContext<'a>,
+    context: &mut MirFunctionContext<'a>,
 ) -> Result<MediumExpression<MediumSyntaxLevel>, ParseError> {
     let mut args = Vec::new();
     // If there is a target (as in a method call), translate and prepend it.
@@ -95,15 +95,15 @@ pub fn translate_function<
 
 /// Handle statement translation
 impl<
-    'a,
+    'a, 'b,
     I: SyntaxLevel<Terminator = HighTerminator<I>, FunctionReference = FunctionRef>
-        + Translatable<MirContext<'a>, I, MediumSyntaxLevel>,
-> Translate<MediumExpression<MediumSyntaxLevel>, MirContext<'a>, I, MediumSyntaxLevel>
+        + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
+> Translate<MediumExpression<MediumSyntaxLevel>, MirFunctionContext<'a>, I, MediumSyntaxLevel>
     for HighExpression<I>
 {
     fn translate(
         &self,
-        context: &mut MirContext<'a>,
+        context: &mut MirFunctionContext<'a>,
     ) -> Result<MediumExpression<MediumSyntaxLevel>, ParseError> {
         Ok(match self {
             // Translate literal directly.

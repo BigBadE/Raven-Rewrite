@@ -17,10 +17,21 @@ pub fn translate_vec<C, I, O, F: Fn(&I, &mut C) -> Result<O, ParseError>>(
     context: &mut C,
     translator: F,
 ) -> Result<Vec<O>, ParseError> {
-    fields
+    let (fields, errors) = fields
         .iter()
         .map(|input| Ok::<_, ParseError>(translator(input, context)?))
-        .collect::<Result<_, _>>()
+        .fold((vec![], vec![]), |mut acc, item| {
+            match item {
+                Ok(value) => acc.0.push(value),
+                Err(err) => acc.1.push(err),
+            }
+            acc
+        });
+    if !errors.is_empty() {
+        Err(ParseError::MultiError(errors))
+    } else {
+        Ok(fields)
+    }
 }
 
 /// This trait is used to say a Syntax can be translated from one type to another

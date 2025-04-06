@@ -49,18 +49,7 @@ pub fn create_syntax() -> Syntax<RawSyntaxLevel> {
     let symbols = Arc::new(ThreadedRodeo::new());
     Syntax {
         functions: Vec::default(),
-        types: vec![
-            HighType::internal(symbols.get_or_intern("void")),
-            HighType::internal(symbols.get_or_intern("str")),
-            HighType::internal(symbols.get_or_intern("f64")),
-            HighType::internal(symbols.get_or_intern("f32")),
-            HighType::internal(symbols.get_or_intern("i64")),
-            HighType::internal(symbols.get_or_intern("i32")),
-            HighType::internal(symbols.get_or_intern("u64")),
-            HighType::internal(symbols.get_or_intern("u32")),
-            HighType::internal(symbols.get_or_intern("bool")),
-            HighType::internal(symbols.get_or_intern("char")),
-        ],
+        types: TYPES.iter().map(|name| HighType::internal(symbols.get_or_intern(name))).collect(),
         symbols,
     }
 }
@@ -79,9 +68,16 @@ impl SyntaxLevel for HighSyntaxLevel {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct RawTypeRef(pub FilePath);
+pub struct RawTypeRef {
+    pub path: FilePath,
+    pub generics: Vec<RawTypeRef>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
-pub struct RawFunctionRef(pub FilePath);
+pub struct RawFunctionRef {
+    pub path: FilePath,
+    pub generics: Vec<RawTypeRef>,
+}
 
 impl TypeReference for RawTypeRef {}
 impl FunctionReference for RawFunctionRef {}
@@ -106,11 +102,12 @@ pub fn resolve_to_hir(source: RawSource) -> Result<HirSource, ParseError> {
         .iter()
         .enumerate()
         .map(|(id, name)| (vec![source.syntax.symbols.get_or_intern(name)], TypeRef(id))));
+
     Ok(HirSource {
         syntax: source.syntax.translate(&mut context)?,
         pre_unary_operations: source.pre_unary_operations,
         post_unary_operations: source.post_unary_operations,
-        binary_operations: source.binary_operations
+        binary_operations: source.binary_operations,
     })
 }
 
@@ -136,12 +133,12 @@ impl FileOwner for HirContext {
 // Handle reference translations
 impl<'a, I: SyntaxLevel, O: SyntaxLevel> Translate<TypeRef, HirContext, I, O> for RawTypeRef {
     fn translate(&self, context: &mut HirContext) -> Result<TypeRef, ParseError> {
-        if let Some(types) = context.types.get(&self.0) {
+        if let Some(types) = context.types.get(&self.path) {
             return Ok(*types);
         }
 
         for import in &context.imports[context.file.as_ref().unwrap()] {
-            if import.last().unwrap() == self.0.first().unwrap() {
+            if import.last().unwrap() == self.path.first().unwrap() {
                 if let Some(types) = context.types.get(import) {
                     return Ok(*types);
                 } else {
@@ -156,7 +153,7 @@ impl<'a, I: SyntaxLevel, O: SyntaxLevel> Translate<TypeRef, HirContext, I, O> fo
 }
 
 impl<'a, I: SyntaxLevel, O: SyntaxLevel> Translate<FunctionRef, HirContext, I, O>
-    for RawFunctionRef
+for RawFunctionRef
 {
     fn translate(&self, _context: &mut HirContext) -> Result<FunctionRef, ParseError> {
         todo!()

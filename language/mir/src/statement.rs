@@ -1,7 +1,5 @@
 use hir::statement::HighStatement;
-use crate::{
-    LocalVar, MediumExpression, MediumSyntaxLevel, MediumTerminator, MirContext, Place,
-};
+use crate::{LocalVar, MediumExpression, MediumSyntaxLevel, MediumTerminator, MirFunctionContext, Place};
 use syntax::structure::visitor::Translate;
 use syntax::util::ParseError;
 use syntax::util::translation::Translatable;
@@ -27,13 +25,13 @@ pub enum MediumStatement<T: SyntaxLevel> {
 impl<T: SyntaxLevel> Statement for MediumStatement<T> {}
 
 // Handle statement translation
-impl<'a, I: SyntaxLevel + Translatable<MirContext<'a>, I, MediumSyntaxLevel>>
-    Translate<MediumStatement<MediumSyntaxLevel>, MirContext<'a>, I, MediumSyntaxLevel>
+impl<'a, 'b, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>>
+    Translate<MediumStatement<MediumSyntaxLevel>, MirFunctionContext<'a>, I, MediumSyntaxLevel>
     for HighStatement<I>
 {
     fn translate(
         &self,
-        context: &mut MirContext<'a>,
+        context: &mut MirFunctionContext<'a>,
     ) -> Result<MediumStatement<MediumSyntaxLevel>, ParseError> {
         match self {
             HighStatement::Expression(expression) => {
