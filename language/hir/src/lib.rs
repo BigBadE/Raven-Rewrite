@@ -6,13 +6,13 @@ use lasso::{Spur, ThreadedRodeo};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use syntax::structure::FileOwner;
 use syntax::structure::literal::TYPES;
 use syntax::structure::traits::{FunctionReference, TypeReference};
 use syntax::structure::visitor::Translate;
-use syntax::util::ParseError;
-use syntax::util::path::{FilePath, path_to_str};
+use syntax::structure::FileOwner;
+use syntax::util::path::{path_to_str, FilePath};
 use syntax::util::translation::Translatable;
+use syntax::util::ParseError;
 use syntax::{FunctionRef, Syntax, SyntaxLevel, TypeRef};
 
 pub mod expression;

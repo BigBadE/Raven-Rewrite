@@ -1,6 +1,6 @@
 use crate::structure::FileOwner;
+use crate::util::translation::{translate_vec, Translatable};
 use crate::util::ParseError;
-use crate::util::translation::{Translatable, translate_vec};
 use crate::{Syntax, SyntaxLevel};
 
 pub trait Translate<T, C, I: SyntaxLevel, O: SyntaxLevel> {

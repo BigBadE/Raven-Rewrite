@@ -17,10 +17,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Terminator;
-use syntax::structure::visitor::{Translate, merge_result};
-use syntax::util::ParseError;
+use syntax::structure::visitor::{merge_result, Translate};
 use syntax::util::path::FilePath;
-use syntax::util::translation::{Translatable, translate_vec};
+use syntax::util::translation::{translate_vec, Translatable};
+use syntax::util::ParseError;
 use syntax::{FunctionRef, Syntax, SyntaxLevel, TypeRef};
 
 #[derive(Serialize, Deserialize, Debug)]

@@ -3,13 +3,13 @@ use lasso::Spur;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fmt::{Debug, Formatter};
-use syntax::SyntaxLevel;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Expression;
 use syntax::structure::visitor::Translate;
-use syntax::util::ParseError;
 use syntax::util::translation::Translatable;
 use syntax::util::translation::{translate_fields, translate_vec};
+use syntax::util::ParseError;
+use syntax::SyntaxLevel;
 
 #[derive(Serialize, Deserialize)]
 pub enum HighExpression<T: SyntaxLevel> {

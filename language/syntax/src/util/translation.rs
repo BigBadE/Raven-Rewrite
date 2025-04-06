@@ -1,5 +1,5 @@
-use crate::SyntaxLevel;
 use crate::util::ParseError;
+use crate::SyntaxLevel;
 use lasso::Spur;
 
 pub fn translate_fields<C, I, O, F: Fn(&I, &mut C) -> Result<O, ParseError>>(

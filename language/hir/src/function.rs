@@ -1,13 +1,13 @@
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use syntax::SyntaxLevel;
 use syntax::structure::traits::{Function, Terminator};
 use syntax::structure::visitor::Translate;
 use syntax::structure::{FileOwner, Modifier};
-use syntax::util::ParseError;
 use syntax::util::path::FilePath;
 use syntax::util::translation::Translatable;
+use syntax::util::ParseError;
+use syntax::SyntaxLevel;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct CodeBlock<T: SyntaxLevel> {

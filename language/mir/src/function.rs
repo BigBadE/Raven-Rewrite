@@ -4,13 +4,13 @@ use lasso::Spur;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::mem;
-use syntax::SyntaxLevel;
-use syntax::structure::Modifier;
 use syntax::structure::traits::Function;
 use syntax::structure::visitor::Translate;
-use syntax::util::ParseError;
+use syntax::structure::Modifier;
 use syntax::util::path::FilePath;
 use syntax::util::translation::Translatable;
+use syntax::util::ParseError;
+use syntax::SyntaxLevel;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]

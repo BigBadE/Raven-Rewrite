@@ -1,8 +1,8 @@
 use crate::types::TypeManager;
 use inkwell::types::BasicType;
 use inkwell::values::FunctionValue;
-use mir::MediumSyntaxLevel;
 use mir::function::MediumFunction;
+use mir::MediumSyntaxLevel;
 
 pub fn get_function_type<'a, 'ctx>(
     type_manager: &mut TypeManager<'a, 'ctx>,

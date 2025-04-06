@@ -4,11 +4,11 @@ use crate::{IResult, Span};
 use hir::function::HighFunction;
 use hir::{RawSyntaxLevel, RawTypeRef};
 use lasso::Spur;
-use nom::Parser;
 use nom::bytes::complete::tag;
 use nom::combinator::{map, opt};
 use nom::multi::separated_list0;
 use nom::sequence::{delimited, preceded, tuple};
+use nom::Parser;
 use nom_supreme::ParserExt;
 
 /// Parser for function declarations
