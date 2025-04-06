@@ -4,13 +4,13 @@ use lasso::Spur;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::mem;
+use syntax::SyntaxLevel;
+use syntax::structure::Modifier;
 use syntax::structure::traits::Function;
 use syntax::structure::visitor::Translate;
-use syntax::structure::Modifier;
+use syntax::util::ParseError;
 use syntax::util::path::FilePath;
 use syntax::util::translation::Translatable;
-use syntax::util::ParseError;
-use syntax::SyntaxLevel;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
@@ -31,16 +31,21 @@ impl<T: SyntaxLevel> Function for MediumFunction<T> {
 }
 
 impl<'a, 'b, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>>
-    Translate<MediumFunction<MediumSyntaxLevel>, MirFunctionContext<'a>, I, MediumSyntaxLevel> for HighFunction<I>
+    Translate<MediumFunction<MediumSyntaxLevel>, MirFunctionContext<'a>, I, MediumSyntaxLevel>
+    for HighFunction<I>
 {
-    fn translate(&self, context: &mut MirFunctionContext<'a>) -> Result<MediumFunction<MediumSyntaxLevel>, ParseError> {
+    fn translate(
+        &self,
+        context: &mut MirFunctionContext<'a>,
+    ) -> Result<MediumFunction<MediumSyntaxLevel>, ParseError> {
         context.file = Some(self.file.clone());
         for statement in &self.body.statements {
             I::translate_stmt(statement, context)?;
         }
 
         // Return void if we have no return at the very end
-        if let MediumTerminator::Unreachable = context.code_blocks[context.current_block].terminator {
+        if let MediumTerminator::Unreachable = context.code_blocks[context.current_block].terminator
+        {
             context.set_terminator(MediumTerminator::Return(None));
         }
 
@@ -53,9 +58,7 @@ impl<'a, 'b, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSynt
             parameters: self
                 .parameters
                 .iter()
-                .map(|(_, ty)| {
-                    Ok::<_, ParseError>(I::translate_type_ref(ty, context)?)
-                })
+                .map(|(_, ty)| Ok::<_, ParseError>(I::translate_type_ref(ty, context)?))
                 .collect::<Result<_, _>>()?,
             return_type: self
                 .return_type

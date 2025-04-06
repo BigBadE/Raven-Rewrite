@@ -17,10 +17,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Terminator;
-use syntax::structure::visitor::{merge_result, Translate};
-use syntax::util::path::FilePath;
-use syntax::util::translation::{translate_vec, Translatable};
+use syntax::structure::visitor::{Translate, merge_result};
 use syntax::util::ParseError;
+use syntax::util::path::FilePath;
+use syntax::util::translation::{Translatable, translate_vec};
 use syntax::{FunctionRef, Syntax, SyntaxLevel, TypeRef};
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -192,17 +192,13 @@ impl<'a, 'b: 'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, O>, O:
     Translate<Syntax<O>, MirContext<'b>, I, O> for Syntax<I>
 {
     fn translate(&self, context: &mut MirContext<'b>) -> Result<Syntax<O>, ParseError> {
-        let functions = translate_vec(
-            &self.functions,
-            context,
-            |input, context| I::translate_func(input, &mut MirFunctionContext::new(context)),
-        );
+        let functions = translate_vec(&self.functions, context, |input, context| {
+            I::translate_func(input, &mut MirFunctionContext::new(context))
+        });
 
-        let types = translate_vec(
-            &self.types,
-            context,
-            |input, context| I::translate_type(input, &mut MirFunctionContext::new(context)),
-        );
+        let types = translate_vec(&self.types, context, |input, context| {
+            I::translate_type(input, &mut MirFunctionContext::new(context))
+        });
 
         let (functions, types) = merge_result(functions, types)?;
 

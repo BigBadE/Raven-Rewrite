@@ -1,13 +1,15 @@
+use crate::{
+    LocalVar, MediumExpression, MediumSyntaxLevel, MediumTerminator, MirFunctionContext, Place,
+};
 use hir::statement::HighStatement;
-use crate::{LocalVar, MediumExpression, MediumSyntaxLevel, MediumTerminator, MirFunctionContext, Place};
+use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
+use syntax::structure::literal::Literal;
+use syntax::structure::traits::Statement;
 use syntax::structure::visitor::Translate;
 use syntax::util::ParseError;
 use syntax::util::translation::Translatable;
 use syntax::{SyntaxLevel, TypeRef};
-use std::fmt::Debug;
-use serde::{Deserialize, Serialize};
-use syntax::structure::literal::Literal;
-use syntax::structure::traits::Statement;
 
 /// The MIR is made up of a series of nodes, each terminated with a jump expression.
 #[derive(Serialize, Deserialize, Debug)]
@@ -38,8 +40,7 @@ impl<'a, 'b, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSynt
                 let value = I::translate_expr(expression, context)?;
                 if let Some(types) = value.get_type(context) {
                     let local = context.create_temp(types);
-                    context
-                        .push_statement(MediumStatement::StorageLive(local, types));
+                    context.push_statement(MediumStatement::StorageLive(local, types));
                     context.push_statement(MediumStatement::Assign {
                         place: Place {
                             local,
@@ -76,7 +77,8 @@ impl<'a, 'b, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSynt
                     for statement in &condition.branch {
                         I::translate_stmt(statement, context)?;
                     }
-                    if let MediumTerminator::Unreachable = context.code_blocks[context.current_block].terminator
+                    if let MediumTerminator::Unreachable =
+                        context.code_blocks[context.current_block].terminator
                     {
                         context.set_terminator(MediumTerminator::Goto(end));
                     }
@@ -87,13 +89,16 @@ impl<'a, 'b, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSynt
                         I::translate_stmt(statement, context)?;
                     }
                 }
-                if let MediumTerminator::Unreachable = context.code_blocks[context.current_block].terminator
+                if let MediumTerminator::Unreachable =
+                    context.code_blocks[context.current_block].terminator
                 {
                     context.set_terminator(MediumTerminator::Goto(end));
                 }
                 context.switch_to_block(end);
             }
-            HighStatement::For { condition: _condition } => {
+            HighStatement::For {
+                condition: _condition,
+            } => {
                 todo!()
             }
             HighStatement::While { condition } => {
@@ -115,7 +120,8 @@ impl<'a, 'b, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSynt
                 for statement in &condition.branch {
                     I::translate_stmt(statement, context)?;
                 }
-                if let MediumTerminator::Unreachable = context.code_blocks[context.current_block].terminator
+                if let MediumTerminator::Unreachable =
+                    context.code_blocks[context.current_block].terminator
                 {
                     context.set_terminator(MediumTerminator::Goto(top));
                 }
@@ -132,7 +138,8 @@ impl<'a, 'b, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSynt
                 for statement in body {
                     I::translate_stmt(statement, context)?;
                 }
-                if let MediumTerminator::Unreachable = context.code_blocks[context.current_block].terminator
+                if let MediumTerminator::Unreachable =
+                    context.code_blocks[context.current_block].terminator
                 {
                     context.set_terminator(MediumTerminator::Goto(top));
                 }

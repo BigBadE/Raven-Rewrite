@@ -13,7 +13,9 @@ pub fn error_message_recursive<E: Error + ?Sized>(
     context: &Vec<(Span, StackContext<&str>)>,
 ) -> (usize, String) {
     match error {
-        GenericErrorTree::Base { location, kind } => (context.len(), display_error(location, context, kind)),
+        GenericErrorTree::Base { location, kind } => {
+            (context.len(), display_error(location, context, kind))
+        }
         GenericErrorTree::Stack { base, mut contexts } => {
             let mut context = context.clone();
             context.append(&mut contexts);
@@ -24,16 +26,23 @@ pub fn error_message_recursive<E: Error + ?Sized>(
                 .into_iter()
                 .map(|err| error_message_recursive(err, context))
                 .collect::<Vec<_>>();
-            let max = errors.iter().map(|(context, _)| *context).max().unwrap_or(0);
-            (max, format!(
-                "{}",
-                errors
-                    .into_iter()
-                    .filter(|(len, _)| *len == max)
-                    .map(|(_, err)| err)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            ))
+            let max = errors
+                .iter()
+                .map(|(context, _)| *context)
+                .max()
+                .unwrap_or(0);
+            (
+                max,
+                format!(
+                    "{}",
+                    errors
+                        .into_iter()
+                        .filter(|(len, _)| *len == max)
+                        .map(|(_, err)| err)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ),
+            )
         }
     }
 }

@@ -1,18 +1,18 @@
+use lasso::Spur;
+use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
+use syntax::SyntaxLevel;
+use syntax::structure::traits::{Function, Terminator};
 use syntax::structure::visitor::Translate;
 use syntax::structure::{FileOwner, Modifier};
+use syntax::util::ParseError;
 use syntax::util::path::FilePath;
 use syntax::util::translation::Translatable;
-use syntax::util::ParseError;
-use syntax::SyntaxLevel;
-use lasso::Spur;
-use std::fmt::Debug;
-use serde::{Deserialize, Serialize};
-use syntax::structure::traits::{Function, Terminator};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct CodeBlock<T: SyntaxLevel> {
     pub statements: Vec<T::Statement>,
-    pub terminator: T::Terminator
+    pub terminator: T::Terminator,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -20,7 +20,7 @@ pub enum HighTerminator<T: SyntaxLevel> {
     Return(Option<T::Expression>),
     Break,
     Continue,
-    None
+    None,
 }
 
 impl<T: SyntaxLevel> Terminator for HighTerminator<T> {}
@@ -53,7 +53,11 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
             file: self.file.clone(),
             modifiers: self.modifiers.clone(),
             body: CodeBlock {
-                statements: self.body.statements.iter().map(|statement| I::translate_stmt(&statement, context))
+                statements: self
+                    .body
+                    .statements
+                    .iter()
+                    .map(|statement| I::translate_stmt(&statement, context))
                     .collect::<Result<_, _>>()?,
                 terminator: I::translate_terminator(&self.body.terminator, context)?,
             },
@@ -74,7 +78,7 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
 }
 
 impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
-Translate<HighTerminator<O>, C, I, O> for HighTerminator<I>
+    Translate<HighTerminator<O>, C, I, O> for HighTerminator<I>
 {
     fn translate(&self, context: &mut C) -> Result<HighTerminator<O>, ParseError> {
         Ok(match self {
@@ -86,7 +90,7 @@ Translate<HighTerminator<O>, C, I, O> for HighTerminator<I>
             ),
             HighTerminator::Break => HighTerminator::Break,
             HighTerminator::Continue => HighTerminator::Continue,
-            HighTerminator::None => HighTerminator::None
+            HighTerminator::None => HighTerminator::None,
         })
     }
 }

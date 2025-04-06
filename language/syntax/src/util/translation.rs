@@ -1,5 +1,5 @@
-use crate::util::ParseError;
 use crate::SyntaxLevel;
+use crate::util::ParseError;
 use lasso::Spur;
 
 pub fn translate_fields<C, I, O, F: Fn(&I, &mut C) -> Result<O, ParseError>>(
@@ -51,5 +51,8 @@ pub trait Translatable<C, I: SyntaxLevel, O: SyntaxLevel> {
     ) -> Result<O::FunctionReference, ParseError>;
     fn translate_type(node: &I::Type, context: &mut C) -> Result<Option<O::Type>, ParseError>;
     fn translate_func(node: &I::Function, context: &mut C) -> Result<O::Function, ParseError>;
-    fn translate_terminator(node: &I::Terminator, context: &mut C) -> Result<O::Terminator, ParseError>;
+    fn translate_terminator(
+        node: &I::Terminator,
+        context: &mut C,
+    ) -> Result<O::Terminator, ParseError>;
 }

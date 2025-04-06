@@ -2,11 +2,11 @@ use crate::function::function;
 use crate::structure::parse_structure;
 use crate::util::{file_path, ignored};
 use crate::{IResult, Span, TopLevelItem};
+use nom::Parser;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::combinator::map;
 use nom::sequence::delimited;
-use nom::Parser;
 use nom_supreme::ParserExt;
 use syntax::util::path::FilePath;
 

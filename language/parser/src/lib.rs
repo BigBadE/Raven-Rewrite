@@ -5,19 +5,19 @@ use anyhow::Error;
 use async_recursion::async_recursion;
 use hir::function::HighFunction;
 use hir::types::HighType;
-use hir::{create_syntax, RawSource, RawSyntaxLevel};
+use hir::{RawSource, RawSyntaxLevel, create_syntax};
 use lasso::{Spur, ThreadedRodeo};
 use nom::combinator::eof;
 use nom_locate::LocatedSpan;
+use nom_supreme::ParserExt;
 use nom_supreme::error::ErrorTree;
 use nom_supreme::final_parser::final_parser;
 use nom_supreme::multi::collect_separated_terminated;
-use nom_supreme::ParserExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use syntax::structure::Modifier;
-use syntax::util::path::{get_path, FilePath};
 use syntax::util::ParseError;
+use syntax::util::path::{FilePath, get_path};
 use syntax::{FunctionRef, TypeRef};
 use tokio::fs;
 
@@ -108,9 +108,21 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, ParseError> {
             let reference = FunctionRef(source.syntax.functions.len());
             if function.modifiers.contains(&Modifier::OPERATION) {
                 match function.parameters.len() {
-                    1 => source.pre_unary_operations.entry(function.name).or_default().push(reference),
-                    2 => source.binary_operations.entry(function.name).or_default().push(reference),
-                    _ => return Err(ParseError::ParseError("Expected operation to only have 1 or 2 args".to_string()))
+                    1 => source
+                        .pre_unary_operations
+                        .entry(function.name)
+                        .or_default()
+                        .push(reference),
+                    2 => source
+                        .binary_operations
+                        .entry(function.name)
+                        .or_default()
+                        .push(reference),
+                    _ => {
+                        return Err(ParseError::ParseError(
+                            "Expected operation to only have 1 or 2 args".to_string(),
+                        ));
+                    }
                 }
             }
             source.functions.insert(path, reference);
@@ -120,7 +132,9 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, ParseError> {
         for types in file.types {
             let mut path = file_path.clone();
             path.push(types.name);
-            source.types.insert(path, TypeRef(source.syntax.types.len()));
+            source
+                .types
+                .insert(path, TypeRef(source.syntax.types.len()));
             source.syntax.types.push(types);
         }
 

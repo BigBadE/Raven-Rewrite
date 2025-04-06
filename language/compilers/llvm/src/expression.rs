@@ -31,12 +31,17 @@ pub fn compile_expression<'a, 'b, 'ctx>(
         } => {
             let struct_type = function_generator.type_manager.convert_type(*struct_type);
 
-            let alloc = function_generator.builder().build_alloca(struct_type, "struct_init")?;
+            let alloc = function_generator
+                .builder()
+                .build_alloca(struct_type, "struct_init")?;
             for (i, (_, field)) in fields.iter().enumerate() {
                 let field = compile_operand(function_generator, field)?;
-                let field_ptr = function_generator
-                    .builder()
-                    .build_struct_gep(struct_type, alloc, i as u32, "struct_field")?;
+                let field_ptr = function_generator.builder().build_struct_gep(
+                    struct_type,
+                    alloc,
+                    i as u32,
+                    "struct_field",
+                )?;
                 function_generator.builder().build_store(field_ptr, field)?;
             }
 

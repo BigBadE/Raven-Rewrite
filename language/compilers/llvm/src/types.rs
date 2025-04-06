@@ -1,12 +1,12 @@
 use crate::function::get_function_type;
+use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::FunctionValue;
-use std::collections::HashMap;
-use inkwell::builder::Builder;
-use mir::types::MediumType;
 use mir::MediumSyntaxLevel;
+use mir::types::MediumType;
+use std::collections::HashMap;
 use syntax::{FunctionRef, Syntax, TypeRef};
 
 pub struct TypeManager<'a, 'ctx> {
@@ -19,7 +19,6 @@ pub struct TypeManager<'a, 'ctx> {
 }
 
 impl<'a, 'ctx> TypeManager<'a, 'ctx> {
-
     pub fn function_type(&mut self, reference: &FunctionRef) -> FunctionValue<'ctx> {
         if let Some(found) = self.functions.get(&reference) {
             return *found;
@@ -40,8 +39,16 @@ impl<'a, 'ctx> TypeManager<'a, 'ctx> {
     }
 
     fn compile_type(&mut self, types: &MediumType<MediumSyntaxLevel>) -> BasicTypeEnum<'ctx> {
-        BasicTypeEnum::StructType(self.context.struct_type(
-            types.fields.iter().map(|field| self.convert_type(*field)).collect::<Vec<_>>().as_slice(), false,
-        ))
+        BasicTypeEnum::StructType(
+            self.context.struct_type(
+                types
+                    .fields
+                    .iter()
+                    .map(|field| self.convert_type(*field))
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                false,
+            ),
+        )
     }
 }

@@ -45,17 +45,12 @@ pub fn code_block(
 }
 
 /// Parser for code blocks
-pub fn code_block_returnless(
-    input: Span,
-) -> IResult<
-    Span,
-        Vec<HighStatement<RawSyntaxLevel>>,
-> {
+pub fn code_block_returnless(input: Span) -> IResult<Span, Vec<HighStatement<RawSyntaxLevel>>> {
     delimited(
         delimited(ignored, tag("{"), ignored),
         many0(terminated(statement, ignored)),
         delimited(ignored, tag("}"), ignored),
     )
-        .context("Code Returnless")
-        .parse(input)
+    .context("Code Returnless")
+    .parse(input)
 }

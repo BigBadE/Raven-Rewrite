@@ -19,7 +19,7 @@ impl ParseError {
         match self {
             ParseError::ParseError(_) | ParseError::InternalError(_) => {
                 println!("{}", self);
-            },
+            }
             ParseError::MultiError(errors) => {
                 for error in errors {
                     error.print();

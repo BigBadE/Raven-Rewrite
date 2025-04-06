@@ -1,6 +1,6 @@
+use crate::TypeRef;
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
-use crate::TypeRef;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 pub enum Literal {
@@ -15,7 +15,9 @@ pub enum Literal {
     Char(char),
 }
 
-pub const TYPES: [&str; 9] = ["str", "f64", "f32", "i64", "i32", "u64", "u32", "bool", "char"];
+pub const TYPES: [&str; 9] = [
+    "str", "f64", "f32", "i64", "i32", "u64", "u32", "bool", "char",
+];
 
 impl Literal {
     /// This is expected to be kept in sync with TYPES.
@@ -29,7 +31,7 @@ impl Literal {
             Literal::U64(_) => 5,
             Literal::U32(_) => 6,
             Literal::Bool(_) => 7,
-            Literal::Char(_) => 8
+            Literal::Char(_) => 8,
         })
     }
 }

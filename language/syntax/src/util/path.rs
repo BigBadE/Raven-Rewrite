@@ -20,7 +20,8 @@ pub fn get_path(interner: &ThreadedRodeo, file: &PathBuf, root: &PathBuf) -> Fil
 
     let mut components = relative
         .components()
-        .filter_map(|comp| comp.as_os_str().to_str()).map(|str| str.to_string())
+        .filter_map(|comp| comp.as_os_str().to_str())
+        .map(|str| str.to_string())
         .collect::<Vec<_>>();
 
     // Remove the file extension
@@ -40,7 +41,7 @@ pub fn get_path(interner: &ThreadedRodeo, file: &PathBuf, root: &PathBuf) -> Fil
     );
 
     components
-            .iter()
-            .map(|s| interner.get_or_intern(s))
-            .collect()
+        .iter()
+        .map(|s| interner.get_or_intern(s))
+        .collect()
 }
