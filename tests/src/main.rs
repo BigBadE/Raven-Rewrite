@@ -9,12 +9,9 @@ fn main() {}
 
 #[tokio::test]
 async fn test() -> Result<(), Error> {
-    let syntax = match compile_source(PathBuf::from("tests/core")).await {
+    let syntax = match compile_source(PathBuf::from("core")).await {
         Ok(syntax) => syntax,
-        Err(errors) => {
-            errors.print();
-            return Ok(());
-        }
+        Err(errors) => return Err(Error::from(errors)),
     };
 
     let compiler = LowCompiler::new();
