@@ -29,9 +29,6 @@ jobs:
         uses: actions/checkout@v3
         with:
           submodules: true
-      - name: Install zstd on macOS
-        if: matrix.os == 'macos-latest'
-        run: brew install zstd-dev
       - name: Install Code Coverage
         run: cargo +nightly install cargo-llvm-cov
       - name: Set up Rust
