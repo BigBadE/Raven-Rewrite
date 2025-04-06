@@ -1,7 +1,7 @@
-use parser::parse_source;
-use std::path::PathBuf;
 use hir::resolve_to_hir;
 use mir::{resolve_to_mir, MediumSyntaxLevel};
+use parser::parse_source;
+use std::path::PathBuf;
 use syntax::util::ParseError;
 use syntax::Syntax;
 

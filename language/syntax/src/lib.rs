@@ -1,10 +1,12 @@
+use crate::structure::traits::{
+    Expression, Function, FunctionReference, Statement, Terminator, Type, TypeReference,
+};
 use crate::structure::visitor::Translate;
 use crate::util::ParseError;
 use lasso::ThreadedRodeo;
+use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::sync::Arc;
-use serde::{Deserialize, Serialize};
-use crate::structure::traits::{Expression, Function, FunctionReference, Statement, Terminator, Type, TypeReference};
 
 pub mod structure;
 pub mod util;

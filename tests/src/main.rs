@@ -1,9 +1,9 @@
 use anyhow::Error;
+use compiler_llvm::LowCompiler;
 use runner::compile_source;
 use std::path::PathBuf;
-use compiler_llvm::LowCompiler;
 
-type Main = unsafe extern "C" fn () -> i32;
+type Main = unsafe extern "C" fn() -> i32;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {

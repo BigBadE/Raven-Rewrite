@@ -2,16 +2,16 @@ use crate::code::code_block_returnless;
 use crate::expressions::expression;
 use crate::util::ignored;
 use crate::{IResult, Span};
-use nom::Parser;
+use hir::function::HighTerminator;
+use hir::statement::{Conditional, HighStatement};
+use hir::RawSyntaxLevel;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::combinator::{map, opt};
 use nom::multi::many0;
 use nom::sequence::{delimited, preceded, tuple};
+use nom::Parser;
 use nom_supreme::ParserExt;
-use hir::function::HighTerminator;
-use hir::RawSyntaxLevel;
-use hir::statement::{Conditional, HighStatement};
 
 pub fn statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     delimited(
@@ -44,19 +44,16 @@ pub fn flow_changer(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>>
 pub fn if_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     tag("if")
         .precedes(
-            tuple((
-                parse_conditional,
-                many0(parse_else_if),
-                opt(parse_else),
-            ))
-            .map(|(first_cond, extra_conds, else_branch)| {
-                let mut conditions = vec![first_cond];
-                conditions.extend(extra_conds);
-                HighStatement::If {
-                    conditions,
-                    else_branch,
-                }
-            }),
+            tuple((parse_conditional, many0(parse_else_if), opt(parse_else))).map(
+                |(first_cond, extra_conds, else_branch)| {
+                    let mut conditions = vec![first_cond];
+                    conditions.extend(extra_conds);
+                    HighStatement::If {
+                        conditions,
+                        else_branch,
+                    }
+                },
+            ),
         )
         .parse(input)
 }
@@ -85,9 +82,12 @@ pub fn loop_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel
 
 /// Parses a conditional block: a condition and its branch.
 fn parse_conditional(input: Span) -> IResult<Span, Conditional<RawSyntaxLevel>> {
-    tuple((delimited(ignored, expression, ignored), code_block_returnless))
-        .map(|(condition, branch)| Conditional { condition, branch })
-        .parse(input)
+    tuple((
+        delimited(ignored, expression, ignored),
+        code_block_returnless,
+    ))
+    .map(|(condition, branch)| Conditional { condition, branch })
+    .parse(input)
 }
 
 /// Parses an "else if" clause.

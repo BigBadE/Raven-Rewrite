@@ -2,14 +2,14 @@ use crate::RawSyntaxLevel;
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use syntax::SyntaxLevel;
 use syntax::structure::traits::Type;
 use syntax::structure::visitor::Translate;
 use syntax::structure::{FileOwner, Modifier};
-use syntax::util::ParseError;
 use syntax::util::path::FilePath;
-use syntax::util::translation::{translate_vec, Translatable};
 use syntax::util::translation::translate_fields;
+use syntax::util::translation::{translate_vec, Translatable};
+use syntax::util::ParseError;
+use syntax::SyntaxLevel;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
@@ -64,7 +64,7 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
                 .map(|(name, generics)| {
                     Ok((
                         name.clone(),
-                        translate_vec(generics, context, I::translate_type_ref)?
+                        translate_vec(generics, context, I::translate_type_ref)?,
                     ))
                 })
                 .collect::<Result<Vec<_>, _>>()?,

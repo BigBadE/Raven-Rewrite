@@ -49,7 +49,10 @@ pub fn create_syntax() -> Syntax<RawSyntaxLevel> {
     let symbols = Arc::new(ThreadedRodeo::new());
     Syntax {
         functions: Vec::default(),
-        types: TYPES.iter().map(|name| HighType::internal(symbols.get_or_intern(name))).collect(),
+        types: TYPES
+            .iter()
+            .map(|name| HighType::internal(symbols.get_or_intern(name)))
+            .collect(),
         symbols,
     }
 }
@@ -98,10 +101,12 @@ pub fn resolve_to_hir(source: RawSource) -> Result<HirSource, ParseError> {
         type_cache: HashMap::default(),
         func_cache: HashMap::default(),
     };
-    context.types.extend(TYPES
-        .iter()
-        .enumerate()
-        .map(|(id, name)| (vec![source.syntax.symbols.get_or_intern(name)], TypeRef(id))));
+    context.types.extend(
+        TYPES
+            .iter()
+            .enumerate()
+            .map(|(id, name)| (vec![source.syntax.symbols.get_or_intern(name)], TypeRef(id))),
+    );
 
     Ok(HirSource {
         syntax: source.syntax.translate(&mut context)?,
@@ -142,8 +147,15 @@ impl<'a, I: SyntaxLevel, O: SyntaxLevel> Translate<TypeRef, HirContext, I, O> fo
                 if let Some(types) = context.types.get(import) {
                     return Ok(*types);
                 } else {
-                    println!("Failed for {:?}: {:?}", path_to_str(import, &context.symbols),
-                             context.types.iter().map(|(key, value)| (path_to_str(key, &context.symbols), value)).collect::<Vec<_>>());
+                    println!(
+                        "Failed for {:?}: {:?}",
+                        path_to_str(import, &context.symbols),
+                        context
+                            .types
+                            .iter()
+                            .map(|(key, value)| (path_to_str(key, &context.symbols), value))
+                            .collect::<Vec<_>>()
+                    );
                 }
             }
         }
@@ -153,7 +165,7 @@ impl<'a, I: SyntaxLevel, O: SyntaxLevel> Translate<TypeRef, HirContext, I, O> fo
 }
 
 impl<'a, I: SyntaxLevel, O: SyntaxLevel> Translate<FunctionRef, HirContext, I, O>
-for RawFunctionRef
+    for RawFunctionRef
 {
     fn translate(&self, _context: &mut HirContext) -> Result<FunctionRef, ParseError> {
         todo!()

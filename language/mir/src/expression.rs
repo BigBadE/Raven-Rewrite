@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Expression;
 use syntax::structure::visitor::Translate;
-use syntax::util::ParseError;
 use syntax::util::translation::Translatable;
+use syntax::util::ParseError;
 use syntax::{FunctionRef, SyntaxLevel, TypeRef};
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -41,7 +41,10 @@ impl<T: SyntaxLevel<FunctionReference = FunctionRef, TypeReference = TypeRef>> M
 }
 
 /// Convert an expression into an operand.
-pub fn get_operand(expr: MediumExpression<MediumSyntaxLevel>, context: &mut MirFunctionContext) -> Operand {
+pub fn get_operand(
+    expr: MediumExpression<MediumSyntaxLevel>,
+    context: &mut MirFunctionContext,
+) -> Operand {
     match expr {
         MediumExpression::Literal(lit) => Operand::Constant(lit),
         MediumExpression::Use(op) => op,
@@ -66,7 +69,8 @@ pub fn get_operand(expr: MediumExpression<MediumSyntaxLevel>, context: &mut MirF
 }
 
 pub fn translate_function<
-    'a, 'b,
+    'a,
+    'b,
     I: SyntaxLevel<Terminator = HighTerminator<I>>
         + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
 >(
@@ -95,10 +99,11 @@ pub fn translate_function<
 
 /// Handle statement translation
 impl<
-    'a, 'b,
-    I: SyntaxLevel<Terminator = HighTerminator<I>, FunctionReference = FunctionRef>
-        + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
-> Translate<MediumExpression<MediumSyntaxLevel>, MirFunctionContext<'a>, I, MediumSyntaxLevel>
+        'a,
+        'b,
+        I: SyntaxLevel<Terminator = HighTerminator<I>, FunctionReference = FunctionRef>
+            + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
+    > Translate<MediumExpression<MediumSyntaxLevel>, MirFunctionContext<'a>, I, MediumSyntaxLevel>
     for HighExpression<I>
 {
     fn translate(
@@ -207,7 +212,13 @@ impl<
                 } else {
                     &context.source.post_unary_operations
                 }
-                .get(symbol).ok_or_else(|| ParseError::ParseError(format!("Unknown operation {}", context.source.syntax.symbols.resolve(symbol))))?[0],
+                .get(symbol)
+                .ok_or_else(|| {
+                    ParseError::ParseError(format!(
+                        "Unknown operation {}",
+                        context.source.syntax.symbols.resolve(symbol)
+                    ))
+                })?[0],
                 // Doesn't matter if it's the target or start of arguments
                 None,
                 vec![value],
@@ -218,13 +229,21 @@ impl<
                 first,
                 second,
             } => translate_function::<I>(
-                &context.source.binary_operations.get(symbol)
-                    .ok_or_else(|| ParseError::ParseError(format!("Unknown operation {}", context.source.syntax.symbols.resolve(symbol))))?[0],
+                &context
+                    .source
+                    .binary_operations
+                    .get(symbol)
+                    .ok_or_else(|| {
+                        ParseError::ParseError(format!(
+                            "Unknown operation {}",
+                            context.source.syntax.symbols.resolve(symbol)
+                        ))
+                    })?[0],
                 // Doesn't matter if it's the target or start of arguments
                 None,
                 vec![first, second],
                 context,
-            )?
+            )?,
         })
     }
 }

@@ -1,12 +1,12 @@
-use std::fmt::{Debug, Formatter};
-use std::fmt;
 use serde::{Deserialize, Serialize};
-use syntax::structure::FileOwner;
+use std::fmt;
+use std::fmt::{Debug, Formatter};
 use syntax::structure::traits::Statement;
 use syntax::structure::visitor::Translate;
-use syntax::SyntaxLevel;
-use syntax::util::ParseError;
+use syntax::structure::FileOwner;
 use syntax::util::translation::{translate_vec, Translatable};
+use syntax::util::ParseError;
+use syntax::SyntaxLevel;
 
 #[derive(Serialize, Deserialize)]
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
@@ -76,7 +76,9 @@ pub struct Conditional<T: SyntaxLevel> {
     pub branch: Vec<T::Statement>,
 }
 
-impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Translate<Conditional<O>, C, I, O> for Conditional<I> {
+impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Translate<Conditional<O>, C, I, O>
+    for Conditional<I>
+{
     fn translate(&self, context: &mut C) -> Result<Conditional<O>, ParseError> {
         Ok(Conditional {
             condition: I::translate_expr(&self.condition, context)?,
@@ -95,9 +97,7 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
                 HighStatement::Expression(I::translate_expr(expression, context)?)
             }
             HighStatement::CodeBlock(expressions) => {
-                HighStatement::CodeBlock(
-                    translate_vec(expressions, context, I::translate_stmt)?
-                )
+                HighStatement::CodeBlock(translate_vec(expressions, context, I::translate_stmt)?)
             }
             HighStatement::If {
                 conditions,
@@ -110,7 +110,7 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
                     .transpose()?,
             },
             HighStatement::For { condition } => HighStatement::For {
-                condition: condition.translate(context)?
+                condition: condition.translate(context)?,
             },
             HighStatement::While { condition } => HighStatement::While {
                 condition: condition.translate(context)?,

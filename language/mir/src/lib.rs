@@ -192,17 +192,13 @@ impl<'a, 'b: 'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, O>, O:
     Translate<Syntax<O>, MirContext<'b>, I, O> for Syntax<I>
 {
     fn translate(&self, context: &mut MirContext<'b>) -> Result<Syntax<O>, ParseError> {
-        let functions = translate_vec(
-            &self.functions,
-            context,
-            |input, context| I::translate_func(input, &mut MirFunctionContext::new(context)),
-        );
+        let functions = translate_vec(&self.functions, context, |input, context| {
+            I::translate_func(input, &mut MirFunctionContext::new(context))
+        });
 
-        let types = translate_vec(
-            &self.types,
-            context,
-            |input, context| I::translate_type(input, &mut MirFunctionContext::new(context)),
-        );
+        let types = translate_vec(&self.types, context, |input, context| {
+            I::translate_type(input, &mut MirFunctionContext::new(context))
+        });
 
         let (functions, types) = merge_result(functions, types)?;
 

@@ -156,10 +156,15 @@ fn locate_llvm_config(prefix: &PathBuf) -> Option<PathBuf> {
                 }
                 // Version mismatch. Will try further searches, but warn that
                 // we're not using the system one.
-                println!("found LLVM version {} on PATH, but need {}", version, *CRATE_VERSION);
+                println!(
+                    "found LLVM version {} on PATH, but need {}",
+                    version, *CRATE_VERSION
+                );
             }
             Err(e) => {
-                if e.downcast_ref::<io::Error>().map_or(false, |e| e.kind() == ErrorKind::NotFound) {
+                if e.downcast_ref::<io::Error>()
+                    .map_or(false, |e| e.kind() == ErrorKind::NotFound)
+                {
                     // Looks like we failed to execute any llvm-config. Keep
                     // searching.
                 } else {
@@ -180,13 +185,18 @@ fn llvm_config_binary_names() -> impl Iterator<Item = String> {
         format!("llvm-config-{}", CRATE_VERSION.major),
         format!("llvm-config{}", CRATE_VERSION.major),
         format!("llvm{}-config", CRATE_VERSION.major),
-        format!("llvm-config-{}.{}", CRATE_VERSION.major, CRATE_VERSION.minor),
+        format!(
+            "llvm-config-{}.{}",
+            CRATE_VERSION.major, CRATE_VERSION.minor
+        ),
         format!("llvm-config{}{}", CRATE_VERSION.major, CRATE_VERSION.minor),
     ];
 
     // On Windows, also search for llvm-config.exe
     if target_os_is("windows") {
-        IntoIterator::into_iter(base_names).flat_map(|name| [format!("{}.exe", name), name]).collect::<Vec<_>>()
+        IntoIterator::into_iter(base_names)
+            .flat_map(|name| [format!("{}.exe", name), name])
+            .collect::<Vec<_>>()
     } else {
         base_names.to_vec()
     }
@@ -200,16 +210,27 @@ fn is_blocklisted_llvm(llvm_version: &Version) -> Option<&'static str> {
 
     if let Some(x) = env::var_os(&*ENV_IGNORE_BLOCKLIST) {
         if &x == "YES" {
-            println!("cargo:warning=ignoring blocklist entry for LLVM {}", llvm_version);
+            println!(
+                "cargo:warning=ignoring blocklist entry for LLVM {}",
+                llvm_version
+            );
             return None;
         } else {
-            println!("cargo:warning={} is set but not exactly \"YES\"; blocklist is still honored", *ENV_IGNORE_BLOCKLIST);
+            println!(
+                "cargo:warning={} is set but not exactly \"YES\"; blocklist is still honored",
+                *ENV_IGNORE_BLOCKLIST
+            );
         }
     }
 
     for &(major, minor, patch, reason) in BLOCKLIST.iter() {
-        let bad_version =
-            Version { major, minor, patch, pre: semver::Prerelease::EMPTY, build: semver::BuildMetadata::EMPTY };
+        let bad_version = Version {
+            major,
+            minor,
+            patch,
+            pre: semver::Prerelease::EMPTY,
+            build: semver::BuildMetadata::EMPTY,
+        };
 
         if &bad_version == llvm_version {
             return Some(reason);
@@ -222,7 +243,10 @@ fn is_blocklisted_llvm(llvm_version: &Version) -> Option<&'static str> {
 /// the crate.
 fn is_compatible_llvm(llvm_version: &Version) -> bool {
     if let Some(reason) = is_blocklisted_llvm(llvm_version) {
-        println!("found LLVM {}, which is blocklisted: {}", llvm_version, reason);
+        println!(
+            "found LLVM {}, which is blocklisted: {}",
+            llvm_version, reason
+        );
         return false;
     }
 
@@ -231,7 +255,8 @@ fn is_compatible_llvm(llvm_version: &Version) -> bool {
         llvm_version.major == CRATE_VERSION.major && llvm_version.minor == CRATE_VERSION.minor
     } else {
         llvm_version.major >= CRATE_VERSION.major
-            || (llvm_version.major == CRATE_VERSION.major && llvm_version.minor >= CRATE_VERSION.minor)
+            || (llvm_version.major == CRATE_VERSION.major
+                && llvm_version.minor >= CRATE_VERSION.minor)
     }
 }
 
@@ -255,13 +280,21 @@ where
 {
     let mut cmd = Command::new(binary);
     (|| {
-        let Output { status, stdout, stderr } = cmd.args(args).output()?;
+        let Output {
+            status,
+            stdout,
+            stderr,
+        } = cmd.args(args).output()?;
         let stdout = String::from_utf8(stdout).context("stdout")?;
         let stderr = String::from_utf8(stderr).context("stderr")?;
         if status.success() {
             Ok(stdout)
         } else {
-            Err(anyhow::anyhow!("status={status}\nstdout={}\nstderr={}", stdout.trim(), stderr.trim()))
+            Err(anyhow::anyhow!(
+                "status={status}\nstdout={}\nstderr={}",
+                stdout.trim(),
+                stderr.trim()
+            ))
         }
     })()
     .with_context(|| format!("{cmd:?}"))
@@ -276,7 +309,9 @@ fn llvm_version(binary: &Path) -> anyhow::Result<Version> {
     // to only the numeric bits.
     let re = Regex::new(r"^(?P<major>\d+)\.(?P<minor>\d+)(?:\.(?P<patch>\d+))??").unwrap();
     let c = re.captures(&version_str).ok_or_else(|| {
-        anyhow::anyhow!("could not determine LLVM version from llvm-config. Version string: {version_str}")
+        anyhow::anyhow!(
+            "could not determine LLVM version from llvm-config. Version string: {version_str}"
+        )
     })?;
 
     // some systems don't have a patch number but Version wants it so we just append .0 if it isn't
@@ -304,8 +339,12 @@ fn get_system_libraries(llvm_config_path: &Path, kind: LibraryKind) -> Vec<Strin
         .map(|flag| {
             if target_env_is("msvc") {
                 // Same as --libnames, foo.lib
-                flag.strip_suffix(".lib")
-                    .unwrap_or_else(|| panic!("system library '{}' does not appear to be a MSVC library file", flag))
+                flag.strip_suffix(".lib").unwrap_or_else(|| {
+                    panic!(
+                        "system library '{}' does not appear to be a MSVC library file",
+                        flag
+                    )
+                })
             } else {
                 if let Some(flag) = flag.strip_prefix("-l") {
                     // Linker flags style, -lfoo
@@ -314,7 +353,10 @@ fn get_system_libraries(llvm_config_path: &Path, kind: LibraryKind) -> Vec<Strin
                         // which refer to libraries shipped with a given system and aren't shipped
                         // as part of the corresponding SDK. They're named like the underlying
                         // library object, including the 'lib' prefix that we need to strip.
-                        if let Some(flag) = flag.strip_prefix("lib").and_then(|flag| flag.strip_suffix(".tbd")) {
+                        if let Some(flag) = flag
+                            .strip_prefix("lib")
+                            .and_then(|flag| flag.strip_suffix(".tbd"))
+                        {
                             return flag;
                         }
                     }
@@ -332,19 +374,30 @@ fn get_system_libraries(llvm_config_path: &Path, kind: LibraryKind) -> Vec<Strin
                 if maybe_lib.is_file() {
                     // Library on disk, likely an absolute path to a .so. We'll add its location to
                     // the library search path and specify the file as a link target.
-                    println!("cargo:rustc-link-search={}", maybe_lib.parent().unwrap().display());
+                    println!(
+                        "cargo:rustc-link-search={}",
+                        maybe_lib.parent().unwrap().display()
+                    );
 
                     // Expect a file named something like libfoo.so, or with a version libfoo.so.1.
                     // Trim everything after and including the last .so and remove the leading 'lib'
-                    let soname =
-                        maybe_lib.file_name().unwrap().to_str().expect("Shared library path must be a valid string");
-                    let (stem, _rest) =
-                        soname.rsplit_once(target_dylib_extension()).expect("Shared library should be a .so file");
+                    let soname = maybe_lib
+                        .file_name()
+                        .unwrap()
+                        .to_str()
+                        .expect("Shared library path must be a valid string");
+                    let (stem, _rest) = soname
+                        .rsplit_once(target_dylib_extension())
+                        .expect("Shared library should be a .so file");
 
-                    stem.strip_prefix("lib")
-                        .unwrap_or_else(|| panic!("system library '{}' does not have a 'lib' prefix", soname))
+                    stem.strip_prefix("lib").unwrap_or_else(|| {
+                        panic!("system library '{}' does not have a 'lib' prefix", soname)
+                    })
                 } else {
-                    panic!("Unable to parse result of llvm-config --system-libs: {}", flag)
+                    panic!(
+                        "Unable to parse result of llvm-config --system-libs: {}",
+                        flag
+                    )
                 }
             }
         })
@@ -416,12 +469,18 @@ impl LibraryKind {
 }
 
 /// Get the names of libraries to link against, along with whether it is static or shared library.
-fn get_link_libraries(llvm_config_path: &Path, preferences: &LinkingPreferences) -> (LibraryKind, Vec<String>) {
+fn get_link_libraries(
+    llvm_config_path: &Path,
+    preferences: &LinkingPreferences,
+) -> (LibraryKind, Vec<String>) {
     // Using --libnames in conjunction with --libdir is particularly important
     // for MSVC when LLVM is in a path with spaces, but it is generally less of
     // a hack than parsing linker flags output from --libs and --ldflags.
 
-    fn get_link_libraries_impl(llvm_config_path: &Path, kind: LibraryKind) -> anyhow::Result<String> {
+    fn get_link_libraries_impl(
+        llvm_config_path: &Path,
+        kind: LibraryKind,
+    ) -> anyhow::Result<String> {
         // Windows targets don't get dynamic support.
         // See: https://gitlab.com/taricorp/llvm-sys.rs/-/merge_requests/31#note_1306397918
         if target_env_is("msvc") && kind == LibraryKind::Dynamic {
@@ -435,23 +494,31 @@ fn get_link_libraries(llvm_config_path: &Path, preferences: &LinkingPreferences)
         llvm_config_ex(llvm_config_path, ["--libnames", link_arg])
     }
 
-    let LinkingPreferences { prefer_static, force } = preferences;
+    let LinkingPreferences {
+        prefer_static,
+        force,
+    } = preferences;
     let one = [*prefer_static];
     let both = [*prefer_static, !*prefer_static];
 
-    let preferences = if *force { &one[..] } else { &both[..] }.iter().map(|is_static| {
-        if *is_static {
-            LibraryKind::Static
-        } else {
-            LibraryKind::Dynamic
-        }
-    });
+    let preferences = if *force { &one[..] } else { &both[..] }
+        .iter()
+        .map(|is_static| {
+            if *is_static {
+                LibraryKind::Static
+            } else {
+                LibraryKind::Dynamic
+            }
+        });
 
     for kind in preferences {
         match get_link_libraries_impl(llvm_config_path, kind) {
             Ok(s) => return (kind, extract_library(&s, kind)),
             Err(err) => {
-                println!("failed to get {} libraries from llvm-config: {err:?}", kind.string())
+                println!(
+                    "failed to get {} libraries from llvm-config: {err:?}",
+                    kind.string()
+                )
             }
         }
     }
@@ -468,7 +535,10 @@ fn extract_library(s: &str, kind: LibraryKind) -> Vec<String> {
             match kind {
                 LibraryKind::Static => {
                     // Match static library
-                    if let Some(name) = name.strip_prefix("lib").and_then(|name| name.strip_suffix(".a")) {
+                    if let Some(name) = name
+                        .strip_prefix("lib")
+                        .and_then(|name| name.strip_suffix(".a"))
+                    {
                         // Unix (Linux/Mac)
                         // libLLVMfoo.a
                         name
@@ -482,16 +552,22 @@ fn extract_library(s: &str, kind: LibraryKind) -> Vec<String> {
                 }
                 LibraryKind::Dynamic => {
                     // Match shared library
-                    if let Some(name) = name.strip_prefix("lib").and_then(|name| name.strip_suffix(".dylib")) {
+                    if let Some(name) = name
+                        .strip_prefix("lib")
+                        .and_then(|name| name.strip_suffix(".dylib"))
+                    {
                         // Mac
                         // libLLVMfoo.dylib
                         name
-                    } else if let Some(name) = name.strip_prefix("lib").and_then(|name| name.strip_suffix(".so")) {
+                    } else if let Some(name) = name
+                        .strip_prefix("lib")
+                        .and_then(|name| name.strip_suffix(".so"))
+                    {
                         // Linux
                         // libLLVMfoo.so
                         name
-                    } else if let Some(name) =
-                        IntoIterator::into_iter([".dll", ".lib"]).find_map(|suffix| name.strip_suffix(suffix))
+                    } else if let Some(name) = IntoIterator::into_iter([".dll", ".lib"])
+                        .find_map(|suffix| name.strip_suffix(suffix))
                     {
                         // Windows
                         // LLVMfoo.{dll,lib}
@@ -516,7 +592,10 @@ struct LinkingPreferences {
 
 impl LinkingPreferences {
     fn init() -> LinkingPreferences {
-        LinkingPreferences { prefer_static: true, force: false }
+        LinkingPreferences {
+            prefer_static: true,
+            force: false,
+        }
     }
 }
 
@@ -536,7 +615,11 @@ fn get_llvm_cflags(llvm_config_path: &Path) -> String {
         return output;
     }
 
-    output.split(&[' ', '\n'][..]).filter(|word| !word.starts_with("-W")).collect::<Vec<_>>().join(" ")
+    output
+        .split(&[' ', '\n'][..])
+        .filter(|word| !word.starts_with("-W"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn is_llvm_debug(llvm_config_path: &Path) -> bool {
@@ -570,7 +653,9 @@ fn build(llvm_path: PathBuf) {
     unsafe {
         std::env::set_var("CFLAGS", get_llvm_cflags(&llvm_config_path));
     }
-    cc::Build::new().file("wrappers/target.c").compile("targetwrappers");
+    cc::Build::new()
+        .file("wrappers/target.c")
+        .compile("targetwrappers");
     let libdir = llvm_config(&llvm_config_path, ["--libdir"]);
 
     // Export information to other crates

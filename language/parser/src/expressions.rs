@@ -49,9 +49,11 @@ pub fn literal(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
 pub fn block(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     delimited(
         tag("{"),
-        map(tuple((many0(statement), expression)), |(body, value)| HighExpression::CodeBlock {
-            body,
-            value: Box::new(value),
+        map(tuple((many0(statement), expression)), |(body, value)| {
+            HighExpression::CodeBlock {
+                body,
+                value: Box::new(value),
+            }
         }),
         tag("}"),
     )(input)
@@ -72,8 +74,8 @@ pub fn assignment(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> 
             value: Box::new(value),
         },
     )
-        .context("Assign")
-        .parse(input)
+    .context("Assign")
+    .parse(input)
 }
 
 /// Parses a function call expression with a target identifier,
@@ -82,20 +84,26 @@ pub fn assignment(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> 
 pub fn function_call(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     map(
         tuple((
-                  opt(terminated(identifier, tag("."))),
-                  file_path,
-                  opt(separated_list1(tag("+"), delimited(ignored, type_ref, ignored))),
-              delimited(
-                  tag("("),
-                  separated_list0(tag(","), preceded(ignored, expression)),
-                  tag(")"),
-              ),
+            opt(terminated(identifier, tag("."))),
+            file_path,
+            opt(separated_list1(
+                tag("+"),
+                delimited(ignored, type_ref, ignored),
+            )),
+            delimited(
+                tag("("),
+                separated_list0(tag(","), preceded(ignored, expression)),
+                tag(")"),
+            ),
         )),
-    |(target, function, generics, args)| HighExpression::FunctionCall {
-        function: RawFunctionRef { path: function, generics: generics.unwrap_or_default() },
-        target: target.map(|span| Box::new(HighExpression::Variable(span))),
-        arguments: args,
-    },
+        |(target, function, generics, args)| HighExpression::FunctionCall {
+            function: RawFunctionRef {
+                path: function,
+                generics: generics.unwrap_or_default(),
+            },
+            target: target.map(|span| Box::new(HighExpression::Variable(span))),
+            arguments: args,
+        },
     )(input)
 }
 
@@ -152,5 +160,5 @@ pub fn operation(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
             }
         }),
     ))
-        .parse(input)
+    .parse(input)
 }

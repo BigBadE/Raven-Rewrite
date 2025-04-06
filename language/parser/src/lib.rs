@@ -108,9 +108,21 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, ParseError> {
             let reference = FunctionRef(source.syntax.functions.len());
             if function.modifiers.contains(&Modifier::OPERATION) {
                 match function.parameters.len() {
-                    1 => source.pre_unary_operations.entry(function.name).or_default().push(reference),
-                    2 => source.binary_operations.entry(function.name).or_default().push(reference),
-                    _ => return Err(ParseError::ParseError("Expected operation to only have 1 or 2 args".to_string()))
+                    1 => source
+                        .pre_unary_operations
+                        .entry(function.name)
+                        .or_default()
+                        .push(reference),
+                    2 => source
+                        .binary_operations
+                        .entry(function.name)
+                        .or_default()
+                        .push(reference),
+                    _ => {
+                        return Err(ParseError::ParseError(
+                            "Expected operation to only have 1 or 2 args".to_string(),
+                        ))
+                    }
                 }
             }
             source.functions.insert(path, reference);
@@ -120,7 +132,9 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, ParseError> {
         for types in file.types {
             let mut path = file_path.clone();
             path.push(types.name);
-            source.types.insert(path, TypeRef(source.syntax.types.len()));
+            source
+                .types
+                .insert(path, TypeRef(source.syntax.types.len()));
             source.syntax.types.push(types);
         }
 

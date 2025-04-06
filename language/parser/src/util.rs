@@ -1,17 +1,17 @@
 use crate::{IResult, Span};
 use hir::RawTypeRef;
 use lasso::Spur;
-use nom::Err::Error;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_till, take_until, take_while1};
 use nom::character::complete::{alpha1, alphanumeric1, multispace0, multispace1};
 use nom::combinator::{eof, map, peek, recognize, value};
 use nom::multi::{many0, separated_list0, separated_list1};
 use nom::sequence::{delimited, pair, preceded, terminated, tuple};
-use nom::{Parser, error};
-use nom_supreme::ParserExt;
+use nom::Err::Error;
+use nom::{error, Parser};
 use nom_supreme::error::{BaseErrorKind, ErrorTree};
-use syntax::structure::{MODIFIERS, Modifier};
+use nom_supreme::ParserExt;
+use syntax::structure::{Modifier, MODIFIERS};
 use syntax::util::path::FilePath;
 
 /// For parsing file paths like foo::bar::baz
