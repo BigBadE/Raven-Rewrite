@@ -49,9 +49,8 @@ pub fn get_operand(
         MediumExpression::Literal(lit) => Operand::Constant(lit),
         MediumExpression::Use(op) => op,
         value => {
-            let ty = value
-                .get_type(context)
-                .unwrap_or_else(|| panic!("Expected non-void type in convert_expr"));
+            // This is checked to be non-void before.
+            let ty = value.get_type(context).unwrap();
             let temp = context.create_temp(ty);
             context.push_statement(MediumStatement::Assign {
                 place: Place {

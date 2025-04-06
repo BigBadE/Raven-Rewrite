@@ -156,7 +156,6 @@ dependencies = [
  "cc",
  "hir",
  "inkwell",
- "lazy_static",
  "mir",
  "regex-lite",
  "reqwest",

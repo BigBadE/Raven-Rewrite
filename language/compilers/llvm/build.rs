@@ -1,5 +1,14 @@
+extern crate anyhow;
+extern crate cc;
+extern crate regex_lite;
+extern crate semver;
+
+use anyhow::Context as _;
+use std::ffi::OsStr;
 use std::fs::File;
+use std::path::Path;
 use std::path::PathBuf;
+use std::process::{Command, Output};
 use std::time::Duration;
 use std::{env, fs, io};
 
@@ -7,6 +16,7 @@ use reqwest::blocking::Client;
 use zip::ZipArchive;
 
 /// To automatically keep up to date with LLVM, this will download and link a binary from a seperate repo.
+/// Linking code is taken from llvm-sys.
 fn main() {
     let mut target = PathBuf::from(env::var("OUT_DIR").unwrap())
         .parent()
@@ -84,65 +94,6 @@ fn setup_llvm(mut target: PathBuf, url: &'static str) {
     }
 }
 
-/// Code from LLVM-sys's build.rs file
-extern crate anyhow;
-extern crate cc;
-#[macro_use]
-extern crate lazy_static;
-extern crate regex_lite;
-extern crate semver;
-
-use anyhow::Context as _;
-use regex_lite::Regex;
-use semver::Version;
-use std::ffi::OsStr;
-use std::io::ErrorKind;
-use std::path::Path;
-use std::process::{Command, Output};
-
-// Environment variables that can guide compilation
-//
-// When adding new ones, they should also be added to main() to force a
-// rebuild if they are changed.
-lazy_static! {
-    /// A single path to search for LLVM in (containing bin/llvm-config)
-    static ref ENV_LLVM_PREFIX: String =
-        format!("LLVM_SYS_{}_PREFIX", env!("CARGO_PKG_VERSION_MAJOR"));
-
-    /// If exactly "YES", ignore the version blocklist
-    static ref ENV_IGNORE_BLOCKLIST: String =
-        format!("LLVM_SYS_{}_IGNORE_BLOCKLIST", env!("CARGO_PKG_VERSION_MAJOR"));
-
-    /// If set, enforce precise correspondence between crate and binary versions.
-    static ref ENV_STRICT_VERSIONING: String =
-        format!("LLVM_SYS_{}_STRICT_VERSIONING", env!("CARGO_PKG_VERSION_MAJOR"));
-
-    /// If set, do not attempt to strip irrelevant options for llvm-config --cflags
-    static ref ENV_NO_CLEAN_CFLAGS: String =
-        format!("LLVM_SYS_{}_NO_CLEAN_CFLAGS", env!("CARGO_PKG_VERSION_MAJOR"));
-
-    /// If set and targeting MSVC, force the debug runtime library
-    static ref ENV_USE_DEBUG_MSVCRT: String =
-        format!("LLVM_SYS_{}_USE_DEBUG_MSVCRT", env!("CARGO_PKG_VERSION_MAJOR"));
-
-    /// If set, always link against libffi
-    static ref ENV_FORCE_FFI: String =
-        format!("LLVM_SYS_{}_FFI_WORKAROUND", env!("CARGO_PKG_VERSION_MAJOR"));
-}
-
-lazy_static! {
-    /// LLVM version used by this version of the crate.
-    static ref CRATE_VERSION: Version = {
-        let crate_version = Version::parse(env!("CARGO_PKG_VERSION"))
-            .expect("Crate version is somehow not valid semver");
-        Version {
-            major: crate_version.major / 10,
-            minor: crate_version.major % 10,
-            .. crate_version
-        }
-    };
-}
-
 fn target_env_is(name: &str) -> bool {
     match env::var_os("CARGO_CFG_TARGET_ENV") {
         Some(s) => s == name,
@@ -165,120 +116,13 @@ fn target_os_is(name: &str) -> bool {
 /// If $LLVM_SYS_<VERSION>_PREFIX is NOT set, then look for llvm-config in $PATH.
 ///
 /// Returns None on failure.
-fn locate_llvm_config(prefix: &PathBuf) -> Option<PathBuf> {
-    let prefix = prefix.join("bin");
-    for binary_name in llvm_config_binary_names() {
-        let binary_name = prefix.join(binary_name);
-        match llvm_version(&binary_name) {
-            Ok(version) => {
-                if is_compatible_llvm(&version) {
-                    // Compatible version found. Nice.
-                    return Some(binary_name);
-                }
-                // Version mismatch. Will try further searches, but warn that
-                // we're not using the system one.
-                println!(
-                    "found LLVM version {} on PATH, but need {}",
-                    version, *CRATE_VERSION
-                );
-            }
-            Err(e) => {
-                if e.downcast_ref::<io::Error>()
-                    .map_or(false, |e| e.kind() == ErrorKind::NotFound)
-                {
-                    // Looks like we failed to execute any llvm-config. Keep
-                    // searching.
-                } else {
-                    // Some other error, probably a weird failure. Give up.
-                    panic!("Failed to search PATH for llvm-config: {}", e)
-                }
-            }
-        }
-    }
-
-    None
-}
-
-/// Return an iterator over possible names for the llvm-config binary.
-fn llvm_config_binary_names() -> impl Iterator<Item = String> {
-    let base_names = [
-        "llvm-config".into(),
-        format!("llvm-config-{}", CRATE_VERSION.major),
-        format!("llvm-config{}", CRATE_VERSION.major),
-        format!("llvm{}-config", CRATE_VERSION.major),
-        format!(
-            "llvm-config-{}.{}",
-            CRATE_VERSION.major, CRATE_VERSION.minor
-        ),
-        format!("llvm-config{}{}", CRATE_VERSION.major, CRATE_VERSION.minor),
-    ];
-
-    // On Windows, also search for llvm-config.exe
-    if target_os_is("windows") {
-        IntoIterator::into_iter(base_names)
-            .flat_map(|name| [format!("{}.exe", name), name])
-            .collect::<Vec<_>>()
-    } else {
-        base_names.to_vec()
-    }
-    .into_iter()
-}
-
-/// Check whether the given version of LLVM is blocklisted,
-/// returning `Some(reason)` if it is.
-fn is_blocklisted_llvm(llvm_version: &Version) -> Option<&'static str> {
-    static BLOCKLIST: &[(u64, u64, u64, &str)] = &[];
-
-    if let Some(x) = env::var_os(&*ENV_IGNORE_BLOCKLIST) {
-        if &x == "YES" {
-            println!(
-                "cargo:warning=ignoring blocklist entry for LLVM {}",
-                llvm_version
-            );
-            return None;
-        } else {
-            println!(
-                "cargo:warning={} is set but not exactly \"YES\"; blocklist is still honored",
-                *ENV_IGNORE_BLOCKLIST
-            );
-        }
-    }
-
-    for &(major, minor, patch, reason) in BLOCKLIST.iter() {
-        let bad_version = Version {
-            major,
-            minor,
-            patch,
-            pre: semver::Prerelease::EMPTY,
-            build: semver::BuildMetadata::EMPTY,
-        };
-
-        if &bad_version == llvm_version {
-            return Some(reason);
-        }
-    }
-    None
-}
-
-/// Check whether the given LLVM version is compatible with this version of
-/// the crate.
-fn is_compatible_llvm(llvm_version: &Version) -> bool {
-    if let Some(reason) = is_blocklisted_llvm(llvm_version) {
-        println!(
-            "found LLVM {}, which is blocklisted: {}",
-            llvm_version, reason
-        );
-        return false;
-    }
-
-    let strict = env::var_os(&*ENV_STRICT_VERSIONING).is_some();
-    if strict {
-        llvm_version.major == CRATE_VERSION.major && llvm_version.minor == CRATE_VERSION.minor
-    } else {
-        llvm_version.major >= CRATE_VERSION.major
-            || (llvm_version.major == CRATE_VERSION.major
-                && llvm_version.minor >= CRATE_VERSION.minor)
-    }
+fn locate_llvm_config(prefix: &PathBuf) -> PathBuf {
+    let binary_name = prefix
+        .join("bin")
+        .join(format!("llvm-config{}", env::consts::EXE_SUFFIX));
+    llvm_config_ex(&*binary_name, ["--version"])
+        .expect("llvm-config not found or downloaded incorrectly!");
+    binary_name
 }
 
 /// Invoke the specified binary as llvm-config.
@@ -321,31 +165,6 @@ where
     .with_context(|| format!("{cmd:?}"))
 }
 
-/// Get the LLVM version using llvm-config.
-fn llvm_version(binary: &Path) -> anyhow::Result<Version> {
-    let version_str = llvm_config_ex(binary, ["--version"])?;
-
-    // LLVM isn't really semver and uses version suffixes to build
-    // version strings like '3.8.0svn', so limit what we try to parse
-    // to only the numeric bits.
-    let re = Regex::new(r"^(?P<major>\d+)\.(?P<minor>\d+)(?:\.(?P<patch>\d+))??").unwrap();
-    let c = re.captures(&version_str).ok_or_else(|| {
-        anyhow::anyhow!(
-            "could not determine LLVM version from llvm-config. Version string: {version_str}"
-        )
-    })?;
-
-    // some systems don't have a patch number but Version wants it so we just append .0 if it isn't
-    // there
-    let major = c.name("major").unwrap().as_str().parse().context("major")?;
-    let minor = c.name("minor").unwrap().as_str().parse().context("minor")?;
-    let patch = match c.name("patch") {
-        None => 0,
-        Some(patch) => patch.as_str().parse().context("patch")?,
-    };
-    Ok(Version::new(major, minor, patch))
-}
-
 /// Get the names of the dylibs required by LLVM, including the C++ standard
 /// library.
 fn get_system_libraries(llvm_config_path: &Path, kind: LibraryKind) -> Vec<String> {
@@ -357,74 +176,76 @@ fn get_system_libraries(llvm_config_path: &Path, kind: LibraryKind) -> Vec<Strin
     llvm_config(llvm_config_path, ["--system-libs", link_arg])
         .split(&[' ', '\n'] as &[char])
         .filter(|s| !s.is_empty())
-        .map(|flag| {
-            if target_env_is("msvc") {
-                // Same as --libnames, foo.lib
-                flag.strip_suffix(".lib").unwrap_or_else(|| {
-                    panic!(
-                        "system library '{}' does not appear to be a MSVC library file",
-                        flag
-                    )
-                })
-            } else {
-                if let Some(flag) = flag.strip_prefix("-l") {
-                    // Linker flags style, -lfoo
-                    if target_os_is("macos") {
-                        // .tdb libraries are "text-based stub" files that provide lists of symbols,
-                        // which refer to libraries shipped with a given system and aren't shipped
-                        // as part of the corresponding SDK. They're named like the underlying
-                        // library object, including the 'lib' prefix that we need to strip.
-                        if let Some(flag) = flag
-                            .strip_prefix("lib")
-                            .and_then(|flag| flag.strip_suffix(".tbd"))
-                        {
-                            return flag;
-                        }
-                    }
-
-                    if let Some(i) = flag.find(".so.") {
-                        // On some distributions (OpenBSD, perhaps others), we get sonames
-                        // like "-lz.so.7.0". Correct those by pruning the file extension
-                        // and library version.
-                        return &flag[..i];
-                    }
-                    return flag;
-                }
-
-                let maybe_lib = Path::new(flag);
-                if maybe_lib.is_file() {
-                    // Library on disk, likely an absolute path to a .so. We'll add its location to
-                    // the library search path and specify the file as a link target.
-                    println!(
-                        "cargo:rustc-link-search={}",
-                        maybe_lib.parent().unwrap().display()
-                    );
-
-                    // Expect a file named something like libfoo.so, or with a version libfoo.so.1.
-                    // Trim everything after and including the last .so and remove the leading 'lib'
-                    let soname = maybe_lib
-                        .file_name()
-                        .unwrap()
-                        .to_str()
-                        .expect("Shared library path must be a valid string");
-                    let (stem, _rest) = soname
-                        .rsplit_once(target_dylib_extension())
-                        .expect("Shared library should be a .so file");
-
-                    stem.strip_prefix("lib").unwrap_or_else(|| {
-                        panic!("system library '{}' does not have a 'lib' prefix", soname)
-                    })
-                } else {
-                    panic!(
-                        "Unable to parse result of llvm-config --system-libs: {}",
-                        flag
-                    )
-                }
-            }
-        })
+        .map(handle_flag)
         .chain(get_system_libcpp())
         .map(str::to_owned)
         .collect()
+}
+
+fn handle_flag(flag: &str) -> &str {
+    if target_env_is("msvc") {
+        // Same as --libnames, foo.lib
+        flag.strip_suffix(".lib").unwrap_or_else(|| {
+            panic!(
+                "system library '{}' does not appear to be a MSVC library file",
+                flag
+            )
+        })
+    } else {
+        if let Some(flag) = flag.strip_prefix("-l") {
+            // Linker flags style, -lfoo
+            if target_os_is("macos") {
+                // .tdb libraries are "text-based stub" files that provide lists of symbols,
+                // which refer to libraries shipped with a given system and aren't shipped
+                // as part of the corresponding SDK. They're named like the underlying
+                // library object, including the 'lib' prefix that we need to strip.
+                if let Some(flag) = flag
+                    .strip_prefix("lib")
+                    .and_then(|flag| flag.strip_suffix(".tbd"))
+                {
+                    return flag;
+                }
+            }
+
+            if let Some(i) = flag.find(".so.") {
+                // On some distributions (OpenBSD, perhaps others), we get sonames
+                // like "-lz.so.7.0". Correct those by pruning the file extension
+                // and library version.
+                return &flag[..i];
+            }
+            return flag;
+        }
+
+        let maybe_lib = Path::new(flag);
+        if maybe_lib.is_file() {
+            // Library on disk, likely an absolute path to a .so. We'll add its location to
+            // the library search path and specify the file as a link target.
+            println!(
+                "cargo:rustc-link-search={}",
+                maybe_lib.parent().unwrap().display()
+            );
+
+            // Expect a file named something like libfoo.so, or with a version libfoo.so.1.
+            // Trim everything after and including the last .so and remove the leading 'lib'
+            let soname = maybe_lib
+                .file_name()
+                .unwrap()
+                .to_str()
+                .expect("Shared library path must be a valid string");
+            let (stem, _rest) = soname
+                .rsplit_once(target_dylib_extension())
+                .expect("Shared library should be a .so file");
+
+            stem.strip_prefix("lib").unwrap_or_else(|| {
+                panic!("system library '{}' does not have a 'lib' prefix", soname)
+            })
+        } else {
+            panic!(
+                "Unable to parse result of llvm-config --system-libs: {}",
+                flag
+            )
+        }
+    }
 }
 
 /// Return additional linker search paths that should be used but that are not discovered
@@ -628,8 +449,7 @@ fn get_llvm_cflags(llvm_config_path: &Path) -> String {
     // include flags that aren't understood by the default compiler we're
     // using. Unless requested otherwise, clean CFLAGS of options that are
     // known to be possibly-harmful.
-    let no_clean = env::var_os(&*ENV_NO_CLEAN_CFLAGS).is_some();
-    if no_clean || target_env_is("msvc") {
+    if target_env_is("msvc") {
         // MSVC doesn't accept -W... options, so don't try to strip them and
         // possibly strip something that should be retained. Also do nothing if
         // the user requests it.
@@ -643,37 +463,18 @@ fn get_llvm_cflags(llvm_config_path: &Path) -> String {
         .join(" ")
 }
 
-fn is_llvm_debug(llvm_config_path: &Path) -> bool {
-    // Has to be either Debug or Release
-    llvm_config(llvm_config_path, ["--build-mode"]).contains("Debug")
-}
-
+/// Builds and links against LLVM
 fn build(llvm_path: PathBuf) {
-    // Behavior can be significantly affected by these vars.
-    println!("cargo:rerun-if-env-changed={}", &*ENV_LLVM_PREFIX);
-    if let Ok(path) = env::var(&*ENV_LLVM_PREFIX) {
-        println!("cargo:rerun-if-changed={}", path);
-    }
-
     if env::consts::OS == "windows" {
         println!("cargo:rustc-link-arg=/ignore:4099");
     }
-    println!("cargo:rerun-if-env-changed={}", &*ENV_IGNORE_BLOCKLIST);
-    println!("cargo:rerun-if-env-changed={}", &*ENV_STRICT_VERSIONING);
-    println!("cargo:rerun-if-env-changed={}", &*ENV_NO_CLEAN_CFLAGS);
-    println!("cargo:rerun-if-env-changed={}", &*ENV_USE_DEBUG_MSVCRT);
-    println!("cargo:rerun-if-env-changed={}", &*ENV_FORCE_FFI);
 
-    let llvm_config_path = match locate_llvm_config(&llvm_path) {
-        None => {
-            panic!("Failed to find LLVM at {}", llvm_path.to_str().unwrap());
-        }
-        Some(llvm_config_path) => llvm_config_path,
-    };
+    let llvm_config_path = locate_llvm_config(&llvm_path);
 
     unsafe {
-        std::env::set_var("CFLAGS", get_llvm_cflags(&llvm_config_path));
+        env::set_var("CFLAGS", get_llvm_cflags(&llvm_config_path));
     }
+
     cc::Build::new()
         .file("wrappers/target.c")
         .compile("targetwrappers");
@@ -694,6 +495,7 @@ fn build(llvm_path: PathBuf) {
     for link_search_dir in get_system_library_dirs() {
         println!("cargo:rustc-link-search=native={}", link_search_dir);
     }
+
     // We need to take note of what kind of libraries we linked to, so that
     // we can link to the same kind of system libraries
     let (kind, libs) = get_link_libraries(&llvm_config_path, &preferences);
@@ -707,17 +509,5 @@ fn build(llvm_path: PathBuf) {
     let sys_lib_kind = LibraryKind::Dynamic;
     for name in get_system_libraries(&llvm_config_path, kind) {
         println!("cargo:rustc-link-lib={}={}", sys_lib_kind.string(), name);
-    }
-
-    let use_debug_msvcrt = env::var_os(&*ENV_USE_DEBUG_MSVCRT).is_some();
-    if target_env_is("msvc") && (use_debug_msvcrt || is_llvm_debug(&llvm_config_path)) {
-        println!("cargo:rustc-link-lib={}", "msvcrtd");
-    }
-
-    // Link libffi if the user requested this workaround.
-    // See https://bitbucket.org/tari/llvm-sys.rs/issues/12/
-    let force_ffi = env::var_os(&*ENV_FORCE_FFI).is_some();
-    if force_ffi {
-        println!("cargo:rustc-link-lib=dylib={}", "ffi");
     }
 }
