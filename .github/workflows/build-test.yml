@@ -28,9 +28,21 @@ jobs:
         uses: actions/checkout@v3
         with:
           submodules: true
+      - name: Install zstd on macOS
+        if: matrix.os == 'macos-latest'
+        run: brew install zstd
+      - name: Install Code Coverage
+        run: cargo +nightly install cargo-llvm-cov
       - name: Set up Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
       - name: Test
-        run: cargo +nightly test --verbose
+        run: cargo +nightly llvm-cov --lcov --output-path coverage.info --bin tests --verbose -- --nocapture
+      - name: Upload Coverage Report To Codecov
+        if: github.event_name == 'push' && github.repository == 'BigBadE/Raven-Rewrite'
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.info
+          verbose: true

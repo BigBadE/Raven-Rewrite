@@ -5,12 +5,8 @@ use compiler_llvm::LowCompiler;
 
 type Main = unsafe extern "C" fn () -> i32;
 
-fn main() {
-
-}
-
-#[tokio::test]
-async fn test() -> Result<(), Error> {
+#[tokio::main]
+async fn main() -> Result<(), Error> {
     let syntax = match compile_source(PathBuf::from("tests/core")).await {
         Ok(syntax) => syntax,
         Err(errors) => {
