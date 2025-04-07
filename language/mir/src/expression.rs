@@ -113,19 +113,7 @@ impl<
             HighExpression::Literal(lit) => MediumExpression::Literal(*lit),
             // Create a new block, using temps for the values until we get what we want
             HighExpression::CodeBlock { body, value } => {
-                let start = context.create_block();
-                context.set_terminator(MediumTerminator::Goto(start));
-                context.switch_to_block(start);
-
-                for statement in body {
-                    // Translate each statement in the block.
-                    I::translate_stmt(statement, context)?;
-                }
-
-                let end = context.create_block();
-                context.set_terminator(MediumTerminator::Goto(end));
-                context.switch_to_block(end);
-                I::translate_expr(value, context)?
+                translate_code_block(body, value, context)?
             }
             // A variable is translated to a use of a local place.
             HighExpression::Variable(var) => {
@@ -195,6 +183,30 @@ impl<
             )?,
         })
     }
+}
+
+fn translate_code_block<
+    'a,
+    I: SyntaxLevel<FunctionReference = FunctionRef, Terminator = HighTerminator<I>>
+        + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
+>(
+    body: &Vec<I::Statement>,
+    value: &I::Expression,
+    context: &mut MirFunctionContext<'a>,
+) -> Result<MediumExpression<MediumSyntaxLevel>, CompileError> {
+    let start = context.create_block();
+    context.set_terminator(MediumTerminator::Goto(start));
+    context.switch_to_block(start);
+
+    for statement in body {
+        // Translate each statement in the block.
+        I::translate_stmt(statement, context)?;
+    }
+
+    let end = context.create_block();
+    context.set_terminator(MediumTerminator::Goto(end));
+    context.switch_to_block(end);
+    I::translate_expr(value, context)
 }
 
 fn get_operation<
