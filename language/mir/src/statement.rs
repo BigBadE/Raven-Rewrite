@@ -7,8 +7,8 @@ use std::fmt::Debug;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Statement;
 use syntax::structure::visitor::Translate;
-use syntax::util::CompileError;
 use syntax::util::translation::Translatable;
+use syntax::util::CompileError;
 use syntax::{SyntaxLevel, TypeRef};
 
 /// The MIR is made up of a series of nodes, each terminated with a jump expression.
