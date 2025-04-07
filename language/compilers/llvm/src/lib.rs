@@ -7,14 +7,14 @@ mod statement;
 /// Compiles types
 mod types;
 
-use crate::statement::{compile_block, FunctionGenerator};
+use crate::statement::{FunctionGenerator, compile_block};
 use crate::types::TypeManager;
 use anyhow::Error;
+use inkwell::OptimizationLevel;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
 use inkwell::module::Module;
-use inkwell::OptimizationLevel;
 use mir::MediumSyntaxLevel;
 use std::collections::HashMap;
 use syntax::{FunctionRef, Syntax};

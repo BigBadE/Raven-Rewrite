@@ -4,11 +4,13 @@ use hir::expression::HighExpression;
 use hir::function::HighTerminator;
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::ops::Deref;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Expression;
 use syntax::structure::visitor::Translate;
-use syntax::util::translation::Translatable;
 use syntax::util::CompileError;
+use syntax::util::translation::{Translatable, translate_fields, translate_vec};
 use syntax::{FunctionRef, SyntaxLevel, TypeRef};
 
 /// An expression in the MIR
@@ -84,34 +86,23 @@ pub fn translate_function<
         + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
 >(
     function: &I::FunctionReference,
-    target: Option<&Box<I::Expression>>,
     arguments: Vec<&I::Expression>,
     context: &mut MirFunctionContext<'a>,
 ) -> Result<MediumExpression<MediumSyntaxLevel>, CompileError> {
-    let mut args = Vec::new();
-    // If there is a target (as in a method call), translate and prepend it.
-    if let Some(target_expr) = target {
-        args.push(get_operand(
-            I::translate_expr(target_expr, context)?,
-            context,
-        ));
-    }
-    // Translate the remaining arguments.
-    for arg in arguments {
-        args.push(get_operand(I::translate_expr(arg, context)?, context));
-    }
     Ok(MediumExpression::FunctionCall {
         func: I::translate_func_ref(function, context)?,
-        args,
+        args: translate_vec(&arguments, context, |arg, context| {
+            I::translate_expr(arg, context).map(|expr| get_operand(expr, context))
+        })?,
     })
 }
 
 /// Handle statement translation
 impl<
-        'a,
-        I: SyntaxLevel<Terminator = HighTerminator<I>, FunctionReference = FunctionRef>
-            + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
-    > Translate<MediumExpression<MediumSyntaxLevel>, MirFunctionContext<'a>> for HighExpression<I>
+    'a,
+    I: SyntaxLevel<Terminator = HighTerminator<I>, FunctionReference = FunctionRef>
+        + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
+> Translate<MediumExpression<MediumSyntaxLevel>, MirFunctionContext<'a>> for HighExpression<I>
 {
     fn translate(
         &self,
@@ -163,8 +154,13 @@ impl<
                 arguments,
             } => translate_function::<I>(
                 function,
-                target.as_ref(),
-                arguments.iter().collect(),
+                target
+                    .as_ref()
+                    .map(|target| vec![target.deref()])
+                    .unwrap_or_default()
+                    .into_iter()
+                    .chain(arguments)
+                    .collect(),
                 context,
             )?,
             // For create-struct, translate the type and each field.
@@ -173,32 +169,17 @@ impl<
                 fields,
             } => MediumExpression::CreateStruct {
                 struct_type: I::translate_type_ref(target_struct, context)?,
-                fields: fields
-                    .iter()
-                    .map(|(name, expression)| {
-                        Ok((
-                            *name,
-                            get_operand(I::translate_expr(expression, context)?, context),
-                        ))
-                    })
-                    .collect::<Result<_, _>>()?,
+                fields: translate_fields(fields, context, |field, context| {
+                    I::translate_expr(field, context).map(|expr| get_operand(expr, context))
+                })?,
             },
-            HighExpression::UnaryOperation { pre, symbol, value } => translate_function::<I>(
-                // TODO type check to get the right one
-                &if *pre {
+            HighExpression::UnaryOperation { pre, symbol, value } => get_operation::<I>(
+                if *pre {
                     &context.source.pre_unary_operations
                 } else {
                     &context.source.post_unary_operations
-                }
-                .get(symbol)
-                .ok_or_else(|| {
-                    CompileError::Basic(format!(
-                        "Unknown operation {}",
-                        context.source.syntax.symbols.resolve(symbol)
-                    ))
-                })?[0],
-                // Doesn't matter if it's the target or start of arguments
-                None,
+                },
+                symbol,
                 vec![value],
                 context,
             )?,
@@ -206,24 +187,37 @@ impl<
                 symbol,
                 first,
                 second,
-            } => translate_function::<I>(
-                &context
-                    .source
-                    .binary_operations
-                    .get(symbol)
-                    .ok_or_else(|| {
-                        CompileError::Basic(format!(
-                            "Unknown operation {}",
-                            context.source.syntax.symbols.resolve(symbol)
-                        ))
-                    })?[0],
-                // Doesn't matter if it's the target or start of arguments
-                None,
+            } => get_operation::<I>(
+                &context.source.binary_operations,
+                symbol,
                 vec![first, second],
                 context,
             )?,
         })
     }
+}
+
+fn get_operation<
+    'a,
+    I: SyntaxLevel<FunctionReference = FunctionRef, Terminator = HighTerminator<I>>
+        + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
+>(
+    operations: &HashMap<Spur, Vec<FunctionRef>>,
+    symbol: &Spur,
+    args: Vec<&I::Expression>,
+    context: &mut MirFunctionContext<'a>,
+) -> Result<MediumExpression<MediumSyntaxLevel>, CompileError> {
+    translate_function::<I>(
+        &operations.get(symbol).ok_or_else(|| {
+            CompileError::Basic(format!(
+                "Unknown operation {}",
+                context.source.syntax.symbols.resolve(symbol)
+            ))
+        })?[0],
+        // TODO type check to get the right one
+        args,
+        context,
+    )
 }
 
 fn translate_assign<

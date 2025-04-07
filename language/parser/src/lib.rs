@@ -5,21 +5,21 @@ use anyhow::Error;
 use async_recursion::async_recursion;
 use hir::function::HighFunction;
 use hir::types::HighType;
-use hir::{create_syntax, RawSource, RawSyntaxLevel};
+use hir::{RawSource, RawSyntaxLevel, create_syntax};
 use lasso::{Spur, ThreadedRodeo};
 use nom::combinator::eof;
 use nom_locate::LocatedSpan;
+use nom_supreme::ParserExt;
 use nom_supreme::error::ErrorTree;
 use nom_supreme::final_parser::final_parser;
 use nom_supreme::multi::collect_separated_terminated;
-use nom_supreme::ParserExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use syntax::structure::literal::TYPES;
 use syntax::structure::Modifier;
-use syntax::util::path::{get_path, FilePath};
+use syntax::structure::literal::TYPES;
 use syntax::util::CompileError;
+use syntax::util::path::{FilePath, get_path};
 use syntax::{FunctionRef, TypeRef};
 use tokio::fs;
 
@@ -115,7 +115,6 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, CompileError> {
         syntax,
     };
     let mut errors = Vec::new();
-
     for path in read_recursive(&dir)
         .await
         .map_err(|err| CompileError::Internal(err))?
@@ -129,45 +128,7 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, CompileError> {
                 continue;
             }
         };
-
-        // Add the functions to the output
-        for function in file.functions {
-            let mut path = file_path.clone();
-            path.push(function.name);
-            let reference = FunctionRef(source.syntax.functions.len());
-            if function.modifiers.contains(&Modifier::OPERATION) {
-                match function.parameters.len() {
-                    1 => source
-                        .pre_unary_operations
-                        .entry(function.name)
-                        .or_default()
-                        .push(reference),
-                    2 => source
-                        .binary_operations
-                        .entry(function.name)
-                        .or_default()
-                        .push(reference),
-                    _ => {
-                        return Err(CompileError::Basic(
-                            "Expected operation to only have 1 or 2 args".to_string(),
-                        ));
-                    }
-                }
-            }
-            source.functions.insert(path, reference);
-            source.syntax.functions.push(function);
-        }
-
-        for types in file.types {
-            let mut path = file_path.clone();
-            path.push(types.name);
-            source
-                .types
-                .insert(path, TypeRef(source.syntax.types.len()));
-            source.syntax.types.push(types);
-        }
-
-        source.imports.insert(file_path, file.imports);
+        errors.append(&mut add_file_to_syntax(&mut source, file, file_path));
     }
 
     if !errors.is_empty() {
@@ -175,6 +136,54 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, CompileError> {
     }
 
     Ok(source)
+}
+
+fn add_file_to_syntax(
+    source: &mut RawSource,
+    file: File,
+    file_path: FilePath,
+) -> Vec<CompileError> {
+    let mut errors = Vec::new();
+
+    // Add the functions to the output
+    for function in file.functions {
+        let mut path = file_path.clone();
+        path.push(function.name);
+        let reference = FunctionRef(source.syntax.functions.len());
+        if function.modifiers.contains(&Modifier::OPERATION) {
+            match function.parameters.len() {
+                1 => source
+                    .pre_unary_operations
+                    .entry(function.name)
+                    .or_default()
+                    .push(reference),
+                2 => source
+                    .binary_operations
+                    .entry(function.name)
+                    .or_default()
+                    .push(reference),
+                _ => {
+                    errors.push(CompileError::Basic(
+                        "Expected operation to only have 1 or 2 args".to_string(),
+                    ));
+                }
+            }
+        }
+        source.functions.insert(path, reference);
+        source.syntax.functions.push(function);
+    }
+
+    for types in file.types {
+        let mut path = file_path.clone();
+        path.push(types.name);
+        source
+            .types
+            .insert(path, TypeRef(source.syntax.types.len()));
+        source.syntax.types.push(types);
+    }
+
+    source.imports.insert(file_path, file.imports);
+    errors
 }
 
 /// Parses a single file into a `File`.

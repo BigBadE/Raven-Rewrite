@@ -189,67 +189,63 @@ fn get_system_libraries(llvm_config_path: &Path, kind: LibraryKind) -> Vec<Strin
 fn handle_flag(flag: &str) -> &str {
     if target_env_is("msvc") {
         // Same as --libnames, foo.lib
-        flag.strip_suffix(".lib").unwrap_or_else(|| {
+        return flag.strip_suffix(".lib").unwrap_or_else(|| {
             panic!(
                 "system library '{}' does not appear to be a MSVC library file",
                 flag
             )
-        })
-    } else {
-        if let Some(flag) = flag.strip_prefix("-l") {
-            // Linker flags style, -lfoo
-            if target_os_is("macos") {
-                // .tdb libraries are "text-based stub" files that provide lists of symbols,
-                // which refer to libraries shipped with a given system and aren't shipped
-                // as part of the corresponding SDK. They're named like the underlying
-                // library object, including the 'lib' prefix that we need to strip.
-                if let Some(flag) = flag
-                    .strip_prefix("lib")
-                    .and_then(|flag| flag.strip_suffix(".tbd"))
-                {
-                    return flag;
-                }
-            }
-
-            if let Some(i) = flag.find(".so.") {
-                // On some distributions (OpenBSD, perhaps others), we get sonames
-                // like "-lz.so.7.0". Correct those by pruning the file extension
-                // and library version.
-                return &flag[..i];
-            }
-            return flag;
-        }
-
-        let maybe_lib = Path::new(flag);
-        if maybe_lib.is_file() {
-            // Library on disk, likely an absolute path to a .so. We'll add its location to
-            // the library search path and specify the file as a link target.
-            println!(
-                "cargo:rustc-link-search={}",
-                maybe_lib.parent().unwrap().display()
-            );
-
-            // Expect a file named something like libfoo.so, or with a version libfoo.so.1.
-            // Trim everything after and including the last .so and remove the leading 'lib'
-            let soname = maybe_lib
-                .file_name()
-                .unwrap()
-                .to_str()
-                .expect("Shared library path must be a valid string");
-            let (stem, _rest) = soname
-                .rsplit_once(target_dylib_extension())
-                .expect("Shared library should be a .so file");
-
-            stem.strip_prefix("lib").unwrap_or_else(|| {
-                panic!("system library '{}' does not have a 'lib' prefix", soname)
-            })
-        } else {
-            panic!(
-                "Unable to parse result of llvm-config --system-libs: {}",
-                flag
-            )
-        }
+        });
     }
+
+    if let Some(flag) = flag.strip_prefix("-l") {
+        // Linker flags style, -lfoo
+        if target_os_is("macos") {
+            // .tdb libraries are "text-based stub" files that provide lists of symbols,
+            // which refer to libraries shipped with a given system and aren't shipped
+            // as part of the corresponding SDK. They're named like the underlying
+            // library object, including the 'lib' prefix that we need to strip.
+            if let Some(flag) = flag
+                .strip_prefix("lib")
+                .and_then(|flag| flag.strip_suffix(".tbd"))
+            {
+                return flag;
+            }
+        }
+
+        // On some distributions (OpenBSD, perhaps others), we get sonames
+        // like "-lz.so.7.0". Correct those by pruning the file extension
+        // and library version.
+        return flag.split(".so.")[0];
+    }
+
+    let maybe_lib = Path::new(flag);
+    if !maybe_lib.is_file() {
+        panic!(
+            "Unable to parse result of llvm-config --system-libs: {}",
+            flag
+        );
+    }
+
+    // Library on disk, likely an absolute path to a .so. We'll add its location to
+    // the library search path and specify the file as a link target.
+    println!(
+        "cargo:rustc-link-search={}",
+        maybe_lib.parent().unwrap().display()
+    );
+
+    // Expect a file named something like libfoo.so, or with a version libfoo.so.1.
+    // Trim everything after and including the last .so and remove the leading 'lib'
+    let soname = maybe_lib
+        .file_name()
+        .unwrap()
+        .to_str()
+        .expect("Shared library path must be a valid string");
+    let (stem, _rest) = soname
+        .rsplit_once(target_dylib_extension())
+        .expect("Shared library should be a .so file");
+
+    stem.strip_prefix("lib")
+        .unwrap_or_else(|| panic!("system library '{}' does not have a 'lib' prefix", soname))
 }
 
 /// Return additional linker search paths that should be used but that are not discovered
