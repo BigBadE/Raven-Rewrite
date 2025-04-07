@@ -215,7 +215,7 @@ fn handle_flag(flag: &str) -> &str {
         // On some distributions (OpenBSD, perhaps others), we get sonames
         // like "-lz.so.7.0". Correct those by pruning the file extension
         // and library version.
-        return flag.split(".so.")[0];
+        return flag.split(".so.").next().unwrap();
     }
 
     let maybe_lib = Path::new(flag);

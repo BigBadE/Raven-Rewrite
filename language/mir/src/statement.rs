@@ -70,7 +70,7 @@ impl<'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLe
                 todo!()
             }
             HighStatement::While { condition } => compile_while(condition, context)?,
-            HighStatement::Loop { body } => compile_loop(body, context)?,
+            HighStatement::Loop { body } => compile_loop::<I>(body, context)?,
             HighStatement::Terminator(terminator) => {
                 let terminator = I::translate_terminator(terminator, context)?;
                 context.set_terminator(terminator)
