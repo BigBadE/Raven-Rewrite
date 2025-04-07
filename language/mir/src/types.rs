@@ -2,13 +2,13 @@ use crate::{MediumSyntaxLevel, MirFunctionContext};
 use hir::types::{HighType, TypeData};
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
-use syntax::SyntaxLevel;
-use syntax::structure::Modifier;
 use syntax::structure::traits::Type;
 use syntax::structure::visitor::Translate;
-use syntax::util::CompileError;
+use syntax::structure::Modifier;
 use syntax::util::path::FilePath;
 use syntax::util::translation::Translatable;
+use syntax::util::CompileError;
+use syntax::SyntaxLevel;
 
 /// A type in the MIR
 #[derive(Serialize, Deserialize, Debug)]
