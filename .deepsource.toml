@@ -5,8 +5,5 @@ test_patterns = ["tests/**"]
 [[analyzers]]
 name = "rust"
 
-  [analyzers.meta]
-  msrv = "nightly"
-
-[[transformers]]
-name = "rustfmt"
+[analyzers.meta]
+msrv = "nightly"

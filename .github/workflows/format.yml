@@ -1,0 +1,78 @@
+name: Rustfmt Auto-Fix # Name of the workflow
+
+on: # Events that trigger this workflow
+  push:
+    branches: # Run on pushes to these branches
+      - main # Or your default branch (e.g., master)
+      - develop # Add other branches you want to auto-format
+  pull_request:
+
+# Prevent concurrent workflow runs for the same branch/PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Grant permissions for the GITHUB_TOKEN to push code
+permissions:
+  contents: write # Needed to push changes back to the repository
+
+jobs:
+  rustfmt:
+    name: Format Code # Name of the job
+    runs-on: ubuntu-latest # Use the latest Ubuntu runner
+
+    steps:
+      # Step 1: Check out the code
+      # Use the default GITHUB_TOKEN which has write permissions (defined above)
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Fetch the ref (branch/PR) correctly
+          ref: ${{ github.head_ref || github.ref }}
+          # Use the token with write permissions
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step 2: Install the Rust toolchain (includes rustfmt)
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      # Step 3: Run cargo fmt (modify files in place)
+      - name: Run cargo fmt
+        run: cargo fmt
+
+      # Step 4: Check if formatting made changes
+      # Use git diff --quiet which exits with 1 if there are changes, 0 otherwise
+      # Set an output variable 'changes_detected'
+      - name: Check for formatting changes
+        id: diff
+        run: |
+          git diff --quiet || echo "changes_detected=true" >> $GITHUB_OUTPUT
+        shell: bash
+
+      # Step 5: Configure Git user for commit (only if changes were detected)
+      - name: Configure Git
+        if: steps.diff.outputs.changes_detected == 'true'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+
+      # Step 6: Commit changes (only if changes were detected)
+      - name: Commit formatting changes
+        if: steps.diff.outputs.changes_detected == 'true'
+        run: |
+          git add . # Stage all changes (rustfmt usually modifies existing files)
+          git commit -m "style: Auto-format Rust code with rustfmt ✨"
+
+      # Step 7: Push changes back to the branch/PR (only if changes were detected)
+      - name: Push formatting changes
+        if: steps.diff.outputs.changes_detected == 'true'
+        run: |
+          # Push to the specific head ref (branch name)
+          # Handles both push events and pull request events
+          git push origin HEAD:${{ github.head_ref || github.ref }}
+        shell: bash
+        env:
+          # The GITHUB_TOKEN is implicitly used by git push over https
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
