@@ -16,11 +16,13 @@ use reqwest::blocking::Client;
 use zip::ZipArchive;
 
 static CFLAGS: &str = "CFLAGS";
+static OUT_DIR: &str = "OUT_DIR";
+static ZSTD_LIB_DIR: &str = "ZSTD_LIB_DIR";
 
 /// To automatically keep up to date with LLVM, this will download and link a binary from a seperate repo.
 /// Linking code is taken from llvm-sys.
 fn main() {
-    let mut target = PathBuf::from(env::var("OUT_DIR").unwrap())
+    let mut target = PathBuf::from(env::var(OUT_DIR).unwrap())
         .parent()
         .unwrap()
         .parent()
@@ -304,6 +306,7 @@ enum LibraryKind {
 }
 
 impl LibraryKind {
+    /// Stringifies the enum
     pub fn string(&self) -> &'static str {
         match self {
             LibraryKind::Static => "static",
@@ -488,7 +491,7 @@ fn build(llvm_path: PathBuf) {
 
     let preferences = LinkingPreferences::init();
 
-    if let Ok(found) = env::var("ZSTD_LIB_DIR") {
+    if let Ok(found) = env::var(ZSTD_LIB_DIR) {
         println!("cargo:rustc-link-search=native={}", found);
     }
 

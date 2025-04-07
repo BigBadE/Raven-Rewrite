@@ -1,6 +1,10 @@
+/// Compiles expressions
 mod expression;
+/// Compiles functions
 mod function;
+/// Compiles statements
 mod statement;
+/// Compiles types
 mod types;
 
 use crate::statement::{FunctionGenerator, compile_block};

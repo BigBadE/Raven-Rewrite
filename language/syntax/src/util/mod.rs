@@ -1,7 +1,9 @@
 use anyhow::Error;
 use thiserror::Error;
 
+/// Utility functions for paths
 pub mod path;
+/// Utility functions for translation
 pub mod translation;
 
 /// An error raised in the compilation process

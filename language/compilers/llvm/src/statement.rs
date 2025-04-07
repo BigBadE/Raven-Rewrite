@@ -21,6 +21,7 @@ pub struct FunctionGenerator<'a, 'b, 'ctx> {
 }
 
 impl<'a, 'b, 'ctx> FunctionGenerator<'a, 'b, 'ctx> {
+    /// Gets the builder
     pub fn builder(&mut self) -> &Builder<'ctx> {
         &self.type_manager.builder
     }

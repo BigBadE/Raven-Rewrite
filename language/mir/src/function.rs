@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::mem;
 use syntax::SyntaxLevel;
 use syntax::structure::Modifier;
+use syntax::structure::traits::Function;
 use syntax::structure::visitor::Translate;
 use syntax::util::CompileError;
 use syntax::util::path::FilePath;
@@ -26,6 +27,12 @@ pub struct MediumFunction<T: SyntaxLevel> {
     pub return_type: Option<T::TypeReference>,
     /// The body of the function
     pub body: Vec<CodeBlock<T>>,
+}
+
+impl<T: SyntaxLevel> Function for MediumFunction<T> {
+    fn file(&self) -> &FilePath {
+        &self.file
+    }
 }
 
 impl<'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>>

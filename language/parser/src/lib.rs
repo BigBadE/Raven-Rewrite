@@ -17,18 +17,27 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use syntax::structure::Modifier;
+use syntax::structure::literal::TYPES;
 use syntax::util::CompileError;
 use syntax::util::path::{FilePath, get_path};
 use syntax::{FunctionRef, TypeRef};
 use tokio::fs;
 
+/// Parses blocks of code
 mod code;
+/// Handles errors
 mod errors;
+/// Parses expressions
 mod expressions;
+/// Parses a file
 mod file;
+/// Parses a function
 mod function;
+/// Parses statements
 mod statements;
+/// Parses structures
 mod structure;
+/// Utility parsing functions
 mod util;
 
 /// Keeps track of the parsing location, the function output, and any error that arises
@@ -91,14 +100,19 @@ impl Extend<TopLevelItem> for File {
 
 /// Parses a source directory into a `RawSource`.
 pub async fn parse_source(dir: PathBuf) -> Result<RawSource, CompileError> {
+    let syntax = create_syntax();
     let mut source = RawSource {
-        syntax: create_syntax(),
         imports: HashMap::default(),
-        types: HashMap::default(),
+        types: TYPES
+            .iter()
+            .enumerate()
+            .map(|(id, name)| (vec![syntax.symbols.get_or_intern(name)], TypeRef(id)))
+            .collect(),
         functions: HashMap::default(),
         pre_unary_operations: HashMap::default(),
         post_unary_operations: HashMap::default(),
         binary_operations: HashMap::default(),
+        syntax,
     };
     let mut errors = Vec::new();
 

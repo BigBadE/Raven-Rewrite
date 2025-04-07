@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::sync::Arc;
 
+/// The structure of the program in memory
 pub mod structure;
+/// Various utility functions
 pub mod util;
 
 /// A reference to a specific type
@@ -37,8 +39,11 @@ pub trait SyntaxLevel: Serialize + for<'a> Deserialize<'a> + Debug {
 /// The syntax of the program, used to
 #[derive(Serialize, Deserialize)]
 pub struct Syntax<T: SyntaxLevel> {
+    /// The symbol table
     pub symbols: Arc<ThreadedRodeo>,
+    /// The program's functions
     pub functions: Vec<T::Function>,
+    /// The program's types
     pub types: Vec<T::Type>,
 }
 

@@ -155,34 +155,7 @@ impl<
                 declaration,
                 variable,
                 value,
-            } => {
-                if !context.local_vars.contains_key(variable) && !declaration {
-                    return Err(CompileError::Basic("Unknown variable!".to_string()));
-                }
-
-                let value = I::translate_expr(value, context)?;
-                let types = value.get_type(context);
-                let Some(types) = types else {
-                    return Err(CompileError::Basic("Expected non-void type!".to_string()));
-                };
-
-                let place = Place {
-                    local: context.get_or_create_local(*variable, types),
-                    projection: Vec::new(),
-                };
-
-                if *declaration {
-                    context.push_statement(MediumStatement::StorageLive(place.local, types))
-                }
-
-                // Emit the assignment as a side-effect.
-                context.push_statement(MediumStatement::Assign {
-                    place: place.clone(),
-                    value,
-                });
-
-                MediumExpression::Use(Operand::Move(place))
-            }
+            } => translate_assign::<I>(declaration, variable, value, context)?,
             // For function calls, translate the function reference and arguments.
             HighExpression::FunctionCall {
                 function,
@@ -251,4 +224,41 @@ impl<
             )?,
         })
     }
+}
+
+fn translate_assign<
+    'a,
+    I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
+>(
+    declaration: &bool,
+    variable: &Spur,
+    value: &I::Expression,
+    context: &mut MirFunctionContext<'a>,
+) -> Result<MediumExpression<MediumSyntaxLevel>, CompileError> {
+    if !context.local_vars.contains_key(variable) && !declaration {
+        return Err(CompileError::Basic("Unknown variable!".to_string()));
+    }
+
+    let value = I::translate_expr(value, context)?;
+    let types = value.get_type(context);
+    let Some(types) = types else {
+        return Err(CompileError::Basic("Expected non-void type!".to_string()));
+    };
+
+    let place = Place {
+        local: context.get_or_create_local(*variable, types),
+        projection: Vec::new(),
+    };
+
+    if *declaration {
+        context.push_statement(MediumStatement::StorageLive(place.local, types))
+    }
+
+    // Emit the assignment as a side-effect.
+    context.push_statement(MediumStatement::Assign {
+        place: place.clone(),
+        value,
+    });
+
+    Ok(MediumExpression::Use(Operand::Move(place)))
 }

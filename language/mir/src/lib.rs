@@ -1,6 +1,10 @@
+/// The MIR expression type and impls
 pub mod expression;
+/// The MIR function type and impls
 pub mod function;
+/// The MIR statement type and impls
 pub mod statement;
+/// The MIR type type and impls
 pub mod types;
 
 use crate::expression::MediumExpression;
@@ -40,13 +44,20 @@ impl SyntaxLevel for MediumSyntaxLevel {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub enum MediumTerminator<T: SyntaxLevel> {
+    /// Goes to a specific block
     Goto(CodeBlockId),
+    /// A goto that depends on a condition
     Switch {
+        /// The condition to check
         discriminant: MediumExpression<T>,
+        /// The blocks to jump to
         targets: Vec<(Literal, CodeBlockId)>,
+        /// The fallback if none match
         fallback: CodeBlockId,
     },
+    /// Returns a value
     Return(Option<T::Expression>),
+    /// Should never be hit
     Unreachable,
 }
 

@@ -23,6 +23,12 @@ pub struct MediumType<T: SyntaxLevel> {
     pub fields: Vec<T::TypeReference>,
 }
 
+impl<T: SyntaxLevel> Type for MediumType<T> {
+    fn file(&self) -> &FilePath {
+        &self.file
+    }
+}
+
 impl<'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>>
     Translate<Option<MediumType<MediumSyntaxLevel>>, MirFunctionContext<'a>> for HighType<I>
 {

@@ -15,20 +15,31 @@ use syntax::util::path::{FilePath, path_to_str};
 use syntax::util::translation::Translatable;
 use syntax::{FunctionRef, Syntax, SyntaxLevel, TypeRef};
 
+/// The HIR expression type and impls
 pub mod expression;
+/// The HIR function type and impls
 pub mod function;
+/// The HIR statement type and impls
 pub mod statement;
+/// The HIR type type and impls
 pub mod types;
 
 /// A representation of the source code in its raw form. No linking or verifying has been done yet.
 /// Contains some additional bookkeeping information, such as the operations.
 pub struct RawSource {
+    /// The syntax
     pub syntax: Syntax<RawSyntaxLevel>,
+    /// Each file's imports
     pub imports: HashMap<FilePath, Vec<FilePath>>,
+    /// All the types by path
     pub types: HashMap<FilePath, TypeRef>,
+    /// All the functions by path
     pub functions: HashMap<FilePath, FunctionRef>,
+    /// All pre unary operations (like !true)
     pub pre_unary_operations: HashMap<Spur, Vec<FunctionRef>>,
+    /// All post unary operations (like foo?)
     pub post_unary_operations: HashMap<Spur, Vec<FunctionRef>>,
+    /// All binary operations (like 1 + 2)
     pub binary_operations: HashMap<Spur, Vec<FunctionRef>>,
 }
 
@@ -116,12 +127,6 @@ pub fn resolve_to_hir(source: RawSource) -> Result<HirSource, CompileError> {
         type_cache: HashMap::default(),
         func_cache: HashMap::default(),
     };
-    context.types.extend(
-        TYPES
-            .iter()
-            .enumerate()
-            .map(|(id, name)| (vec![source.syntax.symbols.get_or_intern(name)], TypeRef(id))),
-    );
 
     Ok(HirSource {
         syntax: source.syntax.translate(&mut context)?,

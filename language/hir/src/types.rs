@@ -27,6 +27,12 @@ pub struct HighType<T: SyntaxLevel> {
     pub data: TypeData<T>,
 }
 
+impl<T: SyntaxLevel> Type for HighType<T> {
+    fn file(&self) -> &FilePath {
+        &self.file
+    }
+}
+
 impl HighType<RawSyntaxLevel> {
     /// Creates an internal type
     pub fn internal(name: Spur) -> Self {

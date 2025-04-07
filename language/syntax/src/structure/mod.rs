@@ -3,8 +3,11 @@ use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Literal values like numbers or strings
 pub mod literal;
+/// Traits for various types used in the syntax
 pub mod traits;
+/// Defines the visitor system used to traverse the syntax tree
 pub mod visitor;
 
 lazy_static! {

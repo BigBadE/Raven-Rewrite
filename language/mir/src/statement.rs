@@ -1,7 +1,7 @@
 use crate::{
     LocalVar, MediumExpression, MediumSyntaxLevel, MediumTerminator, MirFunctionContext, Place,
 };
-use hir::statement::HighStatement;
+use hir::statement::{Conditional, HighStatement};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use syntax::structure::literal::Literal;
@@ -63,46 +63,7 @@ impl<'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLe
             HighStatement::If {
                 conditions,
                 else_branch,
-            } => {
-                let mut current = context.create_block();
-                let end = context.create_block();
-                for condition in conditions {
-                    context.switch_to_block(current);
-                    let discriminant = I::translate_expr(&condition.condition, context)?;
-                    let next = context.create_block();
-                    current = context.create_block();
-                    context.set_terminator(MediumTerminator::Switch {
-                        discriminant,
-                        targets: vec![(Literal::U64(0), next)],
-                        fallback: current,
-                    });
-
-                    // Translate the if body
-                    context.switch_to_block(next);
-                    for statement in &condition.branch {
-                        I::translate_stmt(statement, context)?;
-                    }
-                    if matches!(
-                        context.code_blocks[context.current_block].terminator,
-                        MediumTerminator::Unreachable
-                    ) {
-                        context.set_terminator(MediumTerminator::Goto(end));
-                    }
-                }
-                context.switch_to_block(current);
-                if let Some(else_branch) = else_branch {
-                    for statement in else_branch {
-                        I::translate_stmt(statement, context)?;
-                    }
-                }
-                if matches!(
-                    context.code_blocks[context.current_block].terminator,
-                    MediumTerminator::Unreachable
-                ) {
-                    context.set_terminator(MediumTerminator::Goto(end));
-                }
-                context.switch_to_block(end);
-            }
+            } => compile_if(conditions, else_branch, context)?,
             HighStatement::For {
                 condition: _condition,
             } => {
@@ -163,4 +124,50 @@ impl<'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLe
         // and instead add whatever we return to the context (since it's not one to one).
         Ok(MediumStatement::Noop)
     }
+}
+
+fn compile_if<'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>>(
+    conditions: &Vec<Conditional<I>>,
+    else_branch: &Option<Vec<I::Statement>>,
+    context: &mut MirFunctionContext<'a>,
+) -> Result<(), CompileError> {
+    let mut current = context.create_block();
+    let end = context.create_block();
+    for condition in conditions {
+        context.switch_to_block(current);
+        let discriminant = I::translate_expr(&condition.condition, context)?;
+        let next = context.create_block();
+        current = context.create_block();
+        context.set_terminator(MediumTerminator::Switch {
+            discriminant,
+            targets: vec![(Literal::U64(0), next)],
+            fallback: current,
+        });
+
+        // Translate the if body
+        context.switch_to_block(next);
+        for statement in &condition.branch {
+            I::translate_stmt(statement, context)?;
+        }
+        if matches!(
+            context.code_blocks[context.current_block].terminator,
+            MediumTerminator::Unreachable
+        ) {
+            context.set_terminator(MediumTerminator::Goto(end));
+        }
+    }
+    context.switch_to_block(current);
+    if let Some(else_branch) = else_branch {
+        for statement in else_branch {
+            I::translate_stmt(statement, context)?;
+        }
+    }
+    if matches!(
+        context.code_blocks[context.current_block].terminator,
+        MediumTerminator::Unreachable
+    ) {
+        context.set_terminator(MediumTerminator::Goto(end));
+    }
+    context.switch_to_block(end);
+    Ok(())
 }
