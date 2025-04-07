@@ -3,13 +3,13 @@ use lasso::Spur;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fmt::{Debug, Formatter};
-use syntax::SyntaxLevel;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Expression;
 use syntax::structure::visitor::Translate;
-use syntax::util::CompileError;
 use syntax::util::translation::Translatable;
 use syntax::util::translation::{translate_fields, translate_vec};
+use syntax::util::CompileError;
+use syntax::SyntaxLevel;
 
 /// An expression in the HIR
 #[derive(Serialize, Deserialize)]

@@ -4,8 +4,8 @@ use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::FunctionValue;
-use mir::MediumSyntaxLevel;
 use mir::types::MediumType;
+use mir::MediumSyntaxLevel;
 use std::collections::HashMap;
 use syntax::{FunctionRef, Syntax, TypeRef};
 

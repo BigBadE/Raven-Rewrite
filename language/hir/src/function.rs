@@ -1,13 +1,13 @@
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use syntax::SyntaxLevel;
 use syntax::structure::traits::{Function, Terminator};
 use syntax::structure::visitor::Translate;
 use syntax::structure::{FileOwner, Modifier};
-use syntax::util::CompileError;
 use syntax::util::path::FilePath;
 use syntax::util::translation::Translatable;
+use syntax::util::CompileError;
+use syntax::SyntaxLevel;
 
 /// A function in the HIR
 #[derive(Serialize, Deserialize, Debug)]

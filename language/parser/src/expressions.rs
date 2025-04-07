@@ -3,13 +3,13 @@ use crate::util::{file_path, identifier, ignored, symbolic, type_ref};
 use crate::{IResult, Span};
 use hir::expression::HighExpression;
 use hir::{RawFunctionRef, RawSyntaxLevel};
-use nom::Parser;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::character::complete::{alphanumeric1, digit1};
 use nom::combinator::{map, opt};
 use nom::multi::{many0, separated_list0, separated_list1};
 use nom::sequence::{delimited, preceded, terminated, tuple};
+use nom::Parser;
 use nom_supreme::ParserExt;
 use syntax::structure::literal::Literal;
 

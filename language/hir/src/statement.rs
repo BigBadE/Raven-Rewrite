@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fmt::{Debug, Formatter};
-use syntax::SyntaxLevel;
-use syntax::structure::FileOwner;
 use syntax::structure::traits::Statement;
 use syntax::structure::visitor::Translate;
+use syntax::structure::FileOwner;
+use syntax::util::translation::{translate_vec, Translatable};
 use syntax::util::CompileError;
-use syntax::util::translation::{Translatable, translate_vec};
+use syntax::SyntaxLevel;
 
 /// A statement in the HIR
 #[derive(Serialize, Deserialize)]

@@ -3,12 +3,12 @@ use hir::function::{CodeBlock, HighFunction};
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
 use std::mem;
-use syntax::SyntaxLevel;
-use syntax::structure::Modifier;
 use syntax::structure::visitor::Translate;
-use syntax::util::CompileError;
+use syntax::structure::Modifier;
 use syntax::util::path::FilePath;
 use syntax::util::translation::Translatable;
+use syntax::util::CompileError;
+use syntax::SyntaxLevel;
 
 /// A function in the MIR.
 #[derive(Serialize, Deserialize, Debug)]

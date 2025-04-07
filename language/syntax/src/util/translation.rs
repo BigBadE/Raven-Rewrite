@@ -1,5 +1,5 @@
-use crate::SyntaxLevel;
 use crate::util::CompileError;
+use crate::SyntaxLevel;
 use lasso::Spur;
 
 /// Translates a vector of fields into fields of the output type.
@@ -44,7 +44,7 @@ pub trait Translatable<C, I: SyntaxLevel, O: SyntaxLevel> {
 
     /// Translates an expression
     fn translate_expr(node: &I::Expression, context: &mut C)
-    -> Result<O::Expression, CompileError>;
+        -> Result<O::Expression, CompileError>;
 
     /// Translates a type reference
     fn translate_type_ref(

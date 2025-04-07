@@ -1,6 +1,6 @@
 use crate::structure::FileOwner;
+use crate::util::translation::{translate_vec, Translatable};
 use crate::util::CompileError;
-use crate::util::translation::{Translatable, translate_vec};
 use crate::{Syntax, SyntaxLevel};
 
 /// Translates a type from an input type to an output type.

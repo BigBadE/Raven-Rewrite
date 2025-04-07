@@ -1,8 +1,8 @@
 use crate::types::TypeManager;
 use inkwell::types::BasicType;
 use inkwell::values::FunctionValue;
-use mir::MediumSyntaxLevel;
 use mir::function::MediumFunction;
+use mir::MediumSyntaxLevel;
 
 /// Gets the LLVM type of a MIR function
 pub fn get_function_type<'a, 'ctx>(

@@ -2,15 +2,15 @@ use crate::expressions::expression;
 use crate::statements::statement;
 use crate::util::ignored;
 use crate::{IResult, Span};
-use hir::RawSyntaxLevel;
 use hir::expression::HighExpression;
 use hir::function::{CodeBlock, HighTerminator};
 use hir::statement::HighStatement;
-use nom::Parser;
+use hir::RawSyntaxLevel;
 use nom::bytes::complete::tag;
 use nom::combinator::opt;
 use nom::multi::many0;
 use nom::sequence::{delimited, terminated, tuple};
+use nom::Parser;
 use nom_supreme::ParserExt;
 
 /// Parser for function bodies

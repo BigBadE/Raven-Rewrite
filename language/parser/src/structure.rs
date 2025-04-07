@@ -4,12 +4,12 @@ use crate::{IResult, Span};
 use hir::types::{HighType, TypeData};
 use hir::{RawSyntaxLevel, RawTypeRef};
 use lasso::Spur;
-use nom::Parser;
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::combinator::{map, opt};
 use nom::multi::{many0, separated_list0, separated_list1};
 use nom::sequence::{delimited, preceded, tuple};
+use nom::Parser;
 use nom_supreme::ParserExt;
 
 /// Parses a structure or trait definition

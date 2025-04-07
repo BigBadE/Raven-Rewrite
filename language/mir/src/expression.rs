@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Expression;
 use syntax::structure::visitor::Translate;
-use syntax::util::CompileError;
 use syntax::util::translation::Translatable;
+use syntax::util::CompileError;
 use syntax::{FunctionRef, SyntaxLevel, TypeRef};
 
 /// An expression in the MIR
@@ -108,10 +108,10 @@ pub fn translate_function<
 
 /// Handle statement translation
 impl<
-    'a,
-    I: SyntaxLevel<Terminator = HighTerminator<I>, FunctionReference = FunctionRef>
-        + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
-> Translate<MediumExpression<MediumSyntaxLevel>, MirFunctionContext<'a>> for HighExpression<I>
+        'a,
+        I: SyntaxLevel<Terminator = HighTerminator<I>, FunctionReference = FunctionRef>
+            + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
+    > Translate<MediumExpression<MediumSyntaxLevel>, MirFunctionContext<'a>> for HighExpression<I>
 {
     fn translate(
         &self,
