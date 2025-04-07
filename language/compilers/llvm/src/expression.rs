@@ -5,6 +5,7 @@ use mir::expression::MediumExpression;
 use mir::{MediumSyntaxLevel, Operand};
 use syntax::structure::literal::Literal;
 
+/// Compiles a MediumExpression into LLVM IR
 pub fn compile_expression<'a, 'b, 'ctx>(
     function_generator: &mut FunctionGenerator<'a, 'b, 'ctx>,
     expression: &MediumExpression<MediumSyntaxLevel>,
@@ -51,6 +52,7 @@ pub fn compile_expression<'a, 'b, 'ctx>(
     })
 }
 
+/// Compiles an operand into LLVM IR
 pub fn compile_operand<'a, 'b, 'ctx>(
     function_generator: &mut FunctionGenerator<'a, 'b, 'ctx>,
     operand: &Operand,
@@ -73,6 +75,7 @@ pub fn compile_operand<'a, 'b, 'ctx>(
     })
 }
 
+/// Compiles a Literal into LLVM IR
 pub fn compile_literal<'a, 'b, 'ctx>(
     function_generator: &mut FunctionGenerator<'a, 'b, 'ctx>,
     literal: &Literal,

@@ -7,7 +7,7 @@ use std::fmt::Debug;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Statement;
 use syntax::structure::visitor::Translate;
-use syntax::util::ParseError;
+use syntax::util::CompileError;
 use syntax::util::translation::Translatable;
 use syntax::{SyntaxLevel, TypeRef};
 
@@ -15,26 +15,31 @@ use syntax::{SyntaxLevel, TypeRef};
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub enum MediumStatement<T: SyntaxLevel> {
+    /// Assigns a value to a place
     Assign {
+        /// The place to assign to
         place: Place,
+        /// The value to assign
         value: MediumExpression<T>,
     },
+    /// Creates a local variable
     StorageLive(LocalVar, TypeRef),
+    /// Kills a local variable
     StorageDead(LocalVar),
+    /// A NOOP
     Noop,
 }
 
 impl<T: SyntaxLevel> Statement for MediumStatement<T> {}
 
-// Handle statement translation
-impl<'a, 'b, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>>
-    Translate<MediumStatement<MediumSyntaxLevel>, MirFunctionContext<'a>, I, MediumSyntaxLevel>
-    for HighStatement<I>
+/// Handle statement translation
+impl<'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>>
+    Translate<MediumStatement<MediumSyntaxLevel>, MirFunctionContext<'a>> for HighStatement<I>
 {
     fn translate(
         &self,
         context: &mut MirFunctionContext<'a>,
-    ) -> Result<MediumStatement<MediumSyntaxLevel>, ParseError> {
+    ) -> Result<MediumStatement<MediumSyntaxLevel>, CompileError> {
         match self {
             HighStatement::Expression(expression) => {
                 let value = I::translate_expr(expression, context)?;
@@ -77,9 +82,10 @@ impl<'a, 'b, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSynt
                     for statement in &condition.branch {
                         I::translate_stmt(statement, context)?;
                     }
-                    if let MediumTerminator::Unreachable =
-                        context.code_blocks[context.current_block].terminator
-                    {
+                    if matches!(
+                        context.code_blocks[context.current_block].terminator,
+                        MediumTerminator::Unreachable
+                    ) {
                         context.set_terminator(MediumTerminator::Goto(end));
                     }
                 }
@@ -89,9 +95,10 @@ impl<'a, 'b, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSynt
                         I::translate_stmt(statement, context)?;
                     }
                 }
-                if let MediumTerminator::Unreachable =
-                    context.code_blocks[context.current_block].terminator
-                {
+                if matches!(
+                    context.code_blocks[context.current_block].terminator,
+                    MediumTerminator::Unreachable
+                ) {
                     context.set_terminator(MediumTerminator::Goto(end));
                 }
                 context.switch_to_block(end);
@@ -120,9 +127,10 @@ impl<'a, 'b, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSynt
                 for statement in &condition.branch {
                     I::translate_stmt(statement, context)?;
                 }
-                if let MediumTerminator::Unreachable =
-                    context.code_blocks[context.current_block].terminator
-                {
+                if matches!(
+                    context.code_blocks[context.current_block].terminator,
+                    MediumTerminator::Unreachable
+                ) {
                     context.set_terminator(MediumTerminator::Goto(top));
                 }
                 context.switch_to_block(end);
@@ -138,9 +146,10 @@ impl<'a, 'b, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSynt
                 for statement in body {
                     I::translate_stmt(statement, context)?;
                 }
-                if let MediumTerminator::Unreachable =
-                    context.code_blocks[context.current_block].terminator
-                {
+                if matches!(
+                    context.code_blocks[context.current_block].terminator,
+                    MediumTerminator::Unreachable
+                ) {
                     context.set_terminator(MediumTerminator::Goto(top));
                 }
                 context.switch_to_block(end);

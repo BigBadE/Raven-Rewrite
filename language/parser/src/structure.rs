@@ -12,6 +12,7 @@ use nom::multi::{many0, separated_list0, separated_list1};
 use nom::sequence::{delimited, preceded, tuple};
 use nom_supreme::ParserExt;
 
+/// Parses a structure or trait definition
 pub fn parse_structure(input: Span) -> IResult<Span, HighType<RawSyntaxLevel>> {
     map(
         tuple((

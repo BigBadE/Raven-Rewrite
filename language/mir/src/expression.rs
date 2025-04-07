@@ -7,20 +7,29 @@ use serde::{Deserialize, Serialize};
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Expression;
 use syntax::structure::visitor::Translate;
+use syntax::util::CompileError;
 use syntax::util::translation::Translatable;
-use syntax::util::ParseError;
 use syntax::{FunctionRef, SyntaxLevel, TypeRef};
 
+/// An expression in the MIR
 #[derive(Serialize, Deserialize, Debug)]
 pub enum MediumExpression<T: SyntaxLevel> {
+    /// Uses the operand
     Use(Operand),
+    /// A literal
     Literal(Literal),
+    /// A function call
     FunctionCall {
+        /// The function
         func: T::FunctionReference,
+        /// The arguments
         args: Vec<Operand>,
     },
+    /// Creates a struct
     CreateStruct {
+        /// The struct's type
         struct_type: T::TypeReference,
+        /// The fields
         fields: Vec<(Spur, Operand)>,
     },
 }
@@ -28,6 +37,7 @@ pub enum MediumExpression<T: SyntaxLevel> {
 impl<T: SyntaxLevel> Expression for MediumExpression<T> {}
 
 impl<T: SyntaxLevel<FunctionReference = FunctionRef, TypeReference = TypeRef>> MediumExpression<T> {
+    /// Get the returned type of the expression
     pub fn get_type(&self, context: &MirFunctionContext) -> Option<TypeRef> {
         match self {
             MediumExpression::Use(op) => Some(op.get_type(context)),
@@ -67,9 +77,9 @@ pub fn get_operand(
     }
 }
 
+/// Translates a single function into its MIR equivalent.
 pub fn translate_function<
     'a,
-    'b,
     I: SyntaxLevel<Terminator = HighTerminator<I>>
         + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
 >(
@@ -77,7 +87,7 @@ pub fn translate_function<
     target: Option<&Box<I::Expression>>,
     arguments: Vec<&I::Expression>,
     context: &mut MirFunctionContext<'a>,
-) -> Result<MediumExpression<MediumSyntaxLevel>, ParseError> {
+) -> Result<MediumExpression<MediumSyntaxLevel>, CompileError> {
     let mut args = Vec::new();
     // If there is a target (as in a method call), translate and prepend it.
     if let Some(target_expr) = target {
@@ -98,17 +108,15 @@ pub fn translate_function<
 
 /// Handle statement translation
 impl<
-        'a,
-        'b,
-        I: SyntaxLevel<Terminator = HighTerminator<I>, FunctionReference = FunctionRef>
-            + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
-    > Translate<MediumExpression<MediumSyntaxLevel>, MirFunctionContext<'a>, I, MediumSyntaxLevel>
-    for HighExpression<I>
+    'a,
+    I: SyntaxLevel<Terminator = HighTerminator<I>, FunctionReference = FunctionRef>
+        + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
+> Translate<MediumExpression<MediumSyntaxLevel>, MirFunctionContext<'a>> for HighExpression<I>
 {
     fn translate(
         &self,
         context: &mut MirFunctionContext<'a>,
-    ) -> Result<MediumExpression<MediumSyntaxLevel>, ParseError> {
+    ) -> Result<MediumExpression<MediumSyntaxLevel>, CompileError> {
         Ok(match self {
             // Translate literal directly.
             HighExpression::Literal(lit) => MediumExpression::Literal(*lit),
@@ -133,7 +141,7 @@ impl<
                 let local = context.get_local(*var).cloned();
                 MediumExpression::Use(Operand::Copy(Place {
                     local: local.ok_or_else(|| {
-                        ParseError::ParseError(format!(
+                        CompileError::Basic(format!(
                             "Unknown variable: {}",
                             context.source.syntax.symbols.resolve(var)
                         ))
@@ -149,15 +157,13 @@ impl<
                 value,
             } => {
                 if !context.local_vars.contains_key(variable) && !declaration {
-                    return Err(ParseError::ParseError("Unknown variable!".to_string()));
+                    return Err(CompileError::Basic("Unknown variable!".to_string()));
                 }
 
                 let value = I::translate_expr(value, context)?;
                 let types = value.get_type(context);
                 let Some(types) = types else {
-                    return Err(ParseError::ParseError(
-                        "Expected non-void type!".to_string(),
-                    ));
+                    return Err(CompileError::Basic("Expected non-void type!".to_string()));
                 };
 
                 let place = Place {
@@ -213,7 +219,7 @@ impl<
                 }
                 .get(symbol)
                 .ok_or_else(|| {
-                    ParseError::ParseError(format!(
+                    CompileError::Basic(format!(
                         "Unknown operation {}",
                         context.source.syntax.symbols.resolve(symbol)
                     ))
@@ -233,7 +239,7 @@ impl<
                     .binary_operations
                     .get(symbol)
                     .ok_or_else(|| {
-                        ParseError::ParseError(format!(
+                        CompileError::Basic(format!(
                             "Unknown operation {}",
                             context.source.syntax.symbols.resolve(symbol)
                         ))

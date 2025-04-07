@@ -5,26 +5,39 @@ use syntax::SyntaxLevel;
 use syntax::structure::FileOwner;
 use syntax::structure::traits::Statement;
 use syntax::structure::visitor::Translate;
-use syntax::util::ParseError;
+use syntax::util::CompileError;
 use syntax::util::translation::{Translatable, translate_vec};
 
+/// A statement in the HIR
 #[derive(Serialize, Deserialize)]
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub enum HighStatement<T: SyntaxLevel> {
+    /// An expression, with the returnvalue ignored
     Expression(T::Expression),
+    /// A block of code
     CodeBlock(Vec<T::Statement>),
+    /// A terminator
     Terminator(T::Terminator),
+    /// An if statement
     If {
+        /// The possible conditions, starting with an if, with each sequential value being an else if
         conditions: Vec<Conditional<T>>,
+        /// The else branch
         else_branch: Option<Vec<T::Statement>>,
     },
+    /// A for statement
     For {
+        /// The condition of the for statement
         condition: Conditional<T>,
     },
+    /// A while statement
     While {
+        /// The condition of the while statement
         condition: Conditional<T>,
     },
+    /// An infinite loop statement
     Loop {
+        /// The body of the loop
         body: Vec<T::Statement>,
     },
 }
@@ -70,16 +83,19 @@ impl<T: SyntaxLevel> Debug for HighStatement<T> {
     }
 }
 
+/// A conditional block
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Conditional<T: SyntaxLevel> {
+    /// The condition to check
     pub condition: T::Expression,
+    /// The branch to execute if the condition is true
     pub branch: Vec<T::Statement>,
 }
 
-impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Translate<Conditional<O>, C, I, O>
+impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Translate<Conditional<O>, C>
     for Conditional<I>
 {
-    fn translate(&self, context: &mut C) -> Result<Conditional<O>, ParseError> {
+    fn translate(&self, context: &mut C) -> Result<Conditional<O>, CompileError> {
         Ok(Conditional {
             condition: I::translate_expr(&self.condition, context)?,
             branch: translate_vec(&self.branch, context, I::translate_stmt)?,
@@ -89,9 +105,9 @@ impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Translate<Condit
 
 // Handle statement translation
 impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
-    Translate<HighStatement<O>, C, I, O> for HighStatement<I>
+    Translate<HighStatement<O>, C> for HighStatement<I>
 {
-    fn translate(&self, context: &mut C) -> Result<HighStatement<O>, ParseError> {
+    fn translate(&self, context: &mut C) -> Result<HighStatement<O>, CompileError> {
         Ok(match self {
             HighStatement::Expression(expression) => {
                 HighStatement::Expression(I::translate_expr(expression, context)?)

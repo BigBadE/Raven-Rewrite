@@ -13,6 +13,7 @@ use nom::sequence::{delimited, preceded, terminated, tuple};
 use nom_supreme::ParserExt;
 use syntax::structure::literal::Literal;
 
+/// Parses a term, an expression that can't be recursive
 pub fn term(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     alt((
         literal,
@@ -24,20 +25,21 @@ pub fn term(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     ))(input)
 }
 
+/// Parses an expression, which can be recursive
 pub fn expression(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     delimited(ignored, alt((operation, term)), ignored)
         .context("Expression")
         .parse(input)
 }
 
-/// Parses a variable name into an Expression::Variable.
+/// Parses a variable name into an Expression::Variable
 pub fn variable(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     map(alphanumeric1, |ident: Span| {
         HighExpression::Variable(input.extra.intern(ident.to_string()))
     })(input.clone())
 }
 
-/// Parses a digit literal into an Expression::Literal.
+/// Parses a digit literal into an Expression::Literal
 /// TODO handle more literals
 pub fn literal(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     map(digit1, |digits: Span| {
@@ -45,7 +47,7 @@ pub fn literal(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     })(input)
 }
 
-/// Parses a block of statements enclosed in braces into a CodeBlock.
+/// Parses a block of statements enclosed in braces into a CodeBlock
 pub fn block(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     delimited(
         tag("{"),

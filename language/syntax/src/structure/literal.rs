@@ -2,19 +2,30 @@ use crate::TypeRef;
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
 
+/// A literal value
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 pub enum Literal {
+    /// A string, like "foo"
     String(Spur),
+    /// A double precision float
     F64(f64),
+    /// A single precision float
     F32(f32),
+    /// A 8-byte signed integer
     I64(i64),
+    /// A 4-byte signed integer
     I32(i32),
+    /// A 8-byte unsigned integer
     U64(u64),
+    /// A 4-byte unsigned integer
     U32(u32),
+    /// A boolean value
     Bool(bool),
+    /// A 1-byte character
     Char(char),
 }
 
+/// A list of all literal types, must be kept in sync with Literals
 pub const TYPES: [&str; 9] = [
     "str", "f64", "f32", "i64", "i32", "u64", "u32", "bool", "char",
 ];

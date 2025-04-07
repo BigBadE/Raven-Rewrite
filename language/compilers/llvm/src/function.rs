@@ -4,6 +4,7 @@ use inkwell::values::FunctionValue;
 use mir::MediumSyntaxLevel;
 use mir::function::MediumFunction;
 
+/// Gets the LLVM type of a MIR function
 pub fn get_function_type<'a, 'ctx>(
     type_manager: &mut TypeManager<'a, 'ctx>,
     function: &'ctx MediumFunction<MediumSyntaxLevel>,
@@ -19,7 +20,7 @@ pub fn get_function_type<'a, 'ctx>(
         function
             .return_type
             .map(|inner| type_manager.convert_type(inner).fn_type(parameters, false))
-            .unwrap_or(type_manager.context.void_type().fn_type(parameters, false)),
+            .unwrap_or_else(|| type_manager.context.void_type().fn_type(parameters, false)),
         None,
     )
 }

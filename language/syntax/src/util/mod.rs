@@ -4,46 +4,29 @@ use thiserror::Error;
 pub mod path;
 pub mod translation;
 
+/// An error raised in the compilation process
 #[derive(Error, Debug)]
-pub enum ParseError {
+pub enum CompileError {
     #[error("Internal error:\n{0}")]
-    InternalError(Error),
+    Internal(Error),
     #[error("{0}")]
-    ParseError(String),
+    Basic(String),
     #[error("{0:?}")]
-    MultiError(Vec<ParseError>),
+    Multi(Vec<CompileError>),
 }
 
-impl ParseError {
+impl CompileError {
+    /// Prints out a compiler error
     pub fn print(&self) {
         match self {
-            ParseError::ParseError(_) | ParseError::InternalError(_) => {
+            CompileError::Basic(_) | CompileError::Internal(_) => {
                 println!("{}", self);
             }
-            ParseError::MultiError(errors) => {
+            CompileError::Multi(errors) => {
                 for error in errors {
                     error.print();
                 }
             }
         }
     }
-}
-
-pub fn collect_results<T, E, I>(iter: I) -> Result<Vec<T>, Vec<E>>
-where
-    I: IntoIterator<Item = Result<T, E>>,
-{
-    iter.into_iter()
-        .fold(Ok(Vec::new()), |acc, item| match (acc, item) {
-            (Ok(mut oks), Ok(value)) => {
-                oks.push(value);
-                Ok(oks)
-            }
-            (Ok(_), Err(e)) => Err(vec![e]),
-            (Err(errs), Ok(_)) => Err(errs),
-            (Err(mut errs), Err(e)) => {
-                errs.push(e);
-                Err(errs)
-            }
-        })
 }

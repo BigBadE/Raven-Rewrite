@@ -2,6 +2,7 @@ use lasso::Spur;
 use std::collections::HashMap;
 use syntax::TypeRef;
 
+/// Compares two types to see if target fits the bounds of expected
 pub fn check_type(
     target: TypeRef,
     expected: TypeRef,

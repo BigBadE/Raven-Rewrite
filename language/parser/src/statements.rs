@@ -13,6 +13,7 @@ use nom::multi::many0;
 use nom::sequence::{delimited, preceded, tuple};
 use nom_supreme::ParserExt;
 
+/// Parses a statement, which ends with a semicolon
 pub fn statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     delimited(
         ignored,
@@ -30,6 +31,7 @@ pub fn statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     .parse(input)
 }
 
+/// Parses a flow-changing statement like a return or break statement
 pub fn flow_changer(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     alt((
         preceded(tag("return"), delimited(ignored, expression, ignored))
@@ -41,6 +43,7 @@ pub fn flow_changer(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>>
     .parse(input)
 }
 
+/// Parses an if statement
 pub fn if_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     tag("if")
         .precedes(
@@ -58,6 +61,7 @@ pub fn if_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>>
         .parse(input)
 }
 
+/// Parses a for statement
 pub fn for_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     preceded(
         tag("for"),
@@ -66,6 +70,7 @@ pub fn for_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>
     .parse(input)
 }
 
+/// Parses a while statement
 pub fn while_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     preceded(
         tag("while"),
@@ -74,6 +79,7 @@ pub fn while_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLeve
     .parse(input)
 }
 
+/// Parses a loop statement
 pub fn loop_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     tag("loop")
         .precedes(code_block_returnless.map(|body| HighStatement::Loop { body }))

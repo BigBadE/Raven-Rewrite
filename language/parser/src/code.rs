@@ -44,7 +44,7 @@ pub fn code_block(
     .parse(input)
 }
 
-/// Parser for code blocks
+/// Parser for code blocks (with no return)
 pub fn code_block_returnless(input: Span) -> IResult<Span, Vec<HighStatement<RawSyntaxLevel>>> {
     delimited(
         delimited(ignored, tag("{"), ignored),

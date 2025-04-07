@@ -39,12 +39,14 @@ pub fn identifier(input: Span) -> IResult<Span, Spur> {
     .parse(input)
 }
 
+/// Parses either an identifier or a symbolic operator
 pub fn identifier_symbolic(input: Span) -> IResult<Span, Spur> {
     alt((identifier, symbolic))
         .context("Symbol Identifier")
         .parse(input)
 }
 
+/// Parses a symbolic operator, which is composed entirely of symbols
 pub fn symbolic(input: Span) -> IResult<Span, Spur> {
     map(
         take_while1(|c: char| "+-*/%&|^!~=<>?:".contains(c)),

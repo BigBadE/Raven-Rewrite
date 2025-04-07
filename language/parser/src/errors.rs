@@ -2,12 +2,14 @@ use crate::Span;
 use nom_supreme::error::{BaseErrorKind, GenericErrorTree, StackContext};
 use std::error::Error;
 
+/// Handles translating errors into a string
 pub fn error_message<E: Error + ?Sized>(
     error: GenericErrorTree<Span, &str, &str, Box<E>>,
 ) -> String {
     error_message_recursive(error, &vec![]).1
 }
 
+/// Recursively translates error trees with the context into errors
 pub fn error_message_recursive<E: Error + ?Sized>(
     error: GenericErrorTree<Span, &str, &str, Box<E>>,
     context: &Vec<(Span, StackContext<&str>)>,
@@ -47,6 +49,7 @@ pub fn error_message_recursive<E: Error + ?Sized>(
     }
 }
 
+/// Displays an error with the given location
 fn display_error<E: Error + ?Sized>(
     location: Span,
     context: &Vec<(Span, StackContext<&str>)>,

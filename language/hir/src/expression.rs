@@ -7,44 +7,68 @@ use syntax::SyntaxLevel;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Expression;
 use syntax::structure::visitor::Translate;
-use syntax::util::ParseError;
+use syntax::util::CompileError;
 use syntax::util::translation::Translatable;
 use syntax::util::translation::{translate_fields, translate_vec};
 
+/// An expression in the HIR
 #[derive(Serialize, Deserialize)]
 pub enum HighExpression<T: SyntaxLevel> {
     // No input one output
+    /// A literal value
     Literal(Literal),
+    /// A block of code
     CodeBlock {
+        /// The code body
         body: Vec<T::Statement>,
-        // A returning value at the end
+        /// A returning value at the end
         value: Box<T::Expression>,
     },
+    /// A variable
     Variable(Spur),
     // One input one output
+    /// An assignment of a variable
     Assignment {
+        /// Whether this is a declaration (let)
         declaration: bool,
+        /// The variable to assign to
         variable: Spur,
+        /// The value to assign
         value: Box<T::Expression>,
     },
+    /// A unary operation
     UnaryOperation {
+        /// Whether the symbol is before or after the operation
         pre: bool,
+        /// The symbol
         symbol: Spur,
+        /// The value passed in
         value: Box<T::Expression>,
     },
     // Multiple inputs one output
+    /// A function call
     FunctionCall {
+        /// The function to call
         function: T::FunctionReference,
+        /// The target to call the function on
         target: Option<Box<T::Expression>>,
+        /// The arguments to pass in
         arguments: Vec<T::Expression>,
     },
+    /// A binary operation
     BinaryOperation {
+        /// The symbol
         symbol: Spur,
+        /// The first value to operate on
         first: Box<T::Expression>,
+        /// The second value to operate on
         second: Box<T::Expression>,
     },
+    /// Creation of a struct
     CreateStruct {
+        /// The struct to create
         target_struct: T::TypeReference,
+        /// The fields to set and their values
         fields: Vec<(Spur, T::Expression)>,
     },
 }
@@ -115,10 +139,10 @@ impl<T: SyntaxLevel> Debug for HighExpression<T> {
 }
 
 /// Handle expression translation
-impl<'a, I: SyntaxLevel + Translatable<HirContext, I, O>, O: SyntaxLevel>
-    Translate<HighExpression<O>, HirContext, I, O> for HighExpression<I>
+impl<I: SyntaxLevel + Translatable<HirContext, I, O>, O: SyntaxLevel>
+    Translate<HighExpression<O>, HirContext> for HighExpression<I>
 {
-    fn translate(&self, context: &mut HirContext) -> Result<HighExpression<O>, ParseError> {
+    fn translate(&self, context: &mut HirContext) -> Result<HighExpression<O>, CompileError> {
         Ok(match self {
             HighExpression::Literal(literal) => HighExpression::Literal(*literal),
             HighExpression::CodeBlock { body, value } => HighExpression::CodeBlock {
@@ -143,7 +167,9 @@ impl<'a, I: SyntaxLevel + Translatable<HirContext, I, O>, O: SyntaxLevel>
                 function: I::translate_func_ref(function, context)?,
                 target: target
                     .as_ref()
-                    .map(|inner| Ok::<_, ParseError>(Box::new(I::translate_expr(inner, context)?)))
+                    .map(|inner| {
+                        Ok::<_, CompileError>(Box::new(I::translate_expr(inner, context)?))
+                    })
                     .transpose()?,
                 arguments: translate_vec(&arguments, context, I::translate_expr)?,
             },

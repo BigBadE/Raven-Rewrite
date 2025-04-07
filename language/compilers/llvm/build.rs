@@ -15,7 +15,7 @@ use std::{env, fs, io};
 use reqwest::blocking::Client;
 use zip::ZipArchive;
 
-static CFLAGS: &'static str = "CFLAGS";
+static CFLAGS: &str = "CFLAGS";
 
 /// To automatically keep up to date with LLVM, this will download and link a binary from a seperate repo.
 /// Linking code is taken from llvm-sys.

@@ -10,9 +10,13 @@ use mir::statement::MediumStatement;
 use mir::{LocalVar, MediumSyntaxLevel, MediumTerminator};
 use std::collections::HashMap;
 
+/// Holds the state of the function being generated
 pub struct FunctionGenerator<'a, 'b, 'ctx> {
+    /// Manages converting types
     pub type_manager: &'a mut TypeManager<'b, 'ctx>,
+    /// The variables in the function
     pub variables: HashMap<LocalVar, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
+    /// The blocks in the function
     pub blocks: Vec<BasicBlock<'ctx>>,
 }
 
@@ -22,6 +26,7 @@ impl<'a, 'b, 'ctx> FunctionGenerator<'a, 'b, 'ctx> {
     }
 }
 
+/// Compiles a block of code
 pub fn compile_block<'ctx>(
     function_generator: &mut FunctionGenerator,
     block: &CodeBlock<MediumSyntaxLevel>,
@@ -80,6 +85,7 @@ pub fn compile_block<'ctx>(
     Ok(())
 }
 
+/// Compiles a statement
 pub fn compile_statement<'ctx>(
     function_generator: &mut FunctionGenerator,
     statement: &MediumStatement<MediumSyntaxLevel>,

@@ -10,6 +10,7 @@ use nom::sequence::delimited;
 use nom_supreme::ParserExt;
 use syntax::util::path::FilePath;
 
+/// Parses a top-level element in the source code
 pub fn parse_top_element(input: Span) -> IResult<Span, TopLevelItem> {
     alt((
         map(parse_import, |import| TopLevelItem::Import(import)),
@@ -20,6 +21,7 @@ pub fn parse_top_element(input: Span) -> IResult<Span, TopLevelItem> {
     .parse(input)
 }
 
+/// Parses an import statement
 pub fn parse_import(input: Span) -> IResult<Span, FilePath> {
     tag("import")
         .precedes(delimited(ignored, file_path, ignored))
