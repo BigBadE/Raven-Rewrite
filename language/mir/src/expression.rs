@@ -116,18 +116,7 @@ impl<
                 translate_code_block::<I>(body, value, context)?
             }
             // A variable is translated to a use of a local place.
-            HighExpression::Variable(var) => {
-                let local = context.get_local(*var).cloned();
-                MediumExpression::Use(Operand::Copy(Place {
-                    local: local.ok_or_else(|| {
-                        CompileError::Basic(format!(
-                            "Unknown variable: {}",
-                            context.source.syntax.symbols.resolve(var)
-                        ))
-                    })?,
-                    projection: vec![],
-                }))
-            }
+            HighExpression::Variable(var) => translate_variable::<I>(var, context)?,
             // For assignment, translate the right-hand side, emit an assign statement,
             // then return a use of the target variable.
             HighExpression::Assignment {
@@ -183,6 +172,26 @@ impl<
             )?,
         })
     }
+}
+
+fn translate_variable<
+    'a,
+    I: SyntaxLevel<FunctionReference = FunctionRef, Terminator = HighTerminator<I>>
+        + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
+>(
+    var: &Spur,
+    context: &mut MirFunctionContext<'a>,
+) -> Result<MediumExpression<MediumSyntaxLevel>, CompileError> {
+    let local = context.get_local(*var).cloned();
+    Ok(MediumExpression::Use(Operand::Copy(Place {
+        local: local.ok_or_else(|| {
+            CompileError::Basic(format!(
+                "Unknown variable: {}",
+                context.source.syntax.symbols.resolve(var)
+            ))
+        })?,
+        projection: vec![],
+    })))
 }
 
 fn translate_code_block<
