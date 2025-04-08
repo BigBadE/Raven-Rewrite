@@ -31,19 +31,19 @@ impl<'a, 'ctx> TypeManager<'a, 'ctx> {
         if let Some(found) = self.functions.get(&reference) {
             return *found;
         }
-        let function = &self.syntax.functions[reference.0];
+        let function = &self.syntax.functions[reference.reference];
         let compiled = get_function_type(self, function);
-        self.functions.insert(*reference, compiled);
+        self.functions.insert(reference.clone(), compiled);
         compiled
     }
 
     /// Gets the LLVMIR type from the MIR type ref
-    pub fn convert_type(&mut self, types: TypeRef) -> BasicTypeEnum<'ctx> {
+    pub fn convert_type(&mut self, types: &TypeRef) -> BasicTypeEnum<'ctx> {
         if let Some(found) = self.types.get(&types) {
             return *found;
         }
-        let compiled = self.compile_type(&self.syntax.types[types.0]);
-        self.types.insert(types, compiled);
+        let compiled = self.compile_type(&self.syntax.types[types.reference]);
+        self.types.insert(types.clone(), compiled);
         compiled
     }
 
@@ -54,7 +54,7 @@ impl<'a, 'ctx> TypeManager<'a, 'ctx> {
                 types
                     .fields
                     .iter()
-                    .map(|field| self.convert_type(*field))
+                    .map(|field| self.convert_type(field))
                     .collect::<Vec<_>>()
                     .as_slice(),
                 false,

@@ -44,7 +44,7 @@ impl<'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLe
             HighStatement::Expression(expression) => {
                 let value = I::translate_expr(expression, context)?;
                 if let Some(types) = value.get_type(context) {
-                    let local = context.create_temp(types);
+                    let local = context.create_temp(types.clone());
                     context.push_statement(MediumStatement::StorageLive(local, types));
                     context.push_statement(MediumStatement::Assign {
                         place: Place {

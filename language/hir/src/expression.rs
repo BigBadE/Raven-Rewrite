@@ -1,15 +1,14 @@
-use crate::HirContext;
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fmt::{Debug, Formatter};
-use syntax::SyntaxLevel;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Expression;
 use syntax::structure::visitor::Translate;
-use syntax::util::CompileError;
 use syntax::util::translation::Translatable;
 use syntax::util::translation::{translate_fields, translate_vec};
+use syntax::util::CompileError;
+use syntax::SyntaxLevel;
 
 /// An expression in the HIR
 #[derive(Serialize, Deserialize)]
@@ -139,10 +138,10 @@ impl<T: SyntaxLevel> Debug for HighExpression<T> {
 }
 
 /// Handle expression translation
-impl<I: SyntaxLevel + Translatable<HirContext, I, O>, O: SyntaxLevel>
-    Translate<HighExpression<O>, HirContext> for HighExpression<I>
+impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
+    Translate<HighExpression<O>, C> for HighExpression<I>
 {
-    fn translate(&self, context: &mut HirContext) -> Result<HighExpression<O>, CompileError> {
+    fn translate(&self, context: &mut C) -> Result<HighExpression<O>, CompileError> {
         Ok(match self {
             HighExpression::Literal(literal) => HighExpression::Literal(*literal),
             HighExpression::CodeBlock { body, value } => HighExpression::CodeBlock {

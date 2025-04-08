@@ -5,7 +5,7 @@ use nom::Err::Error;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_till, take_until, take_while1};
 use nom::character::complete::{alpha1, alphanumeric1, multispace0, multispace1};
-use nom::combinator::{eof, map, peek, recognize, value};
+use nom::combinator::{eof, map, opt, peek, recognize, value};
 use nom::multi::{many0, separated_list0, separated_list1};
 use nom::sequence::{delimited, pair, preceded, terminated, tuple};
 use nom::{Parser, error};
@@ -24,9 +24,9 @@ pub fn type_ref(input: Span) -> IResult<Span, RawTypeRef> {
     map(
         tuple((
             file_path,
-            separated_list0(delimited(ignored, tag(","), ignored), type_ref),
+            opt(delimited(tag("<"), separated_list0(delimited(ignored, tag(","), ignored), type_ref), tag(">"))),
         )),
-        |(path, generics)| RawTypeRef { path, generics },
+        |(path, generics)| RawTypeRef { path, generics: generics.unwrap_or_default() },
     )(input)
 }
 

@@ -14,13 +14,24 @@ pub mod structure;
 pub mod util;
 
 /// A reference to a specific type
-#[derive(Debug, Copy, Clone, Hash, Ord, PartialOrd, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TypeRef(pub usize);
+#[derive(Debug, Clone, Hash, Ord, PartialOrd, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeRef {
+    /// The reference to the type
+    pub reference: usize,
+    /// The generic constraints of the type
+    pub generics: Vec<TypeRef>,
+}
+
 impl TypeReference for TypeRef {}
 
 /// A reference to a specific function
-#[derive(Debug, Copy, Clone, Hash, Ord, PartialOrd, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FunctionRef(pub usize);
+#[derive(Debug, Clone, Hash, Ord, PartialOrd, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionRef {
+    /// The reference to the function
+    pub reference: usize,
+    /// The generic constraints of the function
+    pub generics: Vec<TypeRef>,
+}
 impl FunctionReference for FunctionRef {}
 
 /// A level of syntax. As the program is compiled, it goes lower until it hits the lowest level.
@@ -47,14 +58,14 @@ pub struct Syntax<T: SyntaxLevel> {
     pub types: Vec<T::Type>,
 }
 
-impl<C> Translate<TypeRef, C> for TypeRef {
+impl<C> Translate<'_, TypeRef, C> for TypeRef {
     fn translate(&self, _context: &mut C) -> Result<TypeRef, CompileError> {
-        Ok(*self)
+        Ok(self.clone())
     }
 }
 
-impl<C> Translate<FunctionRef, C> for FunctionRef {
+impl<C> Translate<'_, FunctionRef, C> for FunctionRef {
     fn translate(&self, _context: &mut C) -> Result<FunctionRef, CompileError> {
-        Ok(*self)
+        Ok(self.clone())
     }
 }

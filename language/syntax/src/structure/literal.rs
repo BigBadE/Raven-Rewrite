@@ -33,16 +33,19 @@ pub const TYPES: [&str; 9] = [
 impl Literal {
     /// This is expected to be kept in sync with TYPES.
     pub fn get_type(&self) -> TypeRef {
-        TypeRef(match self {
-            Literal::String(_) => 0,
-            Literal::F64(_) => 1,
-            Literal::F32(_) => 2,
-            Literal::I64(_) => 3,
-            Literal::I32(_) => 4,
-            Literal::U64(_) => 5,
-            Literal::U32(_) => 6,
-            Literal::Bool(_) => 7,
-            Literal::Char(_) => 8,
-        })
+        TypeRef {
+            reference: match self {
+                Literal::String(_) => 0,
+                Literal::F64(_) => 1,
+                Literal::F32(_) => 2,
+                Literal::I64(_) => 3,
+                Literal::I32(_) => 4,
+                Literal::U64(_) => 5,
+                Literal::U32(_) => 6,
+                Literal::Bool(_) => 7,
+                Literal::Char(_) => 8,
+            },
+            generics: vec![]
+        }
     }
 }

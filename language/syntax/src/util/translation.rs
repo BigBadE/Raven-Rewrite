@@ -1,5 +1,5 @@
-use crate::SyntaxLevel;
 use crate::util::CompileError;
+use crate::SyntaxLevel;
 use lasso::Spur;
 
 /// Translates a vector of fields into fields of the output type.
@@ -62,7 +62,7 @@ pub trait Translatable<C, I: SyntaxLevel, O: SyntaxLevel> {
     fn translate_type(node: &I::Type, context: &mut C) -> Result<Option<O::Type>, CompileError>;
 
     /// Translates a function
-    fn translate_func(node: &I::Function, context: &mut C) -> Result<O::Function, CompileError>;
+    fn translate_func(node: &I::Function, context: C) -> Result<O::Function, CompileError>;
 
     /// Translates a terminator
     fn translate_terminator(

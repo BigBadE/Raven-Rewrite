@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use syntax::SyntaxLevel;
-use syntax::structure::FileOwner;
 use syntax::structure::traits::Statement;
 use syntax::structure::visitor::Translate;
 use syntax::util::CompileError;
@@ -104,7 +103,7 @@ impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Translate<Condit
 }
 
 // Handle statement translation
-impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
+impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
     Translate<HighStatement<O>, C> for HighStatement<I>
 {
     fn translate(&self, context: &mut C) -> Result<HighStatement<O>, CompileError> {

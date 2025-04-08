@@ -88,10 +88,10 @@ pub fn function_call(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel
         tuple((
             opt(terminated(identifier, tag("."))),
             file_path,
-            opt(separated_list1(
-                tag("+"),
+            opt(delimited(tag("<"), separated_list1(
+                tag(","),
                 delimited(ignored, type_ref, ignored),
-            )),
+            ), tag(">"))),
             delimited(
                 tag("("),
                 separated_list0(tag(","), preceded(ignored, expression)),

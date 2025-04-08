@@ -68,7 +68,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         for (reference, function) in code.functions.iter().enumerate() {
             let mut blocks = Vec::new();
             for (position, _) in function.body.iter().enumerate() {
-                let function = type_manager.function_type(&FunctionRef(reference));
+                let function = type_manager.function_type(&FunctionRef { reference, generics: vec![] });
                 blocks.push(
                     type_manager
                         .context

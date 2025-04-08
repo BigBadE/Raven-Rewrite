@@ -106,7 +106,7 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, CompileError> {
         types: TYPES
             .iter()
             .enumerate()
-            .map(|(id, name)| (vec![syntax.symbols.get_or_intern(name)], TypeRef(id)))
+            .map(|(id, name)| (vec![syntax.symbols.get_or_intern(name)], TypeRef { reference: id, generics: vec![] }))
             .collect(),
         functions: HashMap::default(),
         pre_unary_operations: HashMap::default(),
@@ -149,19 +149,19 @@ fn add_file_to_syntax(
     for function in file.functions {
         let mut path = file_path.clone();
         path.push(function.name);
-        let reference = FunctionRef(source.syntax.functions.len());
+        let reference = FunctionRef { reference: source.syntax.functions.len(), generics: vec![] };
         if function.modifiers.contains(&Modifier::OPERATION) {
             match function.parameters.len() {
                 1 => source
                     .pre_unary_operations
                     .entry(function.name)
                     .or_default()
-                    .push(reference),
+                    .push(reference.clone()),
                 2 => source
                     .binary_operations
                     .entry(function.name)
                     .or_default()
-                    .push(reference),
+                    .push(reference.clone()),
                 _ => {
                     errors.push(CompileError::Basic(
                         "Expected operation to only have 1 or 2 args".to_string(),
@@ -178,7 +178,7 @@ fn add_file_to_syntax(
         path.push(types.name);
         source
             .types
-            .insert(path, TypeRef(source.syntax.types.len()));
+            .insert(path, TypeRef { reference: source.syntax.types.len(), generics: vec![] });
         source.syntax.types.push(types);
     }
 

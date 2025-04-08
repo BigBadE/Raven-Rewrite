@@ -1,20 +1,28 @@
-use crate::structure::FileOwner;
-use crate::util::CompileError;
+use crate::structure::traits::{Function, Type};
 use crate::util::translation::{Translatable, translate_vec};
+use crate::util::{CompileError, Context};
 use crate::{Syntax, SyntaxLevel};
 
 /// Translates a type from an input type to an output type.
-pub trait Translate<T, C> {
-    fn translate(&self, context: &mut C) -> Result<T, CompileError>;
+pub trait Translate<'a, T, C> {
+    fn translate(&self, context: &'a mut C) -> Result<T, CompileError>;
 }
 
-impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Translate<Syntax<O>, C>
-    for Syntax<I>
+impl<'a, C: Context<'a>, I: SyntaxLevel + Translatable<C::FunctionContext, I, O>, O: SyntaxLevel>
+    Translate<'a, Syntax<O>, C> for Syntax<I>
 {
-    fn translate(&self, context: &mut C) -> Result<Syntax<O>, CompileError> {
-        let functions = translate_vec(&self.functions, context, I::translate_func);
+    fn translate(&self, context: &'a mut C) -> Result<Syntax<O>, CompileError> {
+        for function in &self.functions {
+            I::translate_func(function, &mut context.function_context(function.file()))?;
+        }
 
-        let types = translate_vec(&self.types, context, I::translate_type);
+        /*let functions = translate_vec(&self.functions, context, |input, context| {
+            I::translate_func(input, &mut context.function_context(input.file()))
+        });
+
+        let types = translate_vec(&self.types, context, |input, context| {
+            I::translate_type(input, &mut context.function_context(input.file()))
+        });
 
         let (functions, types) = merge_result(functions, types)?;
 
@@ -22,6 +30,12 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Trans
             symbols: self.symbols.clone(),
             functions,
             types: types.into_iter().flatten().collect(),
+        })*/
+
+        Ok(Syntax {
+            symbols: self.symbols.clone(),
+            functions: vec![],
+            types: vec![],
         })
     }
 }

@@ -6,7 +6,7 @@ pub fn test() -> i32 {
 }
 
 struct Testing<T> {
-    first: i64,
+    first: T,
     other: Other
 }
 

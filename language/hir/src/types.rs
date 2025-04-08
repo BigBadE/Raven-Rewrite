@@ -5,7 +5,7 @@ use std::fmt::Debug;
 use syntax::SyntaxLevel;
 use syntax::structure::traits::Type;
 use syntax::structure::visitor::Translate;
-use syntax::structure::{FileOwner, Modifier};
+use syntax::structure::Modifier;
 use syntax::util::CompileError;
 use syntax::util::path::FilePath;
 use syntax::util::translation::translate_fields;
@@ -62,7 +62,7 @@ pub enum TypeData<T: SyntaxLevel> {
 }
 
 // Handle type translations
-impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
+impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
     Translate<Option<HighType<O>>, C> for HighType<I>
 {
     fn translate(&self, context: &mut C) -> Result<Option<HighType<O>>, CompileError> {

@@ -22,9 +22,10 @@ use std::collections::HashMap;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Terminator;
 use syntax::structure::visitor::{Translate, merge_result};
-use syntax::util::CompileError;
+use syntax::util::{CompileError, Context};
 use syntax::util::translation::{Translatable, translate_vec};
 use syntax::{FunctionRef, Syntax, SyntaxLevel, TypeRef};
+use syntax::util::path::FilePath;
 
 /// The MIR level
 #[derive(Serialize, Deserialize, Debug)]
@@ -143,6 +144,14 @@ impl<'a> MirContext<'a> {
     }
 }
 
+impl<'a> Context for MirContext<'a> {
+    type FunctionContext = MirFunctionContext<'a>;
+
+    fn function_context(&mut self, _file: &FilePath) -> Self::FunctionContext {
+        MirFunctionContext::new(self)
+    }
+}
+
 impl<'a> MirFunctionContext<'a> {
     /// Creates a MIR function context
     fn new(context: &mut MirContext<'a>) -> Self {
@@ -162,7 +171,7 @@ impl<'a> MirFunctionContext<'a> {
 
     /// Translates a place to its type
     pub fn translate(&self, place: &Place) -> TypeRef {
-        let local = self.var_types[place.local];
+        let local = self.var_types[place.local].clone();
         for _projection in &place.projection {
             todo!()
         }
@@ -222,28 +231,6 @@ impl<'a> MirFunctionContext<'a> {
 /// Resolves a HIR source to MIR
 pub fn resolve_to_mir(source: HirSource) -> Result<Syntax<MediumSyntaxLevel>, CompileError> {
     source.syntax.translate(&mut MirContext::new(&source))
-}
-
-impl<'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, O>, O: SyntaxLevel>
-    Translate<Syntax<O>, MirContext<'a>> for Syntax<I>
-{
-    fn translate(&self, context: &mut MirContext<'a>) -> Result<Syntax<O>, CompileError> {
-        let functions = translate_vec(&self.functions, context, |input, context| {
-            I::translate_func(input, &mut MirFunctionContext::new(context))
-        });
-
-        let types = translate_vec(&self.types, context, |input, context| {
-            I::translate_type(input, &mut MirFunctionContext::new(context))
-        });
-
-        let (functions, types) = merge_result(functions, types)?;
-
-        Ok(Syntax {
-            symbols: self.symbols.clone(),
-            functions,
-            types: types.into_iter().flatten().collect(),
-        })
-    }
 }
 
 impl Translatable<MirFunctionContext<'_>, HighSyntaxLevel, MediumSyntaxLevel> for HighSyntaxLevel {

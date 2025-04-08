@@ -98,7 +98,7 @@ pub fn compile_statement<'ctx>(
             function_generator.builder().build_store(target, value)?;
         }
         MediumStatement::StorageLive(local, types) => {
-            let types = function_generator.type_manager.convert_type(*types);
+            let types = function_generator.type_manager.convert_type(types);
             let pointer = function_generator.builder().build_alloca(types, "")?;
             function_generator
                 .variables

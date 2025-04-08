@@ -45,7 +45,7 @@ impl<T: SyntaxLevel<FunctionReference = FunctionRef, TypeReference = TypeRef>> M
             MediumExpression::Use(op) => Some(op.get_type(context)),
             MediumExpression::Literal(lit) => Some(lit.get_type()),
             MediumExpression::FunctionCall { func, .. } => {
-                context.source.syntax.functions[func.0].return_type
+                context.source.syntax.functions[func.reference].return_type.clone()
             }
             MediumExpression::CreateStruct { struct_type, .. } => Some(struct_type.clone()),
         }
@@ -261,7 +261,7 @@ fn translate_assign<
     };
 
     let place = Place {
-        local: context.get_or_create_local(*variable, types),
+        local: context.get_or_create_local(*variable, types.clone()),
         projection: Vec::new(),
     };
 

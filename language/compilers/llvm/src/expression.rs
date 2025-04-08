@@ -30,7 +30,7 @@ pub fn compile_expression<'a, 'b, 'ctx>(
             struct_type,
             fields,
         } => {
-            let struct_type = function_generator.type_manager.convert_type(*struct_type);
+            let struct_type = function_generator.type_manager.convert_type(struct_type);
 
             let alloc = function_generator
                 .builder()

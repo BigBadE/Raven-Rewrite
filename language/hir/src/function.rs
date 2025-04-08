@@ -1,13 +1,13 @@
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use syntax::SyntaxLevel;
 use syntax::structure::traits::{Function, Terminator};
 use syntax::structure::visitor::Translate;
-use syntax::structure::{FileOwner, Modifier};
-use syntax::util::CompileError;
+use syntax::structure::Modifier;
 use syntax::util::path::FilePath;
 use syntax::util::translation::Translatable;
+use syntax::util::CompileError;
+use syntax::SyntaxLevel;
 
 /// A function in the HIR
 #[derive(Serialize, Deserialize, Debug)]
@@ -58,11 +58,10 @@ impl<T: SyntaxLevel> Function for HighFunction<T> {
 }
 
 // Handle type translation
-impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
+impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
     Translate<HighFunction<O>, C> for HighFunction<I>
 {
     fn translate(&self, context: &mut C) -> Result<HighFunction<O>, CompileError> {
-        context.set_file(self.file.clone());
         Ok(HighFunction {
             name: self.name,
             file: self.file.clone(),
@@ -92,7 +91,7 @@ impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
     }
 }
 
-impl<C: FileOwner, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
+impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
     Translate<HighTerminator<O>, C> for HighTerminator<I>
 {
     fn translate(&self, context: &mut C) -> Result<HighTerminator<O>, CompileError> {

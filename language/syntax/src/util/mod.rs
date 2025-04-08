@@ -1,10 +1,28 @@
 use anyhow::Error;
 use thiserror::Error;
+use crate::util::path::FilePath;
 
 /// Utility functions for paths
 pub mod path;
 /// Utility functions for translation
 pub mod translation;
+
+/// A trait for handling translation contexts
+pub trait Context<'a> {
+    type FunctionContext;
+
+    /// Creates a function context
+    fn function_context(&'a mut self, file: &FilePath) -> Self::FunctionContext;
+}
+
+/// A trait for all objects that have a file associated with them
+pub trait FileOwner {
+    /// The file that this object is associated with
+    fn file(&self) -> &FilePath;
+
+    /// Set the file that this object is associated with
+    fn set_file(&mut self, file: FilePath);
+}
 
 /// An error raised in the compilation process
 #[derive(Error, Debug)]
