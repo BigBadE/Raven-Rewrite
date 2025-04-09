@@ -48,9 +48,9 @@ pub trait SyntaxLevel: Serialize + for<'a> Deserialize<'a> + Debug {
 }
 
 /// A SyntaxLevel that also contains a context type for translation.
-pub trait ContextSyntaxLevel: SyntaxLevel {
-    type Context<'ctx>: Context<Self>;
-    type FunctionContext<'ctx>;
+pub trait ContextSyntaxLevel<I: SyntaxLevel>: SyntaxLevel {
+    type Context<'ctx>: Context<I, Self>;
+    type InnerContext<'ctx>;
 }
 
 /// The syntax of the program, used to

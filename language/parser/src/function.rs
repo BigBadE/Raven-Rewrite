@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use crate::code::function_body;
 use crate::util::{identifier_symbolic, ignored, modifiers, parameter, type_ref};
 use crate::{IResult, Span};
@@ -10,6 +11,7 @@ use nom::combinator::{map, opt};
 use nom::multi::separated_list0;
 use nom::sequence::{delimited, preceded, tuple};
 use nom_supreme::ParserExt;
+use crate::structure::generics;
 
 /// Parser for function declarations
 pub fn function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {
@@ -18,15 +20,17 @@ pub fn function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {
             modifiers,
             preceded(delimited(ignored, tag("fn"), ignored), identifier_symbolic)
                 .context("Keyword"),
+            generics,
             parameter_list,
             return_type,
             function_body,
         ))
         .context("Function"),
-        |(modifiers, name, parameters, return_type, body)| HighFunction {
+        |(modifiers, name, generics, parameters, return_type, body)| HighFunction {
             file: input.extra.file.clone(),
             modifiers,
             name,
+            generics: HashMap::from_iter(generics.into_iter()),
             parameters,
             return_type,
             body,

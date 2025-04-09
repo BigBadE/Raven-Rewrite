@@ -8,7 +8,7 @@ pub trait Type: Serialize + for<'a> Deserialize<'a> + Debug {
 }
 
 /// Indicates that this represents a type reference in the language.
-pub trait TypeReference: Serialize + for<'a> Deserialize<'a> + Debug {}
+pub trait TypeReference: Serialize + for<'a> Deserialize<'a> + Clone + Debug {}
 
 /// Indicates that this represents a function in the language.
 pub trait Function: Serialize + for<'a> Deserialize<'a> + Debug {

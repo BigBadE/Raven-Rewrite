@@ -1,4 +1,3 @@
-use crate::structure::traits::{Function, Type};
 use crate::util::translation::{translate_vec, Translatable};
 use crate::util::{CompileError, Context};
 use crate::{ContextSyntaxLevel, Syntax, SyntaxLevel};
@@ -8,16 +7,16 @@ pub trait Translate<T, C> {
     fn translate(&self, context: &mut C) -> Result<T, CompileError>;
 }
 
-impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel>
+impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>
     Translate<Syntax<O>, O::Context<'ctx>> for Syntax<I>
 {
     fn translate(&self, context: &mut O::Context<'_>) -> Result<Syntax<O>, CompileError> {
         let functions = translate_vec(&self.functions, context, |input, context| {
-            I::translate_func(input, &mut context.function_context(input.file()))
+            I::translate_func(input, &mut context.function_context(input)?)
         });
 
         let types = translate_vec(&self.types, context, |input, context| {
-            I::translate_type(input, &mut context.function_context(input.file()))
+            I::translate_type(input, &mut context.type_context(input)?)
         });
 
         let (functions, types) = merge_result(functions, types)?;

@@ -62,10 +62,10 @@ pub enum TypeData<T: SyntaxLevel> {
 }
 
 // Handle type translations
-impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel>
-    Translate<Option<HighType<O>>, O::FunctionContext<'ctx>> for HighType<I>
+impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>
+    Translate<Option<HighType<O>>, O::InnerContext<'ctx>> for HighType<I>
 {
-    fn translate(&self, context: &mut O::FunctionContext<'_>) -> Result<Option<HighType<O>>, CompileError> {
+    fn translate(&self, context: &mut O::InnerContext<'_>) -> Result<Option<HighType<O>>, CompileError> {
         Ok(Some(HighType {
             name: self.name.clone(),
             file: self.file.clone(),

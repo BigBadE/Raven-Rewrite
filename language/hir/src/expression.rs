@@ -138,14 +138,14 @@ impl<T: SyntaxLevel> Debug for HighExpression<T> {
 }
 
 /// Handle expression translation
-impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel>
-    Translate<HighExpression<O>, O::FunctionContext<'ctx>> for HighExpression<I>
+impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>
+    Translate<HighExpression<O>, O::InnerContext<'ctx>> for HighExpression<I>
 {
-    fn translate(&self, context: &mut O::FunctionContext<'_>) -> Result<HighExpression<O>, CompileError> {
+    fn translate(&self, context: &mut O::InnerContext<'_>) -> Result<HighExpression<O>, CompileError> {
         Ok(match self {
             HighExpression::Literal(literal) => HighExpression::Literal(*literal),
             HighExpression::CodeBlock { body, value } => HighExpression::CodeBlock {
-                body: translate_vec(&body, context, I::translate_stmt)?,
+                body: translate_vec(body, context, I::translate_stmt)?,
                 value: Box::new(I::translate_expr(value, context)?),
             },
             HighExpression::Variable(variable) => HighExpression::Variable(*variable),
@@ -170,7 +170,7 @@ impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel>
                         Ok::<_, CompileError>(Box::new(I::translate_expr(inner, context)?))
                     })
                     .transpose()?,
-                arguments: translate_vec(&arguments, context, I::translate_expr)?,
+                arguments: translate_vec(arguments, context, I::translate_expr)?,
             },
             HighExpression::CreateStruct {
                 target_struct,

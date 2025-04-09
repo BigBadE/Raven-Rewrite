@@ -22,7 +22,6 @@ use std::collections::HashMap;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Terminator;
 use syntax::structure::visitor::Translate;
-use syntax::util::path::FilePath;
 use syntax::util::translation::Translatable;
 use syntax::util::{CompileError, Context};
 use syntax::{ContextSyntaxLevel, FunctionRef, Syntax, SyntaxLevel, TypeRef};
@@ -41,9 +40,9 @@ impl SyntaxLevel for MediumSyntaxLevel {
     type Terminator = MediumTerminator<MediumSyntaxLevel>;
 }
 
-impl ContextSyntaxLevel for MediumSyntaxLevel {
+impl<I: SyntaxLevel> ContextSyntaxLevel<I> for MediumSyntaxLevel {
     type Context<'ctx> = MirContext<'ctx>;
-    type FunctionContext<'ctx> = MirFunctionContext<'ctx>;
+    type InnerContext<'ctx> = MirFunctionContext<'ctx>;
 }
 
 /// A terminator for a MIR block
@@ -149,9 +148,13 @@ impl<'a> MirContext<'a> {
     }
 }
 
-impl Context<MediumSyntaxLevel> for MirContext<'_> {
-    fn function_context(&mut self, _file: &FilePath) -> MirFunctionContext<'_> {
-        MirFunctionContext::new(self)
+impl<I: SyntaxLevel> Context<I, MediumSyntaxLevel> for MirContext<'_> {
+    fn function_context(&mut self, _function: &I::Function) -> Result<MirFunctionContext<'_>, CompileError> {
+        Ok(MirFunctionContext::new(self))
+    }
+
+    fn type_context(&mut self, _types: &I::Type) -> Result<MirFunctionContext<'_>, CompileError> {
+        Ok(MirFunctionContext::new(self))
     }
 }
 

@@ -1,11 +1,12 @@
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt::Debug;
 use syntax::structure::traits::{Function, Terminator};
 use syntax::structure::visitor::Translate;
 use syntax::structure::Modifier;
 use syntax::util::path::FilePath;
-use syntax::util::translation::Translatable;
+use syntax::util::translation::{translate_fields, translate_map, translate_vec, Translatable};
 use syntax::util::CompileError;
 use syntax::{ContextSyntaxLevel, SyntaxLevel};
 
@@ -21,6 +22,8 @@ pub struct HighFunction<T: SyntaxLevel> {
     pub modifiers: Vec<Modifier>,
     /// The parameters of the function
     pub parameters: Vec<(Spur, T::TypeReference)>,
+    /// The function's generics
+    pub generics: HashMap<Spur, Vec<T::TypeReference>>,
     /// The return type of the function
     pub return_type: Option<T::TypeReference>,
     /// The body of the function
@@ -58,30 +61,24 @@ impl<T: SyntaxLevel> Function for HighFunction<T> {
 }
 
 // Handle type translation
-impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel>
-    Translate<HighFunction<O>, O::FunctionContext<'ctx>> for HighFunction<I>
+impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>
+    Translate<HighFunction<O>, O::InnerContext<'ctx>> for HighFunction<I>
 {
-    fn translate(&self, context: &mut O::FunctionContext<'_>) -> Result<HighFunction<O>, CompileError> {
+    fn translate(
+        &self,
+        context: &mut O::InnerContext<'_>,
+    ) -> Result<HighFunction<O>, CompileError> {
         Ok(HighFunction {
             name: self.name,
             file: self.file.clone(),
             modifiers: self.modifiers.clone(),
             body: CodeBlock {
-                statements: self
-                    .body
-                    .statements
-                    .iter()
-                    .map(|statement| I::translate_stmt(&statement, context))
-                    .collect::<Result<_, _>>()?,
+                statements: translate_vec(&self.body.statements, context, I::translate_stmt)?,
                 terminator: I::translate_terminator(&self.body.terminator, context)?,
             },
-            parameters: self
-                .parameters
-                .iter()
-                .map(|(name, ty)| {
-                    Ok::<_, CompileError>((name.clone(), I::translate_type_ref(ty, context)?))
-                })
-                .collect::<Result<_, _>>()?,
+            parameters: translate_fields(&self.parameters, context, I::translate_type_ref)?,
+            generics: translate_map(&self.generics, context,
+                                    |types, context| translate_vec(types, context, I::translate_type_ref))?,
             return_type: self
                 .return_type
                 .as_ref()
@@ -91,10 +88,13 @@ impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel>
     }
 }
 
-impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel>
-    Translate<HighTerminator<O>, O::FunctionContext<'ctx>> for HighTerminator<I>
+impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>
+    Translate<HighTerminator<O>, O::InnerContext<'ctx>> for HighTerminator<I>
 {
-    fn translate(&self, context: &mut O::FunctionContext<'_>) -> Result<HighTerminator<O>, CompileError> {
+    fn translate(
+        &self,
+        context: &mut O::InnerContext<'_>,
+    ) -> Result<HighTerminator<O>, CompileError> {
         Ok(match self {
             HighTerminator::Return(expression) => HighTerminator::Return(
                 expression

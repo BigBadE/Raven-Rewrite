@@ -91,10 +91,10 @@ pub struct Conditional<T: SyntaxLevel> {
     pub branch: Vec<T::Statement>,
 }
 
-impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel> Translate<Conditional<O>, O::FunctionContext<'ctx>>
+impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>> Translate<Conditional<O>, O::InnerContext<'ctx>>
     for Conditional<I>
 {
-    fn translate(&self, context: &mut O::FunctionContext<'_>) -> Result<Conditional<O>, CompileError> {
+    fn translate(&self, context: &mut O::InnerContext<'_>) -> Result<Conditional<O>, CompileError> {
         Ok(Conditional {
             condition: I::translate_expr(&self.condition, context)?,
             branch: translate_vec(&self.branch, context, I::translate_stmt)?,
@@ -103,10 +103,10 @@ impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel> Translate
 }
 
 // Handle statement translation
-impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel>
-    Translate<HighStatement<O>, O::FunctionContext<'ctx>> for HighStatement<I>
+impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>
+    Translate<HighStatement<O>, O::InnerContext<'ctx>> for HighStatement<I>
 {
-    fn translate(&self, context: &mut O::FunctionContext<'_>) -> Result<HighStatement<O>, CompileError> {
+    fn translate(&self, context: &mut O::InnerContext<'_>) -> Result<HighStatement<O>, CompileError> {
         Ok(match self {
             HighStatement::Expression(expression) => {
                 HighStatement::Expression(I::translate_expr(expression, context)?)
@@ -121,7 +121,7 @@ impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel>
                 conditions: translate_vec(conditions, context, Translate::translate)?,
                 else_branch: else_branch
                     .as_ref()
-                    .map(|inner| translate_vec(&inner, context, I::translate_stmt))
+                    .map(|inner| translate_vec(inner, context, I::translate_stmt))
                     .transpose()?,
             },
             HighStatement::For { condition } => HighStatement::For {
@@ -131,7 +131,7 @@ impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel>
                 condition: condition.translate(context)?,
             },
             HighStatement::Loop { body } => HighStatement::Loop {
-                body: translate_vec(&body, context, I::translate_stmt)?,
+                body: translate_vec(body, context, I::translate_stmt)?,
             },
             HighStatement::Terminator(terminator) => {
                 HighStatement::Terminator(I::translate_terminator(terminator, context)?)
