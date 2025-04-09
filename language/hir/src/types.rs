@@ -2,14 +2,14 @@ use crate::RawSyntaxLevel;
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use syntax::SyntaxLevel;
 use syntax::structure::traits::Type;
 use syntax::structure::visitor::Translate;
 use syntax::structure::Modifier;
-use syntax::util::CompileError;
 use syntax::util::path::FilePath;
 use syntax::util::translation::translate_fields;
-use syntax::util::translation::{Translatable, translate_vec};
+use syntax::util::translation::{translate_vec, Translatable};
+use syntax::util::CompileError;
+use syntax::{ContextSyntaxLevel, SyntaxLevel};
 
 /// A type in the HIR
 #[derive(Serialize, Deserialize, Debug)]
@@ -62,10 +62,10 @@ pub enum TypeData<T: SyntaxLevel> {
 }
 
 // Handle type translations
-impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
-    Translate<Option<HighType<O>>, C> for HighType<I>
+impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel>
+    Translate<Option<HighType<O>>, O::FunctionContext<'ctx>> for HighType<I>
 {
-    fn translate(&self, context: &mut C) -> Result<Option<HighType<O>>, CompileError> {
+    fn translate(&self, context: &mut O::FunctionContext<'_>) -> Result<Option<HighType<O>>, CompileError> {
         Ok(Some(HighType {
             name: self.name.clone(),
             file: self.file.clone(),

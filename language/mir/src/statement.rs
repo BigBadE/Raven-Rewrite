@@ -33,7 +33,7 @@ pub enum MediumStatement<T: SyntaxLevel> {
 impl<T: SyntaxLevel> Statement for MediumStatement<T> {}
 
 /// Handle statement translation
-impl<'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>>
+impl<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>
     Translate<MediumStatement<MediumSyntaxLevel>, MirFunctionContext<'a>> for HighStatement<I>
 {
     fn translate(
@@ -82,7 +82,7 @@ impl<'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLe
     }
 }
 
-fn compile_if<'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>>(
+fn compile_if<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>(
     conditions: &Vec<Conditional<I>>,
     else_branch: &Option<Vec<I::Statement>>,
     context: &mut MirFunctionContext<'a>,
@@ -130,7 +130,7 @@ fn compile_if<'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, Mediu
 
 fn compile_while<
     'a,
-    I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
+    I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>,
 >(
     condition: &Conditional<I>,
     context: &mut MirFunctionContext<'a>,
@@ -163,7 +163,7 @@ fn compile_while<
     Ok(())
 }
 
-fn compile_loop<'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>>(
+fn compile_loop<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>(
     body: &Vec<I::Statement>,
     context: &mut MirFunctionContext<'a>,
 ) -> Result<(), CompileError> {

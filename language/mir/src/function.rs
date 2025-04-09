@@ -35,7 +35,7 @@ impl<T: SyntaxLevel> Function for MediumFunction<T> {
     }
 }
 
-impl<'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>>
+impl<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>
     Translate<MediumFunction<MediumSyntaxLevel>, MirFunctionContext<'a>> for HighFunction<I>
 {
     fn translate(

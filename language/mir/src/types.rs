@@ -29,7 +29,7 @@ impl<T: SyntaxLevel> Type for MediumType<T> {
     }
 }
 
-impl<'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>>
+impl<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>
     Translate<Option<MediumType<MediumSyntaxLevel>>, MirFunctionContext<'a>> for HighType<I>
 {
     fn translate(

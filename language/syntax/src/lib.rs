@@ -2,7 +2,7 @@ use crate::structure::traits::{
     Expression, Function, FunctionReference, Statement, Terminator, Type, TypeReference,
 };
 use crate::structure::visitor::Translate;
-use crate::util::CompileError;
+use crate::util::{CompileError, Context};
 use lasso::ThreadedRodeo;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -47,6 +47,12 @@ pub trait SyntaxLevel: Serialize + for<'a> Deserialize<'a> + Debug {
     type Terminator: Terminator;
 }
 
+/// A SyntaxLevel that also contains a context type for translation.
+pub trait ContextSyntaxLevel: SyntaxLevel {
+    type Context<'ctx>: Context<Self>;
+    type FunctionContext<'ctx>;
+}
+
 /// The syntax of the program, used to
 #[derive(Serialize, Deserialize)]
 pub struct Syntax<T: SyntaxLevel> {
@@ -58,13 +64,13 @@ pub struct Syntax<T: SyntaxLevel> {
     pub types: Vec<T::Type>,
 }
 
-impl<C> Translate<'_, TypeRef, C> for TypeRef {
+impl<C> Translate<TypeRef, C> for TypeRef {
     fn translate(&self, _context: &mut C) -> Result<TypeRef, CompileError> {
         Ok(self.clone())
     }
 }
 
-impl<C> Translate<'_, FunctionRef, C> for FunctionRef {
+impl<C> Translate<FunctionRef, C> for FunctionRef {
     fn translate(&self, _context: &mut C) -> Result<FunctionRef, CompileError> {
         Ok(self.clone())
     }

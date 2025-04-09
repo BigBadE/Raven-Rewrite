@@ -1,22 +1,18 @@
 use crate::structure::traits::{Function, Type};
-use crate::util::translation::{Translatable, translate_vec};
+use crate::util::translation::{translate_vec, Translatable};
 use crate::util::{CompileError, Context};
-use crate::{Syntax, SyntaxLevel};
+use crate::{ContextSyntaxLevel, Syntax, SyntaxLevel};
 
 /// Translates a type from an input type to an output type.
-pub trait Translate<'a, T, C> {
-    fn translate(&self, context: &'a mut C) -> Result<T, CompileError>;
+pub trait Translate<T, C> {
+    fn translate(&self, context: &mut C) -> Result<T, CompileError>;
 }
 
-impl<'a, C: Context<'a>, I: SyntaxLevel + Translatable<C::FunctionContext, I, O>, O: SyntaxLevel>
-    Translate<'a, Syntax<O>, C> for Syntax<I>
+impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel>
+    Translate<Syntax<O>, O::Context<'ctx>> for Syntax<I>
 {
-    fn translate(&self, context: &'a mut C) -> Result<Syntax<O>, CompileError> {
-        for function in &self.functions {
-            I::translate_func(function, &mut context.function_context(function.file()))?;
-        }
-
-        /*let functions = translate_vec(&self.functions, context, |input, context| {
+    fn translate(&self, context: &mut O::Context<'_>) -> Result<Syntax<O>, CompileError> {
+        let functions = translate_vec(&self.functions, context, |input, context| {
             I::translate_func(input, &mut context.function_context(input.file()))
         });
 
@@ -30,12 +26,6 @@ impl<'a, C: Context<'a>, I: SyntaxLevel + Translatable<C::FunctionContext, I, O>
             symbols: self.symbols.clone(),
             functions,
             types: types.into_iter().flatten().collect(),
-        })*/
-
-        Ok(Syntax {
-            symbols: self.symbols.clone(),
-            functions: vec![],
-            types: vec![],
         })
     }
 }

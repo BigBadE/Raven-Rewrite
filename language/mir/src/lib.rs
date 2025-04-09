@@ -21,11 +21,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Terminator;
-use syntax::structure::visitor::{Translate, merge_result};
-use syntax::util::{CompileError, Context};
-use syntax::util::translation::{Translatable, translate_vec};
-use syntax::{FunctionRef, Syntax, SyntaxLevel, TypeRef};
+use syntax::structure::visitor::Translate;
 use syntax::util::path::FilePath;
+use syntax::util::translation::Translatable;
+use syntax::util::{CompileError, Context};
+use syntax::{ContextSyntaxLevel, FunctionRef, Syntax, SyntaxLevel, TypeRef};
 
 /// The MIR level
 #[derive(Serialize, Deserialize, Debug)]
@@ -39,6 +39,11 @@ impl SyntaxLevel for MediumSyntaxLevel {
     type Statement = MediumStatement<MediumSyntaxLevel>;
     type Expression = MediumExpression<MediumSyntaxLevel>;
     type Terminator = MediumTerminator<MediumSyntaxLevel>;
+}
+
+impl ContextSyntaxLevel for MediumSyntaxLevel {
+    type Context<'ctx> = MirContext<'ctx>;
+    type FunctionContext<'ctx> = MirFunctionContext<'ctx>;
 }
 
 /// A terminator for a MIR block
@@ -144,10 +149,8 @@ impl<'a> MirContext<'a> {
     }
 }
 
-impl<'a> Context for MirContext<'a> {
-    type FunctionContext = MirFunctionContext<'a>;
-
-    fn function_context(&mut self, _file: &FilePath) -> Self::FunctionContext {
+impl Context<MediumSyntaxLevel> for MirContext<'_> {
+    fn function_context(&mut self, _file: &FilePath) -> MirFunctionContext<'_> {
         MirFunctionContext::new(self)
     }
 }
@@ -233,7 +236,7 @@ pub fn resolve_to_mir(source: HirSource) -> Result<Syntax<MediumSyntaxLevel>, Co
     source.syntax.translate(&mut MirContext::new(&source))
 }
 
-impl Translatable<MirFunctionContext<'_>, HighSyntaxLevel, MediumSyntaxLevel> for HighSyntaxLevel {
+impl Translatable<HighSyntaxLevel, MediumSyntaxLevel> for HighSyntaxLevel {
     fn translate_stmt(
         node: &HighStatement<HighSyntaxLevel>,
         context: &mut MirFunctionContext,
@@ -284,7 +287,7 @@ impl Translatable<MirFunctionContext<'_>, HighSyntaxLevel, MediumSyntaxLevel> fo
     }
 }
 
-impl<'a, I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>>
+impl<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>
     Translate<MediumTerminator<MediumSyntaxLevel>, MirFunctionContext<'a>> for HighTerminator<I>
 {
     fn translate(

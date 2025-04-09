@@ -1,6 +1,7 @@
+use crate::util::path::FilePath;
+use crate::ContextSyntaxLevel;
 use anyhow::Error;
 use thiserror::Error;
-use crate::util::path::FilePath;
 
 /// Utility functions for paths
 pub mod path;
@@ -8,11 +9,9 @@ pub mod path;
 pub mod translation;
 
 /// A trait for handling translation contexts
-pub trait Context<'a> {
-    type FunctionContext;
-
+pub trait Context<T: ContextSyntaxLevel> {
     /// Creates a function context
-    fn function_context(&'a mut self, file: &FilePath) -> Self::FunctionContext;
+    fn function_context(&mut self, file: &FilePath) -> T::FunctionContext<'_>;
 }
 
 /// A trait for all objects that have a file associated with them

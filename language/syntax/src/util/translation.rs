@@ -1,5 +1,5 @@
 use crate::util::CompileError;
-use crate::SyntaxLevel;
+use crate::{ContextSyntaxLevel, SyntaxLevel};
 use lasso::Spur;
 
 /// Translates a vector of fields into fields of the output type.
@@ -38,35 +38,35 @@ pub fn translate_vec<C, I, O, F: Fn(&I, &mut C) -> Result<O, CompileError>>(
 
 /// This trait is used to say a Syntax can be translated from one type to another
 /// MUST be manually implemented to prevent recursive loops
-pub trait Translatable<C, I: SyntaxLevel, O: SyntaxLevel> {
+pub trait Translatable<I: SyntaxLevel, O: ContextSyntaxLevel> {
     /// Translates a statement
-    fn translate_stmt(node: &I::Statement, context: &mut C) -> Result<O::Statement, CompileError>;
+    fn translate_stmt(node: &I::Statement, context: &mut O::FunctionContext<'_>) -> Result<O::Statement, CompileError>;
 
     /// Translates an expression
-    fn translate_expr(node: &I::Expression, context: &mut C)
+    fn translate_expr(node: &I::Expression, context: &mut O::FunctionContext<'_>)
     -> Result<O::Expression, CompileError>;
 
     /// Translates a type reference
     fn translate_type_ref(
         node: &I::TypeReference,
-        context: &mut C,
+        context: &mut O::FunctionContext<'_>,
     ) -> Result<O::TypeReference, CompileError>;
 
     /// Translates a function reference
     fn translate_func_ref(
         node: &I::FunctionReference,
-        context: &mut C,
+        context: &mut O::FunctionContext<'_>,
     ) -> Result<O::FunctionReference, CompileError>;
 
     /// Translates a type
-    fn translate_type(node: &I::Type, context: &mut C) -> Result<Option<O::Type>, CompileError>;
+    fn translate_type(node: &I::Type, context: &mut O::FunctionContext<'_>) -> Result<Option<O::Type>, CompileError>;
 
     /// Translates a function
-    fn translate_func(node: &I::Function, context: C) -> Result<O::Function, CompileError>;
+    fn translate_func(node: &I::Function, context: &mut O::FunctionContext<'_>) -> Result<O::Function, CompileError>;
 
     /// Translates a terminator
     fn translate_terminator(
         node: &I::Terminator,
-        context: &mut C,
+        context: &mut O::FunctionContext<'_>,
     ) -> Result<O::Terminator, CompileError>;
 }

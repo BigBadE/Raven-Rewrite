@@ -8,7 +8,7 @@ use syntax::structure::visitor::Translate;
 use syntax::util::translation::Translatable;
 use syntax::util::translation::{translate_fields, translate_vec};
 use syntax::util::CompileError;
-use syntax::SyntaxLevel;
+use syntax::{ContextSyntaxLevel, SyntaxLevel};
 
 /// An expression in the HIR
 #[derive(Serialize, Deserialize)]
@@ -138,10 +138,10 @@ impl<T: SyntaxLevel> Debug for HighExpression<T> {
 }
 
 /// Handle expression translation
-impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
-    Translate<HighExpression<O>, C> for HighExpression<I>
+impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel>
+    Translate<HighExpression<O>, O::FunctionContext<'ctx>> for HighExpression<I>
 {
-    fn translate(&self, context: &mut C) -> Result<HighExpression<O>, CompileError> {
+    fn translate(&self, context: &mut O::FunctionContext<'_>) -> Result<HighExpression<O>, CompileError> {
         Ok(match self {
             HighExpression::Literal(literal) => HighExpression::Literal(*literal),
             HighExpression::CodeBlock { body, value } => HighExpression::CodeBlock {

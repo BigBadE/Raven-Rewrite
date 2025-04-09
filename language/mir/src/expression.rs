@@ -83,7 +83,7 @@ pub fn get_operand(
 pub fn translate_function<
     'a,
     I: SyntaxLevel<Terminator = HighTerminator<I>>
-        + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
+        + Translatable<I, MediumSyntaxLevel>,
 >(
     function: &I::FunctionReference,
     arguments: Vec<&I::Expression>,
@@ -101,7 +101,7 @@ pub fn translate_function<
 impl<
     'a,
     I: SyntaxLevel<Terminator = HighTerminator<I>, FunctionReference = FunctionRef>
-        + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
+        + Translatable<I, MediumSyntaxLevel>,
 > Translate<MediumExpression<MediumSyntaxLevel>, MirFunctionContext<'a>> for HighExpression<I>
 {
     fn translate(
@@ -177,7 +177,7 @@ impl<
 fn translate_variable<
     'a,
     I: SyntaxLevel<FunctionReference = FunctionRef, Terminator = HighTerminator<I>>
-        + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
+        + Translatable<I, MediumSyntaxLevel>,
 >(
     var: &Spur,
     context: &mut MirFunctionContext<'a>,
@@ -197,7 +197,7 @@ fn translate_variable<
 fn translate_code_block<
     'a,
     I: SyntaxLevel<FunctionReference = FunctionRef, Terminator = HighTerminator<I>>
-        + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
+        + Translatable<I, MediumSyntaxLevel>,
 >(
     body: &Vec<I::Statement>,
     value: &I::Expression,
@@ -221,7 +221,7 @@ fn translate_code_block<
 fn get_operation<
     'a,
     I: SyntaxLevel<FunctionReference = FunctionRef, Terminator = HighTerminator<I>>
-        + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
+        + Translatable<I, MediumSyntaxLevel>,
 >(
     operations: &HashMap<Spur, Vec<FunctionRef>>,
     symbol: &Spur,
@@ -243,7 +243,7 @@ fn get_operation<
 
 fn translate_assign<
     'a,
-    I: SyntaxLevel + Translatable<MirFunctionContext<'a>, I, MediumSyntaxLevel>,
+    I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>,
 >(
     declaration: &bool,
     variable: &Spur,

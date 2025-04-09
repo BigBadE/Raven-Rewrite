@@ -7,7 +7,7 @@ use syntax::structure::Modifier;
 use syntax::util::path::FilePath;
 use syntax::util::translation::Translatable;
 use syntax::util::CompileError;
-use syntax::SyntaxLevel;
+use syntax::{ContextSyntaxLevel, SyntaxLevel};
 
 /// A function in the HIR
 #[derive(Serialize, Deserialize, Debug)]
@@ -58,10 +58,10 @@ impl<T: SyntaxLevel> Function for HighFunction<T> {
 }
 
 // Handle type translation
-impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
-    Translate<HighFunction<O>, C> for HighFunction<I>
+impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel>
+    Translate<HighFunction<O>, O::FunctionContext<'ctx>> for HighFunction<I>
 {
-    fn translate(&self, context: &mut C) -> Result<HighFunction<O>, CompileError> {
+    fn translate(&self, context: &mut O::FunctionContext<'_>) -> Result<HighFunction<O>, CompileError> {
         Ok(HighFunction {
             name: self.name,
             file: self.file.clone(),
@@ -91,10 +91,10 @@ impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
     }
 }
 
-impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
-    Translate<HighTerminator<O>, C> for HighTerminator<I>
+impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel>
+    Translate<HighTerminator<O>, O::FunctionContext<'ctx>> for HighTerminator<I>
 {
-    fn translate(&self, context: &mut C) -> Result<HighTerminator<O>, CompileError> {
+    fn translate(&self, context: &mut O::FunctionContext<'_>) -> Result<HighTerminator<O>, CompileError> {
         Ok(match self {
             HighTerminator::Return(expression) => HighTerminator::Return(
                 expression

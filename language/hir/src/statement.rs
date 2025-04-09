@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fmt::{Debug, Formatter};
-use syntax::SyntaxLevel;
 use syntax::structure::traits::Statement;
 use syntax::structure::visitor::Translate;
+use syntax::util::translation::{translate_vec, Translatable};
 use syntax::util::CompileError;
-use syntax::util::translation::{Translatable, translate_vec};
+use syntax::{ContextSyntaxLevel, SyntaxLevel};
 
 /// A statement in the HIR
 #[derive(Serialize, Deserialize)]
@@ -91,10 +91,10 @@ pub struct Conditional<T: SyntaxLevel> {
     pub branch: Vec<T::Statement>,
 }
 
-impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Translate<Conditional<O>, C>
+impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel> Translate<Conditional<O>, O::FunctionContext<'ctx>>
     for Conditional<I>
 {
-    fn translate(&self, context: &mut C) -> Result<Conditional<O>, CompileError> {
+    fn translate(&self, context: &mut O::FunctionContext<'_>) -> Result<Conditional<O>, CompileError> {
         Ok(Conditional {
             condition: I::translate_expr(&self.condition, context)?,
             branch: translate_vec(&self.branch, context, I::translate_stmt)?,
@@ -103,10 +103,10 @@ impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel> Translate<Condit
 }
 
 // Handle statement translation
-impl<C, I: SyntaxLevel + Translatable<C, I, O>, O: SyntaxLevel>
-    Translate<HighStatement<O>, C> for HighStatement<I>
+impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel>
+    Translate<HighStatement<O>, O::FunctionContext<'ctx>> for HighStatement<I>
 {
-    fn translate(&self, context: &mut C) -> Result<HighStatement<O>, CompileError> {
+    fn translate(&self, context: &mut O::FunctionContext<'_>) -> Result<HighStatement<O>, CompileError> {
         Ok(match self {
             HighStatement::Expression(expression) => {
                 HighStatement::Expression(I::translate_expr(expression, context)?)
