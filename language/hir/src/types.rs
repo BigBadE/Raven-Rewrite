@@ -2,6 +2,7 @@ use crate::RawSyntaxLevel;
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
+use indexmap::IndexMap;
 use syntax::structure::traits::Type;
 use syntax::structure::visitor::Translate;
 use syntax::structure::Modifier;
@@ -20,7 +21,7 @@ pub struct HighType<T: SyntaxLevel> {
     /// The file this type is defined in
     pub file: FilePath,
     /// The type's generics
-    pub generics: Vec<(Spur, Vec<T::TypeReference>)>,
+    pub generics: IndexMap<Spur, Vec<T::TypeReference>>,
     /// The type's modifiers
     pub modifiers: Vec<Modifier>,
     /// The per-type data, such as fields, functions, etc...
@@ -39,7 +40,7 @@ impl HighType<RawSyntaxLevel> {
         Self {
             name,
             file: vec![name],
-            generics: vec![],
+            generics: IndexMap::default(),
             modifiers: vec![Modifier::PUBLIC],
             data: TypeData::Struct { fields: vec![] },
         }
@@ -78,7 +79,7 @@ impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>
                         translate_vec(generics, context, I::translate_type_ref)?,
                     ))
                 })
-                .collect::<Result<Vec<_>, _>>()?,
+                .collect::<Result<IndexMap<_, _>, _>>()?,
             modifiers: self.modifiers.clone(),
             data: match &self.data {
                 TypeData::Struct { fields } => TypeData::Struct {

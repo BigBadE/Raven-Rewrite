@@ -2,7 +2,7 @@ use crate::{MediumSyntaxLevel, MirFunctionContext};
 use hir::types::{HighType, TypeData};
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
-use syntax::SyntaxLevel;
+use syntax::{GenericTypeRef, SyntaxLevel, TypeRef};
 use syntax::structure::Modifier;
 use syntax::structure::traits::Type;
 use syntax::structure::visitor::Translate;
@@ -49,5 +49,15 @@ impl<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>
             // Raw -> High should get rid of traits
             TypeData::Trait { .. } => unreachable!(),
         }))
+    }
+}
+
+impl<'a> Translate<TypeRef, MirFunctionContext<'a>> for GenericTypeRef {
+    fn translate(&self, _context: &mut MirFunctionContext<'a>) -> Result<TypeRef, CompileError> {
+        match self {
+            // TODO
+            GenericTypeRef::Struct { reference, .. } => Ok(*reference),
+            GenericTypeRef::Generic { reference, .. } => Ok(*reference),
+        }
     }
 }

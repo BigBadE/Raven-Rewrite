@@ -24,14 +24,14 @@ use syntax::structure::traits::Terminator;
 use syntax::structure::visitor::Translate;
 use syntax::util::translation::Translatable;
 use syntax::util::{CompileError, Context};
-use syntax::{ContextSyntaxLevel, FunctionRef, Syntax, SyntaxLevel, GenericTypeRef};
+use syntax::{ContextSyntaxLevel, FunctionRef, Syntax, SyntaxLevel, GenericTypeRef, TypeRef};
 
 /// The MIR level
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MediumSyntaxLevel;
 
 impl SyntaxLevel for MediumSyntaxLevel {
-    type TypeReference = GenericTypeRef;
+    type TypeReference = TypeRef;
     type Type = MediumType<MediumSyntaxLevel>;
     type FunctionReference = FunctionRef;
     type Function = MediumFunction<MediumSyntaxLevel>;
@@ -79,7 +79,7 @@ pub enum Operand {
 
 impl Operand {
     /// Gets the type of the operand
-    pub fn get_type(&self, context: &MirFunctionContext) -> GenericTypeRef {
+    pub fn get_type(&self, context: &MirFunctionContext) -> TypeRef {
         match self {
             Operand::Copy(place) => context.translate(place),
             Operand::Move(place) => context.translate(place),
@@ -132,7 +132,7 @@ pub struct MirFunctionContext<'a> {
     /// All current local variables
     local_vars: HashMap<Spur, LocalVar>,
     /// The variable types
-    var_types: Vec<GenericTypeRef>,
+    var_types: Vec<TypeRef>,
     /// The looping condition of the parent control block, if any
     parent_loop: Option<CodeBlockId>,
     /// The end of the parent control block, if any
@@ -176,7 +176,7 @@ impl<'a> MirFunctionContext<'a> {
     }
 
     /// Translates a place to its type
-    pub fn translate(&self, place: &Place) -> GenericTypeRef {
+    pub fn translate(&self, place: &Place) -> TypeRef {
         let local = self.var_types[place.local].clone();
         for _projection in &place.projection {
             todo!()
@@ -212,7 +212,7 @@ impl<'a> MirFunctionContext<'a> {
     }
 
     /// Create a new temporary variable
-    pub fn create_temp(&mut self, type_ref: GenericTypeRef) -> LocalVar {
+    pub fn create_temp(&mut self, type_ref: TypeRef) -> LocalVar {
         self.var_types.push(type_ref);
         self.var_types.len() - 1
     }
@@ -223,7 +223,7 @@ impl<'a> MirFunctionContext<'a> {
     }
 
     /// Get or create a local variable for a named variable
-    pub fn get_or_create_local(&mut self, name: Spur, types: GenericTypeRef) -> LocalVar {
+    pub fn get_or_create_local(&mut self, name: Spur, types: TypeRef) -> LocalVar {
         if let Some(local) = self.local_vars.get(&name) {
             *local
         } else {
@@ -257,7 +257,7 @@ impl Translatable<HighSyntaxLevel, MediumSyntaxLevel> for HighSyntaxLevel {
     fn translate_type_ref(
         node: &GenericTypeRef,
         context: &mut MirFunctionContext,
-    ) -> Result<GenericTypeRef, CompileError> {
+    ) -> Result<TypeRef, CompileError> {
         Translate::translate(node, context)
     }
 

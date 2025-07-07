@@ -15,6 +15,7 @@ nom-supreme = "0.8.0"
 nom_locate = "4.2.0"
 
 # Util
+indexmap.workspace = true
 anyhow.workspace = true
 
 # Core

@@ -30,6 +30,11 @@ pub enum GenericTypeRef {
 
 impl TypeReference for GenericTypeRef {}
 
+/// A reference to a specific type
+pub type TypeRef = usize;
+
+impl TypeReference for TypeRef {}
+
 /// A reference to a specific function
 #[derive(Debug, Clone, Hash, Ord, PartialOrd, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionRef {
@@ -68,12 +73,6 @@ pub struct Syntax<T: SyntaxLevel> {
     pub functions: Vec<T::Function>,
     /// The program's types
     pub types: Vec<T::Type>,
-}
-
-impl<C> Translate<GenericTypeRef, C> for GenericTypeRef {
-    fn translate(&self, _context: &mut C) -> Result<GenericTypeRef, CompileError> {
-        Ok(self.clone())
-    }
 }
 
 impl<C> Translate<FunctionRef, C> for FunctionRef {

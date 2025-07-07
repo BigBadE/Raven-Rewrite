@@ -4,10 +4,10 @@ use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::FunctionValue;
-use mir::MediumSyntaxLevel;
 use mir::types::MediumType;
+use mir::MediumSyntaxLevel;
 use std::collections::HashMap;
-use syntax::{FunctionRef, Syntax, GenericTypeRef};
+use syntax::{FunctionRef, Syntax, TypeRef};
 
 /// Manages the MIR types and converting them to LLVMIR versions
 pub struct TypeManager<'a, 'ctx> {
@@ -20,7 +20,7 @@ pub struct TypeManager<'a, 'ctx> {
     /// The LLVM builder
     pub builder: &'a Builder<'ctx>,
     /// MIR to LLVMIR type map
-    pub types: HashMap<GenericTypeRef, BasicTypeEnum<'ctx>>,
+    pub types: HashMap<TypeRef, BasicTypeEnum<'ctx>>,
     /// MIR to LLVMIR function map
     pub functions: HashMap<FunctionRef, FunctionValue<'ctx>>,
 }
@@ -38,11 +38,11 @@ impl<'a, 'ctx> TypeManager<'a, 'ctx> {
     }
 
     /// Gets the LLVMIR type from the MIR type ref
-    pub fn convert_type(&mut self, types: &GenericTypeRef) -> BasicTypeEnum<'ctx> {
+    pub fn convert_type(&mut self, types: &TypeRef) -> BasicTypeEnum<'ctx> {
         if let Some(found) = self.types.get(&types) {
             return *found;
         }
-        let compiled = self.compile_type(&self.syntax.types[types.reference]);
+        let compiled = self.compile_type(&self.syntax.types[*types]);
         self.types.insert(types.clone(), compiled);
         compiled
     }

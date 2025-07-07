@@ -9,9 +9,9 @@ use std::ops::Deref;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Expression;
 use syntax::structure::visitor::Translate;
+use syntax::util::translation::{translate_fields, translate_vec, Translatable};
 use syntax::util::CompileError;
-use syntax::util::translation::{Translatable, translate_fields, translate_vec};
-use syntax::{FunctionRef, SyntaxLevel, GenericTypeRef};
+use syntax::{FunctionRef, SyntaxLevel, TypeRef};
 
 /// An expression in the MIR
 #[derive(Serialize, Deserialize, Debug)]
@@ -38,16 +38,19 @@ pub enum MediumExpression<T: SyntaxLevel> {
 
 impl<T: SyntaxLevel> Expression for MediumExpression<T> {}
 
-impl<T: SyntaxLevel<FunctionReference = FunctionRef, TypeReference =GenericTypeRef>> MediumExpression<T> {
+impl<T: SyntaxLevel<FunctionReference = FunctionRef, TypeReference = TypeRef>,
+    > MediumExpression<T> {
     /// Get the returned type of the expression
-    pub fn get_type(&self, context: &MirFunctionContext) -> Option<GenericTypeRef> {
+    pub fn get_type(&self, context: &mut MirFunctionContext) -> Result<Option<TypeRef>, CompileError> {
         match self {
-            MediumExpression::Use(op) => Some(op.get_type(context)),
-            MediumExpression::Literal(lit) => Some(lit.get_type()),
+            MediumExpression::Use(op) => Ok(Some(op.get_type(context))),
+            MediumExpression::Literal(lit) => Ok(Some(lit.get_type())),
             MediumExpression::FunctionCall { func, .. } => {
-                context.source.syntax.functions[func.reference].return_type.clone()
+                context.source.syntax.functions[func.reference].return_type.as_ref().map(|inner| {
+                    Translate::translate(inner, context)
+                }).transpose()
             }
-            MediumExpression::CreateStruct { struct_type, .. } => Some(struct_type.clone()),
+            MediumExpression::CreateStruct { struct_type, .. } => Ok(Some(struct_type.clone())),
         }
     }
 }
@@ -56,13 +59,13 @@ impl<T: SyntaxLevel<FunctionReference = FunctionRef, TypeReference =GenericTypeR
 pub fn get_operand(
     expr: MediumExpression<MediumSyntaxLevel>,
     context: &mut MirFunctionContext,
-) -> Operand {
+) -> Result<Operand, CompileError> {
     match expr {
-        MediumExpression::Literal(lit) => Operand::Constant(lit),
-        MediumExpression::Use(op) => op,
+        MediumExpression::Literal(lit) => Ok(Operand::Constant(lit)),
+        MediumExpression::Use(op) => Ok(op),
         value => {
             // This is checked to be non-void before.
-            let ty = value.get_type(context).unwrap();
+            let ty = value.get_type(context)?.unwrap();
             let temp = context.create_temp(ty);
             context.push_statement(MediumStatement::Assign {
                 place: Place {
@@ -71,10 +74,10 @@ pub fn get_operand(
                 },
                 value,
             });
-            Operand::Copy(Place {
+            Ok(Operand::Copy(Place {
                 local: temp,
                 projection: vec![],
-            })
+            }))
         }
     }
 }
@@ -92,7 +95,7 @@ pub fn translate_function<
     Ok(MediumExpression::FunctionCall {
         func: I::translate_func_ref(function, context)?,
         args: translate_vec(&arguments, context, |arg, context| {
-            I::translate_expr(arg, context).map(|expr| get_operand(expr, context))
+            I::translate_expr(arg, context).and_then(|expr| get_operand(expr, context))
         })?,
     })
 }
@@ -147,7 +150,7 @@ impl<
             } => MediumExpression::CreateStruct {
                 struct_type: I::translate_type_ref(target_struct, context)?,
                 fields: translate_fields(fields, context, |field, context| {
-                    I::translate_expr(field, context).map(|expr| get_operand(expr, context))
+                    I::translate_expr(field, context).and_then(|expr| get_operand(expr, context))
                 })?,
             },
             HighExpression::UnaryOperation { pre, symbol, value } => get_operation::<I>(
@@ -255,7 +258,7 @@ fn translate_assign<
     }
 
     let value = I::translate_expr(value, context)?;
-    let types = value.get_type(context);
+    let types = value.get_type(context)?;
     let Some(types) = types else {
         return Err(CompileError::Basic("Expected non-void type!".to_string()));
     };

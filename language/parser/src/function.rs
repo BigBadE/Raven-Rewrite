@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use crate::code::function_body;
 use crate::util::{identifier_symbolic, ignored, modifiers, parameter, type_ref};
 use crate::{IResult, Span};
@@ -30,7 +30,7 @@ pub fn function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {
             file: input.extra.file.clone(),
             modifiers,
             name,
-            generics: HashMap::from_iter(generics.into_iter()),
+            generics: IndexMap::from_iter(generics.into_iter()),
             parameters,
             return_type,
             body,

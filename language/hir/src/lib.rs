@@ -84,7 +84,7 @@ impl SyntaxLevel for HighSyntaxLevel {
     type Terminator = HighTerminator<HighSyntaxLevel>;
 }
 
-impl<I: SyntaxLevel<Function = HighFunction<I>> + Translatable<I, HighSyntaxLevel>>
+impl<I: SyntaxLevel<Type = HighType<I>, Function = HighFunction<I>> + Translatable<I, HighSyntaxLevel>>
     ContextSyntaxLevel<I> for HighSyntaxLevel
 {
     type Context<'ctx> = HirContext<'ctx>;
@@ -156,9 +156,9 @@ pub struct HirFunctionContext<'a> {
     pub file: FilePath,
 }
 
-impl HirFunctionContext<'_> {
-    pub fn new<T: SyntaxLevel + Translatable<T, HighSyntaxLevel>>(
-        source: &RawSource,
+impl<'a> HirFunctionContext<'a> {
+    pub fn new<T: SyntaxLevel<Type=HighType<T>, Function=HighFunction<T>> + Translatable<T, HighSyntaxLevel>>(
+        source: &'a RawSource,
         file: FilePath,
         generics: &IndexMap<Spur, Vec<T::TypeReference>>,
     ) -> Result<Self, CompileError> {
@@ -186,11 +186,11 @@ impl<
         &mut self,
         function: &I::Function,
     ) -> Result<HirFunctionContext<'_>, CompileError> {
-        HirFunctionContext::new(self.source, function.file().clone(), &function.generics)
+        HirFunctionContext::new::<I>(self.source, function.file().clone(), &function.generics)
     }
 
     fn type_context(&mut self, types: &I::Type) -> Result<HirFunctionContext<'_>, CompileError> {
-        HirFunctionContext::new(self.source, types.file().clone(), &types.generics)
+        HirFunctionContext::new::<I>(self.source, types.file().clone(), &types.generics)
     }
 }
 

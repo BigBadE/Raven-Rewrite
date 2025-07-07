@@ -83,7 +83,7 @@ pub enum TopLevelItem {
 }
 
 impl Extend<TopLevelItem> for File {
-    fn extend<T: IntoIterator<Item = TopLevelItem>>(&mut self, iter: T) {
+    fn extend<T: IntoIterator<Item=TopLevelItem>>(&mut self, iter: T) {
         for item in iter {
             match item {
                 TopLevelItem::Function(function) => {
@@ -106,7 +106,8 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, CompileError> {
         types: TYPES
             .iter()
             .enumerate()
-            .map(|(id, name)| (vec![syntax.symbols.get_or_intern(name)], GenericTypeRef { reference: id, generics: vec![] }))
+            .map(|(id, name)| (vec![syntax.symbols.get_or_intern(name)],
+                               GenericTypeRef::Struct { reference: id, generics: vec![] }))
             .collect(),
         functions: HashMap::default(),
         pre_unary_operations: HashMap::default(),
@@ -178,7 +179,7 @@ fn add_file_to_syntax(
         path.push(types.name);
         source
             .types
-            .insert(path, GenericTypeRef { reference: source.syntax.types.len(), generics: vec![] });
+            .insert(path, GenericTypeRef::Struct { reference: source.syntax.types.len(), generics: vec![] });
         source.syntax.types.push(types);
     }
 
@@ -199,7 +200,7 @@ pub async fn parse_file(
     let file = final_parser(
         collect_separated_terminated(parse_top_element, ignored, eof).context("Ignored"),
     )(Span::new_extra(&parsing, ParseContext { interner, file }))
-    .map_err(|err| CompileError::Basic(error_message(err)))?;
+        .map_err(|err| CompileError::Basic(error_message(err)))?;
 
     Ok(file)
 }

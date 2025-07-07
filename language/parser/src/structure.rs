@@ -1,3 +1,4 @@
+use indexmap::IndexMap;
 use crate::function::function;
 use crate::util::{identifier, ignored, modifiers, parameter, type_ref};
 use crate::{IResult, Span};
@@ -58,10 +59,10 @@ pub fn parse_structure(input: Span) -> IResult<Span, HighType<RawSyntaxLevel>> {
 }
 
 /// Parses generics
-pub fn generics(input: Span) -> IResult<Span, Vec<(Spur, Vec<RawTypeRef>)>> {
+pub fn generics(input: Span) -> IResult<Span, IndexMap<Spur, Vec<RawTypeRef>>> {
     delimited(
         delimited(ignored, tag("<"), ignored),
-        separated_list1(
+        map(separated_list1(
             delimited(ignored, tag(","), ignored),
             tuple((
                 identifier,
@@ -70,7 +71,7 @@ pub fn generics(input: Span) -> IResult<Span, Vec<(Spur, Vec<RawTypeRef>)>> {
                     |generics| generics.unwrap_or_default(),
                 ),
             )),
-        ),
+        ), |list| IndexMap::from_iter(list.into_iter())),
         delimited(ignored, tag(">"), ignored),
     )
     .context("Generics")

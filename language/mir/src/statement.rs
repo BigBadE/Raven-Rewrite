@@ -7,9 +7,9 @@ use std::fmt::Debug;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Statement;
 use syntax::structure::visitor::Translate;
-use syntax::util::CompileError;
 use syntax::util::translation::Translatable;
-use syntax::{SyntaxLevel, GenericTypeRef};
+use syntax::util::CompileError;
+use syntax::SyntaxLevel;
 
 /// The MIR is made up of a series of nodes, each terminated with a jump expression.
 #[derive(Serialize, Deserialize, Debug)]
@@ -23,7 +23,7 @@ pub enum MediumStatement<T: SyntaxLevel> {
         value: MediumExpression<T>,
     },
     /// Creates a local variable
-    StorageLive(LocalVar, GenericTypeRef),
+    StorageLive(LocalVar, T::TypeReference),
     /// Kills a local variable
     StorageDead(LocalVar),
     /// A NOOP
@@ -43,7 +43,7 @@ impl<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>
         match self {
             HighStatement::Expression(expression) => {
                 let value = I::translate_expr(expression, context)?;
-                if let Some(types) = value.get_type(context) {
+                if let Some(types) = value.get_type(context)? {
                     let local = context.create_temp(types.clone());
                     context.push_statement(MediumStatement::StorageLive(local, types));
                     context.push_statement(MediumStatement::Assign {
