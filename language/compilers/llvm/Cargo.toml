@@ -10,8 +10,7 @@ mir.workspace = true
 hir.workspace = true
 anyhow.workspace = true
 
-#inkwell = { version = "0.6.0", features = ["llvm18-1-no-llvm-linking"] }
-inkwell = { version = "0.6.0", features = ["llvm18-1"] }
+inkwell = { version = "0.6.0", features = ["llvm18-1-no-llvm-linking"] }
 
 [build-dependencies]
 anyhow.workspace = true
