@@ -2,6 +2,7 @@ use crate::expression::HighExpression;
 use crate::function::{HighFunction, HighTerminator};
 use crate::statement::HighStatement;
 use crate::types::HighType;
+use indexmap::IndexMap;
 use lasso::{Spur, ThreadedRodeo};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -10,9 +11,9 @@ use syntax::structure::literal::TYPES;
 use syntax::structure::traits::{Function, FunctionReference, Type, TypeReference};
 use syntax::structure::visitor::Translate;
 use syntax::util::path::{FilePath, path_to_str};
-use syntax::util::translation::{translate_map, translate_vec, Translatable};
+use syntax::util::translation::{Translatable, translate_map, translate_vec};
 use syntax::util::{CompileError, Context};
-use syntax::{ContextSyntaxLevel, FunctionRef, Syntax, SyntaxLevel, TypeRef};
+use syntax::{ContextSyntaxLevel, FunctionRef, GenericTypeRef, Syntax, SyntaxLevel};
 
 /// The HIR expression type and impls
 pub mod expression;
@@ -31,7 +32,7 @@ pub struct RawSource {
     /// Each file's imports
     pub imports: HashMap<FilePath, Vec<FilePath>>,
     /// All the types by path
-    pub types: HashMap<FilePath, TypeRef>,
+    pub types: HashMap<FilePath, GenericTypeRef>,
     /// All the functions by path
     pub functions: HashMap<FilePath, FunctionRef>,
     /// All pre unary operations (like !true)
@@ -74,7 +75,7 @@ pub fn create_syntax() -> Syntax<RawSyntaxLevel> {
 pub struct HighSyntaxLevel;
 
 impl SyntaxLevel for HighSyntaxLevel {
-    type TypeReference = TypeRef;
+    type TypeReference = GenericTypeRef;
     type Type = HighType<HighSyntaxLevel>;
     type FunctionReference = FunctionRef;
     type Function = HighFunction<HighSyntaxLevel>;
@@ -83,9 +84,11 @@ impl SyntaxLevel for HighSyntaxLevel {
     type Terminator = HighTerminator<HighSyntaxLevel>;
 }
 
-impl<I: SyntaxLevel<Function = HighFunction<I>> + Translatable<I, HighSyntaxLevel>> ContextSyntaxLevel<I> for HighSyntaxLevel {
+impl<I: SyntaxLevel<Function = HighFunction<I>> + Translatable<I, HighSyntaxLevel>>
+    ContextSyntaxLevel<I> for HighSyntaxLevel
+{
     type Context<'ctx> = HirContext<'ctx>;
-    type InnerContext<'ctx> = HirInnerContext<'ctx>;
+    type InnerContext<'ctx> = HirFunctionContext<'ctx>;
 }
 
 /// A raw type reference, which hasn't been resolved yet.
@@ -123,9 +126,7 @@ pub struct HirSource {
 
 /// Resolves a raw source into HIR
 pub fn resolve_to_hir(source: RawSource) -> Result<HirSource, CompileError> {
-    let mut context = HirContext {
-        source: &source
-    };
+    let mut context = HirContext { source: &source };
 
     Ok(HirSource {
         syntax: source.syntax.translate(&mut context)?,
@@ -138,142 +139,153 @@ pub fn resolve_to_hir(source: RawSource) -> Result<HirSource, CompileError> {
 /// The context for HIR translation
 pub struct HirContext<'a> {
     /// The raw source
-    pub source: &'a RawSource
+    pub source: &'a RawSource,
 }
 
 /// The context for HIR function translation
-pub struct HirInnerContext<'a> {
+pub struct HirFunctionContext<'a> {
     /// The raw source
     pub source: &'a RawSource,
     /// A cache for type lookups
-    pub type_cache: HashMap<Spur, TypeRef>,
+    pub type_cache: HashMap<Spur, GenericTypeRef>,
     /// A cache for function lookups
     pub func_cache: HashMap<Spur, FunctionRef>,
     /// The currently in scope generics
-    pub generics: HashMap<Spur, Vec<TypeRef>>,
+    pub generics: IndexMap<Spur, Vec<GenericTypeRef>>,
     /// The currently being translated file
     pub file: FilePath,
 }
 
-impl<I: SyntaxLevel<Function = HighFunction<I>> + Translatable<I, HighSyntaxLevel>> Context<I, HighSyntaxLevel> for HirContext<'_> {
-    fn function_context(&mut self, function: &I::Function) -> Result<HirInnerContext<'_>, CompileError> {
-        let mut temp = HirInnerContext {
-            source: self.source,
+impl HirFunctionContext<'_> {
+    pub fn new<T: SyntaxLevel + Translatable<T, HighSyntaxLevel>>(
+        source: &RawSource,
+        file: FilePath,
+        generics: &IndexMap<Spur, Vec<T::TypeReference>>,
+    ) -> Result<Self, CompileError> {
+        let mut context = HirFunctionContext {
+            source,
             type_cache: HashMap::default(),
             func_cache: HashMap::default(),
-            generics: HashMap::default(),
-            file: function.file().clone(),
+            generics: IndexMap::default(),
+            file,
         };
 
-        temp.generics = translate_map(&function.generics, &mut temp, |types, context| translate_vec(types, context, I::translate_type_ref))?;
+        context.generics = translate_map(&generics, &mut context, |types, context| {
+            translate_vec(types, context, T::translate_type_ref)
+        })?;
 
-        Ok(temp)
+        Ok(context)
+    }
+}
+
+impl<
+    I: SyntaxLevel<Type = HighType<I>, Function = HighFunction<I>> + Translatable<I, HighSyntaxLevel>,
+> Context<I, HighSyntaxLevel> for HirContext<'_>
+{
+    fn function_context(
+        &mut self,
+        function: &I::Function,
+    ) -> Result<HirFunctionContext<'_>, CompileError> {
+        HirFunctionContext::new(self.source, function.file().clone(), &function.generics)
     }
 
-    fn type_context(&mut self, types: &I::Type) -> Result<HirInnerContext<'_>, CompileError> {
-        Ok(HirInnerContext {
-            source: self.source,
-            type_cache: HashMap::default(),
-            func_cache: HashMap::default(),
-            generics: HashMap::default(),
-            file: types.file().clone(),
-        })
+    fn type_context(&mut self, types: &I::Type) -> Result<HirFunctionContext<'_>, CompileError> {
+        HirFunctionContext::new(self.source, types.file().clone(), &types.generics)
     }
 }
 
 /// Handle reference translations
-impl<'a> Translate<TypeRef, HirInnerContext<'a>> for RawTypeRef {
-    fn translate(&self, context: &mut HirInnerContext) -> Result<TypeRef, CompileError> {
+impl<'a> Translate<GenericTypeRef, HirFunctionContext<'a>> for RawTypeRef {
+    fn translate(&self, context: &mut HirFunctionContext) -> Result<GenericTypeRef, CompileError> {
         if let Some(types) = context.source.types.get(&self.path) {
             return Ok(types.clone());
         }
 
-        if self.generics.is_empty() && self.path.len() == 1 {
-            if let Some(generic) = context.generics.get(&self.path[0]) {
-                return Ok(generic.clone());
-            }
+        if self.generics.is_empty()
+            && self.path.len() == 1
+            && let Some(generic) = context.generics.get_index_of(&self.path[0])
+        {
+            return Ok(GenericTypeRef::Generic { reference: generic });
         }
 
         for import in &context.source.imports[&context.file] {
-            if import.last().unwrap() == self.path.first().unwrap() {
-                if let Some(types) = context.source.types.get(import) {
-                    return Ok(types.clone());
-                } else {
-                    println!(
-                        "Failed for {:?}: {:?}",
-                        path_to_str(import, &context.source.syntax.symbols),
-                        context
-                            .source
-                            .types
-                            .iter()
-                            .map(|(key, value)| (path_to_str(key, &context.source.syntax.symbols), value))
-                            .collect::<Vec<_>>()
-                    );
-                }
+            if import.last().unwrap() != self.path.first().unwrap() {
+                continue;
             }
+            if let Some(types) = context.source.types.get(import) {
+                return Ok(types.clone());
+            }
+            println!(
+                "Failed for {:?}: {:?}",
+                path_to_str(import, &context.source.syntax.symbols),
+                context
+                    .source
+                    .types
+                    .iter()
+                    .map(|(key, value)| (path_to_str(key, &context.source.syntax.symbols), value))
+                    .collect::<Vec<_>>()
+            );
         }
 
         todo!()
     }
 }
 
-impl<'a> Translate<FunctionRef, HirInnerContext<'a>> for RawFunctionRef {
+impl<'a> Translate<FunctionRef, HirFunctionContext<'a>> for RawFunctionRef {
     fn translate(
         &self,
-        _context: &mut HirInnerContext<'a>,
+        _context: &mut HirFunctionContext<'a>,
     ) -> Result<FunctionRef, CompileError> {
         todo!()
     }
 }
 
-impl Translatable<RawSyntaxLevel, HighSyntaxLevel>
-    for RawSyntaxLevel
-{
+impl Translatable<RawSyntaxLevel, HighSyntaxLevel> for RawSyntaxLevel {
     fn translate_stmt(
         node: &HighStatement<RawSyntaxLevel>,
-        context: &mut HirInnerContext<'_>,
+        context: &mut HirFunctionContext<'_>,
     ) -> Result<HighStatement<HighSyntaxLevel>, CompileError> {
         Translate::translate(node, context)
     }
 
     fn translate_expr(
         node: &HighExpression<RawSyntaxLevel>,
-        context: &mut HirInnerContext<'_>,
+        context: &mut HirFunctionContext<'_>,
     ) -> Result<HighExpression<HighSyntaxLevel>, CompileError> {
         Translate::translate(node, context)
     }
 
     fn translate_type_ref(
         node: &RawTypeRef,
-        context: &mut HirInnerContext<'_>,
-    ) -> Result<TypeRef, CompileError> {
+        context: &mut HirFunctionContext<'_>,
+    ) -> Result<GenericTypeRef, CompileError> {
         Translate::translate(node, context)
     }
 
     fn translate_func_ref(
         node: &RawFunctionRef,
-        context: &mut HirInnerContext<'_>,
+        context: &mut HirFunctionContext<'_>,
     ) -> Result<FunctionRef, CompileError> {
         Translate::translate(node, context)
     }
 
     fn translate_type(
         node: &HighType<RawSyntaxLevel>,
-        context: &mut HirInnerContext<'_>,
+        context: &mut HirFunctionContext<'_>,
     ) -> Result<Option<HighType<HighSyntaxLevel>>, CompileError> {
         Translate::translate(node, context)
     }
 
     fn translate_func(
         node: &HighFunction<RawSyntaxLevel>,
-        context: &mut HirInnerContext<'_>,
+        context: &mut HirFunctionContext<'_>,
     ) -> Result<HighFunction<HighSyntaxLevel>, CompileError> {
         Translate::translate(node, context)
     }
 
     fn translate_terminator(
         node: &HighTerminator<RawSyntaxLevel>,
-        context: &mut HirInnerContext<'_>,
+        context: &mut HirFunctionContext<'_>,
     ) -> Result<HighTerminator<HighSyntaxLevel>, CompileError> {
         Translate::translate(node, context)
     }

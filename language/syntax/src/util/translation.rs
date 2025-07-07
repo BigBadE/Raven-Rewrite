@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use crate::util::CompileError;
 use crate::{ContextSyntaxLevel, SyntaxLevel};
+use indexmap::IndexMap;
 use lasso::Spur;
 
 /// Translates a vector of fields into fields of the output type.
@@ -16,11 +16,11 @@ pub fn translate_fields<C, I, O, F: Fn(&I, &mut C) -> Result<O, CompileError>>(
 
 /// Translates a map into a map of the output type.
 pub fn translate_map<C, I, O, F: Fn(&I, &mut C) -> Result<O, CompileError>>(
-    fields: &HashMap<Spur, I>,
+    fields: &IndexMap<Spur, I>,
     context: &mut C,
     translator: F,
-) -> Result<HashMap<Spur, O>, CompileError> {
-    Ok(HashMap::from_iter(translate_vec(fields, context, |(name, value), context| {
+) -> Result<IndexMap<Spur, O>, CompileError> {
+    Ok(IndexMap::from_iter(translate_vec(fields, context, |(name, value), context| {
         Ok::<_, CompileError>((*name, translator(value, context)?))
     })?))
 }

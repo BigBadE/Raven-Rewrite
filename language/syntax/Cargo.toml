@@ -5,6 +5,7 @@ edition = "2024"
 [dependencies]
 lasso.workspace = true
 
+indexmap.workspace = true
 lazy_static.workspace = true
 serde.workspace = true
 

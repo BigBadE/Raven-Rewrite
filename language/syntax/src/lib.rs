@@ -15,14 +15,20 @@ pub mod util;
 
 /// A reference to a specific type
 #[derive(Debug, Clone, Hash, Ord, PartialOrd, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TypeRef {
-    /// The reference to the type
-    pub reference: usize,
-    /// The generic constraints of the type
-    pub generics: Vec<TypeRef>,
+pub enum GenericTypeRef {
+    Struct {
+        /// The reference to the type
+        reference: usize,
+        /// The generic constraints of the type
+        generics: Vec<GenericTypeRef>,
+    },
+    Generic {
+        /// The reference to the generic
+        reference: usize,
+    },
 }
 
-impl TypeReference for TypeRef {}
+impl TypeReference for GenericTypeRef {}
 
 /// A reference to a specific function
 #[derive(Debug, Clone, Hash, Ord, PartialOrd, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,7 +36,7 @@ pub struct FunctionRef {
     /// The reference to the function
     pub reference: usize,
     /// The generic constraints of the function
-    pub generics: Vec<TypeRef>,
+    pub generics: Vec<GenericTypeRef>,
 }
 impl FunctionReference for FunctionRef {}
 
@@ -64,8 +70,8 @@ pub struct Syntax<T: SyntaxLevel> {
     pub types: Vec<T::Type>,
 }
 
-impl<C> Translate<TypeRef, C> for TypeRef {
-    fn translate(&self, _context: &mut C) -> Result<TypeRef, CompileError> {
+impl<C> Translate<GenericTypeRef, C> for GenericTypeRef {
+    fn translate(&self, _context: &mut C) -> Result<GenericTypeRef, CompileError> {
         Ok(self.clone())
     }
 }

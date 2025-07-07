@@ -13,19 +13,23 @@ members = [
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [workspace.dependencies]
 tokio = { version = "1.44.2", features = ["fs", "rt-multi-thread", "macros"] }
+serde = { version = "1.0.219", features = ["derive", "rc"] }
+
+# Util
 async-recursion = "1.1.1"
 lazy_static = "1.5.0"
-thiserror = "2.0.12"
-openssl = "=0.10.72"
+indexmap = { version = "2.10.0", features = ["serde"] }
+
+# String interning
 lasso = { version = "0.7.3", features = ["multi-threaded", "serialize"] }
-serde = { version = "1.0.219", features = ["derive", "rc"] }
 
 # Error handling
 anyhow = "1.0.71"
+thiserror = "2.0.12"
 
 hir = { path = "language/hir" }
 mir = { path = "language/mir" }

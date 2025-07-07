@@ -11,7 +11,7 @@ use syntax::structure::traits::Expression;
 use syntax::structure::visitor::Translate;
 use syntax::util::CompileError;
 use syntax::util::translation::{Translatable, translate_fields, translate_vec};
-use syntax::{FunctionRef, SyntaxLevel, TypeRef};
+use syntax::{FunctionRef, SyntaxLevel, GenericTypeRef};
 
 /// An expression in the MIR
 #[derive(Serialize, Deserialize, Debug)]
@@ -38,9 +38,9 @@ pub enum MediumExpression<T: SyntaxLevel> {
 
 impl<T: SyntaxLevel> Expression for MediumExpression<T> {}
 
-impl<T: SyntaxLevel<FunctionReference = FunctionRef, TypeReference = TypeRef>> MediumExpression<T> {
+impl<T: SyntaxLevel<FunctionReference = FunctionRef, TypeReference =GenericTypeRef>> MediumExpression<T> {
     /// Get the returned type of the expression
-    pub fn get_type(&self, context: &MirFunctionContext) -> Option<TypeRef> {
+    pub fn get_type(&self, context: &MirFunctionContext) -> Option<GenericTypeRef> {
         match self {
             MediumExpression::Use(op) => Some(op.get_type(context)),
             MediumExpression::Literal(lit) => Some(lit.get_type()),

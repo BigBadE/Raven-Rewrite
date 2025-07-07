@@ -1,6 +1,6 @@
+use indexmap::IndexMap;
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fmt::Debug;
 use syntax::structure::traits::{Function, Terminator};
 use syntax::structure::visitor::Translate;
@@ -23,7 +23,7 @@ pub struct HighFunction<T: SyntaxLevel> {
     /// The parameters of the function
     pub parameters: Vec<(Spur, T::TypeReference)>,
     /// The function's generics
-    pub generics: HashMap<Spur, Vec<T::TypeReference>>,
+    pub generics: IndexMap<Spur, Vec<T::TypeReference>>,
     /// The return type of the function
     pub return_type: Option<T::TypeReference>,
     /// The body of the function

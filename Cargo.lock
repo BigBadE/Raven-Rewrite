@@ -427,6 +427,7 @@ checksum = "bf151400ff0baff5465007dd2f3e717f3fe502074ca563069ce3a6629d07b289"
 name = "hir"
 version = "0.0.0"
 dependencies = [
+ "indexmap",
  "lasso",
  "serde",
  "syntax",
@@ -693,12 +694,13 @@ checksum = "0cfe9645a18782869361d9c8732246be7b410ad4e919d3609ebabdac00ba12c3"
 
 [[package]]
 name = "indexmap"
-version = "2.9.0"
+version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cea70ddb795996207ad57735b50c5982d8844f38ba9ee5f1aedcfb708a2aa11e"
+checksum = "fe4cd85333e22411419a0bcae1297d25e58c9443848b11dc6a86fefe8c78a661"
 dependencies = [
  "equivalent",
  "hashbrown 0.15.2",
+ "serde",
 ]
 
 [[package]]
@@ -1386,6 +1388,7 @@ name = "syntax"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "indexmap",
  "lasso",
  "lazy_static",
  "serde",

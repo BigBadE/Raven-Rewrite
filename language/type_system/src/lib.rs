@@ -1,12 +1,12 @@
 use lasso::Spur;
 use std::collections::HashMap;
-use syntax::TypeRef;
+use syntax::GenericTypeRef;
 
 /// Compares two types to see if target fits the bounds of expected
 pub fn check_type(
-    target: TypeRef,
-    expected: TypeRef,
-    _generics: HashMap<Spur, Vec<TypeRef>>,
+    target: GenericTypeRef,
+    expected: GenericTypeRef,
+    _generics: HashMap<Spur, Vec<GenericTypeRef>>,
 ) -> Result<(), String> {
     if target == expected {
         Ok(())

@@ -1,4 +1,4 @@
-use crate::TypeRef;
+use crate::GenericTypeRef;
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
 
@@ -32,8 +32,8 @@ pub const TYPES: [&str; 9] = [
 
 impl Literal {
     /// This is expected to be kept in sync with TYPES.
-    pub fn get_type(&self) -> TypeRef {
-        TypeRef {
+    pub fn get_type(&self) -> GenericTypeRef {
+        GenericTypeRef::Struct {
             reference: match self {
                 Literal::String(_) => 0,
                 Literal::F64(_) => 1,
@@ -45,7 +45,7 @@ impl Literal {
                 Literal::Bool(_) => 7,
                 Literal::Char(_) => 8,
             },
-            generics: vec![]
+            generics: vec![],
         }
     }
 }

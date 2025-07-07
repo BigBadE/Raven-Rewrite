@@ -9,7 +9,7 @@ use syntax::structure::traits::Statement;
 use syntax::structure::visitor::Translate;
 use syntax::util::CompileError;
 use syntax::util::translation::Translatable;
-use syntax::{SyntaxLevel, TypeRef};
+use syntax::{SyntaxLevel, GenericTypeRef};
 
 /// The MIR is made up of a series of nodes, each terminated with a jump expression.
 #[derive(Serialize, Deserialize, Debug)]
@@ -23,7 +23,7 @@ pub enum MediumStatement<T: SyntaxLevel> {
         value: MediumExpression<T>,
     },
     /// Creates a local variable
-    StorageLive(LocalVar, TypeRef),
+    StorageLive(LocalVar, GenericTypeRef),
     /// Kills a local variable
     StorageDead(LocalVar),
     /// A NOOP

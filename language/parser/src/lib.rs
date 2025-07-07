@@ -20,7 +20,7 @@ use syntax::structure::Modifier;
 use syntax::structure::literal::TYPES;
 use syntax::util::CompileError;
 use syntax::util::path::{FilePath, get_path};
-use syntax::{FunctionRef, TypeRef};
+use syntax::{FunctionRef, GenericTypeRef};
 use tokio::fs;
 
 /// Parses blocks of code
@@ -106,7 +106,7 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, CompileError> {
         types: TYPES
             .iter()
             .enumerate()
-            .map(|(id, name)| (vec![syntax.symbols.get_or_intern(name)], TypeRef { reference: id, generics: vec![] }))
+            .map(|(id, name)| (vec![syntax.symbols.get_or_intern(name)], GenericTypeRef { reference: id, generics: vec![] }))
             .collect(),
         functions: HashMap::default(),
         pre_unary_operations: HashMap::default(),
@@ -178,7 +178,7 @@ fn add_file_to_syntax(
         path.push(types.name);
         source
             .types
-            .insert(path, TypeRef { reference: source.syntax.types.len(), generics: vec![] });
+            .insert(path, GenericTypeRef { reference: source.syntax.types.len(), generics: vec![] });
         source.syntax.types.push(types);
     }
 
