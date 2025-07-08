@@ -1,0 +1,17 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+Do not use full paths, always import paths when possible.
+
+Do not re-export types.
+
+Do not create tests unless asked.
+
+Do not create additional documentation file unless asked.
+
+Do not modify the main function or tests unless explicitly told to.
+
+
+You should test your code with cargo test. Do not use cargo run unless explicitly told to.

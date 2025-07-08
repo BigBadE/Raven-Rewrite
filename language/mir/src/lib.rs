@@ -6,6 +6,8 @@ pub mod function;
 pub mod statement;
 /// The MIR type type and impls
 pub mod types;
+/// Pretty printing implementations for MIR types
+pub mod pretty_print;
 
 use crate::expression::MediumExpression;
 use crate::function::MediumFunction;

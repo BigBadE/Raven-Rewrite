@@ -10,6 +10,8 @@ pub async fn compile_source(dir: PathBuf) -> Result<Syntax<MediumSyntaxLevel>, C
     let raw_source = parse_source(dir).await?;
 
     let hir = resolve_to_hir(raw_source)?;
+    println!("=== HIR ===");
+    println!("{}", hir.syntax);
     let mir = resolve_to_mir(hir)?;
 
     Ok(mir)

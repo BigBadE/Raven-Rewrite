@@ -7,6 +7,7 @@ use lasso::ThreadedRodeo;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::sync::Arc;
+use crate::util::pretty_print::PrettyPrint;
 
 /// The structure of the program in memory
 pub mod structure;
@@ -80,3 +81,44 @@ impl<C> Translate<FunctionRef, C> for FunctionRef {
         Ok(self.clone())
     }
 }
+
+/// Implement PrettyPrint for generic type references
+impl PrettyPrint for GenericTypeRef {
+    fn format(&self, interner: &ThreadedRodeo) -> String {
+        match self {
+            GenericTypeRef::Struct { reference, generics } => {
+                let mut code = format!("TypeRef{}", reference);
+                if !generics.is_empty() {
+                    code.push('<');
+                    let generic_strs: Vec<String> = generics.iter()
+                        .map(|g| g.format(interner))
+                        .collect();
+                    code.push_str(&generic_strs.join(", "));
+                    code.push('>');
+                }
+                code
+            },
+            GenericTypeRef::Generic { reference } => {
+                format!("GenericT{}", reference)
+            }
+        }
+    }
+}
+
+/// Implement PrettyPrint for function references
+impl PrettyPrint for FunctionRef {
+    fn format(&self, interner: &ThreadedRodeo) -> String {
+        let mut code = format!("FuncRef{}", self.reference);
+        if !self.generics.is_empty() {
+            code.push('<');
+            let generic_strs: Vec<String> = self.generics.iter()
+                .map(|g| g.format(interner))
+                .collect();
+            code.push_str(&generic_strs.join(", "));
+            code.push('>');
+        }
+        code
+    }
+}
+
+

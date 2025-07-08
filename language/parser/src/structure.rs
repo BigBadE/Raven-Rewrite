@@ -60,7 +60,7 @@ pub fn parse_structure(input: Span) -> IResult<Span, HighType<RawSyntaxLevel>> {
 
 /// Parses generics
 pub fn generics(input: Span) -> IResult<Span, IndexMap<Spur, Vec<RawTypeRef>>> {
-    delimited(
+    map(opt(delimited(
         delimited(ignored, tag("<"), ignored),
         map(separated_list1(
             delimited(ignored, tag(","), ignored),
@@ -73,7 +73,9 @@ pub fn generics(input: Span) -> IResult<Span, IndexMap<Spur, Vec<RawTypeRef>>> {
             )),
         ), |list| IndexMap::from_iter(list.into_iter())),
         delimited(ignored, tag(">"), ignored),
-    )
+    )), |generics| {
+        generics.unwrap_or_default()
+    })
     .context("Generics")
     .parse(input)
 }

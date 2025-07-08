@@ -1,12 +1,14 @@
 use crate::util::path::FilePath;
 use crate::{ContextSyntaxLevel, SyntaxLevel};
 use anyhow::Error;
-use thiserror::Error;
+use std::fmt;
 
 /// Utility functions for paths
 pub mod path;
 /// Utility functions for translation
 pub mod translation;
+/// Pretty printing utilities that resolve Spurs to actual strings
+pub mod pretty_print;
 
 /// A trait for handling translation contexts
 pub trait Context<I: SyntaxLevel, O: ContextSyntaxLevel<I>> {
@@ -27,14 +29,40 @@ pub trait FileOwner {
 }
 
 /// An error raised in the compilation process
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum CompileError {
-    #[error("Internal error:\n{0}")]
     Internal(Error),
-    #[error("{0}")]
     Basic(String),
-    #[error("{0:?}")]
     Multi(Vec<CompileError>),
+}
+
+impl fmt::Display for CompileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CompileError::Internal(err) => write!(f, "Internal error:\n{}", err),
+            CompileError::Basic(msg) => write!(f, "{}", msg),
+            CompileError::Multi(errors) => {
+                writeln!(f, "Multiple errors occurred:")?;
+                for (i, error) in errors.iter().enumerate() {
+                    if i > 0 {
+                        writeln!(f)?;
+                    }
+                    write!(f, "{}", error)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl std::error::Error for CompileError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            CompileError::Internal(err) => Some(err.as_ref()),
+            CompileError::Basic(_) => None,
+            CompileError::Multi(_) => None,
+        }
+    }
 }
 
 impl CompileError {
