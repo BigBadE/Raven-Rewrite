@@ -15,8 +15,10 @@ pub fn get_function_type<'a, 'ctx>(
         .map(|param| type_manager.convert_type(param).into())
         .collect::<Vec<_>>();
     let parameters = parameters.as_slice();
+    let mut path = function.file.clone();
+    path.push(function.name);
     type_manager.module.add_function(
-        type_manager.syntax.symbols.resolve(&function.name),
+        &path.into_iter().map(|s| type_manager.syntax.symbols.resolve(&s)).collect::<Vec<_>>().join("::"),
         function
             .return_type
             .as_ref()

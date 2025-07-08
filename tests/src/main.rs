@@ -19,7 +19,7 @@ async fn test() -> Result<(), Error> {
 
     // SAFETY: Running external code is always unsafe.
     unsafe {
-        println!("{}", generator.execute::<Main>("test")?.call());
+        println!("{}", generator.execute::<Main>("core::parsing::test")?.call());
     }
     Ok(())
 }
