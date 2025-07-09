@@ -857,7 +857,9 @@ dependencies = [
 name = "mir"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "hir",
+ "indexmap",
  "lasso",
  "serde",
  "syntax",

@@ -1,22 +1,22 @@
-use crate::util::path::FilePath;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
+use std::hash::Hash;
 
 /// Indicates that this represents a type in the language.
-pub trait Type: Serialize + for<'a> Deserialize<'a> + Debug {
-    fn file(&self) -> &FilePath;
+pub trait Type<T>: Serialize + for<'a> Deserialize<'a> + Debug {
+    fn reference(&self) -> &T;
 }
 
 /// Indicates that this represents a type reference in the language.
-pub trait TypeReference: Serialize + for<'a> Deserialize<'a> + Clone + Debug {}
+pub trait TypeReference: Serialize + for<'a> Deserialize<'a> + Clone + Eq + Hash + Debug {}
 
 /// Indicates that this represents a function in the language.
-pub trait Function: Serialize + for<'a> Deserialize<'a> + Debug {
-    fn file(&self) -> &FilePath;
+pub trait Function<T>: Serialize + for<'a> Deserialize<'a> + Debug {
+    fn reference(&self) -> &T;
 }
 
 /// Indicates that this represents a function reference in the language.
-pub trait FunctionReference: Serialize + for<'a> Deserialize<'a> + Debug {}
+pub trait FunctionReference: Serialize + for<'a> Deserialize<'a> + Clone + Eq + Hash + Debug {}
 
 /// Indicates that this represents a terminator for a block of code in the language.
 /// Terminators end blocks of code, and can alter the flow of the program.

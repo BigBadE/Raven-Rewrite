@@ -17,7 +17,7 @@ use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPoin
 use inkwell::module::Module;
 use mir::MediumSyntaxLevel;
 use std::collections::HashMap;
-use syntax::{FunctionRef, Syntax};
+use syntax::{GenericFunctionRef, Syntax};
 
 /// The context for LLVMIR compilation
 pub struct LowCompiler {
@@ -68,7 +68,7 @@ impl<'ctx> CodeGenerator<'ctx> {
         for (reference, function) in code.functions.iter().enumerate() {
             let mut blocks = Vec::new();
             for (position, _) in function.body.iter().enumerate() {
-                let function = type_manager.function_type(&FunctionRef { reference, generics: vec![] });
+                let function = type_manager.function_type(&GenericFunctionRef { reference, generics: vec![] });
                 blocks.push(
                     type_manager
                         .context

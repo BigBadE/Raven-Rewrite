@@ -9,9 +9,9 @@ use std::ops::Deref;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Expression;
 use syntax::structure::visitor::Translate;
-use syntax::util::translation::{translate_fields, translate_vec, Translatable};
+use syntax::util::translation::{translate_fields, translate_iterable, Translatable};
 use syntax::util::CompileError;
-use syntax::{FunctionRef, SyntaxLevel, TypeRef};
+use syntax::{GenericFunctionRef, SyntaxLevel, TypeRef};
 
 /// An expression in the MIR
 #[derive(Serialize, Deserialize, Debug)]
@@ -38,13 +38,13 @@ pub enum MediumExpression<T: SyntaxLevel> {
 
 impl<T: SyntaxLevel> Expression for MediumExpression<T> {}
 
-impl<T: SyntaxLevel<FunctionReference = FunctionRef, TypeReference = TypeRef>,
+impl<T: SyntaxLevel<FunctionReference =GenericFunctionRef, TypeReference = TypeRef>,
     > MediumExpression<T> {
     /// Get the returned type of the expression
     pub fn get_type(&self, context: &mut MirFunctionContext) -> Result<Option<TypeRef>, CompileError> {
         match self {
             MediumExpression::Use(op) => Ok(Some(op.get_type(context))),
-            MediumExpression::Literal(lit) => Ok(Some(lit.get_type())),
+            MediumExpression::Literal(lit) => Ok(Some(lit.get_type(&context.source.syntax.symbols))),
             MediumExpression::FunctionCall { func, .. } => {
                 context.source.syntax.functions[func.reference].return_type.as_ref().map(|inner| {
                     Translate::translate(inner, context)
@@ -94,7 +94,7 @@ pub fn translate_function<
 ) -> Result<MediumExpression<MediumSyntaxLevel>, CompileError> {
     Ok(MediumExpression::FunctionCall {
         func: I::translate_func_ref(function, context)?,
-        args: translate_vec(&arguments, context, |arg, context| {
+        args: translate_iterable(&arguments, context, |arg, context| {
             I::translate_expr(arg, context).and_then(|expr| get_operand(expr, context))
         })?,
     })
@@ -103,7 +103,7 @@ pub fn translate_function<
 /// Handle statement translation
 impl<
     'a,
-    I: SyntaxLevel<Terminator = HighTerminator<I>, FunctionReference = FunctionRef>
+    I: SyntaxLevel<Terminator = HighTerminator<I>, FunctionReference =GenericFunctionRef>
         + Translatable<I, MediumSyntaxLevel>,
 > Translate<MediumExpression<MediumSyntaxLevel>, MirFunctionContext<'a>> for HighExpression<I>
 {
@@ -179,7 +179,7 @@ impl<
 
 fn translate_variable<
     'a,
-    I: SyntaxLevel<FunctionReference = FunctionRef, Terminator = HighTerminator<I>>
+    I: SyntaxLevel<FunctionReference =GenericFunctionRef, Terminator = HighTerminator<I>>
         + Translatable<I, MediumSyntaxLevel>,
 >(
     var: &Spur,
@@ -199,7 +199,7 @@ fn translate_variable<
 
 fn translate_code_block<
     'a,
-    I: SyntaxLevel<FunctionReference = FunctionRef, Terminator = HighTerminator<I>>
+    I: SyntaxLevel<FunctionReference =GenericFunctionRef, Terminator = HighTerminator<I>>
         + Translatable<I, MediumSyntaxLevel>,
 >(
     body: &Vec<I::Statement>,
@@ -223,10 +223,10 @@ fn translate_code_block<
 
 fn get_operation<
     'a,
-    I: SyntaxLevel<FunctionReference = FunctionRef, Terminator = HighTerminator<I>>
+    I: SyntaxLevel<FunctionReference =GenericFunctionRef, Terminator = HighTerminator<I>>
         + Translatable<I, MediumSyntaxLevel>,
 >(
-    operations: &HashMap<Spur, Vec<FunctionRef>>,
+    operations: &HashMap<Spur, Vec<GenericFunctionRef>>,
     symbol: &Spur,
     args: Vec<&I::Expression>,
     context: &mut MirFunctionContext<'a>,

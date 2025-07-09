@@ -5,7 +5,7 @@ use crate::types::MediumType;
 use crate::{MediumSyntaxLevel, MediumTerminator, Operand, Place, PlaceElem};
 use lasso::ThreadedRodeo;
 use syntax::util::pretty_print::{format_modifiers, PrettyPrint, PrettyPrintWithContext};
-use syntax::{FunctionRef, Syntax, TypeRef};
+use syntax::{GenericFunctionRef, Syntax, TypeRef};
 
 /// Implement PrettyPrint for MIR functions
 impl PrettyPrint for MediumFunction<MediumSyntaxLevel> {
@@ -396,7 +396,7 @@ fn resolve_type_name(type_ref: &TypeRef, syntax: &Syntax<MediumSyntaxLevel>, int
 }
 
 /// Helper function to resolve a FunctionRef to its actual name
-fn resolve_function_name(func_ref: &FunctionRef, syntax: &Syntax<MediumSyntaxLevel>, interner: &ThreadedRodeo) -> String {
+fn resolve_function_name(func_ref: &GenericFunctionRef, syntax: &Syntax<MediumSyntaxLevel>, interner: &ThreadedRodeo) -> String {
     if let Some(func_def) = syntax.functions.get(func_ref.reference) {
         let mut name = interner.resolve(&func_def.name).to_string();
         if !func_ref.generics.is_empty() {

@@ -3,7 +3,7 @@ use std::fmt;
 use std::fmt::{Debug, Formatter};
 use syntax::structure::traits::Statement;
 use syntax::structure::visitor::Translate;
-use syntax::util::translation::{translate_vec, Translatable};
+use syntax::util::translation::{translate_iterable, Translatable};
 use syntax::util::CompileError;
 use syntax::{ContextSyntaxLevel, SyntaxLevel};
 
@@ -97,7 +97,7 @@ impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>> Transl
     fn translate(&self, context: &mut O::InnerContext<'_>) -> Result<Conditional<O>, CompileError> {
         Ok(Conditional {
             condition: I::translate_expr(&self.condition, context)?,
-            branch: translate_vec(&self.branch, context, I::translate_stmt)?,
+            branch: translate_iterable(&self.branch, context, I::translate_stmt)?,
         })
     }
 }
@@ -112,16 +112,16 @@ impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>
                 HighStatement::Expression(I::translate_expr(expression, context)?)
             }
             HighStatement::CodeBlock(expressions) => {
-                HighStatement::CodeBlock(translate_vec(expressions, context, I::translate_stmt)?)
+                HighStatement::CodeBlock(translate_iterable(expressions, context, I::translate_stmt)?)
             }
             HighStatement::If {
                 conditions,
                 else_branch,
             } => HighStatement::If {
-                conditions: translate_vec(conditions, context, Translate::translate)?,
+                conditions: translate_iterable(conditions, context, Translate::translate)?,
                 else_branch: else_branch
                     .as_ref()
-                    .map(|inner| translate_vec(inner, context, I::translate_stmt))
+                    .map(|inner| translate_iterable(inner, context, I::translate_stmt))
                     .transpose()?,
             },
             HighStatement::For { condition } => HighStatement::For {
@@ -131,7 +131,7 @@ impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>
                 condition: condition.translate(context)?,
             },
             HighStatement::Loop { body } => HighStatement::Loop {
-                body: translate_vec(body, context, I::translate_stmt)?,
+                body: translate_iterable(body, context, I::translate_stmt)?,
             },
             HighStatement::Terminator(terminator) => {
                 HighStatement::Terminator(I::translate_terminator(terminator, context)?)

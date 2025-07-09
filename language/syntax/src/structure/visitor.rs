@@ -1,4 +1,5 @@
-use crate::util::translation::{translate_vec, Translatable};
+use crate::structure::traits::{Function, Type};
+use crate::util::translation::{translate_iterable, Translatable};
 use crate::util::{CompileError, Context};
 use crate::{ContextSyntaxLevel, Syntax, SyntaxLevel};
 
@@ -8,22 +9,29 @@ pub trait Translate<T, C> {
 }
 
 impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>
-    Translate<Syntax<O>, O::Context<'ctx>> for Syntax<I>
+Translate<Syntax<O>, O::Context<'ctx>> for Syntax<I>
 {
     fn translate(&self, context: &mut O::Context<'_>) -> Result<Syntax<O>, CompileError> {
-        let functions = translate_vec(&self.functions, context, |input, context| {
-            I::translate_func(input, &mut context.function_context(input)?)
-        });
+        let functions =
+            translate_iterable(&self.functions, context,
+                               |(_, input), context| {
+                                   let func = I::translate_func(input, &mut context.function_context(input)?)?;
+                                   Ok(func.into_iter().map(|func| (func.reference().clone(), func)))
+                               });
 
-        let types = translate_vec(&self.types, context, |input, context| {
-            I::translate_type(input, &mut context.type_context(input)?)
-        });
+        let types =
+            translate_iterable(&self.types, context,
+                               |(_, input), context| {
+                                   let types = I::translate_type(input, &mut context.type_context(input)?)?;
+                                   Ok(types.into_iter().map(|types| (types.reference().clone(), types)))
+                               });
 
-        let (functions, types) = merge_result(functions, types)?;
+        let (functions, types) =
+            merge_result::<Vec<_>, Vec<_>>(functions, types)?;
 
         Ok(Syntax {
             symbols: self.symbols.clone(),
-            functions,
+            functions: functions.into_iter().flatten().collect(),
             types: types.into_iter().flatten().collect(),
         })
     }

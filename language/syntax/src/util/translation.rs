@@ -1,6 +1,5 @@
 use crate::util::CompileError;
 use crate::{ContextSyntaxLevel, SyntaxLevel};
-use indexmap::IndexMap;
 use lasso::Spur;
 
 /// Translates a vector of fields into fields of the output type.
@@ -9,34 +8,23 @@ pub fn translate_fields<C, I, O, F: Fn(&I, &mut C) -> Result<O, CompileError>>(
     context: &mut C,
     translator: F,
 ) -> Result<Vec<(Spur, O)>, CompileError> {
-    translate_vec(fields, context, |(name, value), context| {
+    translate_iterable(fields, context, |(name, value), context| {
         Ok::<_, CompileError>((*name, translator(value, context)?))
     })
 }
 
-/// Translates a map into a map of the output type.
-pub fn translate_map<C, I, O, F: Fn(&I, &mut C) -> Result<O, CompileError>>(
-    fields: &IndexMap<Spur, I>,
-    context: &mut C,
-    translator: F,
-) -> Result<IndexMap<Spur, O>, CompileError> {
-    Ok(IndexMap::from_iter(translate_vec(fields, context, |(name, value), context| {
-        Ok::<_, CompileError>((*name, translator(value, context)?))
-    })?))
-}
-
 /// Translates a vector into a vector of the output type.
-pub fn translate_vec<'a, Iter: IntoIterator<Item=I>, C, I: 'a, O, F: Fn(I, &mut C) -> Result<O, CompileError>>(
+pub fn translate_iterable<'a, Iter: IntoIterator<Item=I>, Out: Default + Extend<O>, C, I: 'a, O, F: Fn(I, &mut C) -> Result<O, CompileError>>(
     fields: Iter,
     context: &mut C,
     translator: F,
-) -> Result<Vec<O>, CompileError> {
+) -> Result<Out, CompileError> {
     let (fields, errors) = fields
         .into_iter()
         .map(|input| Ok::<_, CompileError>(translator(input, context)?))
-        .fold((vec![], vec![]), |mut acc, item| {
+        .fold((Out::default(), vec![]), |mut acc, item| {
             match item {
-                Ok(value) => acc.0.push(value),
+                Ok(value) => acc.0.extend(Some(value)),
                 Err(err) => acc.1.push(err),
             }
             acc
@@ -71,10 +59,10 @@ pub trait Translatable<I: SyntaxLevel, O: ContextSyntaxLevel<I>> {
     ) -> Result<O::FunctionReference, CompileError>;
 
     /// Translates a type
-    fn translate_type(node: &I::Type, context: &mut O::InnerContext<'_>) -> Result<Option<O::Type>, CompileError>;
+    fn translate_type(node: &I::Type, context: &mut O::InnerContext<'_>) -> Result<Vec<O::Type>, CompileError>;
 
     /// Translates a function
-    fn translate_func(node: &I::Function, context: &mut O::InnerContext<'_>) -> Result<O::Function, CompileError>;
+    fn translate_func(node: &I::Function, context: &mut O::InnerContext<'_>) -> Result<Vec<O::Function>, CompileError>;
 
     /// Translates a terminator
     fn translate_terminator(

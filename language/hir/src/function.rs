@@ -5,8 +5,7 @@ use std::fmt::Debug;
 use syntax::structure::traits::{Function, Terminator};
 use syntax::structure::visitor::Translate;
 use syntax::structure::Modifier;
-use syntax::util::path::FilePath;
-use syntax::util::translation::{translate_fields, translate_map, translate_vec, Translatable};
+use syntax::util::translation::{translate_fields, translate_iterable, Translatable};
 use syntax::util::CompileError;
 use syntax::{ContextSyntaxLevel, SyntaxLevel};
 
@@ -14,10 +13,8 @@ use syntax::{ContextSyntaxLevel, SyntaxLevel};
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub struct HighFunction<T: SyntaxLevel> {
-    /// The name of the function
-    pub name: Spur,
-    /// The file the function is in
-    pub file: FilePath,
+    /// The reference (file path) to the function
+    pub reference: T::FunctionReference,
     /// The modifiers of the function
     pub modifiers: Vec<Modifier>,
     /// The parameters of the function
@@ -54,42 +51,42 @@ pub enum HighTerminator<T: SyntaxLevel> {
 
 impl<T: SyntaxLevel> Terminator for HighTerminator<T> {}
 
-impl<T: SyntaxLevel> Function for HighFunction<T> {
-    fn file(&self) -> &FilePath {
-        &self.file
+impl<T: SyntaxLevel> Function<T::FunctionReference> for HighFunction<T> {
+    fn reference(&self) -> &T::FunctionReference {
+        &self.reference
     }
 }
 
 // Handle type translation
 impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>
-    Translate<HighFunction<O>, O::InnerContext<'ctx>> for HighFunction<I>
+Translate<Vec<HighFunction<O>>, O::InnerContext<'ctx>> for HighFunction<I>
 {
     fn translate(
         &self,
         context: &mut O::InnerContext<'_>,
-    ) -> Result<HighFunction<O>, CompileError> {
-        Ok(HighFunction {
-            name: self.name,
-            file: self.file.clone(),
+    ) -> Result<Vec<HighFunction<O>>, CompileError> {
+        Ok(vec![HighFunction {
+            reference: I::translate_func_ref(&self.reference, context)?,
             modifiers: self.modifiers.clone(),
             body: CodeBlock {
-                statements: translate_vec(&self.body.statements, context, I::translate_stmt)?,
+                statements: translate_iterable(&self.body.statements, context, I::translate_stmt)?,
                 terminator: I::translate_terminator(&self.body.terminator, context)?,
             },
             parameters: translate_fields(&self.parameters, context, I::translate_type_ref)?,
-            generics: translate_map(&self.generics, context,
-                                    |types, context| translate_vec(types, context, I::translate_type_ref))?,
+            generics: translate_iterable(&self.generics, context,
+                                         |(key, types), context|
+                                             Ok((key, translate_iterable(types, context, I::translate_type_ref)?)))?,
             return_type: self
                 .return_type
                 .as_ref()
                 .map(|ty| I::translate_type_ref(ty, context))
                 .transpose()?,
-        })
+        }])
     }
 }
 
 impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>
-    Translate<HighTerminator<O>, O::InnerContext<'ctx>> for HighTerminator<I>
+Translate<HighTerminator<O>, O::InnerContext<'ctx>> for HighTerminator<I>
 {
     fn translate(
         &self,

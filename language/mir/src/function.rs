@@ -30,7 +30,7 @@ pub struct MediumFunction<T: SyntaxLevel> {
 }
 
 impl<T: SyntaxLevel> Function for MediumFunction<T> {
-    fn file(&self) -> &FilePath {
+    fn reference(&self) -> &FilePath {
         &self.file
     }
 }

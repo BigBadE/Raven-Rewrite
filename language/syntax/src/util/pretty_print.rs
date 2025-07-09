@@ -1,140 +1,145 @@
 use crate::structure::literal::Literal;
-use crate::{Syntax, SyntaxLevel};
-use lasso::ThreadedRodeo;
-use crate::structure::Modifier;
+use crate::{GenericTypeRef, Syntax, SyntaxLevel};
+use lasso::{Spur, ThreadedRodeo};
+use std::fmt;
+use std::fmt::{Arguments, Display, Write};
+use indexmap::IndexMap;
+use crate::structure::traits::TypeReference;
 
 /// Trait for pretty printing with string interpolation
-pub trait PrettyPrint {
+pub trait PrettyPrint<W: Write> {
     /// Format this item as a human-readable string
-    fn format(&self, interner: &ThreadedRodeo) -> String;
-}
-
-/// Enhanced trait for context-aware pretty printing that can resolve references
-pub trait PrettyPrintWithContext<T: SyntaxLevel> {
-    /// Format this item with full syntax context for reference resolution
-    fn format_with_context(&self, syntax: &Syntax<T>, interner: &ThreadedRodeo) -> String;
+    fn format(&self, interner: &ThreadedRodeo, writer: &mut W) -> Result<(), fmt::Error>;
 }
 
 /// Implementation for Syntax
-impl<T: SyntaxLevel> PrettyPrint for Syntax<T>
+impl<T: SyntaxLevel, W: Write> PrettyPrint<W> for Syntax<T>
 where
-    T::Type: PrettyPrint,
-    T::Function: PrettyPrint,
+    T::Type: PrettyPrint<W>,
+    T::Function: PrettyPrint<W>,
 {
-    fn format(&self, interner: &ThreadedRodeo) -> String {
-        let mut output = String::new();
-        
-        // Format types
-        for (i, type_def) in self.types.iter().enumerate() {
-            if i > 0 { output.push('\n'); }
-            output.push_str(&type_def.format(interner));
-            output.push('\n');
+    fn format(&self, interner: &ThreadedRodeo, writer: &mut W) -> Result<(), fmt::Error> {
+        for (_, types) in self.types {
+            types.format(interner, writer)?;
         }
-        
-        // Add separator between types and functions
-        if !self.types.is_empty() && !self.functions.is_empty() {
-            output.push('\n');
-        }
-        
-        // Format functions
-        for (i, function) in self.functions.iter().enumerate() {
-            if i > 0 { output.push('\n'); }
-            output.push_str(&function.format(interner));
-            output.push('\n');
-        }
-        
-        if output.trim().is_empty() {
-            output.push_str("// Empty syntax\n");
-        }
-        
-        output
-    }
-}
 
-/// Enhanced implementation for Syntax with context-aware formatting
-impl<T: SyntaxLevel> PrettyPrintWithContext<T> for Syntax<T>
-where
-    T::Type: PrettyPrintWithContext<T>,
-    T::Function: PrettyPrintWithContext<T>,
-{
-    fn format_with_context(&self, _syntax: &Syntax<T>, interner: &ThreadedRodeo) -> String {
-        let mut output = String::new();
-        
-        // Format types with context
-        for (i, type_def) in self.types.iter().enumerate() {
-            if i > 0 { output.push('\n'); }
-            output.push_str(&type_def.format_with_context(self, interner));
-            output.push('\n');
-        }
-        
         // Add separator between types and functions
         if !self.types.is_empty() && !self.functions.is_empty() {
-            output.push('\n');
+            write!(writer, "\n")?;
         }
-        
-        // Format functions with context
-        for (i, function) in self.functions.iter().enumerate() {
-            if i > 0 { output.push('\n'); }
-            output.push_str(&function.format_with_context(self, interner));
-            output.push('\n');
+
+        // Format functions
+        for (_, function) in self.functions {
+            function.format(interner, writer)?;
         }
-        
-        if output.trim().is_empty() {
-            output.push_str("// Empty syntax\n");
-        }
-        
-        output
+
+        Ok(())
     }
 }
 
 /// Implement Display for Syntax when its types implement PrettyPrint
-impl<T: SyntaxLevel> std::fmt::Display for Syntax<T>
+impl<T: SyntaxLevel> Display for Syntax<T>
 where
-    T::Type: PrettyPrintWithContext<T>,
-    T::Function: PrettyPrintWithContext<T>,
+    T::Type: PrettyPrint<String>,
+    T::Function: PrettyPrint<String>,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.format_with_context(self, &self.symbols))
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        let mut output = String::new();
+        self.format(&self.symbols, &mut output)?;
+        write!(f, "{}", output)
     }
 }
 
 /// Implementation for Literal
-impl PrettyPrint for Literal {
-    fn format(&self, interner: &ThreadedRodeo) -> String {
+impl<W: Write> PrettyPrint<W> for Literal {
+    fn format(&self, interner: &ThreadedRodeo, writer: &mut W) -> Result<(), fmt::Error> {
         match self {
-            Literal::String(spur) => format!("\"{}\"", interner.resolve(spur)),
-            Literal::F64(value) => format!("{}f64", value),
-            Literal::F32(value) => format!("{}f32", value),
-            Literal::I64(value) => format!("{}i64", value),
-            Literal::I32(value) => format!("{}i32", value),
-            Literal::U64(value) => format!("{}u64", value),
-            Literal::U32(value) => format!("{}u32", value),
-            Literal::Bool(value) => value.to_string(),
-            Literal::Char(value) => format!("'{}'", value),
+            Literal::String(spur) => write!(writer, "\"{}\"", interner.resolve(spur)),
+            Literal::F64(value) => write!(writer, "{}f64", value),
+            Literal::F32(value) => write!(writer, "{}f32", value),
+            Literal::I64(value) => write!(writer, "{}i64", value),
+            Literal::I32(value) => write!(writer, "{}i32", value),
+            Literal::U64(value) => write!(writer, "{}u64", value),
+            Literal::U32(value) => write!(writer, "{}u32", value),
+            Literal::Bool(value) => write!(writer, "{}", value),
+            Literal::Char(value) => write!(writer, "'{}'", value),
         }
     }
 }
 
-/// Helper function to format a list of modifiers
-pub fn format_modifiers(modifiers: &[Modifier]) -> String {
-    let mut result = String::new();
-    for modifier in modifiers {
-        match modifier {
-            Modifier::PUBLIC => result.push_str("pub "),
-            Modifier::OPERATION => result.push_str("operation "),
+pub fn write_generic_header<W: Write>(interner: &ThreadedRodeo, generics: &IndexMap<Spur, Vec<GenericTypeRef>>, writer: &mut W) -> Result<(), fmt::Error> {
+    if !generics.is_empty() {
+        write!(writer, "<")?;
+        for (name, generics) in generics {
+            write!(writer, "{}: ", interner.resolve(name))?;
+            for (i, generic) in generics.iter().enumerate() {
+                if i > 0 {
+                    write!(writer, " + ")?;
+                }
+                generic.format(interner, writer)?;
+            }
         }
+        write!(writer, ">")?;
     }
-    result
+    Ok(())
 }
 
-/// Helper function to format a path (list of Spurs) as a string
-pub fn format_path(path: &[lasso::Spur], interner: &ThreadedRodeo) -> String {
-    let mut result = String::new();
-    for (i, part) in path.iter().enumerate() {
+pub fn write_generics<W: Write, T: PrettyPrint<W>>(interner: &ThreadedRodeo, generics: &Vec<T>, writer: &mut W) -> Result<(), fmt::Error> {
+    if !generics.is_empty() {
+        write!(writer, "<")?;
+        for (i, generic) in generics.iter().enumerate() {
+            if i > 0 {
+                write!(writer, ", ")?;
+            }
+            generic.format(interner, writer)?;
+        }
+        write!(writer, ">")?;
+    }
+    Ok(())
+}
+
+pub fn write_parameters<T: TypeReference, W: Write>(interner: &ThreadedRodeo, parameters: &Vec<(Spur, T)>, writer: &mut W) -> Result<(), fmt::Error> {
+    for (i, (name, ty)) in parameters.iter().enumerate() {
         if i > 0 {
-            result.push_str("::");
+            write!(writer, ", ")?;
         }
-        result.push_str(interner.resolve(part));
+        write!(writer, "{}: ", interner.resolve(name))?;
+        ty.format(interner, writer)?;
     }
-    result
+    Ok(())
+}
+
+pub struct NestedWriter<W> {
+    pub writer: W,
+    pub depth: usize
+}
+
+impl<W: Write> NestedWriter<W> {
+    pub fn indent(&mut self) -> fmt::Result {
+        for _ in 0..self.depth {
+            write!(self.writer, "    ")?;
+        }
+        Ok(())
+    }
+
+    pub fn indent_lower(&mut self) -> fmt::Result {
+        for _ in 0..self.depth - 1 {
+            write!(self.writer, "    ")?;
+        }
+        Ok(())
+    }
+}
+
+impl<W: Write> Write for NestedWriter<W> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.writer.write_str(s)
+    }
+
+    fn write_char(&mut self, c: char) -> fmt::Result {
+        self.writer.write_char(c)
+    }
+
+    fn write_fmt(&mut self, args: Arguments<'_>) -> fmt::Result {
+        self.writer.write_fmt(args)
+    }
 }

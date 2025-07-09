@@ -20,7 +20,7 @@ use syntax::structure::Modifier;
 use syntax::structure::literal::TYPES;
 use syntax::util::CompileError;
 use syntax::util::path::{FilePath, get_path};
-use syntax::{FunctionRef, GenericTypeRef};
+use syntax::{GenericFunctionRef, GenericTypeRef};
 use tokio::fs;
 
 /// Parses blocks of code
@@ -150,7 +150,7 @@ fn add_file_to_syntax(
     for function in file.functions {
         let mut path = file_path.clone();
         path.push(function.name);
-        let reference = FunctionRef { reference: source.syntax.functions.len(), generics: vec![] };
+        let reference = GenericFunctionRef { reference: source.syntax.functions.len(), generics: vec![] };
         if function.modifiers.contains(&Modifier::OPERATION) {
             match function.parameters.len() {
                 1 => source

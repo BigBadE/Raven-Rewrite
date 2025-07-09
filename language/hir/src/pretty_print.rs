@@ -1,88 +1,28 @@
+use std::fmt::{Error, Write};
+use crate::expression::HighExpression;
 use crate::function::HighFunction;
+use crate::function::{CodeBlock, HighTerminator};
+use crate::statement::HighStatement;
 use crate::types::{HighType, TypeData};
 use crate::{HighSyntaxLevel, RawFunctionRef, RawSyntaxLevel, RawTypeRef};
-use crate::expression::HighExpression;
-use crate::statement::HighStatement;
-use crate::function::{HighTerminator, CodeBlock};
-use lasso::{Spur, ThreadedRodeo};
-use syntax::util::pretty_print::{format_modifiers, format_path, PrettyPrint, PrettyPrintWithContext};
-use syntax::{Syntax, GenericTypeRef, FunctionRef};
 use indexmap::IndexMap;
-
-/// Extension trait for HIR-specific pretty printing
-pub trait HirPrettyPrint {
-    /// Generate complete source code for HIR syntax with properly resolved names
-    fn generate_hir_code(&self) -> String;
-    
-    /// Print HIR syntax as reconstructed source code
-    fn print_hir_pretty(&self);
-}
-
-impl HirPrettyPrint for Syntax<HighSyntaxLevel> {
-    fn generate_hir_code(&self) -> String {
-        let mut output = String::new();
-        
-        // Generate types first
-        for (i, type_def) in self.types.iter().enumerate() {
-            if i > 0 { output.push('\n'); }
-            output.push_str(&type_def.format_with_context(self, &self.symbols));
-            output.push('\n');
-        }
-        
-        // Add separator between types and functions
-        if !self.types.is_empty() && !self.functions.is_empty() {
-            output.push('\n');
-        }
-        
-        // Generate functions
-        for (i, function) in self.functions.iter().enumerate() {
-            if i > 0 { output.push('\n'); }
-            output.push_str(&function.format_with_context(self, &self.symbols));
-            output.push('\n');
-        }
-        
-        if output.trim().is_empty() {
-            output.push_str("// Empty HIR\n");
-        }
-        
-        output
-    }
-    
-    fn print_hir_pretty(&self) {
-        println!("{}", self.generate_hir_code());
-    }
-}
-
-/// Implement PrettyPrint for HIR functions (high level)
-impl PrettyPrint for HighFunction<HighSyntaxLevel> {
-    fn format(&self, interner: &ThreadedRodeo) -> String {
-        // Note: This is a fallback implementation without full context
-        // For better output, use format_with_context instead
-        format!("fn {} {{ /* body requires context */ }}", interner.resolve(&self.name))
-    }
-}
+use lasso::{Spur, ThreadedRodeo};
+use syntax::util::pretty_print::{write_generic_header, write_generics, write_parameters, NestedWriter, PrettyPrint};
+use syntax::{GenericFunctionRef, GenericTypeRef, Syntax};
 
 /// Enhanced function that can resolve generic names when provided with generic context
 pub fn format_generic_type_ref_with_generics_context(
     type_ref: &GenericTypeRef,
-    syntax: &Syntax<HighSyntaxLevel>,
     interner: &ThreadedRodeo,
     generics_context: &IndexMap<Spur, Vec<GenericTypeRef>>
 ) -> String {
     match type_ref {
         GenericTypeRef::Struct { reference, generics } => {
-            // Try to resolve the actual type name
-            let type_name = if let Some(type_def) = syntax.types.get(*reference) {
-                interner.resolve(&type_def.name).to_string()
-            } else {
-                format!("Type{}", reference)
-            };
-
-            let mut code = type_name;
+            let mut code = reference.format(interner);
             if !generics.is_empty() {
                 code.push('<');
                 let generic_strs: Vec<String> = generics.iter()
-                    .map(|g| format_generic_type_ref_with_generics_context(g, syntax, interner, generics_context))
+                    .map(|g| format_generic_type_ref_with_generics_context(g, interner, generics_context))
                     .collect();
                 code.push_str(&generic_strs.join(", "));
                 code.push('>');
@@ -115,54 +55,30 @@ pub fn format_generic_type_ref_with_type_context(
     type_ref: &GenericTypeRef,
     syntax: &Syntax<HighSyntaxLevel>,
     interner: &ThreadedRodeo,
-    type_generics: &IndexMap<lasso::Spur, Vec<GenericTypeRef>>
+    type_generics: &IndexMap<Spur, Vec<GenericTypeRef>>
 ) -> String {
     format_generic_type_ref_with_generics_context(type_ref, syntax, interner, type_generics)
 }
 
 /// Implement context-aware PrettyPrint for HIR functions (high level)
-impl PrettyPrintWithContext<HighSyntaxLevel> for HighFunction<HighSyntaxLevel> {
-    fn format_with_context(&self, syntax: &Syntax<HighSyntaxLevel>, interner: &ThreadedRodeo) -> String {
-        let mut code = String::new();
-        
-        // Add modifiers
-        code.push_str(&format_modifiers(&self.modifiers));
-        
-        code.push_str("fn ");
-        code.push_str(interner.resolve(&self.name));
-        
-        // Add generics if any with their actual names
-        if !self.generics.is_empty() {
-            code.push('<');
-            let generic_names: Vec<String> = self.generics.keys()
-                .map(|spur| interner.resolve(spur).to_string())
-                .collect();
-            code.push_str(&generic_names.join(", "));
-            code.push('>');
-        }
-        
-        // Add parameters with resolved type names (including generics)
-        code.push('(');
-        let param_strs: Vec<String> = self.parameters.iter()
-            .map(|(name, type_ref)| {
-                let type_name = format_generic_type_ref_with_function_context(type_ref, syntax, interner, &self.generics);
-                format!("{}: {}", interner.resolve(name), type_name)
-            })
-            .collect();
-        code.push_str(&param_strs.join(", "));
-        code.push(')');
-        
+impl<W: Write> PrettyPrint<W> for HighFunction<HighSyntaxLevel> {
+    fn format(&self, interner: &ThreadedRodeo, writer: &mut W) -> Result<(), Error> {
+        write!(writer, "{} fn ", self.modifiers.join(" "))?;
+        self.reference.format(interner, writer)?;
+
+        write_generic_header(interner, &self.generics, writer)?;
+
+        write!(writer, "(")?;
+        write_parameters(interner, &self.parameters, writer)?;
+        write!(writer, ") ")?;
+
         // Add return type if present with resolved name (including generics)
         if let Some(return_type) = &self.return_type {
-            code.push_str(" -> ");
-            code.push_str(&format_generic_type_ref_with_function_context(return_type, syntax, interner, &self.generics));
+            write!(writer, "-> ")?;
+            return_type.format(interner, writer)?;
         }
-        
-        // Generate body with existing formatting
-        code.push_str(" ");
-        code.push_str(&self.body.format_with_context(syntax, interner));
-        
-        code
+
+        self.body.format(interner, writer)
     }
 }
 
@@ -175,7 +91,7 @@ impl PrettyPrint for HighFunction<RawSyntaxLevel> {
         code.push_str(&format_modifiers(&self.modifiers));
         
         code.push_str("fn ");
-        code.push_str(interner.resolve(&self.name));
+        code.push_str(&self.reference.format(interner));
         
         // Add generics if any
         if !self.generics.is_empty() {
@@ -215,15 +131,6 @@ impl PrettyPrintWithContext<RawSyntaxLevel> for HighFunction<RawSyntaxLevel> {
     }
 }
 
-/// Implement PrettyPrint for HIR types (high level)
-impl PrettyPrint for HighType<HighSyntaxLevel> {
-    fn format(&self, interner: &ThreadedRodeo) -> String {
-        // Note: This is a fallback implementation without full context
-        // For better output, use format_with_context instead
-        format!("struct {} {{ /* fields require context */ }}", interner.resolve(&self.name))
-    }
-}
-
 /// Implement context-aware PrettyPrint for HIR types (high level)
 impl PrettyPrintWithContext<HighSyntaxLevel> for HighType<HighSyntaxLevel> {
     fn format_with_context(&self, syntax: &Syntax<HighSyntaxLevel>, interner: &ThreadedRodeo) -> String {
@@ -235,7 +142,7 @@ impl PrettyPrintWithContext<HighSyntaxLevel> for HighType<HighSyntaxLevel> {
         match &self.data {
             TypeData::Struct { fields } => {
                 code.push_str("struct ");
-                code.push_str(interner.resolve(&self.name));
+                code.push_str(&self.reference.format(interner));
                 
                 // Add generics if any with their actual names
                 if !self.generics.is_empty() {
@@ -260,7 +167,7 @@ impl PrettyPrintWithContext<HighSyntaxLevel> for HighType<HighSyntaxLevel> {
             },
             TypeData::Trait { functions } => {
                 code.push_str("trait ");
-                code.push_str(interner.resolve(&self.name));
+                code.push_str(&self.reference.format(interner));
                 
                 // Add generics if any with their actual names
                 if !self.generics.is_empty() {
@@ -297,7 +204,7 @@ impl PrettyPrint for HighType<RawSyntaxLevel> {
         match &self.data {
             TypeData::Struct { fields } => {
                 code.push_str("struct ");
-                code.push_str(interner.resolve(&self.name));
+                code.push_str(&self.reference.format(interner));
                 
                 // Add generics if any
                 if !self.generics.is_empty() {
@@ -321,7 +228,7 @@ impl PrettyPrint for HighType<RawSyntaxLevel> {
             },
             TypeData::Trait { functions } => {
                 code.push_str("trait ");
-                code.push_str(interner.resolve(&self.name));
+                code.push_str(&self.reference.format(interner));
                 
                 // Add generics if any
                 if !self.generics.is_empty() {
@@ -355,27 +262,21 @@ impl PrettyPrintWithContext<RawSyntaxLevel> for HighType<RawSyntaxLevel> {
 }
 
 /// Implement context-aware PrettyPrint for CodeBlock
-impl PrettyPrintWithContext<HighSyntaxLevel> for CodeBlock<HighSyntaxLevel> {
-    fn format_with_context(&self, syntax: &Syntax<HighSyntaxLevel>, interner: &ThreadedRodeo) -> String {
-        let mut code = String::new();
+impl<W: Write> PrettyPrint<NestedWriter<W>> for CodeBlock<HighSyntaxLevel> {
+    fn format(&self, interner: &ThreadedRodeo, writer: &mut NestedWriter<W>) -> Result<(), Error> {
+        write!(writer, "{{\n")?;
 
-        code.push_str("{\n");
-        
         // Generate statements with context-aware formatting
         for stmt in &self.statements {
-            code.push_str("    ");
-            code.push_str(&stmt.format_with_context(syntax, interner));
-            code.push('\n');
+            writer.indent()?;
+            stmt.format(interner, &mut writer.writer)?;
+            write!(writer, "\n")?;
         }
 
-        // Generate terminator with context-aware formatting
-        code.push_str("    ");
-        code.push_str(&self.terminator.format_with_context(syntax, interner));
-        code.push('\n');
-        
-        code.push_str("}");
-
-        code
+        writer.indent()?;
+        self.terminator.format(interner, writer)?;
+        writer.indent()?;
+        write!(writer, "}}")
     }
 }
 
@@ -418,7 +319,7 @@ impl PrettyPrintWithContext<HighSyntaxLevel> for HighExpression<HighSyntaxLevel>
                     code.push('.');
                 }
                 // Use enhanced function reference formatting
-                code.push_str(&format_function_ref_with_context(function, syntax, interner));
+                code.push_str(&function.format(interner));
                 code.push('(');
                 let arg_strs: Vec<String> = arguments.iter()
                     .map(|arg| arg.format_with_context(syntax, interner))
@@ -461,45 +362,44 @@ impl PrettyPrintWithContext<HighSyntaxLevel> for HighExpression<HighSyntaxLevel>
 }
 
 /// Implement context-aware PrettyPrint for HIR statements
-impl PrettyPrintWithContext<HighSyntaxLevel> for HighStatement<HighSyntaxLevel> {
-    fn format_with_context(&self, syntax: &Syntax<HighSyntaxLevel>, interner: &ThreadedRodeo) -> String {
+impl<W: Write> PrettyPrint<NestedWriter<W>> for HighStatement<HighSyntaxLevel> {
+    fn format(&self, interner: &ThreadedRodeo, writer: &mut NestedWriter<W>) -> Result<(), Error> {
         match self {
             HighStatement::Expression(expr) => {
-                format!("{};", expr.format_with_context(syntax, interner))
+                expr.format(interner, writer)?;
+                write!(writer, ";")?
             },
             HighStatement::CodeBlock(statements) => {
-                let mut code = String::new();
-                code.push_str("{\n");
+                write!(writer, "{{\n")?;
                 for stmt in statements {
-                    code.push_str("    ");
-                    code.push_str(&stmt.format_with_context(syntax, interner));
-                    code.push('\n');
+                    writer.indent()?;
+                    stmt.format(interner, &mut writer.writer)?;
+                    write!(writer, "\n")?;
                 }
-                code.push_str("}");
-                code
+                writer.indent_lower()?;
+                write!(writer, "}}")
             },
             HighStatement::Terminator(terminator) => {
-                terminator.format_with_context(syntax, interner)
+                terminator.format(interner, &mut writer.writer)
             },
             HighStatement::If { conditions, else_branch } => {
-                let mut code = String::new();
                 for (i, conditional) in conditions.iter().enumerate() {
-                    if i == 0 {
-                        code.push_str("if ");
-                    } else {
-                        code.push_str(" else if ");
+                    if i != 0 {
+                        write!(writer, " else ")?;
                     }
-                    code.push_str(&conditional.condition.format_with_context(syntax, interner));
-                    code.push_str(" {\n");
+                    write!(writer, "if ")?;
+                    conditional.condition.format(interner, &mut writer.writer)?;
+                    write!(writer, " {{\n")?;
                     for stmt in &conditional.branch {
-                        code.push_str("    ");
-                        code.push_str(&stmt.format_with_context(syntax, interner));
-                        code.push('\n');
+                        writer.indent()?;
+                        stmt.format(interner, &mut writer.writer)?;
+                        write!(writer, "\n")?;
                     }
-                    code.push_str("}");
+                    writer.indent_lower()?;
+                    write!(writer, "}}")?;
                 }
                 if let Some(else_stmts) = else_branch {
-                    code.push_str(" else {\n");
+                    write!(writer, " else {{\n")?;
                     for stmt in else_stmts {
                         code.push_str("    ");
                         code.push_str(&stmt.format_with_context(syntax, interner));
@@ -551,78 +451,36 @@ impl PrettyPrintWithContext<HighSyntaxLevel> for HighStatement<HighSyntaxLevel> 
 }
 
 /// Implement context-aware PrettyPrint for HIR terminators
-impl PrettyPrintWithContext<HighSyntaxLevel> for HighTerminator<HighSyntaxLevel> {
-    fn format_with_context(&self, syntax: &Syntax<HighSyntaxLevel>, interner: &ThreadedRodeo) -> String {
+impl<W: Write> PrettyPrint<W> for HighTerminator<HighSyntaxLevel> {
+    fn format(&self, interner: &ThreadedRodeo, writer: &mut W) -> Result<(), Error> {
         match self {
             HighTerminator::Return(expr) => {
+                write!(writer, "return ")?;
                 if let Some(expr) = expr {
-                    format!("return {};", expr.format_with_context(syntax, interner))
-                } else {
-                    "return;".to_string()
+                    write!(writer, " ")?;
+                    expr.format(interner, writer)?;
                 }
+                write!(writer, ";\n")?;
             },
-            HighTerminator::Break => "break;".to_string(),
-            HighTerminator::Continue => "continue;".to_string(),
-            HighTerminator::None => "".to_string(),
+            HighTerminator::Break => write!(writer, "break;\n"),
+            HighTerminator::Continue => write!(writer, "continue;\n"),
+            HighTerminator::None => Ok(()),
         }
     }
 }
 
 /// Implement PrettyPrint for raw type references
-impl PrettyPrint for RawTypeRef {
-    fn format(&self, interner: &ThreadedRodeo) -> String {
-        let mut code = format_path(&self.path, interner);
-        
-        if !self.generics.is_empty() {
-            code.push('<');
-            let generic_strs: Vec<String> = self.generics.iter()
-                .map(|g| g.format(interner))
-                .collect();
-            code.push_str(&generic_strs.join(", "));
-            code.push('>');
-        }
-        
-        code
+impl<W: Write> PrettyPrint<W> for RawTypeRef {
+    fn format(&self, interner: &ThreadedRodeo, writer: &mut W) -> Result<(), Error> {
+        self.path.format(interner, writer)?;
+        write_generics(interner, &self.generics, writer)
     }
 }
 
 /// Implement PrettyPrint for raw function references
-impl PrettyPrint for RawFunctionRef {
-    fn format(&self, interner: &ThreadedRodeo) -> String {
-        let mut code = format_path(&self.path, interner);
-        
-        if !self.generics.is_empty() {
-            code.push('<');
-            let generic_strs: Vec<String> = self.generics.iter()
-                .map(|g| g.format(interner))
-                .collect();
-            code.push_str(&generic_strs.join(", "));
-            code.push('>');
-        }
-        
-        code
-    }
-}
-
-/// Helper function to resolve a FunctionRef to its actual name with enhanced resolution
-pub fn format_function_ref_with_context(
-    func_ref: &FunctionRef, 
-    syntax: &Syntax<HighSyntaxLevel>,
-    interner: &ThreadedRodeo
-) -> String {
-    if let Some(func_def) = syntax.functions.get(func_ref.reference) {
-        let mut name = interner.resolve(&func_def.name).to_string();
-        if !func_ref.generics.is_empty() {
-            name.push('<');
-            // Use the function's own generics for resolving generic type arguments
-            let generic_strs: Vec<String> = func_ref.generics.iter()
-                .map(|g| format_generic_type_ref_with_function_context(g, syntax, interner, &func_def.generics))
-                .collect();
-            name.push_str(&generic_strs.join(", "));
-            name.push('>');
-        }
-        name
-    } else {
-        format!("func_{}", func_ref.reference)
+impl<W: Write> PrettyPrint<W> for RawFunctionRef {
+    fn format(&self, interner: &ThreadedRodeo, writer: &mut W) -> Result<(), Error> {
+        self.path.format(interner, writer)?;
+        write_generics(interner, &self.generics, writer)
     }
 }

@@ -7,7 +7,7 @@ use inkwell::values::FunctionValue;
 use mir::types::MediumType;
 use mir::MediumSyntaxLevel;
 use std::collections::HashMap;
-use syntax::{FunctionRef, Syntax, TypeRef};
+use syntax::{GenericFunctionRef, Syntax, TypeRef};
 
 /// Manages the MIR types and converting them to LLVMIR versions
 pub struct TypeManager<'a, 'ctx> {
@@ -22,12 +22,12 @@ pub struct TypeManager<'a, 'ctx> {
     /// MIR to LLVMIR type map
     pub types: HashMap<TypeRef, BasicTypeEnum<'ctx>>,
     /// MIR to LLVMIR function map
-    pub functions: HashMap<FunctionRef, FunctionValue<'ctx>>,
+    pub functions: HashMap<GenericFunctionRef, FunctionValue<'ctx>>,
 }
 
 impl<'a, 'ctx> TypeManager<'a, 'ctx> {
     /// Gets the LLVMIR function from the MIR function ref
-    pub fn function_type(&mut self, reference: &FunctionRef) -> FunctionValue<'ctx> {
+    pub fn function_type(&mut self, reference: &GenericFunctionRef) -> FunctionValue<'ctx> {
         if let Some(found) = self.functions.get(&reference) {
             return *found;
         }

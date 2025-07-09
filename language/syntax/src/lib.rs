@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::fmt;
 use crate::structure::traits::{
     Expression, Function, FunctionReference, Statement, Terminator, Type, TypeReference,
 };
@@ -5,9 +7,10 @@ use crate::structure::visitor::Translate;
 use crate::util::{CompileError, Context};
 use lasso::ThreadedRodeo;
 use serde::{Deserialize, Serialize};
-use std::fmt::Debug;
+use std::fmt::{Debug, Write};
 use std::sync::Arc;
-use crate::util::pretty_print::PrettyPrint;
+use crate::util::path::FilePath;
+use crate::util::pretty_print::{write_generics, PrettyPrint};
 
 /// The structure of the program in memory
 pub mod structure;
@@ -19,31 +22,36 @@ pub mod util;
 pub enum GenericTypeRef {
     Struct {
         /// The reference to the type
-        reference: usize,
+        reference: TypeRef,
         /// The generic constraints of the type
         generics: Vec<GenericTypeRef>,
     },
     Generic {
-        /// The reference to the generic
-        reference: usize,
+        /// The reference to the generic in the function context
+        reference: TypeRef,
     },
 }
 
 impl TypeReference for GenericTypeRef {}
 
 /// A reference to a specific type
-pub type TypeRef = usize;
+pub type TypeRef = FilePath;
 
 impl TypeReference for TypeRef {}
 
 /// A reference to a specific function
 #[derive(Debug, Clone, Hash, Ord, PartialOrd, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FunctionRef {
+pub struct GenericFunctionRef {
     /// The reference to the function
-    pub reference: usize,
+    pub reference: FunctionRef,
     /// The generic constraints of the function
     pub generics: Vec<GenericTypeRef>,
 }
+
+impl FunctionReference for GenericFunctionRef {}
+
+pub type FunctionRef = FilePath;
+
 impl FunctionReference for FunctionRef {}
 
 /// A level of syntax. As the program is compiled, it goes lower until it hits the lowest level.
@@ -51,9 +59,9 @@ impl FunctionReference for FunctionRef {}
 /// and allow the same transformations to be used on multiple levels.
 pub trait SyntaxLevel: Serialize + for<'a> Deserialize<'a> + Debug {
     type TypeReference: TypeReference;
-    type Type: Type;
+    type Type: Type<Self::TypeReference>;
     type FunctionReference: FunctionReference;
-    type Function: Function;
+    type Function: Function<Self::FunctionReference>;
     type Statement: Statement;
     type Expression: Expression;
     type Terminator: Terminator;
@@ -71,53 +79,37 @@ pub struct Syntax<T: SyntaxLevel> {
     /// The symbol table
     pub symbols: Arc<ThreadedRodeo>,
     /// The program's functions
-    pub functions: Vec<T::Function>,
+    pub functions: HashMap<T::FunctionReference, T::Function>,
     /// The program's types
-    pub types: Vec<T::Type>,
+    pub types: HashMap<T::TypeReference, T::Type>,
 }
 
-impl<C> Translate<FunctionRef, C> for FunctionRef {
-    fn translate(&self, _context: &mut C) -> Result<FunctionRef, CompileError> {
+impl<C> Translate<GenericFunctionRef, C> for GenericFunctionRef {
+    fn translate(&self, _context: &mut C) -> Result<GenericFunctionRef, CompileError> {
         Ok(self.clone())
     }
 }
 
 /// Implement PrettyPrint for generic type references
-impl PrettyPrint for GenericTypeRef {
-    fn format(&self, interner: &ThreadedRodeo) -> String {
+impl<W: Write> PrettyPrint<W> for GenericTypeRef {
+    fn format(&self, interner: &ThreadedRodeo, writer: &mut W) -> Result<(), fmt::Error> {
         match self {
             GenericTypeRef::Struct { reference, generics } => {
-                let mut code = format!("TypeRef{}", reference);
-                if !generics.is_empty() {
-                    code.push('<');
-                    let generic_strs: Vec<String> = generics.iter()
-                        .map(|g| g.format(interner))
-                        .collect();
-                    code.push_str(&generic_strs.join(", "));
-                    code.push('>');
-                }
-                code
+                reference.format(interner, writer)?;
+                write_generics(generics, writer)
             },
             GenericTypeRef::Generic { reference } => {
-                format!("GenericT{}", reference)
+                reference.format(interner, writer)
             }
         }
     }
 }
 
 /// Implement PrettyPrint for function references
-impl PrettyPrint for FunctionRef {
-    fn format(&self, interner: &ThreadedRodeo) -> String {
-        let mut code = format!("FuncRef{}", self.reference);
-        if !self.generics.is_empty() {
-            code.push('<');
-            let generic_strs: Vec<String> = self.generics.iter()
-                .map(|g| g.format(interner))
-                .collect();
-            code.push_str(&generic_strs.join(", "));
-            code.push('>');
-        }
-        code
+impl<W: Write> PrettyPrint<W> for GenericFunctionRef {
+    fn format(&self, interner: &ThreadedRodeo, writer: &mut W) -> Result<(), fmt::Error> {
+        self.reference.format(interner, writer)?;
+        write_generics(&self.generics, writer)
     }
 }
 

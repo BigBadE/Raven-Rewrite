@@ -11,11 +11,12 @@ use syntax::structure::literal::TYPES;
 use syntax::structure::traits::{Function, FunctionReference, Type, TypeReference};
 use syntax::structure::visitor::Translate;
 use syntax::structure::Modifier;
-use syntax::util::path::{path_to_str, FilePath};
-use syntax::util::translation::{translate_map, translate_vec, Translatable};
+use syntax::util::path::FilePath;
+use syntax::util::translation::{translate_iterable, Translatable};
 use syntax::util::{CompileError, Context};
 
-use syntax::{ContextSyntaxLevel, FunctionRef, GenericTypeRef, Syntax, SyntaxLevel};
+use syntax::{ContextSyntaxLevel, GenericFunctionRef, GenericTypeRef, Syntax, SyntaxLevel};
+use syntax::util::pretty_print::PrettyPrint;
 use crate::pretty_print::format_generic_type_ref_with_generics_context;
 
 /// The HIR expression type and impls
@@ -39,13 +40,13 @@ pub struct RawSource {
     /// All the types by path
     pub types: HashMap<FilePath, GenericTypeRef>,
     /// All the functions by path
-    pub functions: HashMap<FilePath, FunctionRef>,
+    pub functions: HashMap<FilePath, GenericFunctionRef>,
     /// All pre unary operations (like !true)
-    pub pre_unary_operations: HashMap<Spur, Vec<FunctionRef>>,
+    pub pre_unary_operations: HashMap<Spur, Vec<GenericFunctionRef>>,
     /// All post unary operations (like foo?)
-    pub post_unary_operations: HashMap<Spur, Vec<FunctionRef>>,
+    pub post_unary_operations: HashMap<Spur, Vec<GenericFunctionRef>>,
     /// All binary operations (like 1 + 2)
-    pub binary_operations: HashMap<Spur, Vec<FunctionRef>>,
+    pub binary_operations: HashMap<Spur, Vec<GenericFunctionRef>>,
 }
 
 /// The raw syntax level, which is a one to one version of the source code.
@@ -66,7 +67,7 @@ impl SyntaxLevel for RawSyntaxLevel {
 pub fn create_syntax() -> Syntax<RawSyntaxLevel> {
     let symbols = Arc::new(ThreadedRodeo::new());
     Syntax {
-        functions: Vec::default(),
+        functions: HashMap::default(),
         types: TYPES
             .iter()
             .map(|name| HighType::internal(symbols.get_or_intern(name)))
@@ -82,7 +83,7 @@ pub struct HighSyntaxLevel;
 impl SyntaxLevel for HighSyntaxLevel {
     type TypeReference = GenericTypeRef;
     type Type = HighType<HighSyntaxLevel>;
-    type FunctionReference = FunctionRef;
+    type FunctionReference = GenericFunctionRef;
     type Function = HighFunction<HighSyntaxLevel>;
     type Statement = HighStatement<HighSyntaxLevel>;
     type Expression = HighExpression<HighSyntaxLevel>;
@@ -97,7 +98,7 @@ impl<I: SyntaxLevel<Type = HighType<I>, Function = HighFunction<I>> + Translatab
 }
 
 /// A raw type reference, which hasn't been resolved yet.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct RawTypeRef {
     /// The path to the type
     pub path: FilePath,
@@ -106,7 +107,7 @@ pub struct RawTypeRef {
 }
 
 /// A raw function reference, which hasn't been resolved yet.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq, Hash)]
 pub struct RawFunctionRef {
     /// The path to the function
     pub path: FilePath,
@@ -122,11 +123,11 @@ pub struct HirSource {
     /// The syntax
     pub syntax: Syntax<HighSyntaxLevel>,
     /// Unary operations before the value (like !true)
-    pub pre_unary_operations: HashMap<Spur, Vec<FunctionRef>>,
+    pub pre_unary_operations: HashMap<Spur, Vec<GenericFunctionRef>>,
     /// Unary operations after the value (like foo?)
-    pub post_unary_operations: HashMap<Spur, Vec<FunctionRef>>,
+    pub post_unary_operations: HashMap<Spur, Vec<GenericFunctionRef>>,
     /// Binary operations (like 1 + 2)
-    pub binary_operations: HashMap<Spur, Vec<FunctionRef>>,
+    pub binary_operations: HashMap<Spur, Vec<GenericFunctionRef>>,
 }
 
 /// Resolves a raw source into HIR
@@ -154,7 +155,7 @@ pub struct HirFunctionContext<'a> {
     /// A cache for type lookups
     pub type_cache: HashMap<Spur, GenericTypeRef>,
     /// A cache for function lookups
-    pub func_cache: HashMap<Spur, FunctionRef>,
+    pub func_cache: HashMap<Spur, GenericFunctionRef>,
     /// The currently in scope generics
     pub generics: IndexMap<Spur, Vec<GenericTypeRef>>,
     /// The currently being translated file
@@ -175,8 +176,8 @@ impl<'a> HirFunctionContext<'a> {
             file,
         };
 
-        context.generics = translate_map(&generics, &mut context, |types, context| {
-            translate_vec(types, context, T::translate_type_ref)
+        context.generics = translate_iterable(&generics, &mut context, |types, context| {
+            translate_iterable(types, context, T::translate_type_ref)
         })?;
 
         Ok(context)
@@ -191,11 +192,11 @@ impl<
         &mut self,
         function: &I::Function,
     ) -> Result<HirFunctionContext<'_>, CompileError> {
-        HirFunctionContext::new::<I>(self.source, function.file().clone(), &function.generics)
+        HirFunctionContext::new::<I>(self.source, function.reference().clone(), &function.generics)
     }
 
     fn type_context(&mut self, types: &I::Type) -> Result<HirFunctionContext<'_>, CompileError> {
-        HirFunctionContext::new::<I>(self.source, types.file().clone(), &types.generics)
+        HirFunctionContext::new::<I>(self.source, types.reference().clone(), &types.generics)
     }
 }
 
@@ -222,7 +223,7 @@ impl<'a> Translate<GenericTypeRef, HirFunctionContext<'a>> for RawTypeRef {
             }
             println!(
                 "Failed for {:?}: {:?}",
-                path_to_str(import, &context.source.syntax.symbols),
+                import.format(&context.source.syntax.symbols),
                 context
                     .source
                     .types
@@ -236,11 +237,11 @@ impl<'a> Translate<GenericTypeRef, HirFunctionContext<'a>> for RawTypeRef {
     }
 }
 
-impl<'a> Translate<FunctionRef, HirFunctionContext<'a>> for RawFunctionRef {
+impl<'a> Translate<GenericFunctionRef, HirFunctionContext<'a>> for RawFunctionRef {
     fn translate(
         &self,
         _context: &mut HirFunctionContext<'a>,
-    ) -> Result<FunctionRef, CompileError> {
+    ) -> Result<GenericFunctionRef, CompileError> {
         todo!()
     }
 }
@@ -270,21 +271,21 @@ impl Translatable<RawSyntaxLevel, HighSyntaxLevel> for RawSyntaxLevel {
     fn translate_func_ref(
         node: &RawFunctionRef,
         context: &mut HirFunctionContext<'_>,
-    ) -> Result<FunctionRef, CompileError> {
+    ) -> Result<GenericFunctionRef, CompileError> {
         Translate::translate(node, context)
     }
 
     fn translate_type(
         node: &HighType<RawSyntaxLevel>,
         context: &mut HirFunctionContext<'_>,
-    ) -> Result<Option<HighType<HighSyntaxLevel>>, CompileError> {
+    ) -> Result<Vec<HighType<HighSyntaxLevel>>, CompileError> {
         Translate::translate(node, context)
     }
 
     fn translate_func(
         node: &HighFunction<RawSyntaxLevel>,
         context: &mut HirFunctionContext<'_>,
-    ) -> Result<HighFunction<HighSyntaxLevel>, CompileError> {
+    ) -> Result<Vec<HighFunction<HighSyntaxLevel>>, CompileError> {
         Translate::translate(node, context)
     }
 
@@ -310,7 +311,7 @@ impl HighFunction<HighSyntaxLevel> {
         }
 
         code.push_str("fn ");
-        code.push_str(interner.resolve(&self.name));
+        code.push_str(&self.reference.format(interner));
 
         // Add generics
         if !self.generics.is_empty() {
@@ -382,7 +383,7 @@ impl HighType<HighSyntaxLevel> {
         match &self.data {
             TypeData::Struct { fields } => {
                 code.push_str("struct ");
-                code.push_str(interner.resolve(&self.name));
+                code.push_str(&self.reference.format(interner));
 
                 // Add generics
                 if !self.generics.is_empty() {
@@ -408,7 +409,7 @@ impl HighType<HighSyntaxLevel> {
             },
             TypeData::Trait { functions } => {
                 code.push_str("trait ");
-                code.push_str(interner.resolve(&self.name));
+                code.push_str(&self.reference.format(interner));
 
                 // Add generics
                 if !self.generics.is_empty() {
@@ -491,7 +492,7 @@ impl HighExpression<HighSyntaxLevel> {
                     code.push('.');
                 }
                 // Format function reference
-                code.push_str(&format!("func_{}", function.reference));
+                code.push_str(&format!("func_{}", function.reference.format(interner)));
                 if !function.generics.is_empty() {
                     code.push('<');
                     let generic_strs: Vec<String> = function.generics.iter()

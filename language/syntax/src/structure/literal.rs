@@ -1,5 +1,5 @@
 use crate::TypeRef;
-use lasso::Spur;
+use lasso::{Spur, ThreadedRodeo};
 use serde::{Deserialize, Serialize};
 
 /// A literal value
@@ -32,17 +32,17 @@ pub const TYPES: [&str; 9] = [
 
 impl Literal {
     /// This is expected to be kept in sync with TYPES.
-    pub fn get_type(&self) -> TypeRef {
-        match self {
-            Literal::String(_) => 0,
-            Literal::F64(_) => 1,
-            Literal::F32(_) => 2,
-            Literal::I64(_) => 3,
-            Literal::I32(_) => 4,
-            Literal::U64(_) => 5,
-            Literal::U32(_) => 6,
-            Literal::Bool(_) => 7,
-            Literal::Char(_) => 8,
-        }
+    pub fn get_type(&self, interner: &ThreadedRodeo) -> TypeRef {
+        vec![interner.get_or_intern(match self {
+            Literal::String(_) => "str",
+            Literal::F32(_) => "f32",
+            Literal::F64(_) => "f64",
+            Literal::I64(_) => "i64",
+            Literal::I32(_) => "i32",
+            Literal::U64(_) => "u64",
+            Literal::U32(_) => "u32",
+            Literal::Bool(_) => "bool",
+            Literal::Char(_) => "char",
+        })]
     }
 }

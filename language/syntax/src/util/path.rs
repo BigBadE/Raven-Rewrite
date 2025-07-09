@@ -1,16 +1,20 @@
+use std::fmt;
+use std::fmt::Write;
 use lasso::{Spur, ThreadedRodeo};
 use std::path::PathBuf;
+use crate::util::pretty_print::PrettyPrint;
 
 /// A path to a file, function, struct, etc.
 /// Usually written in the style of foo::bar::Baz
 pub type FilePath = Vec<Spur>;
 
-/// Converts the interned representation of a file path to a string.
-pub fn path_to_str(path: &FilePath, interner: &ThreadedRodeo) -> String {
-    path.iter()
-        .map(|s| interner.resolve(s))
-        .collect::<Vec<_>>()
-        .join("::")
+impl<W: Write> PrettyPrint<W> for FilePath {
+    fn format(&self, interner: &ThreadedRodeo, writer: &mut W) -> Result<(), fmt::Error> {
+        write!(writer, "{}", self.iter()
+            .map(|s| interner.resolve(s))
+            .collect::<Vec<_>>()
+            .join("::"))
+    }
 }
 
 /// Translates a file to its path representation.

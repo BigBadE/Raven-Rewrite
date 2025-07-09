@@ -6,7 +6,7 @@ use syntax::structure::literal::Literal;
 use syntax::structure::traits::Expression;
 use syntax::structure::visitor::Translate;
 use syntax::util::translation::Translatable;
-use syntax::util::translation::{translate_fields, translate_vec};
+use syntax::util::translation::{translate_fields, translate_iterable};
 use syntax::util::CompileError;
 use syntax::{ContextSyntaxLevel, SyntaxLevel};
 
@@ -145,7 +145,7 @@ impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>
         Ok(match self {
             HighExpression::Literal(literal) => HighExpression::Literal(*literal),
             HighExpression::CodeBlock { body, value } => HighExpression::CodeBlock {
-                body: translate_vec(body, context, I::translate_stmt)?,
+                body: translate_iterable(body, context, I::translate_stmt)?,
                 value: Box::new(I::translate_expr(value, context)?),
             },
             HighExpression::Variable(variable) => HighExpression::Variable(*variable),
@@ -170,7 +170,7 @@ impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>
                         Ok::<_, CompileError>(Box::new(I::translate_expr(inner, context)?))
                     })
                     .transpose()?,
-                arguments: translate_vec(arguments, context, I::translate_expr)?,
+                arguments: translate_iterable(arguments, context, I::translate_expr)?,
             },
             HighExpression::CreateStruct {
                 target_struct,

@@ -1,6 +1,8 @@
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
+use std::fmt::{Display, Formatter};
 
 /// Literal values like numbers or strings
 pub mod literal;
@@ -25,4 +27,13 @@ pub enum Modifier {
     PUBLIC = 0b1,
     /// Indicates that the function is an operation with special naming and calling conventions
     OPERATION = 0b10,
+}
+
+impl Display for Modifier {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Modifier::PUBLIC => write!(f, "pub"),
+            Modifier::OPERATION => write!(f, "operation"),
+        }
+    }
 }

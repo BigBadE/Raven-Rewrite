@@ -8,6 +8,7 @@ pub mod statement;
 pub mod types;
 /// Pretty printing implementations for MIR types
 pub mod pretty_print;
+mod monomorphization;
 
 use crate::expression::MediumExpression;
 use crate::function::MediumFunction;
@@ -21,12 +22,13 @@ use hir::{HighSyntaxLevel, HirSource};
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use indexmap::IndexMap;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Terminator;
 use syntax::structure::visitor::Translate;
 use syntax::util::translation::Translatable;
 use syntax::util::{CompileError, Context};
-use syntax::{ContextSyntaxLevel, FunctionRef, Syntax, SyntaxLevel, GenericTypeRef, TypeRef};
+use syntax::{ContextSyntaxLevel, GenericFunctionRef, Syntax, SyntaxLevel, GenericTypeRef, TypeRef};
 
 /// The MIR level
 #[derive(Serialize, Deserialize, Debug)]
@@ -35,7 +37,7 @@ pub struct MediumSyntaxLevel;
 impl SyntaxLevel for MediumSyntaxLevel {
     type TypeReference = TypeRef;
     type Type = MediumType<MediumSyntaxLevel>;
-    type FunctionReference = FunctionRef;
+    type FunctionReference = GenericFunctionRef;
     type Function = MediumFunction<MediumSyntaxLevel>;
     type Statement = MediumStatement<MediumSyntaxLevel>;
     type Expression = MediumExpression<MediumSyntaxLevel>;
@@ -140,29 +142,31 @@ pub struct MirFunctionContext<'a> {
     /// The end of the parent control block, if any
     parent_end: Option<CodeBlockId>,
     /// The HIR source
-    source: &'a HirSource,
+    source: &'a mut HirSource,
+    /// All generics in scope
+    generics: IndexMap<Spur, Vec<GenericTypeRef>>,
 }
 
 impl<'a> MirContext<'a> {
     /// Creates a new MIR context
-    fn new(source: &'a HirSource) -> Self {
+    fn new(source: &'a mut HirSource) -> Self {
         Self { source }
     }
 }
 
-impl<I: SyntaxLevel> Context<I, MediumSyntaxLevel> for MirContext<'_> {
-    fn function_context(&mut self, _function: &I::Function) -> Result<MirFunctionContext<'_>, CompileError> {
-        Ok(MirFunctionContext::new(self))
+impl<I: SyntaxLevel<Function = HighFunction<I>, Type = HighType<I>, TypeReference = GenericTypeRef>> Context<I, MediumSyntaxLevel> for MirContext<'_> {
+    fn function_context(&mut self, function: &HighFunction<I>) -> Result<MirFunctionContext<'_>, CompileError> {
+        Ok(MirFunctionContext::new(self, function.generics.clone()))
     }
 
-    fn type_context(&mut self, _types: &I::Type) -> Result<MirFunctionContext<'_>, CompileError> {
-        Ok(MirFunctionContext::new(self))
+    fn type_context(&mut self, types: &I::Type) -> Result<MirFunctionContext<'_>, CompileError> {
+        Ok(MirFunctionContext::new(self, types.generics.clone()))
     }
 }
 
 impl<'a> MirFunctionContext<'a> {
     /// Creates a MIR function context
-    fn new(context: &mut MirContext<'a>) -> Self {
+    fn new(context: &mut MirContext<'a>, generics: IndexMap<Spur, Vec<GenericTypeRef>>) -> Self {
         Self {
             code_blocks: vec![CodeBlock {
                 statements: vec![],
@@ -173,7 +177,8 @@ impl<'a> MirFunctionContext<'a> {
             local_vars: HashMap::default(),
             parent_loop: None,
             parent_end: None,
-            source: &context.source,
+            source: &mut context.source,
+            generics
         }
     }
 
@@ -237,8 +242,8 @@ impl<'a> MirFunctionContext<'a> {
 }
 
 /// Resolves a HIR source to MIR
-pub fn resolve_to_mir(source: HirSource) -> Result<Syntax<MediumSyntaxLevel>, CompileError> {
-    source.syntax.translate(&mut MirContext::new(&source))
+pub fn resolve_to_mir(mut source: HirSource) -> Result<Syntax<MediumSyntaxLevel>, CompileError> {
+    source.syntax.translate(&mut MirContext::new(&mut source))
 }
 
 impl Translatable<HighSyntaxLevel, MediumSyntaxLevel> for HighSyntaxLevel {
@@ -264,9 +269,9 @@ impl Translatable<HighSyntaxLevel, MediumSyntaxLevel> for HighSyntaxLevel {
     }
 
     fn translate_func_ref(
-        node: &FunctionRef,
+        node: &GenericFunctionRef,
         context: &mut MirFunctionContext,
-    ) -> Result<FunctionRef, CompileError> {
+    ) -> Result<GenericFunctionRef, CompileError> {
         Translate::translate(node, context)
     }
 
