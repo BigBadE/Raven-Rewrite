@@ -48,12 +48,15 @@ pub fn parse_structure(input: Span) -> IResult<Span, HighType<RawSyntaxLevel>> {
             )),
         ))
         .context("Type"),
-        |(modifiers, (name, generics, data))| HighType {
-            name,
-            file: input.extra.file.clone(),
-            generics: generics.unwrap_or_default(),
-            modifiers,
-            data,
+        |(modifiers, (name, generics, data))| {
+            let mut reference = input.extra.file.clone();
+            reference.push(name);
+            HighType {
+                reference: reference.into(),
+                generics: generics.unwrap_or_default(),
+                modifiers,
+                data,
+            }
         },
     )(input.clone())
 }

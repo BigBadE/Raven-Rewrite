@@ -3,7 +3,7 @@ use crate::{
 };
 use hir::statement::{Conditional, HighStatement};
 use serde::{Deserialize, Serialize};
-use std::fmt::Debug;
+use hir::HighSyntaxLevel;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Statement;
 use syntax::structure::visitor::Translate;
@@ -12,7 +12,7 @@ use syntax::util::CompileError;
 use syntax::SyntaxLevel;
 
 /// The MIR is made up of a series of nodes, each terminated with a jump expression.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub enum MediumStatement<T: SyntaxLevel> {
     /// Assigns a value to a place
@@ -33,8 +33,8 @@ pub enum MediumStatement<T: SyntaxLevel> {
 impl<T: SyntaxLevel> Statement for MediumStatement<T> {}
 
 /// Handle statement translation
-impl<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>
-    Translate<MediumStatement<MediumSyntaxLevel>, MirFunctionContext<'a>> for HighStatement<I>
+impl<'a>
+    Translate<MediumStatement<MediumSyntaxLevel>, MirFunctionContext<'a>> for HighStatement<HighSyntaxLevel>
 {
     fn translate(
         &self,
@@ -42,7 +42,7 @@ impl<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>
     ) -> Result<MediumStatement<MediumSyntaxLevel>, CompileError> {
         match self {
             HighStatement::Expression(expression) => {
-                let value = I::translate_expr(expression, context)?;
+                let value = HighSyntaxLevel::translate_expr(expression, context)?;
                 if let Some(types) = value.get_type(context)? {
                     let local = context.create_temp(types.clone());
                     context.push_statement(MediumStatement::StorageLive(local, types));
@@ -57,7 +57,7 @@ impl<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>
             }
             HighStatement::CodeBlock(expressions) => {
                 for expression in expressions {
-                    I::translate_stmt(expression, context)?;
+                    HighSyntaxLevel::translate_stmt(expression, context)?;
                 }
             }
             HighStatement::If {
@@ -70,9 +70,9 @@ impl<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>
                 todo!()
             }
             HighStatement::While { condition } => compile_while(condition, context)?,
-            HighStatement::Loop { body } => compile_loop::<I>(body, context)?,
+            HighStatement::Loop { body } => compile_loop(body, context)?,
             HighStatement::Terminator(terminator) => {
-                let terminator = I::translate_terminator(terminator, context)?;
+                let terminator = HighSyntaxLevel::translate_terminator(terminator, context)?;
                 context.set_terminator(terminator)
             }
         }
@@ -82,16 +82,16 @@ impl<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>
     }
 }
 
-fn compile_if<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>(
-    conditions: &Vec<Conditional<I>>,
-    else_branch: &Option<Vec<I::Statement>>,
+fn compile_if<'a>(
+    conditions: &Vec<Conditional<HighSyntaxLevel>>,
+    else_branch: &Option<Vec<HighStatement<HighSyntaxLevel>>>,
     context: &mut MirFunctionContext<'a>,
 ) -> Result<(), CompileError> {
     let mut current = context.create_block();
     let end = context.create_block();
     for condition in conditions {
         context.switch_to_block(current);
-        let discriminant = I::translate_expr(&condition.condition, context)?;
+        let discriminant = HighSyntaxLevel::translate_expr(&condition.condition, context)?;
         let next = context.create_block();
         current = context.create_block();
         context.set_terminator(MediumTerminator::Switch {
@@ -103,7 +103,7 @@ fn compile_if<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>(
         // Translate the if body
         context.switch_to_block(next);
         for statement in &condition.branch {
-            I::translate_stmt(statement, context)?;
+            HighSyntaxLevel::translate_stmt(statement, context)?;
         }
         if matches!(
             context.code_blocks[context.current_block].terminator,
@@ -115,7 +115,7 @@ fn compile_if<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>(
     context.switch_to_block(current);
     if let Some(else_branch) = else_branch {
         for statement in else_branch {
-            I::translate_stmt(statement, context)?;
+            HighSyntaxLevel::translate_stmt(statement, context)?;
         }
     }
     if matches!(
@@ -128,11 +128,8 @@ fn compile_if<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>(
     Ok(())
 }
 
-fn compile_while<
-    'a,
-    I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>,
->(
-    condition: &Conditional<I>,
+fn compile_while<'a>(
+    condition: &Conditional<HighSyntaxLevel>,
     context: &mut MirFunctionContext<'a>,
 ) -> Result<(), CompileError> {
     let top = context.create_block();
@@ -140,7 +137,7 @@ fn compile_while<
     let end = context.create_block();
     context.switch_to_block(top);
     // Jump to end if condition is false
-    let discriminant = I::translate_expr(&condition.condition, context)?;
+    let discriminant = HighSyntaxLevel::translate_expr(&condition.condition, context)?;
     context.set_terminator(MediumTerminator::Switch {
         discriminant,
         targets: vec![(Literal::U64(0), end)],
@@ -151,7 +148,7 @@ fn compile_while<
     context.parent_loop = Some(top);
     context.parent_end = Some(end);
     for statement in &condition.branch {
-        I::translate_stmt(statement, context)?;
+        HighSyntaxLevel::translate_stmt(statement, context)?;
     }
     if matches!(
         context.code_blocks[context.current_block].terminator,
@@ -163,8 +160,8 @@ fn compile_while<
     Ok(())
 }
 
-fn compile_loop<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>(
-    body: &Vec<I::Statement>,
+fn compile_loop<'a>(
+    body: &Vec<HighStatement<HighSyntaxLevel>>,
     context: &mut MirFunctionContext<'a>,
 ) -> Result<(), CompileError> {
     let top = context.create_block();
@@ -175,7 +172,7 @@ fn compile_loop<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>(
 
     // Translate the body
     for statement in body {
-        I::translate_stmt(statement, context)?;
+        HighSyntaxLevel::translate_stmt(statement, context)?;
     }
     if matches!(
         context.code_blocks[context.current_block].terminator,

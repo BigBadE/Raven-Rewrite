@@ -1,20 +1,21 @@
 use crate::statement::MediumStatement;
 use crate::{MediumSyntaxLevel, MediumTerminator, MirFunctionContext, Operand, Place};
 use hir::expression::HighExpression;
-use hir::function::HighTerminator;
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ops::Deref;
+use hir::HighSyntaxLevel;
+use hir::statement::HighStatement;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Expression;
 use syntax::structure::visitor::Translate;
 use syntax::util::translation::{translate_fields, translate_iterable, Translatable};
 use syntax::util::CompileError;
-use syntax::{GenericFunctionRef, SyntaxLevel, TypeRef};
+use syntax::{FunctionRef, GenericFunctionRef, SyntaxLevel, TypeRef};
 
 /// An expression in the MIR
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 pub enum MediumExpression<T: SyntaxLevel> {
     /// Uses the operand
     Use(Operand),
@@ -38,20 +39,18 @@ pub enum MediumExpression<T: SyntaxLevel> {
 
 impl<T: SyntaxLevel> Expression for MediumExpression<T> {}
 
-impl<T: SyntaxLevel<FunctionReference =GenericFunctionRef, TypeReference = TypeRef>,
+impl<T: SyntaxLevel<FunctionReference = FunctionRef, TypeReference = TypeRef>,
     > MediumExpression<T> {
     /// Get the returned type of the expression
     pub fn get_type(&self, context: &mut MirFunctionContext) -> Result<Option<TypeRef>, CompileError> {
-        match self {
-            MediumExpression::Use(op) => Ok(Some(op.get_type(context))),
-            MediumExpression::Literal(lit) => Ok(Some(lit.get_type(&context.source.syntax.symbols))),
+        Ok(match self {
+            MediumExpression::Use(op) => Some(op.get_type(context)),
+            MediumExpression::Literal(lit) => Some(lit.get_type(&context.source.syntax.symbols)),
             MediumExpression::FunctionCall { func, .. } => {
-                context.source.syntax.functions[func.reference].return_type.as_ref().map(|inner| {
-                    Translate::translate(inner, context)
-                }).transpose()
+                context.output.functions[func].return_type.clone()
             }
-            MediumExpression::CreateStruct { struct_type, .. } => Ok(Some(struct_type.clone())),
-        }
+            MediumExpression::CreateStruct { struct_type, .. } => Some(struct_type.clone()),
+        })
     }
 }
 
@@ -83,29 +82,22 @@ pub fn get_operand(
 }
 
 /// Translates a single function into its MIR equivalent.
-pub fn translate_function<
-    'a,
-    I: SyntaxLevel<Terminator = HighTerminator<I>>
-        + Translatable<I, MediumSyntaxLevel>,
->(
-    function: &I::FunctionReference,
-    arguments: Vec<&I::Expression>,
+pub fn translate_function<'a>(
+    function: &GenericFunctionRef,
+    arguments: Vec<&HighExpression<HighSyntaxLevel>>,
     context: &mut MirFunctionContext<'a>,
 ) -> Result<MediumExpression<MediumSyntaxLevel>, CompileError> {
     Ok(MediumExpression::FunctionCall {
-        func: I::translate_func_ref(function, context)?,
+        func: HighSyntaxLevel::translate_func_ref(function, context)?,
         args: translate_iterable(&arguments, context, |arg, context| {
-            I::translate_expr(arg, context).and_then(|expr| get_operand(expr, context))
+            HighSyntaxLevel::translate_expr(arg, context).and_then(|expr| get_operand(expr, context))
         })?,
     })
 }
 
 /// Handle statement translation
-impl<
-    'a,
-    I: SyntaxLevel<Terminator = HighTerminator<I>, FunctionReference =GenericFunctionRef>
-        + Translatable<I, MediumSyntaxLevel>,
-> Translate<MediumExpression<MediumSyntaxLevel>, MirFunctionContext<'a>> for HighExpression<I>
+impl<'a> Translate<MediumExpression<MediumSyntaxLevel>, MirFunctionContext<'a>> for
+HighExpression<HighSyntaxLevel>
 {
     fn translate(
         &self,
@@ -116,23 +108,23 @@ impl<
             HighExpression::Literal(lit) => MediumExpression::Literal(*lit),
             // Create a new block, using temps for the values until we get what we want
             HighExpression::CodeBlock { body, value } => {
-                translate_code_block::<I>(body, value, context)?
+                translate_code_block(body, value, context)?
             }
             // A variable is translated to a use of a local place.
-            HighExpression::Variable(var) => translate_variable::<I>(var, context)?,
+            HighExpression::Variable(var) => translate_variable(var, context)?,
             // For assignment, translate the right-hand side, emit an assign statement,
             // then return a use of the target variable.
             HighExpression::Assignment {
                 declaration,
                 variable,
                 value,
-            } => translate_assign::<I>(declaration, variable, value, context)?,
+            } => translate_assign(declaration, variable, value, context)?,
             // For function calls, translate the function reference and arguments.
             HighExpression::FunctionCall {
                 function,
                 target,
                 arguments,
-            } => translate_function::<I>(
+            } => translate_function(
                 function,
                 target
                     .as_ref()
@@ -148,12 +140,12 @@ impl<
                 target_struct,
                 fields,
             } => MediumExpression::CreateStruct {
-                struct_type: I::translate_type_ref(target_struct, context)?,
+                struct_type: HighSyntaxLevel::translate_type_ref(target_struct, context)?,
                 fields: translate_fields(fields, context, |field, context| {
-                    I::translate_expr(field, context).and_then(|expr| get_operand(expr, context))
+                    HighSyntaxLevel::translate_expr(field, context).and_then(|expr| get_operand(expr, context))
                 })?,
             },
-            HighExpression::UnaryOperation { pre, symbol, value } => get_operation::<I>(
+            HighExpression::UnaryOperation { pre, symbol, value } => get_operation(
                 if *pre {
                     &context.source.pre_unary_operations
                 } else {
@@ -167,7 +159,7 @@ impl<
                 symbol,
                 first,
                 second,
-            } => get_operation::<I>(
+            } => get_operation(
                 &context.source.binary_operations,
                 symbol,
                 vec![first, second],
@@ -177,11 +169,7 @@ impl<
     }
 }
 
-fn translate_variable<
-    'a,
-    I: SyntaxLevel<FunctionReference =GenericFunctionRef, Terminator = HighTerminator<I>>
-        + Translatable<I, MediumSyntaxLevel>,
->(
+fn translate_variable<'a>(
     var: &Spur,
     context: &mut MirFunctionContext<'a>,
 ) -> Result<MediumExpression<MediumSyntaxLevel>, CompileError> {
@@ -197,13 +185,9 @@ fn translate_variable<
     })))
 }
 
-fn translate_code_block<
-    'a,
-    I: SyntaxLevel<FunctionReference =GenericFunctionRef, Terminator = HighTerminator<I>>
-        + Translatable<I, MediumSyntaxLevel>,
->(
-    body: &Vec<I::Statement>,
-    value: &I::Expression,
+fn translate_code_block<'a>(
+    body: &Vec<HighStatement<HighSyntaxLevel>>,
+    value: &HighExpression<HighSyntaxLevel>,
     context: &mut MirFunctionContext<'a>,
 ) -> Result<MediumExpression<MediumSyntaxLevel>, CompileError> {
     let start = context.create_block();
@@ -211,27 +195,22 @@ fn translate_code_block<
     context.switch_to_block(start);
 
     for statement in body {
-        // Translate each statement in the block.
-        I::translate_stmt(statement, context)?;
+        HighSyntaxLevel::translate_stmt(statement, context)?;
     }
 
     let end = context.create_block();
     context.set_terminator(MediumTerminator::Goto(end));
     context.switch_to_block(end);
-    I::translate_expr(value, context)
+    HighSyntaxLevel::translate_expr(value, context)
 }
 
-fn get_operation<
-    'a,
-    I: SyntaxLevel<FunctionReference =GenericFunctionRef, Terminator = HighTerminator<I>>
-        + Translatable<I, MediumSyntaxLevel>,
->(
+fn get_operation<'a>(
     operations: &HashMap<Spur, Vec<GenericFunctionRef>>,
     symbol: &Spur,
-    args: Vec<&I::Expression>,
+    args: Vec<&HighExpression<HighSyntaxLevel>>,
     context: &mut MirFunctionContext<'a>,
 ) -> Result<MediumExpression<MediumSyntaxLevel>, CompileError> {
-    translate_function::<I>(
+    translate_function(
         &operations.get(symbol).ok_or_else(|| {
             CompileError::Basic(format!(
                 "Unknown operation {}",
@@ -244,20 +223,17 @@ fn get_operation<
     )
 }
 
-fn translate_assign<
-    'a,
-    I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>,
->(
+fn translate_assign<'a>(
     declaration: &bool,
     variable: &Spur,
-    value: &I::Expression,
+    value: &HighExpression<HighSyntaxLevel>,
     context: &mut MirFunctionContext<'a>,
 ) -> Result<MediumExpression<MediumSyntaxLevel>, CompileError> {
     if !context.local_vars.contains_key(variable) && !declaration {
         return Err(CompileError::Basic("Unknown variable!".to_string()));
     }
 
-    let value = I::translate_expr(value, context)?;
+    let value = HighSyntaxLevel::translate_expr(value, context)?;
     let types = value.get_type(context)?;
     let Some(types) = types else {
         return Err(CompileError::Basic("Expected non-void type!".to_string()));

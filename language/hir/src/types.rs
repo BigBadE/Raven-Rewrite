@@ -1,7 +1,6 @@
-use crate::{RawSyntaxLevel, RawTypeRef};
+use crate::{HighSyntaxLevel, HirFunctionContext, RawSyntaxLevel, RawTypeRef};
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
-use std::fmt::Debug;
 use indexmap::IndexMap;
 use syntax::structure::traits::Type;
 use syntax::structure::visitor::Translate;
@@ -9,10 +8,11 @@ use syntax::structure::Modifier;
 use syntax::util::translation::translate_fields;
 use syntax::util::translation::{translate_iterable, Translatable};
 use syntax::util::CompileError;
-use syntax::{ContextSyntaxLevel, SyntaxLevel};
+use syntax::SyntaxLevel;
+use crate::function::HighFunction;
 
 /// A type in the HIR
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub struct HighType<T: SyntaxLevel> {
     /// The reference to the type
@@ -44,7 +44,7 @@ impl HighType<RawSyntaxLevel> {
 }
 
 /// The data associated with a type, depending on what type it is
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 pub enum TypeData<T: SyntaxLevel> {
     /// A structure holds fields of data
     Struct {
@@ -59,17 +59,17 @@ pub enum TypeData<T: SyntaxLevel> {
 }
 
 // Handle type translations
-impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>
-    Translate<Vec<HighType<O>>, O::InnerContext<'ctx>> for HighType<I>
+impl<'ctx, I: SyntaxLevel<Type = HighType<I>, Function = HighFunction<I>> + Translatable<I, HighSyntaxLevel>>
+Translate<(), HirFunctionContext<'ctx>> for HighType<I>
 {
-    fn translate(&self, context: &mut O::InnerContext<'_>) -> Result<Vec<HighType<O>>, CompileError> {
-        Ok(vec![HighType {
+    fn translate(&self, context: &mut HirFunctionContext<'_>) -> Result<(), CompileError> {
+        let types = HighType::<HighSyntaxLevel> {
             reference: I::translate_type_ref(&self.reference, context)?,
             generics: self
                 .generics
                 .iter()
                 .map(|(name, generics)| {
-                    Ok((
+                    Ok::<_, CompileError>((
                         name.clone(),
                         translate_iterable(generics, context, I::translate_type_ref)?,
                     ))
@@ -80,8 +80,10 @@ impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>
                 TypeData::Struct { fields } => TypeData::Struct {
                     fields: translate_fields(fields, context, I::translate_type_ref)?,
                 },
-                TypeData::Trait { .. } => return Ok(vec![]),
+                TypeData::Trait { .. } => return Ok(()),
             },
-        }])
+        };
+        context.syntax.types.insert(types.reference.clone(), types);
+        Ok(())
     }
 }

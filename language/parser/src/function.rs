@@ -26,14 +26,17 @@ pub fn function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {
             function_body,
         ))
         .context("Function"),
-        |(modifiers, name, generics, parameters, return_type, body)| HighFunction {
-            file: input.extra.file.clone(),
-            modifiers,
-            name,
-            generics: IndexMap::from_iter(generics.into_iter()),
-            parameters,
-            return_type,
-            body,
+        |(modifiers, name, generics, parameters, return_type, body)| {
+            let mut reference = input.extra.file.clone();
+            reference.push(name);
+            HighFunction {
+                reference: reference.into(),
+                modifiers,
+                generics: IndexMap::from_iter(generics.into_iter()),
+                parameters,
+                return_type,
+                body,
+            }
         },
     )(input.clone())
 }

@@ -8,4 +8,5 @@ type_system.workspace = true
 indexmap.workspace = true
 serde.workspace = true
 
+anyhow.workspace = true
 lasso.workspace = true

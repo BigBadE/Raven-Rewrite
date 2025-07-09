@@ -1,6 +1,6 @@
+use anyhow::anyhow;
 use crate::{MediumSyntaxLevel, MirFunctionContext};
 use hir::types::{HighType, TypeData};
-use lasso::Spur;
 use serde::{Deserialize, Serialize};
 use hir::HighSyntaxLevel;
 use syntax::{GenericTypeRef, SyntaxLevel, TypeRef};
@@ -8,54 +8,50 @@ use syntax::structure::Modifier;
 use syntax::structure::traits::Type;
 use syntax::structure::visitor::Translate;
 use syntax::util::CompileError;
-use syntax::util::path::FilePath;
 use syntax::util::translation::Translatable;
 use crate::monomorphization::MonomorphizationContext;
 
 /// A type in the MIR
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 pub struct MediumType<T: SyntaxLevel> {
-    /// The type's name
-    pub name: Spur,
-    /// The file path where the type is defined
-    pub file: FilePath,
+    /// The reference to the type
+    pub reference: T::TypeReference,
     /// The type's modifiers
     pub modifiers: Vec<Modifier>,
     /// The type's fields
     pub fields: Vec<T::TypeReference>,
 }
 
-impl<T: SyntaxLevel> Type for MediumType<T> {
-    fn reference(&self) -> &FilePath {
-        &self.file
+impl<T: SyntaxLevel> Type<T::TypeReference> for MediumType<T> {
+    fn reference(&self) -> &T::TypeReference {
+        &self.reference
     }
 }
 
-impl<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>
-Translate<Option<MediumType<MediumSyntaxLevel>>, MirFunctionContext<'a>> for HighType<I>
+impl<'a> Translate<(), MirFunctionContext<'a>> for HighType<HighSyntaxLevel>
 {
     fn translate(
         &self,
         context: &mut MirFunctionContext<'a>,
-    ) -> Result<Option<MediumType<MediumSyntaxLevel>>, CompileError> {
+    ) -> Result<(), CompileError> {
         // We don't translate functions with generics. The main function will translate the type references,
         // which will in turn call translate with the correct context.
         if !self.generics.is_empty() {
-            return Ok(None);
+            return Ok(());
         }
 
-        Ok(match &self.data {
-            TypeData::Struct { fields } => Some(MediumType {
-                name: self.name,
-                file: self.file.clone(),
+        if let TypeData::Struct { fields } = &self.data {
+            let types = MediumType::<MediumSyntaxLevel> {
+                reference: HighSyntaxLevel::translate_type_ref(&self.reference, context)?,
                 modifiers: self.modifiers.clone(),
                 fields: fields
                     .iter()
-                    .map(|(_, types)| I::translate_type_ref(types, context))
+                    .map(|(_, types)| HighSyntaxLevel::translate_type_ref(types, context))
                     .collect::<Result<_, _>>()?,
-            }),
-            TypeData::Trait { .. } => None,
-        })
+            };
+            context.output.types.insert(types.reference.clone(), types);
+        }
+        Ok(())
     }
 }
 
@@ -65,19 +61,19 @@ impl<'a> Translate<TypeRef, MirFunctionContext<'a>> for GenericTypeRef {
             // TODO
             GenericTypeRef::Struct { reference, generics } => {
                 if generics.is_empty() {
-                    return Ok(*reference);
+                    return Ok(reference.clone());
                 }
 
-                context.source.syntax.types.push(
-                    Translate::<HighType<HighSyntaxLevel>, MonomorphizationContext>::
-                    translate(&context.source.syntax.types[*reference], &mut MonomorphizationContext {
-                        generics: generics.clone()
-                    })?);
-                Ok(context.source.syntax.types.len() - 1)
+                let translated = Translate::<MediumType<MediumSyntaxLevel>, MonomorphizationContext>::
+                translate(&context.source.syntax.types[self], &mut MonomorphizationContext {
+                    generics: generics.clone()
+                })?;
+                let reference = translated.reference().clone();
+                context.output.types.insert(reference.clone(), translated);
+                Ok(reference)
             }
-            GenericTypeRef::Generic { reference } => {
-
-                Ok(*reference)
+            GenericTypeRef::Generic { .. } => {
+                Err(CompileError::Internal(anyhow!("Tried to convert a generic type to a solid type!")))
             }
         }
     }

@@ -1,7 +1,5 @@
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::fmt::{Debug, Formatter};
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Expression;
 use syntax::structure::visitor::Translate;
@@ -73,69 +71,6 @@ pub enum HighExpression<T: SyntaxLevel> {
 }
 
 impl<T: SyntaxLevel> Expression for HighExpression<T> {}
-
-impl<T: SyntaxLevel> Debug for HighExpression<T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            HighExpression::Literal(lit) => {
-                f.debug_tuple("HighExpression::Literal").field(lit).finish()
-            }
-            HighExpression::CodeBlock { body, value } => f
-                .debug_struct("HighExpression::CodeBlock")
-                .field("body", body)
-                .field("value", value)
-                .finish(),
-            HighExpression::Variable(var) => f
-                .debug_tuple("HighExpression::Variable")
-                .field(var)
-                .finish(),
-            HighExpression::Assignment {
-                declaration,
-                variable,
-                value,
-            } => f
-                .debug_struct("HighExpression::Assignment")
-                .field("declaration", declaration)
-                .field("variable", variable)
-                .field("value", value)
-                .finish(),
-            HighExpression::FunctionCall {
-                function,
-                target,
-                arguments,
-            } => f
-                .debug_struct("HighExpression::FunctionCall")
-                .field("function", function)
-                .field("target", target)
-                .field("arguments", arguments)
-                .finish(),
-            HighExpression::CreateStruct {
-                target_struct,
-                fields,
-            } => f
-                .debug_struct("HighExpression::CreateStruct")
-                .field("target_struct", target_struct)
-                .field("fields", fields)
-                .finish(),
-            HighExpression::UnaryOperation { pre, symbol, value } => f
-                .debug_struct("HighExpression::UnaryOperation")
-                .field("pre", pre)
-                .field("symbol", symbol)
-                .field("value", value)
-                .finish(),
-            HighExpression::BinaryOperation {
-                symbol,
-                first,
-                second,
-            } => f
-                .debug_struct("HighExpression::BinaryOperation")
-                .field("symbol", symbol)
-                .field("first", first)
-                .field("second", second)
-                .finish(),
-        }
-    }
-}
 
 /// Handle expression translation
 impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>

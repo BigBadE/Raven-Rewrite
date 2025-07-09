@@ -2,14 +2,14 @@ use std::fmt;
 use std::fmt::Write;
 use lasso::{Spur, ThreadedRodeo};
 use std::path::PathBuf;
-use crate::util::pretty_print::PrettyPrint;
+use crate::util::pretty_print::{NestedWriter, PrettyPrint};
 
 /// A path to a file, function, struct, etc.
 /// Usually written in the style of foo::bar::Baz
 pub type FilePath = Vec<Spur>;
 
 impl<W: Write> PrettyPrint<W> for FilePath {
-    fn format(&self, interner: &ThreadedRodeo, writer: &mut W) -> Result<(), fmt::Error> {
+    fn format(&self, interner: &ThreadedRodeo, writer: &mut NestedWriter<W>) -> Result<(), fmt::Error> {
         write!(writer, "{}", self.iter()
             .map(|s| interner.resolve(s))
             .collect::<Vec<_>>()

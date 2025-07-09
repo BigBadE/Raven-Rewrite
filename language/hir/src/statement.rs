@@ -1,6 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::fmt::{Debug, Formatter};
 use syntax::structure::traits::Statement;
 use syntax::structure::visitor::Translate;
 use syntax::util::translation::{translate_iterable, Translatable};
@@ -43,47 +41,8 @@ pub enum HighStatement<T: SyntaxLevel> {
 
 impl<T: SyntaxLevel> Statement for HighStatement<T> {}
 
-impl<T: SyntaxLevel> Debug for HighStatement<T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            HighStatement::Expression(expr) => f
-                .debug_tuple("HighStatement::Expression")
-                .field(expr)
-                .finish(),
-            HighStatement::CodeBlock(expr) => f
-                .debug_tuple("HighStatement::Expression")
-                .field(expr)
-                .finish(),
-            HighStatement::If {
-                conditions,
-                else_branch,
-            } => f
-                .debug_struct("HighStatement::If")
-                .field("conditions", conditions)
-                .field("else_branch", else_branch)
-                .finish(),
-            HighStatement::For { condition } => f
-                .debug_struct("HighStatement::For")
-                .field("condition", condition)
-                .finish(),
-            HighStatement::While { condition } => f
-                .debug_struct("HighStatement::While")
-                .field("condition", condition)
-                .finish(),
-            HighStatement::Loop { body } => f
-                .debug_struct("HighStatement::Loop")
-                .field("body", body)
-                .finish(),
-            HighStatement::Terminator(terminator) => f
-                .debug_tuple("HighStatement::Terminator")
-                .field(terminator)
-                .finish(),
-        }
-    }
-}
-
 /// A conditional block
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 pub struct Conditional<T: SyntaxLevel> {
     /// The condition to check
     pub condition: T::Expression,

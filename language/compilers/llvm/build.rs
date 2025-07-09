@@ -425,7 +425,7 @@ fn extract_library(s: &str, kind: LibraryKind) -> Vec<String> {
         .collect::<Vec<String>>()
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 struct LinkingPreferences {
     /// Prefer static linking over dynamic linking.
     prefer_static: bool,

@@ -36,6 +36,12 @@ pub enum CompileError {
     Multi(Vec<CompileError>),
 }
 
+impl From<fmt::Error> for CompileError {
+    fn from(err: fmt::Error) -> Self {
+        CompileError::Internal(err.into())
+    }
+}
+
 impl fmt::Display for CompileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

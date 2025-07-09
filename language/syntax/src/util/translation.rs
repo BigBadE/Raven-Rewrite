@@ -14,10 +14,10 @@ pub fn translate_fields<C, I, O, F: Fn(&I, &mut C) -> Result<O, CompileError>>(
 }
 
 /// Translates a vector into a vector of the output type.
-pub fn translate_iterable<'a, Iter: IntoIterator<Item=I>, Out: Default + Extend<O>, C, I: 'a, O, F: Fn(I, &mut C) -> Result<O, CompileError>>(
+pub fn translate_iterable<'a, Iter: IntoIterator<Item=I>, Out: Default + Extend<O>, C, I: 'a, O, F: FnMut(I, &mut C) -> Result<O, CompileError>>(
     fields: Iter,
     context: &mut C,
-    translator: F,
+    mut translator: F,
 ) -> Result<Out, CompileError> {
     let (fields, errors) = fields
         .into_iter()
@@ -59,10 +59,10 @@ pub trait Translatable<I: SyntaxLevel, O: ContextSyntaxLevel<I>> {
     ) -> Result<O::FunctionReference, CompileError>;
 
     /// Translates a type
-    fn translate_type(node: &I::Type, context: &mut O::InnerContext<'_>) -> Result<Vec<O::Type>, CompileError>;
+    fn translate_type(node: &I::Type, context: &mut O::InnerContext<'_>) -> Result<(), CompileError>;
 
     /// Translates a function
-    fn translate_func(node: &I::Function, context: &mut O::InnerContext<'_>) -> Result<Vec<O::Function>, CompileError>;
+    fn translate_func(node: &I::Function, context: &mut O::InnerContext<'_>) -> Result<(), CompileError>;
 
     /// Translates a terminator
     fn translate_terminator(

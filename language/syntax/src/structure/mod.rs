@@ -21,7 +21,7 @@ lazy_static! {
 
 /// All modifiers that can be added to a function, struct, or variable
 /// Must be added to MODIFIERS to be parsable
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Modifier {
     /// Allows access from other projects
     PUBLIC = 0b1,

@@ -1,16 +1,17 @@
 use indexmap::IndexMap;
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
-use std::fmt::Debug;
 use syntax::structure::traits::{Function, Terminator};
 use syntax::structure::visitor::Translate;
 use syntax::structure::Modifier;
 use syntax::util::translation::{translate_fields, translate_iterable, Translatable};
 use syntax::util::CompileError;
 use syntax::{ContextSyntaxLevel, SyntaxLevel};
+use crate::{HighSyntaxLevel, HirFunctionContext};
+use crate::types::HighType;
 
 /// A function in the HIR
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub struct HighFunction<T: SyntaxLevel> {
     /// The reference (file path) to the function
@@ -28,7 +29,7 @@ pub struct HighFunction<T: SyntaxLevel> {
 }
 
 /// A block of code
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 pub struct CodeBlock<T: SyntaxLevel> {
     /// The statements in the block
     pub statements: Vec<T::Statement>,
@@ -37,7 +38,7 @@ pub struct CodeBlock<T: SyntaxLevel> {
 }
 
 /// A terminator for a block of code
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 pub enum HighTerminator<T: SyntaxLevel> {
     /// A return statement
     Return(Option<T::Expression>),
@@ -58,14 +59,14 @@ impl<T: SyntaxLevel> Function<T::FunctionReference> for HighFunction<T> {
 }
 
 // Handle type translation
-impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>
-Translate<Vec<HighFunction<O>>, O::InnerContext<'ctx>> for HighFunction<I>
+impl<'ctx, I: SyntaxLevel<Type = HighType<I>, Function = HighFunction<I>> + Translatable<I, HighSyntaxLevel>>
+Translate<(), HirFunctionContext<'ctx>> for HighFunction<I>
 {
     fn translate(
         &self,
-        context: &mut O::InnerContext<'_>,
-    ) -> Result<Vec<HighFunction<O>>, CompileError> {
-        Ok(vec![HighFunction {
+        context: &mut HirFunctionContext<'_>,
+    ) -> Result<(), CompileError> {
+        let function = HighFunction::<HighSyntaxLevel> {
             reference: I::translate_func_ref(&self.reference, context)?,
             modifiers: self.modifiers.clone(),
             body: CodeBlock {
@@ -75,13 +76,16 @@ Translate<Vec<HighFunction<O>>, O::InnerContext<'ctx>> for HighFunction<I>
             parameters: translate_fields(&self.parameters, context, I::translate_type_ref)?,
             generics: translate_iterable(&self.generics, context,
                                          |(key, types), context|
-                                             Ok((key, translate_iterable(types, context, I::translate_type_ref)?)))?,
+                                             Ok((*key, translate_iterable(types, context, I::translate_type_ref)?)))?,
             return_type: self
                 .return_type
                 .as_ref()
                 .map(|ty| I::translate_type_ref(ty, context))
                 .transpose()?,
-        }])
+        };
+
+        context.syntax.functions.insert(function.reference.clone(), function);
+        Ok(())
     }
 }
 

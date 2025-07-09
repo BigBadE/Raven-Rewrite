@@ -10,6 +10,8 @@ pub mod types;
 pub mod pretty_print;
 mod monomorphization;
 
+use syntax::{FunctionRef, PrettyPrintableSyntaxLevel};
+use std::fmt::Write;
 use crate::expression::MediumExpression;
 use crate::function::MediumFunction;
 use crate::statement::MediumStatement;
@@ -31,26 +33,28 @@ use syntax::util::{CompileError, Context};
 use syntax::{ContextSyntaxLevel, GenericFunctionRef, Syntax, SyntaxLevel, GenericTypeRef, TypeRef};
 
 /// The MIR level
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 pub struct MediumSyntaxLevel;
 
 impl SyntaxLevel for MediumSyntaxLevel {
     type TypeReference = TypeRef;
     type Type = MediumType<MediumSyntaxLevel>;
-    type FunctionReference = GenericFunctionRef;
+    type FunctionReference = FunctionRef;
     type Function = MediumFunction<MediumSyntaxLevel>;
     type Statement = MediumStatement<MediumSyntaxLevel>;
     type Expression = MediumExpression<MediumSyntaxLevel>;
     type Terminator = MediumTerminator<MediumSyntaxLevel>;
 }
 
-impl<I: SyntaxLevel> ContextSyntaxLevel<I> for MediumSyntaxLevel {
+impl<W: Write> PrettyPrintableSyntaxLevel<W> for MediumSyntaxLevel {}
+
+impl ContextSyntaxLevel<HighSyntaxLevel> for MediumSyntaxLevel {
     type Context<'ctx> = MirContext<'ctx>;
     type InnerContext<'ctx> = MirFunctionContext<'ctx>;
 }
 
 /// A terminator for a MIR block
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub enum MediumTerminator<T: SyntaxLevel> {
     /// Goes to a specific block
@@ -71,7 +75,7 @@ pub enum MediumTerminator<T: SyntaxLevel> {
 }
 
 /// An operand, a value that can be used in an expression
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 pub enum Operand {
     /// Copies the value at the place, like for a reference
     Copy(Place),
@@ -87,13 +91,13 @@ impl Operand {
         match self {
             Operand::Copy(place) => context.translate(place),
             Operand::Move(place) => context.translate(place),
-            Operand::Constant(literal) => literal.get_type(),
+            Operand::Constant(literal) => literal.get_type(&context.source.syntax.symbols),
         }
     }
 }
 
 /// A location in memory that can be read from or written to
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Place {
     /// Where this place is located
     pub local: LocalVar,
@@ -102,7 +106,7 @@ pub struct Place {
 }
 
 /// A way to traverse a place
-#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+#[derive(Serialize, Deserialize, Copy, Clone)]
 pub enum PlaceElem {
     /// Dereferences a reference for the inner value
     Deref,
@@ -123,6 +127,8 @@ impl<T: SyntaxLevel> Terminator for MediumTerminator<T> {}
 pub struct MirContext<'a> {
     /// The HIR source
     source: &'a HirSource,
+    /// The MIR output
+    output: Syntax<MediumSyntaxLevel>,
 }
 
 /// The context for compiling code to MIR. This flattens the syntax tree structure for code
@@ -142,31 +148,27 @@ pub struct MirFunctionContext<'a> {
     /// The end of the parent control block, if any
     parent_end: Option<CodeBlockId>,
     /// The HIR source
-    source: &'a mut HirSource,
+    source: &'a HirSource,
     /// All generics in scope
     generics: IndexMap<Spur, Vec<GenericTypeRef>>,
+    /// The output syntax
+    output: &'a mut Syntax<MediumSyntaxLevel>
 }
 
 impl<'a> MirContext<'a> {
     /// Creates a new MIR context
-    fn new(source: &'a mut HirSource) -> Self {
-        Self { source }
-    }
-}
-
-impl<I: SyntaxLevel<Function = HighFunction<I>, Type = HighType<I>, TypeReference = GenericTypeRef>> Context<I, MediumSyntaxLevel> for MirContext<'_> {
-    fn function_context(&mut self, function: &HighFunction<I>) -> Result<MirFunctionContext<'_>, CompileError> {
-        Ok(MirFunctionContext::new(self, function.generics.clone()))
-    }
-
-    fn type_context(&mut self, types: &I::Type) -> Result<MirFunctionContext<'_>, CompileError> {
-        Ok(MirFunctionContext::new(self, types.generics.clone()))
+    fn new(source: &'a HirSource) -> Self {
+        Self { source, output: Syntax {
+            symbols: source.syntax.symbols.clone(),
+            functions: HashMap::new(),
+            types: HashMap::new(),
+        } }
     }
 }
 
 impl<'a> MirFunctionContext<'a> {
     /// Creates a MIR function context
-    fn new(context: &mut MirContext<'a>, generics: IndexMap<Spur, Vec<GenericTypeRef>>) -> Self {
+    fn new(source: &'a HirSource, generics: IndexMap<Spur, Vec<GenericTypeRef>>, output: &'a mut Syntax<MediumSyntaxLevel>) -> Self {
         Self {
             code_blocks: vec![CodeBlock {
                 statements: vec![],
@@ -177,8 +179,9 @@ impl<'a> MirFunctionContext<'a> {
             local_vars: HashMap::default(),
             parent_loop: None,
             parent_end: None,
-            source: &mut context.source,
-            generics
+            source,
+            generics,
+            output,
         }
     }
 
@@ -241,9 +244,21 @@ impl<'a> MirFunctionContext<'a> {
     }
 }
 
+impl Context<HighSyntaxLevel, MediumSyntaxLevel> for MirContext<'_> {
+    fn function_context(&mut self, function: &HighFunction<HighSyntaxLevel>) -> Result<MirFunctionContext<'_>, CompileError> {
+        Ok(MirFunctionContext::new(self.source, function.generics.clone(), &mut self.output))
+    }
+
+    fn type_context(&mut self, types: &HighType<HighSyntaxLevel>) -> Result<MirFunctionContext<'_>, CompileError> {
+        Ok(MirFunctionContext::new(self.source, types.generics.clone(), &mut self.output))
+    }
+}
+
 /// Resolves a HIR source to MIR
-pub fn resolve_to_mir(mut source: HirSource) -> Result<Syntax<MediumSyntaxLevel>, CompileError> {
-    source.syntax.translate(&mut MirContext::new(&mut source))
+pub fn resolve_to_mir(source: HirSource) -> Result<Syntax<MediumSyntaxLevel>, CompileError> {
+    let mut context = MirContext::new(&source);
+    source.syntax.translate(&mut context)?;
+    Ok(context.output)
 }
 
 impl Translatable<HighSyntaxLevel, MediumSyntaxLevel> for HighSyntaxLevel {
@@ -271,21 +286,21 @@ impl Translatable<HighSyntaxLevel, MediumSyntaxLevel> for HighSyntaxLevel {
     fn translate_func_ref(
         node: &GenericFunctionRef,
         context: &mut MirFunctionContext,
-    ) -> Result<GenericFunctionRef, CompileError> {
+    ) -> Result<FunctionRef, CompileError> {
         Translate::translate(node, context)
     }
 
     fn translate_type(
         node: &HighType<HighSyntaxLevel>,
         context: &mut MirFunctionContext,
-    ) -> Result<Option<MediumType<MediumSyntaxLevel>>, CompileError> {
+    ) -> Result<(), CompileError> {
         Translate::translate(node, context)
     }
 
     fn translate_func(
         node: &HighFunction<HighSyntaxLevel>,
         context: &mut MirFunctionContext,
-    ) -> Result<MediumFunction<MediumSyntaxLevel>, CompileError> {
+    ) -> Result<(), CompileError> {
         Translate::translate(node, context)
     }
 
@@ -297,8 +312,8 @@ impl Translatable<HighSyntaxLevel, MediumSyntaxLevel> for HighSyntaxLevel {
     }
 }
 
-impl<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>
-    Translate<MediumTerminator<MediumSyntaxLevel>, MirFunctionContext<'a>> for HighTerminator<I>
+impl<'a>
+    Translate<MediumTerminator<MediumSyntaxLevel>, MirFunctionContext<'a>> for HighTerminator<HighSyntaxLevel>
 {
     fn translate(
         &self,
@@ -308,7 +323,7 @@ impl<'a, I: SyntaxLevel + Translatable<I, MediumSyntaxLevel>>
             HighTerminator::Return(returning) => MediumTerminator::Return(
                 returning
                     .as_ref()
-                    .map(|inner| I::translate_expr(inner, context))
+                    .map(|inner| HighSyntaxLevel::translate_expr(inner, context))
                     .transpose()?,
             ),
             HighTerminator::Break => {

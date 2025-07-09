@@ -1,4 +1,4 @@
-use crate::structure::traits::{Function, Type};
+use std::marker::PhantomData;
 use crate::util::translation::{translate_iterable, Translatable};
 use crate::util::{CompileError, Context};
 use crate::{ContextSyntaxLevel, Syntax, SyntaxLevel};
@@ -9,31 +9,25 @@ pub trait Translate<T, C> {
 }
 
 impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>
-Translate<Syntax<O>, O::Context<'ctx>> for Syntax<I>
+Translate<PhantomData<O>, O::Context<'ctx>> for Syntax<I>
 {
-    fn translate(&self, context: &mut O::Context<'_>) -> Result<Syntax<O>, CompileError> {
+    fn translate(&self, context: &mut O::Context<'_>) -> Result<PhantomData<O>, CompileError> {
         let functions =
             translate_iterable(&self.functions, context,
                                |(_, input), context| {
-                                   let func = I::translate_func(input, &mut context.function_context(input)?)?;
-                                   Ok(func.into_iter().map(|func| (func.reference().clone(), func)))
+                                   I::translate_func(input, &mut context.function_context(input)?)?;
+                                   Ok(())
                                });
 
         let types =
             translate_iterable(&self.types, context,
                                |(_, input), context| {
-                                   let types = I::translate_type(input, &mut context.type_context(input)?)?;
-                                   Ok(types.into_iter().map(|types| (types.reference().clone(), types)))
+                                   I::translate_type(input, &mut context.type_context(input)?)?;
+                                   Ok(())
                                });
 
-        let (functions, types) =
-            merge_result::<Vec<_>, Vec<_>>(functions, types)?;
-
-        Ok(Syntax {
-            symbols: self.symbols.clone(),
-            functions: functions.into_iter().flatten().collect(),
-            types: types.into_iter().flatten().collect(),
-        })
+        merge_result::<Vec<_>, Vec<_>>(functions, types)?;
+        Ok(PhantomData::default())
     }
 }
 

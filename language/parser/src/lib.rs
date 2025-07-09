@@ -5,22 +5,20 @@ use anyhow::Error;
 use async_recursion::async_recursion;
 use hir::function::HighFunction;
 use hir::types::HighType;
-use hir::{RawSource, RawSyntaxLevel, create_syntax};
+use hir::{create_syntax, RawSource, RawSyntaxLevel};
 use lasso::{Spur, ThreadedRodeo};
 use nom::combinator::eof;
 use nom_locate::LocatedSpan;
-use nom_supreme::ParserExt;
 use nom_supreme::error::ErrorTree;
 use nom_supreme::final_parser::final_parser;
 use nom_supreme::multi::collect_separated_terminated;
+use nom_supreme::ParserExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use syntax::structure::Modifier;
-use syntax::structure::literal::TYPES;
+use syntax::util::path::{get_path, FilePath};
 use syntax::util::CompileError;
-use syntax::util::path::{FilePath, get_path};
-use syntax::{GenericFunctionRef, GenericTypeRef};
 use tokio::fs;
 
 /// Parses blocks of code
@@ -103,13 +101,6 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, CompileError> {
     let syntax = create_syntax();
     let mut source = RawSource {
         imports: HashMap::default(),
-        types: TYPES
-            .iter()
-            .enumerate()
-            .map(|(id, name)| (vec![syntax.symbols.get_or_intern(name)],
-                               GenericTypeRef::Struct { reference: id, generics: vec![] }))
-            .collect(),
-        functions: HashMap::default(),
         pre_unary_operations: HashMap::default(),
         post_unary_operations: HashMap::default(),
         binary_operations: HashMap::default(),
@@ -148,21 +139,18 @@ fn add_file_to_syntax(
 
     // Add the functions to the output
     for function in file.functions {
-        let mut path = file_path.clone();
-        path.push(function.name);
-        let reference = GenericFunctionRef { reference: source.syntax.functions.len(), generics: vec![] };
         if function.modifiers.contains(&Modifier::OPERATION) {
             match function.parameters.len() {
                 1 => source
                     .pre_unary_operations
-                    .entry(function.name)
+                    .entry(function.reference.path.last().unwrap().clone())
                     .or_default()
-                    .push(reference.clone()),
+                    .push(function.reference.path.clone().into()),
                 2 => source
                     .binary_operations
-                    .entry(function.name)
+                    .entry(function.reference.path.last().unwrap().clone())
                     .or_default()
-                    .push(reference.clone()),
+                    .push(function.reference.path.clone().into()),
                 _ => {
                     errors.push(CompileError::Basic(
                         "Expected operation to only have 1 or 2 args".to_string(),
@@ -170,17 +158,11 @@ fn add_file_to_syntax(
                 }
             }
         }
-        source.functions.insert(path, reference);
-        source.syntax.functions.push(function);
+        source.syntax.functions.insert(function.reference.clone(), function);
     }
 
     for types in file.types {
-        let mut path = file_path.clone();
-        path.push(types.name);
-        source
-            .types
-            .insert(path, GenericTypeRef::Struct { reference: source.syntax.types.len(), generics: vec![] });
-        source.syntax.types.push(types);
+        source.syntax.types.insert(types.reference.clone(), types);
     }
 
     source.imports.insert(file_path, file.imports);

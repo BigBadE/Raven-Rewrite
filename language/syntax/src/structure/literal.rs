@@ -3,7 +3,7 @@ use lasso::{Spur, ThreadedRodeo};
 use serde::{Deserialize, Serialize};
 
 /// A literal value
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub enum Literal {
     /// A string, like "foo"
     String(Spur),
