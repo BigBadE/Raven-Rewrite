@@ -11,7 +11,7 @@ use crate::{HighSyntaxLevel, HirFunctionContext};
 use crate::types::HighType;
 
 /// A function in the HIR
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub struct HighFunction<T: SyntaxLevel> {
     /// The reference (file path) to the function
@@ -29,7 +29,7 @@ pub struct HighFunction<T: SyntaxLevel> {
 }
 
 /// A block of code
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct CodeBlock<T: SyntaxLevel> {
     /// The statements in the block
     pub statements: Vec<T::Statement>,
@@ -38,7 +38,7 @@ pub struct CodeBlock<T: SyntaxLevel> {
 }
 
 /// A terminator for a block of code
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub enum HighTerminator<T: SyntaxLevel> {
     /// A return statement
     Return(Option<T::Expression>),

@@ -24,7 +24,6 @@ use hir::{HighSyntaxLevel, HirSource};
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use indexmap::IndexMap;
 use syntax::structure::literal::Literal;
 use syntax::structure::traits::Terminator;
 use syntax::structure::visitor::Translate;
@@ -33,7 +32,7 @@ use syntax::util::{CompileError, Context};
 use syntax::{ContextSyntaxLevel, GenericFunctionRef, Syntax, SyntaxLevel, GenericTypeRef, TypeRef};
 
 /// The MIR level
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct MediumSyntaxLevel;
 
 impl SyntaxLevel for MediumSyntaxLevel {
@@ -54,7 +53,7 @@ impl ContextSyntaxLevel<HighSyntaxLevel> for MediumSyntaxLevel {
 }
 
 /// A terminator for a MIR block
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub enum MediumTerminator<T: SyntaxLevel> {
     /// Goes to a specific block
@@ -75,7 +74,7 @@ pub enum MediumTerminator<T: SyntaxLevel> {
 }
 
 /// An operand, a value that can be used in an expression
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub enum Operand {
     /// Copies the value at the place, like for a reference
     Copy(Place),
@@ -150,7 +149,7 @@ pub struct MirFunctionContext<'a> {
     /// The HIR source
     source: &'a HirSource,
     /// All generics in scope
-    generics: IndexMap<Spur, Vec<GenericTypeRef>>,
+    generics: HashMap<GenericTypeRef, TypeRef>,
     /// The output syntax
     output: &'a mut Syntax<MediumSyntaxLevel>
 }
@@ -168,7 +167,7 @@ impl<'a> MirContext<'a> {
 
 impl<'a> MirFunctionContext<'a> {
     /// Creates a MIR function context
-    fn new(source: &'a HirSource, generics: IndexMap<Spur, Vec<GenericTypeRef>>, output: &'a mut Syntax<MediumSyntaxLevel>) -> Self {
+    fn new(source: &'a HirSource,  output: &'a mut Syntax<MediumSyntaxLevel>) -> Self {
         Self {
             code_blocks: vec![CodeBlock {
                 statements: vec![],
@@ -180,7 +179,7 @@ impl<'a> MirFunctionContext<'a> {
             parent_loop: None,
             parent_end: None,
             source,
-            generics,
+            generics: HashMap::default(),
             output,
         }
     }
@@ -245,12 +244,12 @@ impl<'a> MirFunctionContext<'a> {
 }
 
 impl Context<HighSyntaxLevel, MediumSyntaxLevel> for MirContext<'_> {
-    fn function_context(&mut self, function: &HighFunction<HighSyntaxLevel>) -> Result<MirFunctionContext<'_>, CompileError> {
-        Ok(MirFunctionContext::new(self.source, function.generics.clone(), &mut self.output))
+    fn function_context(&mut self, _function: &HighFunction<HighSyntaxLevel>) -> Result<MirFunctionContext<'_>, CompileError> {
+        Ok(MirFunctionContext::new(self.source, &mut self.output))
     }
 
-    fn type_context(&mut self, types: &HighType<HighSyntaxLevel>) -> Result<MirFunctionContext<'_>, CompileError> {
-        Ok(MirFunctionContext::new(self.source, types.generics.clone(), &mut self.output))
+    fn type_context(&mut self, _types: &HighType<HighSyntaxLevel>) -> Result<MirFunctionContext<'_>, CompileError> {
+        Ok(MirFunctionContext::new(self.source, &mut self.output))
     }
 }
 

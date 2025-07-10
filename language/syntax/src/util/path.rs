@@ -17,6 +17,10 @@ impl<W: Write> PrettyPrint<W> for FilePath {
     }
 }
 
+pub fn get_file_path(path: FilePath) -> FilePath {
+    path[..path.len() - 1].to_vec()
+}
+
 /// Translates a file to its path representation.
 pub fn get_path(interner: &ThreadedRodeo, file: &PathBuf, root: &PathBuf) -> FilePath {
     // Compute the relative path from root to file.

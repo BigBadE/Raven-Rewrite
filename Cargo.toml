@@ -44,8 +44,6 @@ compiler-llvm = { path = "language/compilers/llvm" }
 # Enable a small amount of optimization in the dev profile.
 [profile.dev]
 opt-level = 1
-debug = 0
-strip = "debuginfo"
 lto = false
 codegen-backend = "cranelift"
 
@@ -53,5 +51,3 @@ codegen-backend = "cranelift"
 [profile.dev.package."*"]
 opt-level = 3
 codegen-backend = "cranelift"
-debug = 0
-strip = "debuginfo"

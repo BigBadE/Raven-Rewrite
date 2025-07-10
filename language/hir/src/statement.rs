@@ -39,6 +39,30 @@ pub enum HighStatement<T: SyntaxLevel> {
     },
 }
 
+/// Manual clone impl to stop overflow when evaluating requirement.
+impl<T: SyntaxLevel> Clone for HighStatement<T> {
+    fn clone(&self) -> Self {
+        match self {
+            HighStatement::Expression(expr) => HighStatement::Expression(expr.clone()),
+            HighStatement::CodeBlock(block) => HighStatement::CodeBlock(block.clone()),
+            HighStatement::Terminator(terminator) => HighStatement::Terminator(terminator.clone()),
+            HighStatement::If { conditions, else_branch } => HighStatement::If {
+                conditions: conditions.clone(),
+                else_branch: else_branch.clone(),
+            },
+            HighStatement::For { condition } => HighStatement::For {
+                condition: condition.clone(),
+            },
+            HighStatement::While { condition } => HighStatement::While {
+                condition: condition.clone(),
+            },
+            HighStatement::Loop { body } => HighStatement::Loop {
+                body: body.clone(),
+            }
+        }
+    }
+}
+
 impl<T: SyntaxLevel> Statement for HighStatement<T> {}
 
 /// A conditional block
@@ -48,6 +72,15 @@ pub struct Conditional<T: SyntaxLevel> {
     pub condition: T::Expression,
     /// The branch to execute if the condition is true
     pub branch: Vec<T::Statement>,
+}
+
+impl<T: SyntaxLevel> Clone for Conditional<T> {
+    fn clone(&self) -> Self {
+        Self {
+            condition: self.condition.clone(),
+            branch: self.branch.clone(),
+        }
+    }
 }
 
 impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>> Translate<Conditional<O>, O::InnerContext<'ctx>>

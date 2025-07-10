@@ -7,17 +7,17 @@ mod statement;
 /// Compiles types
 mod types;
 
-use crate::statement::{FunctionGenerator, compile_block};
+use crate::statement::{compile_block, FunctionGenerator};
 use crate::types::TypeManager;
 use anyhow::Error;
-use inkwell::OptimizationLevel;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
 use inkwell::module::Module;
+use inkwell::OptimizationLevel;
 use mir::MediumSyntaxLevel;
 use std::collections::HashMap;
-use syntax::{GenericFunctionRef, Syntax};
+use syntax::Syntax;
 
 /// The context for LLVMIR compilation
 pub struct LowCompiler {
@@ -40,7 +40,7 @@ impl LowCompiler {
     }
 
     /// Creates a new CodeGenerator
-    pub fn create_code_generator(&self) -> Result<CodeGenerator, Error> {
+    pub fn create_code_generator(&self) -> Result<CodeGenerator<'_>, Error> {
         let module = self.context.create_module("main");
         Ok(CodeGenerator {
             context: &self.context,
@@ -65,10 +65,10 @@ impl<'ctx> CodeGenerator<'ctx> {
             functions: HashMap::default(),
         };
 
-        for (reference, function) in code.functions.iter().enumerate() {
+        for (reference, function) in code.functions.iter() {
             let mut blocks = Vec::new();
             for (position, _) in function.body.iter().enumerate() {
-                let function = type_manager.function_type(&GenericFunctionRef { reference, generics: vec![] });
+                let function = type_manager.function_type(reference);
                 blocks.push(
                     type_manager
                         .context
@@ -95,7 +95,7 @@ impl<'ctx> CodeGenerator<'ctx> {
     pub fn execute<F: UnsafeFunctionPointer>(
         &mut self,
         function: &str,
-    ) -> Result<JitFunction<F>, Error> {
+    ) -> Result<JitFunction<'_, F>, Error> {
         // SAFETY: We assume the caller knows that it's calling user-generated code
         unsafe { Ok(self.execution_engine.get_function(function)?) }
     }

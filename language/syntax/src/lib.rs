@@ -89,7 +89,7 @@ impl FunctionReference for FunctionRef {
 /// A level of syntax. As the program is compiled, it goes lower until it hits the lowest level.
 /// Associated traits are used to keep track of exactly what the data structure is at each level
 /// and allow the same transformations to be used on multiple levels.
-pub trait SyntaxLevel: Serialize + for<'a> Deserialize<'a> {
+pub trait SyntaxLevel: Serialize + for<'a> Deserialize<'a> + Clone {
     type TypeReference: TypeReference;
     type Type: Type<Self::TypeReference>;
     type FunctionReference: FunctionReference;

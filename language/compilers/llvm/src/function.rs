@@ -3,6 +3,7 @@ use inkwell::types::BasicType;
 use inkwell::values::FunctionValue;
 use mir::MediumSyntaxLevel;
 use mir::function::MediumFunction;
+use syntax::util::pretty_print::PrettyPrint;
 
 /// Gets the LLVM type of a MIR function
 pub fn get_function_type<'a, 'ctx>(
@@ -15,10 +16,8 @@ pub fn get_function_type<'a, 'ctx>(
         .map(|param| type_manager.convert_type(param).into())
         .collect::<Vec<_>>();
     let parameters = parameters.as_slice();
-    let mut path = function.file.clone();
-    path.push(function.name);
     type_manager.module.add_function(
-        &path.into_iter().map(|s| type_manager.syntax.symbols.resolve(&s)).collect::<Vec<_>>().join("::"),
+        &function.reference.format_top(&type_manager.syntax.symbols, &mut String::new()).unwrap(),
         function
             .return_type
             .as_ref()

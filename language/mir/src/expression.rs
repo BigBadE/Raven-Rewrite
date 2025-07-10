@@ -15,7 +15,7 @@ use syntax::util::CompileError;
 use syntax::{FunctionRef, GenericFunctionRef, SyntaxLevel, TypeRef};
 
 /// An expression in the MIR
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub enum MediumExpression<T: SyntaxLevel> {
     /// Uses the operand
     Use(Operand),

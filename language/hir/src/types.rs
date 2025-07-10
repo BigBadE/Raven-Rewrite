@@ -12,7 +12,7 @@ use syntax::SyntaxLevel;
 use crate::function::HighFunction;
 
 /// A type in the HIR
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub struct HighType<T: SyntaxLevel> {
     /// The reference to the type
@@ -44,7 +44,7 @@ impl HighType<RawSyntaxLevel> {
 }
 
 /// The data associated with a type, depending on what type it is
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub enum TypeData<T: SyntaxLevel> {
     /// A structure holds fields of data
     Struct {

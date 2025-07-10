@@ -10,14 +10,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use syntax::structure::literal::TYPES;
-use syntax::structure::traits::{Function, FunctionReference, Type, TypeReference};
+use syntax::structure::traits::{FunctionReference, TypeReference};
 use syntax::structure::visitor::Translate;
-use syntax::util::path::FilePath;
+use syntax::util::path::{get_file_path, FilePath};
 use syntax::util::translation::{translate_iterable, Translatable};
 use syntax::util::{CompileError, Context};
 
 use syntax::{ContextSyntaxLevel, GenericFunctionRef, GenericTypeRef, Syntax, SyntaxLevel};
-use syntax::util::pretty_print::PrettyPrint;
 
 /// The HIR expression type and impls
 pub mod expression;
@@ -46,7 +45,7 @@ pub struct RawSource {
 }
 
 /// The raw syntax level, which is a one to one version of the source code.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct RawSyntaxLevel;
 
 impl SyntaxLevel for RawSyntaxLevel {
@@ -78,7 +77,7 @@ pub fn create_syntax() -> Syntax<RawSyntaxLevel> {
 }
 
 /// The high syntax level, which is the raw level with the types resolved.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct HighSyntaxLevel;
 
 impl SyntaxLevel for HighSyntaxLevel {
@@ -234,11 +233,11 @@ impl<
         &mut self,
         function: &I::Function,
     ) -> Result<HirFunctionContext<'_>, CompileError> {
-        HirFunctionContext::new::<I>(self.source, function.reference().path(), &function.generics, &mut self.output)
+        HirFunctionContext::new::<I>(self.source, get_file_path(function.reference.path()), &function.generics, &mut self.output)
     }
 
     fn type_context(&mut self, types: &I::Type) -> Result<HirFunctionContext<'_>, CompileError> {
-        HirFunctionContext::new::<I>(self.source, types.reference().path(), &types.generics, &mut self.output)
+        HirFunctionContext::new::<I>(self.source, get_file_path(types.reference.path()), &types.generics, &mut self.output)
     }
 }
 
@@ -261,27 +260,15 @@ impl<'a> Translate<GenericTypeRef, HirFunctionContext<'a>> for RawTypeRef {
             return Ok(GenericTypeRef::Generic { reference: self.path.clone() });
         }
 
-        for import in &context.source.imports[&context.file] {
-            if import.last().unwrap() != self.path.first().unwrap() {
-                continue;
-            }
-            if context.source.syntax.types.contains_key(&import.clone().into()) {
-                return Ok(GenericTypeRef::Struct {
-                    reference: self.path.clone(),
-                    generics: translate_iterable(&self.generics, context, |ty, context| {
-                        ty.translate(context)
-                    })?,
-                });
-            }
-            let mut failed = "Failed for ".to_string();
-            import.format_top(&context.source.syntax.symbols, &mut failed)?;
-            failed.push_str(":\n");
-            for (key, value) in &context.source.syntax.types {
-                key.format_top(&context.source.syntax.symbols, &mut failed)?;
-                failed.push_str(": ");
-                value.format_top(&context.source.syntax.symbols, &mut failed)?;
-                failed.push('\n');
-            }
+        if let Some(found) = check_imports(context, &self.path(), |path, context| {
+            Ok(GenericTypeRef::Struct {
+                reference: path,
+                generics: translate_iterable(&self.generics, context, |ty, context| {
+                    ty.translate(context)
+                })?,
+            })
+        })? {
+            return Ok(found);
         }
 
         todo!()
@@ -291,10 +278,46 @@ impl<'a> Translate<GenericTypeRef, HirFunctionContext<'a>> for RawTypeRef {
 impl<'a> Translate<GenericFunctionRef, HirFunctionContext<'a>> for RawFunctionRef {
     fn translate(
         &self,
-        _context: &mut HirFunctionContext<'a>,
+        context: &mut HirFunctionContext<'a>,
     ) -> Result<GenericFunctionRef, CompileError> {
+        if context.source.syntax.functions.contains_key(&self.path.clone().into()) {
+            return Ok(GenericFunctionRef {
+                reference: self.path.clone(),
+                generics: translate_iterable(&self.generics, context, |ty, context| {
+                    ty.translate(context)
+                })?,
+            });
+        }
+
+        if let Some(found) = check_imports(context, &self.path(), |path, context| {
+            Ok(GenericFunctionRef {
+                reference: path,
+                generics: translate_iterable(&self.generics, context, |ty, context| {
+                    ty.translate(context)
+                })?,
+            })
+        })? {
+            return Ok(found);
+        }
+
         todo!()
     }
+}
+
+fn check_imports<F: Fn(FilePath, &mut HirFunctionContext) -> Result<T, CompileError>, T>(
+    context: &mut HirFunctionContext, path: &FilePath, creator: F) -> Result<Option<T>, CompileError> {
+    for import in &context.source.imports[&context.file] {
+        if import.last().unwrap() != path.first().unwrap() {
+            continue;
+        }
+        if context.source.syntax.types.contains_key(&import.clone().into()) {
+            let mut reference = import.clone();
+            reference.append(&mut path.iter().cloned().skip(1).collect());
+            return Ok(Some(creator(reference, context)?));
+        }
+    }
+
+    Ok(None)
 }
 
 impl Translatable<RawSyntaxLevel, HighSyntaxLevel> for RawSyntaxLevel {

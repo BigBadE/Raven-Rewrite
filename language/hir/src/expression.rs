@@ -70,6 +70,43 @@ pub enum HighExpression<T: SyntaxLevel> {
     },
 }
 
+impl<T: SyntaxLevel> Clone for HighExpression<T> {
+    fn clone(&self) -> Self {
+        match self {
+            HighExpression::Literal(literal) => HighExpression::Literal(*literal),
+            HighExpression::CodeBlock { body, value } => HighExpression::CodeBlock {
+                body: body.clone(),
+                value: value.clone(),
+            },
+            HighExpression::Variable(variable) => HighExpression::Variable(*variable),
+            HighExpression::Assignment { variable, value, declaration } => HighExpression::Assignment {
+                declaration: *declaration,
+                variable: *variable,
+                value: value.clone(),
+            },
+            HighExpression::UnaryOperation { pre, symbol, value } => HighExpression::UnaryOperation {
+                pre: *pre,
+                symbol: *symbol,
+                value: value.clone(),
+            },
+            HighExpression::FunctionCall { function, target, arguments } => HighExpression::FunctionCall {
+                function: function.clone(),
+                target: target.clone(),
+                arguments: arguments.clone(),
+            },
+            HighExpression::BinaryOperation { symbol, first, second } => HighExpression::BinaryOperation {
+                symbol: *symbol,
+                first: first.clone(),
+                second: second.clone(),
+            },
+            HighExpression::CreateStruct { target_struct, fields } => HighExpression::CreateStruct {
+                target_struct: target_struct.clone(),
+                fields: fields.clone(),
+            }
+        }
+    }
+}
+
 impl<T: SyntaxLevel> Expression for HighExpression<T> {}
 
 /// Handle expression translation

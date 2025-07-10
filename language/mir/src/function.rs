@@ -8,11 +8,11 @@ use syntax::structure::Modifier;
 use syntax::structure::traits::Function;
 use syntax::structure::visitor::Translate;
 use syntax::util::CompileError;
-use syntax::util::translation::Translatable;
+use syntax::util::translation::{translate_iterable, Translatable};
 use crate::monomorphization::MonomorphizationContext;
 
 /// A function in the MIR.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub struct MediumFunction<T: SyntaxLevel> {
     /// The function reference
@@ -83,12 +83,12 @@ impl<'a> Translate<FunctionRef, MirFunctionContext<'a>> for GenericFunctionRef {
             return Ok(self.reference.clone());
         }
 
-        let translated = Translate::<MediumFunction<MediumSyntaxLevel>, MonomorphizationContext>::
+        Translate::<FunctionRef, MonomorphizationContext>::
         translate(&context.source.syntax.functions[self], &mut MonomorphizationContext {
-            generics: self.generics.clone()
-        })?;
-        let reference = translated.reference().clone();
-        context.output.functions.insert(reference.clone(), translated);
-        Ok(reference)
+            generics: translate_iterable(&self.generics, context,
+                                         |generic, context|
+                                             Ok((generic.clone(), Translate::translate(generic, context)?)))?,
+            context
+        })
     }
 }

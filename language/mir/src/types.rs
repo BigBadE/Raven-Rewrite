@@ -1,4 +1,3 @@
-use anyhow::anyhow;
 use crate::{MediumSyntaxLevel, MirFunctionContext};
 use hir::types::{HighType, TypeData};
 use serde::{Deserialize, Serialize};
@@ -8,11 +7,11 @@ use syntax::structure::Modifier;
 use syntax::structure::traits::Type;
 use syntax::structure::visitor::Translate;
 use syntax::util::CompileError;
-use syntax::util::translation::Translatable;
+use syntax::util::translation::{translate_iterable, Translatable};
 use crate::monomorphization::MonomorphizationContext;
 
 /// A type in the MIR
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct MediumType<T: SyntaxLevel> {
     /// The reference to the type
     pub reference: T::TypeReference,
@@ -58,22 +57,20 @@ impl<'a> Translate<(), MirFunctionContext<'a>> for HighType<HighSyntaxLevel>
 impl<'a> Translate<TypeRef, MirFunctionContext<'a>> for GenericTypeRef {
     fn translate(&self, context: &mut MirFunctionContext<'a>) -> Result<TypeRef, CompileError> {
         match self {
-            // TODO
             GenericTypeRef::Struct { reference, generics } => {
                 if generics.is_empty() {
                     return Ok(reference.clone());
                 }
 
-                let translated = Translate::<MediumType<MediumSyntaxLevel>, MonomorphizationContext>::
+                Translate::<TypeRef, MonomorphizationContext>::
                 translate(&context.source.syntax.types[self], &mut MonomorphizationContext {
-                    generics: generics.clone()
-                })?;
-                let reference = translated.reference().clone();
-                context.output.types.insert(reference.clone(), translated);
-                Ok(reference)
+                    generics: translate_iterable(generics, context, |generic, context|
+                        Ok((generic.clone(), Translate::translate(generic, context)?)))?,
+                    context
+                })
             }
             GenericTypeRef::Generic { .. } => {
-                Err(CompileError::Internal(anyhow!("Tried to convert a generic type to a solid type!")))
+                Ok(context.generics[self].clone())
             }
         }
     }

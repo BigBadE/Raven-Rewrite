@@ -12,7 +12,7 @@ use syntax::util::CompileError;
 use syntax::SyntaxLevel;
 
 /// The MIR is made up of a series of nodes, each terminated with a jump expression.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub enum MediumStatement<T: SyntaxLevel> {
     /// Assigns a value to a place
