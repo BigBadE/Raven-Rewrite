@@ -33,18 +33,27 @@ pub fn format_modifiers<W: Write>(modifiers: &[Modifier], writer: &mut W) -> Res
 /// Implementation for Syntax
 impl<T: PrettyPrintableSyntaxLevel<W>, W: Write> PrettyPrint<W> for Syntax<T> {
     fn format(&self, interner: &ThreadedRodeo, writer: &mut NestedWriter<W>) -> Result<(), fmt::Error> {
-        for (_, types) in &self.types {
+        for (i, (_, types)) in self.types.iter().enumerate() {
+            if i != 0 {
+                write!(writer, "\n")?;
+            }
             types.format(interner, writer)?;
+            write!(writer, "\n")?;
         }
 
-        // Add separator between types and functions
         if !self.types.is_empty() && !self.functions.is_empty() {
             write!(writer, "\n")?;
         }
 
         // Format functions
-        for (_, function) in &self.functions {
+        for (i, (_, function)) in self.functions.iter().enumerate() {
+            if i != 0 {
+                write!(writer, "\n")?;
+            }
             function.format(interner, writer)?;
+            if i != self.functions.len() - 1 {
+                write!(writer, "\n")?;
+            }
         }
 
         Ok(())

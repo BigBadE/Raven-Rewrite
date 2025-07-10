@@ -25,6 +25,8 @@ pub enum MediumExpression<T: SyntaxLevel> {
     FunctionCall {
         /// The function
         func: T::FunctionReference,
+        /// The return type
+        return_type: Option<T::TypeReference>,
         /// The arguments
         args: Vec<Operand>,
     },
@@ -46,8 +48,8 @@ impl<T: SyntaxLevel<FunctionReference = FunctionRef, TypeReference = TypeRef>,
         Ok(match self {
             MediumExpression::Use(op) => Some(op.get_type(context)),
             MediumExpression::Literal(lit) => Some(lit.get_type(&context.source.syntax.symbols)),
-            MediumExpression::FunctionCall { func, .. } => {
-                context.output.functions[func].return_type.clone()
+            MediumExpression::FunctionCall { return_type, .. } => {
+                return_type.clone()
             }
             MediumExpression::CreateStruct { struct_type, .. } => Some(struct_type.clone()),
         })
@@ -89,6 +91,9 @@ pub fn translate_function<'a>(
 ) -> Result<MediumExpression<MediumSyntaxLevel>, CompileError> {
     Ok(MediumExpression::FunctionCall {
         func: HighSyntaxLevel::translate_func_ref(function, context)?,
+        return_type: context.source.syntax.functions[function].return_type.as_ref().map(|ret| {
+            HighSyntaxLevel::translate_type_ref(ret, context)
+        }).transpose()?,
         args: translate_iterable(&arguments, context, |arg, context| {
             HighSyntaxLevel::translate_expr(arg, context).and_then(|expr| get_operand(expr, context))
         })?,

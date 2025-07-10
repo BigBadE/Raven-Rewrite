@@ -6,8 +6,9 @@ use crate::types::{HighType, TypeData};
 use crate::{RawFunctionRef, RawTypeRef};
 use lasso::ThreadedRodeo;
 use std::fmt::{Error, Write};
-use syntax::util::pretty_print::{format_modifiers, write_generic_header, write_generics, write_parameters, NestedWriter, PrettyPrint};
+use syntax::util::pretty_print::{format_modifiers, write_comma_list, write_generic_header, write_generics, write_parameters, NestedWriter, PrettyPrint};
 use syntax::PrettyPrintableSyntaxLevel;
+use syntax::structure::traits::Terminator;
 
 /// Implement PrettyPrint for HIR functions
 impl<T: PrettyPrintableSyntaxLevel<W>, W: Write> PrettyPrint<W> for HighFunction<T> {
@@ -29,7 +30,7 @@ impl<T: PrettyPrintableSyntaxLevel<W>, W: Write> PrettyPrint<W> for HighFunction
         }
 
         write!(writer, " ")?;
-        writer.deepen(|writer| self.body.format(interner, writer))
+        self.body.format(interner, writer)
     }
 }
 
@@ -45,11 +46,20 @@ impl<T: PrettyPrintableSyntaxLevel<W>, W: Write> PrettyPrint<W> for HighType<T> 
 
                 write_generic_header(interner, &self.generics, writer)?;
 
-                write!(writer, " {{\n")?;
-                for (field_name, field_type) in fields {
-                    write!(writer, "    {}: ", interner.resolve(field_name))?;
-                    field_type.format(interner, writer)?;
-                    write!(writer, ",\n")?;
+                write!(writer, " {{")?;
+                writer.deepen(|writer| {
+                    for (field_name, field_type) in fields {
+                        write!(writer, "\n")?;
+                        writer.indent()?;
+                        write!(writer, "{}: ", interner.resolve(field_name))?;
+                        field_type.format(interner, writer)?;
+                        write!(writer, ",")?;
+                    }
+                    Ok(())
+                })?;
+                if !fields.is_empty() {
+                    write!(writer, "\n")?;
+                    writer.indent()?;
                 }
                 write!(writer, "}}")
             }
@@ -74,20 +84,25 @@ impl<T: PrettyPrintableSyntaxLevel<W>, W: Write> PrettyPrint<W> for HighType<T> 
 /// Implement PrettyPrint for CodeBlock
 impl<T: PrettyPrintableSyntaxLevel<W>, W: Write> PrettyPrint<W> for CodeBlock<T> {
     fn format(&self, interner: &ThreadedRodeo, writer: &mut NestedWriter<W>) -> Result<(), Error> {
-        write!(writer, "{{\n")?;
+        write!(writer, "{{")?;
         writer.deepen(|writer| {
             for stmt in &self.statements {
+                write!(writer, "\n")?;
                 writer.indent()?;
                 stmt.format(interner, writer)?;
-                write!(writer, "\n")?;
             }
 
-            writer.indent()?;
             self.terminator.format(interner, writer)?;
+            if !self.terminator.is_none() {
+                write!(writer, "\n")?;
+            }
             Ok(())
         })?;
 
-        writer.indent()?;
+        if !self.statements.is_empty() {
+            writer.indent()?;
+        }
+
         write!(writer, "}}")
     }
 }
@@ -132,12 +147,7 @@ impl<T: PrettyPrintableSyntaxLevel<W>, W: Write> PrettyPrint<W> for HighExpressi
                 }
                 function.format(interner, writer)?;
                 write!(writer, "(")?;
-                for (i, arg) in arguments.iter().enumerate() {
-                    if i > 0 {
-                        write!(writer, ", ")?;
-                    }
-                    arg.format(interner, writer)?;
-                }
+                write_comma_list(interner, arguments, writer)?;
                 write!(writer, ")")
             }
             HighExpression::UnaryOperation { pre, symbol, value } => {
@@ -187,7 +197,11 @@ impl<T: PrettyPrintableSyntaxLevel<W>, W: Write> PrettyPrint<W> for HighStatemen
                 write!(writer, "}}")
             }
             HighStatement::Terminator(terminator) => {
-                terminator.format(interner, writer)
+                terminator.format(interner, writer)?;
+                if !terminator.is_none() {
+                    write!(writer, "\n")?;
+                }
+                Ok(())
             }
             HighStatement::If { conditions, else_branch } => {
                 for (i, conditional) in conditions.iter().enumerate() {

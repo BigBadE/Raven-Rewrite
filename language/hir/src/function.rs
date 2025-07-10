@@ -50,7 +50,14 @@ pub enum HighTerminator<T: SyntaxLevel> {
     None,
 }
 
-impl<T: SyntaxLevel> Terminator for HighTerminator<T> {}
+impl<T: SyntaxLevel> Terminator for HighTerminator<T> {
+    fn is_none(&self) -> bool {
+        match self {
+            HighTerminator::None => true,
+            _ => false,
+        }
+    }
+}
 
 impl<T: SyntaxLevel> Function<T::FunctionReference> for HighFunction<T> {
     fn reference(&self) -> &T::FunctionReference {

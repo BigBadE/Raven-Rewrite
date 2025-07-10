@@ -13,7 +13,7 @@ pub fn compile_expression<'a, 'b, 'ctx>(
     Ok(match expression {
         MediumExpression::Use(operand) => compile_operand(function_generator, operand)?,
         MediumExpression::Literal(literal) => compile_literal(function_generator, literal)?,
-        MediumExpression::FunctionCall { func, args } => {
+        MediumExpression::FunctionCall { func, args, .. } => {
             let func = function_generator.type_manager.function_type(func);
             let args = args
                 .iter()

@@ -25,7 +25,11 @@ pub trait FunctionReference: Serialize + for<'a> Deserialize<'a> + Clone + Eq + 
 /// Indicates that this represents a terminator for a block of code in the language.
 /// Terminators end blocks of code, and can alter the flow of the program.
 /// For example, a return, continue, and break statement is a terminator.
-pub trait Terminator: Serialize + for<'a> Deserialize<'a> + Clone {}
+pub trait Terminator: Serialize + for<'a> Deserialize<'a> + Clone {
+    fn is_none(&self) -> bool {
+        false
+    }
+}
 
 /// Indicates that this represents an expression in the language.
 /// Expressions are pieces of code that can evaluate to a value.

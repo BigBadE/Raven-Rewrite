@@ -1,3 +1,17 @@
-pub fn testing() {
+fn basic_function() {
 
+}
+
+fn referential_function() {
+    basic_function();
+}
+
+fn returning_function() -> i32 {
+    42
+}
+
+pub fn modified_function() {}
+
+fn recursive_function(n: i32) -> i32 {
+    return recursive_function(n);
 }

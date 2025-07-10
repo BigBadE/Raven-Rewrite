@@ -60,8 +60,15 @@ impl<T: PrettyPrintableSyntaxLevel<W>, W: Write> PrettyPrint<W> for MediumType<T
         write!(writer, "struct ")?;
         self.reference.format(interner, writer)?;
 
-        write!(writer, " {{\n")?;
-        write_comma_list(interner, &self.fields, writer)?;
+        write!(writer, " {{")?;
+        for field in &self.fields {
+            write!(writer, "\n")?;
+            writer.indent()?;
+            field.format(interner, writer)?;
+        }
+        if !self.fields.is_empty() {
+            write!(writer, "\n")?;
+        }
         write!(writer, "}}")
     }
 }
@@ -95,7 +102,7 @@ impl<T: PrettyPrintableSyntaxLevel<W>, W: Write> PrettyPrint<W> for MediumExpres
         match self {
             MediumExpression::Use(operand) => operand.format(interner, writer),
             MediumExpression::Literal(literal) => literal.format(interner, writer),
-            MediumExpression::FunctionCall { func, args } => {
+            MediumExpression::FunctionCall { func, args, .. } => {
                 func.format(interner, writer)?;
                 write!(writer, "(")?;
                 write_comma_list(interner, args, writer)?;
