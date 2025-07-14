@@ -4,8 +4,18 @@ use std::fmt::Write;
 use lasso::ThreadedRodeo;
 use crate::{IResult, Span};
 use nom::error::{ErrorKind, ParseError};
+use syntax::util::CompileError;
 use syntax::util::pretty_print::{NestedWriter, PrettyPrint};
 
+pub fn print_err(err: &nom::Err<ParserError>) -> Result<String, CompileError> {
+    match err {
+        nom::Err::Failure(err) | nom::Err::Error(err) => {
+            let interner = &err.span.extra.interner;
+            Ok(err.format_top(interner, String::new())?)
+        },
+        nom::Err::Incomplete(_) => unreachable!(),
+    }
+}
 #[derive(Debug)]
 pub struct ParserError<'a> {
     pub span: Span<'a>,

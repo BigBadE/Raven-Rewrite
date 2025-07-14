@@ -1,4 +1,4 @@
-use crate::errors::ParserError;
+use crate::errors::{print_err, ParserError};
 use crate::file::parse_top_element;
 use crate::util::ignored;
 use anyhow::Error;
@@ -7,7 +7,7 @@ use hir::function::HighFunction;
 use hir::types::HighType;
 use hir::{create_syntax, RawSource, RawSyntaxLevel};
 use lasso::{Spur, ThreadedRodeo};
-use nom::multi::{many0, many1};
+use nom::multi::many1;
 use nom::sequence::delimited;
 use nom_locate::LocatedSpan;
 use std::collections::HashMap;
@@ -182,7 +182,7 @@ pub async fn parse_file(
     file.extend(
         many1(delimited(ignored, parse_top_element, ignored))(
             Span::new_extra(&parsing, ParseContext { interner, file: file_path, parsing: &parsing }))
-            .map_err(|err| CompileError::Basic(format!("{}", err)))?.1);
+            .map_err(|err| CompileError::Basic(format!("{}", print_err(&err).unwrap())))?.1);
 
     Ok(file)
 }

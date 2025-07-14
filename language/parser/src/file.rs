@@ -8,12 +8,9 @@ use nom::bytes::complete::tag;
 use nom::combinator::map;
 use nom::sequence::{delimited, preceded, terminated};
 use syntax::util::path::FilePath;
-use crate::errors::ParserError;
 
 /// Parses a top-level element in the source code
 pub fn parse_top_element(input: Span) -> IResult<Span, TopLevelItem> {
-    use nom::error::ParseError;
-    return Err(nom::Err::Error(ParserError::from_error_kind(input, nom::error::ErrorKind::Tag)));
     alt((
         map(parse_import, |import| TopLevelItem::Import(import)),
         map(function, |function| {
