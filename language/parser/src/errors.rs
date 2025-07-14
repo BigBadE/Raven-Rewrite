@@ -85,15 +85,13 @@ impl<W: Write> PrettyPrint<W> for ParserError<'_> {
 
         // Main error message (like Rust's format)
         writeln!(writer, "error: {}", self.kind)?;
-        writeln!(writer, "  --> ")?;
+        write!(writer, "  --> ")?;
         self.span.extra.file.format(interner, writer)?;
         writeln!(writer, ":{}:{}", line_num, col_num)?;
 
         writeln!(writer, "   |")?;
         writeln!(writer, "{:2} | {}", line_num, source_line)?;
-        writeln!(writer, "   | {}{}",
-                 " ".repeat(col_num - 1),
-                 "^".repeat(self.span.fragment().len().max(1)))?;
+        writeln!(writer, "   |")?;
 
         // Add context if available
         if !self.context.is_empty() {

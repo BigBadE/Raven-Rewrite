@@ -1,3 +1,4 @@
+use crate::errors::expect;
 use crate::{IResult, Span};
 use hir::RawTypeRef;
 use lasso::Spur;
@@ -57,7 +58,7 @@ pub fn symbolic(input: Span) -> IResult<Span, Spur> {
 pub fn parameter(input: Span) -> IResult<Span, (Spur, RawTypeRef)> {
     tuple((
         identifier,
-        preceded(delimited(ignored, tag(":"), ignored), type_ref),
+        preceded(delimited(ignored, expect(tag_parser(":"), "colon ':'", Some("parameters use ':' to separate name and type")), ignored), type_ref),
     ))
         .parse(input)
 }
@@ -107,4 +108,9 @@ fn whitespace_or_comment(input: Span) -> IResult<Span, ()> {
 pub fn ignored(input: Span) -> IResult<Span, ()> {
     value((), many0(whitespace_or_comment))
         .parse(input)
+}
+
+/// A variant of nom's tag that uses the correct type annotations for our parser
+pub fn tag_parser(tag_str: &'static str) -> impl Fn(Span) -> IResult<Span, Span> {
+    move |input: Span| tag(tag_str)(input)
 }

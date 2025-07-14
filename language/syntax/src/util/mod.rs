@@ -46,9 +46,9 @@ impl fmt::Display for CompileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CompileError::Internal(err) => write!(f, "Internal error:\n{}", err),
-            CompileError::Basic(msg) => write!(f, "{}", msg),
+            CompileError::Basic(msg) => write!(f, "\n{}", msg),
             CompileError::Multi(errors) => {
-                writeln!(f, "Multiple errors occurred:")?;
+                writeln!(f)?;
                 for (i, error) in errors.iter().enumerate() {
                     if i > 0 {
                         writeln!(f)?;

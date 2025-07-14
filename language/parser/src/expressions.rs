@@ -1,5 +1,6 @@
+use crate::errors::expect;
 use crate::statements::statement;
-use crate::util::{file_path, identifier, ignored, symbolic, type_ref};
+use crate::util::{file_path, identifier, ignored, symbolic, tag_parser, type_ref};
 use crate::{IResult, Span};
 use hir::expression::HighExpression;
 use hir::{RawFunctionRef, RawSyntaxLevel};
@@ -48,14 +49,14 @@ pub fn literal(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
 /// Parses a block of statements enclosed in braces into a CodeBlock
 pub fn block(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     delimited(
-        tag("{"),
+        expect(tag_parser("{"), "opening brace '{'", Some("blocks must start with '{'")),
         map(tuple((many0(statement), expression)), |(body, value)| {
             HighExpression::CodeBlock {
                 body,
                 value: Box::new(value),
             }
         }),
-        tag("}"),
+        expect(tag_parser("}"), "closing brace '}'", Some("blocks must end with '}'")),
     )(input)
 }
 
@@ -66,7 +67,7 @@ pub fn assignment(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> 
         tuple((
             opt(tag("let")),
             delimited(ignored, identifier, ignored),
-            preceded(tag("="), expression),
+            preceded(expect(tag_parser("="), "assignment operator '='", Some("use '=' to assign values")), expression),
         )),
         |(declaration, variable, value)| HighExpression::Assignment {
             declaration: declaration.is_some(),
@@ -83,16 +84,16 @@ pub fn assignment(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> 
 pub fn function_call(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     map(
         tuple((
-            opt(terminated(identifier, tag("."))),
+            opt(terminated(identifier, expect(tag_parser("."), "dot '.' for method calls", Some("use '.' to call methods on objects")))),
             file_path,
-            opt(delimited(tag("<"), separated_list0(
+            opt(delimited(expect(tag_parser("<"), "opening angle bracket '<'", Some("generic arguments start with '<'")), separated_list0(
                 tag(","),
                 delimited(ignored, type_ref, ignored),
-            ), tag(">"))),
+            ), expect(tag_parser(">"), "closing angle bracket '>'", Some("generic arguments end with '>'")))),
             delimited(
-                tag("("),
+                expect(tag_parser("("), "opening parenthesis '('", Some("function arguments must be enclosed in parentheses")),
                 separated_list0(tag(","), preceded(ignored, expression)),
-                tag(")"),
+                expect(tag_parser(")"), "closing parenthesis ')'", Some("function arguments must end with ')'")),
             ),
         )),
         |(target, function, generics, args)| HighExpression::FunctionCall {
@@ -113,15 +114,15 @@ pub fn create_struct(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel
         tuple((
             type_ref,
             delimited(
-                delimited(ignored, tag("{"), ignored),
+                delimited(ignored, expect(tag_parser("{"), "opening brace '{'", Some("struct creation starts with '{'")), ignored),
                 separated_list0(
                     tag(","),
                     tuple((
                         preceded(ignored, identifier),
-                        preceded(preceded(ignored, tag(":")), preceded(ignored, expression)),
+                        preceded(preceded(ignored, expect(tag_parser(":"), "colon ':'", Some("struct fields use ':' to separate name and value"))), preceded(ignored, expression)),
                     )),
                 ),
-                delimited(ignored, tag("}"), ignored),
+                delimited(ignored, expect(tag_parser("}"), "closing brace '}'", Some("struct creation ends with '}'")), ignored),
             ),
         )),
         |(target_struct, fields)| HighExpression::CreateStruct {

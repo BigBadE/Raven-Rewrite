@@ -1,6 +1,7 @@
 use indexmap::IndexMap;
+use crate::errors::expect;
 use crate::function::function;
-use crate::util::{identifier, ignored, modifiers, parameter, type_ref};
+use crate::util::{identifier, ignored, modifiers, parameter, tag_parser, type_ref};
 use crate::{IResult, Span};
 use hir::types::{HighType, TypeData};
 use hir::{RawSyntaxLevel, RawTypeRef};
@@ -19,25 +20,25 @@ pub fn parse_structure(input: Span) -> IResult<Span, HighType<RawSyntaxLevel>> {
             modifiers,
             alt((
                 tuple((
-                    preceded(delimited(ignored, tag("struct"), ignored), identifier),
+                    preceded(delimited(ignored, expect(tag_parser("struct"), "struct keyword 'struct'", Some("struct definitions start with 'struct'")), ignored), identifier),
                     opt(generics),
                     map(
                         delimited(
-                            delimited(ignored, tag("{"), ignored),
+                            delimited(ignored, expect(tag_parser("{"), "opening brace '{'", Some("struct bodies start with '{'")), ignored),
                             separated_list0(tag(","), delimited(ignored, parameter, ignored)),
-                            delimited(ignored, tag("}"), ignored),
+                            delimited(ignored, expect(tag_parser("}"), "closing brace '}'", Some("struct bodies end with '}'")), ignored),
                         ),
                         |fields| TypeData::Struct { fields },
                     ),
                 )),
                 tuple((
-                    preceded(delimited(ignored, tag("trait"), ignored), identifier),
+                    preceded(delimited(ignored, expect(tag_parser("trait"), "trait keyword 'trait'", Some("trait definitions start with 'trait'")), ignored), identifier),
                     opt(generics),
                     map(
                         delimited(
-                            delimited(ignored, tag("{"), ignored),
+                            delimited(ignored, expect(tag_parser("{"), "opening brace '{'", Some("trait bodies start with '{'")), ignored),
                             many0(delimited(ignored, function, ignored)),
-                            delimited(ignored, tag("}"), ignored),
+                            delimited(ignored, expect(tag_parser("}"), "closing brace '}'", Some("trait bodies end with '}'")), ignored),
                         ),
                         |functions| TypeData::Trait { functions },
                     ),
@@ -60,18 +61,18 @@ pub fn parse_structure(input: Span) -> IResult<Span, HighType<RawSyntaxLevel>> {
 /// Parses generics
 pub fn generics(input: Span) -> IResult<Span, IndexMap<Spur, Vec<RawTypeRef>>> {
     map(opt(delimited(
-        delimited(ignored, tag("<"), ignored),
+        delimited(ignored, expect(tag_parser("<"), "opening angle bracket '<'", Some("generic parameters start with '<'")), ignored),
         map(separated_list1(
             delimited(ignored, tag(","), ignored),
             tuple((
                 identifier,
                 map(
-                    opt(preceded(tag(":"), separated_list0(tag("+"), type_ref))),
+                    opt(preceded(expect(tag_parser(":"), "colon ':'", Some("generic constraints use ':' separator")), separated_list0(tag("+"), type_ref))),
                     |generics| generics.unwrap_or_default(),
                 ),
             )),
         ), |list| IndexMap::from_iter(list.into_iter())),
-        delimited(ignored, tag(">"), ignored),
+        delimited(ignored, expect(tag_parser(">"), "closing angle bracket '>'", Some("generic parameters end with '>'")), ignored),
     )), |generics| {
         generics.unwrap_or_default()
     })

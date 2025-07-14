@@ -1,6 +1,7 @@
 use indexmap::IndexMap;
 use crate::code::function_body;
-use crate::util::{identifier_symbolic, ignored, modifiers, parameter, type_ref};
+use crate::errors::expect;
+use crate::util::{identifier_symbolic, ignored, modifiers, parameter, tag_parser, type_ref};
 use crate::{IResult, Span};
 use hir::function::HighFunction;
 use hir::{RawSyntaxLevel, RawTypeRef};
@@ -17,7 +18,7 @@ pub fn function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {
     map(
         tuple((
             modifiers,
-            preceded(delimited(ignored, tag("fn"), ignored), identifier_symbolic),
+            preceded(delimited(ignored, expect(tag_parser("fn"), "function keyword 'fn'", Some("functions must start with 'fn'")), ignored), identifier_symbolic),
             generics,
             parameter_list,
             return_type,
@@ -41,15 +42,15 @@ pub fn function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {
 /// Parser for parameter lists
 fn parameter_list(input: Span) -> IResult<Span, Vec<(Spur, RawTypeRef)>> {
     delimited(
-        delimited(ignored, tag("("), ignored),
+        delimited(ignored, expect(tag_parser("("), "opening parenthesis '('", Some("parameter lists must start with '('")), ignored),
         separated_list0(delimited(ignored, tag(","), ignored), parameter),
-        delimited(ignored, tag(")"), ignored),
+        delimited(ignored, expect(tag_parser(")"), "closing parenthesis ')'", Some("parameter lists must end with ')'")), ignored),
     )
     .parse(input)
 }
 
 /// Parser for return type (optional)
 fn return_type(input: Span) -> IResult<Span, Option<RawTypeRef>> {
-    opt(preceded(delimited(ignored, tag("->"), ignored), type_ref))
+    opt(preceded(delimited(ignored, expect(tag_parser("->"), "return type arrow '->'", Some("use '->' to specify return type")), ignored), type_ref))
         .parse(input)
 }

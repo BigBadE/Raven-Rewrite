@@ -1,6 +1,7 @@
 use crate::code::code_block_returnless;
+use crate::errors::expect;
 use crate::expressions::expression;
-use crate::util::ignored;
+use crate::util::{ignored, tag_parser};
 use crate::{IResult, Span};
 use hir::RawSyntaxLevel;
 use hir::function::HighTerminator;
@@ -25,7 +26,7 @@ pub fn statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
             map(expression, HighStatement::Expression),
         )),
         ignored,
-    ), delimited(ignored, tag(";"), ignored))
+    ), delimited(ignored, expect(tag_parser(";"), "semicolon ';'", Some("statements must end with ';'")), ignored))
         .parse(input)
 }
 
