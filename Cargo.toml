@@ -1,0 +1,53 @@
+cargo-features = ["codegen-backend"]
+[workspace]
+resolver = "3"
+
+exclude = [
+    "language/compilers"
+]
+
+members = [
+    "language/*",
+    "language/compilers/llvm",
+    "tests"
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+tokio = { version = "1.44.2", features = ["fs", "rt-multi-thread", "macros"] }
+serde = { version = "1.0.219", features = ["derive", "rc"] }
+
+# Util
+async-recursion = "1.1.1"
+lazy_static = "1.5.0"
+indexmap = { version = "2.10.0", features = ["serde"] }
+
+# String interning
+lasso = { version = "0.7.3", features = ["multi-threaded", "serialize"] }
+
+# Error handling
+anyhow = "1.0.71"
+thiserror = "2.0.12"
+
+hir = { path = "language/hir" }
+mir = { path = "language/mir" }
+parser = { path = "language/parser" }
+runner = { path = "language/runner" }
+syntax = { path = "language/syntax" }
+type_system = { path = "language/type_system" }
+
+compiler-llvm = { path = "language/compilers/llvm" }
+
+# Enable a small amount of optimization in the dev profile.
+[profile.dev]
+opt-level = 1
+lto = false
+codegen-backend = "cranelift"
+
+# Enable a large amount of optimization in the dev profile for dependencies.
+[profile.dev.package."*"]
+opt-level = 3
+codegen-backend = "cranelift"

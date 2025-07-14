@@ -1,0 +1,49 @@
+name: Raven-Build-Test
+
+on:
+  #schedule:
+  #  - cron: "0 0 * * *"
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+# Cancel any other build tasks running right now to prevent stale uploads
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  ZSTD_LIB_DIR: /opt/homebrew/Cellar/zstd/1.5.7/lib
+
+jobs:
+  build:
+    permissions: write-all
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest, macos-13]
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+        with:
+          submodules: true
+      - name: Install Code Coverage
+        run: cargo +nightly install cargo-llvm-cov
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+      - name: Install cranelift
+        run: rustup component add rustc-codegen-cranelift-preview --toolchain nightly
+      - name: Test
+        run: cargo +nightly llvm-cov --lcov --output-path coverage.info --bin tests --verbose -- --nocapture
+      - name: Upload Coverage Report To Codecov
+        # Codecov is broken on macos 13 currently.
+        if: github.event_name == 'push' && github.repository == 'BigBadE/Raven-Rewrite' && matrix.os != 'macos-13'
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.info
+          verbose: true

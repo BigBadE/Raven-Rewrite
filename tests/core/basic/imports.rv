@@ -1,0 +1,10 @@
+import core::basic::function::basic_function;
+import core::basic::structure::BasicStructure;
+
+fn import_function() {
+    basic_function();
+}
+
+struct ImportStructure {
+    field: BasicStructure,
+}

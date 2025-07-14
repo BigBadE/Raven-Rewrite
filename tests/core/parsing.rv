@@ -1,0 +1,19 @@
+import core::other::Other;
+
+pub fn test() -> i32 {
+    let value = 1 + 2;
+    return 12;
+}
+
+struct Testing<T> {
+    first: T,
+    other: Other
+}
+
+pub operation fn +(first: i64, second: i64) -> i64 {
+
+}
+
+trait Add {
+
+}
