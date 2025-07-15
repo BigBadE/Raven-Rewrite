@@ -13,10 +13,7 @@ use syntax::util::path::FilePath;
 pub fn parse_top_element(input: Span) -> IResult<Span, TopLevelItem> {
     alt((
         map(parse_import, |import| TopLevelItem::Import(import)),
-        map(function, |function| {
-            println!("Found function!");
-            TopLevelItem::Function(function)
-        }),
+        map(function, |function| TopLevelItem::Function(function)),
         map(parse_structure, |types| TopLevelItem::Type(types)),
     ))
     .parse(input)
