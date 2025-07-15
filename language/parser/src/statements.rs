@@ -1,7 +1,7 @@
 use crate::code::code_block_returnless;
 use crate::errors::expect;
 use crate::expressions::expression;
-use crate::util::{ignored, tag_parser};
+use crate::util::{ignored, tag_parser, deepest_alt};
 use crate::{IResult, Span};
 use hir::RawSyntaxLevel;
 use hir::function::HighTerminator;
@@ -33,11 +33,11 @@ pub fn statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
 /// Parses a flow-changing statement like a return or break statement
 pub fn flow_changer(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     alt((
-        preceded(tag("return"), delimited(ignored, expression, ignored))
+        preceded(tag_parser("return"), delimited(ignored, expression, ignored))
             .map(|expression| HighStatement::Terminator(HighTerminator::Return(Some(expression)))),
-        tag("return").map(|_| HighStatement::Terminator(HighTerminator::Return(None))),
-        tag("break").map(|_| HighStatement::Terminator(HighTerminator::Break)),
-        tag("continue").map(|_| HighStatement::Terminator(HighTerminator::Continue)),
+        map(tag_parser("return"), |_| HighStatement::Terminator(HighTerminator::Return(None))),
+        map(tag_parser("break"), |_| HighStatement::Terminator(HighTerminator::Break)),
+        map(tag_parser("continue"), |_| HighStatement::Terminator(HighTerminator::Continue)),
     ))
         .parse(input)
 }

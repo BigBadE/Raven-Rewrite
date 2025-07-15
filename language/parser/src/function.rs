@@ -1,6 +1,6 @@
 use indexmap::IndexMap;
 use crate::code::function_body;
-use crate::errors::expect;
+use crate::errors::{expect, context};
 use crate::util::{identifier_symbolic, ignored, modifiers, parameter, tag_parser, type_ref};
 use crate::{IResult, Span};
 use hir::function::HighFunction;
@@ -18,7 +18,7 @@ pub fn function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {
     map(
         tuple((
             modifiers,
-            preceded(delimited(ignored, expect(tag_parser("fn"), "function keyword 'fn'", Some("functions must start with 'fn'")), ignored), identifier_symbolic),
+            preceded(delimited(ignored, context(tag_parser("fn"), "function keyword 'fn'", Some("functions must start with 'fn'")), ignored), expect(identifier_symbolic, "function name", Some("function names must be valid identifiers"))),
             generics,
             parameter_list,
             return_type,
@@ -51,6 +51,6 @@ fn parameter_list(input: Span) -> IResult<Span, Vec<(Spur, RawTypeRef)>> {
 
 /// Parser for return type (optional)
 fn return_type(input: Span) -> IResult<Span, Option<RawTypeRef>> {
-    opt(preceded(delimited(ignored, expect(tag_parser("->"), "return type arrow '->'", Some("use '->' to specify return type")), ignored), type_ref))
+    opt(preceded(delimited(ignored, tag_parser("->"), ignored), type_ref))
         .parse(input)
 }

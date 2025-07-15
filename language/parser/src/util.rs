@@ -4,7 +4,7 @@ use hir::RawTypeRef;
 use lasso::Spur;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_till, take_until, take_while1};
-use nom::character::complete::{alpha1, alphanumeric0, multispace0, multispace1};
+use nom::character::complete::{alpha1, alphanumeric1, multispace0, multispace1};
 use nom::combinator::{eof, map, opt, peek, recognize, value};
 use nom::multi::{many0, separated_list0, separated_list1};
 use nom::sequence::{delimited, pair, preceded, terminated, tuple};
@@ -14,6 +14,38 @@ use syntax::structure::{Modifier, MODIFIERS};
 use syntax::util::path::FilePath;
 use crate::errors::ParserError;
 use nom::error::ParseError;
+
+/// Custom alt macro that returns the deepest (furthest progressed) error
+/// instead of the first error encountered
+macro_rules! deepest_alt {
+    ($input:expr, $($parser:expr),+ $(,)?) => {{
+        use nom::error::ParseError;
+        let input = $input;
+        let mut deepest_error: Option<crate::errors::ParserError> = None;
+        let mut deepest_pos = 0;
+        
+        $(
+            match ($parser).parse(input.clone()) {
+                Ok(result) => return Ok(result),
+                Err(nom::Err::Error(err)) | Err(nom::Err::Failure(err)) => {
+                    let pos = err.span.location_offset();
+                    if pos > deepest_pos {
+                        deepest_pos = pos;
+                        deepest_error = Some(err);
+                    }
+                },
+                Err(nom::Err::Incomplete(needed)) => return Err(nom::Err::Incomplete(needed)),
+            }
+        )+
+        
+        match deepest_error {
+            Some(err) => Err(nom::Err::Error(err)),
+            None => Err(nom::Err::Error(crate::errors::ParserError::from_error_kind(input, nom::error::ErrorKind::Alt))),
+        }
+    }};
+}
+
+pub(crate) use deepest_alt;
 
 /// For parsing file paths like foo::bar::baz
 pub fn file_path(input: Span) -> IResult<Span, FilePath> {
@@ -33,7 +65,7 @@ pub fn type_ref(input: Span) -> IResult<Span, RawTypeRef> {
 
 /// Parser for identifiers (function names, parameter names)
 pub fn identifier(input: Span) -> IResult<Span, Spur> {
-    map(recognize(pair(alpha1, many0(alt((tag("_"), alphanumeric0))))), |s: Span| {
+    map(recognize(pair(alpha1, many0(alt((tag("_"), alphanumeric1))))), |s: Span| {
         s.extra.intern(s.to_string())
     })
         .parse(input)

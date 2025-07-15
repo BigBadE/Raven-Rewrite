@@ -1,6 +1,6 @@
-use crate::errors::expect;
+use crate::errors::{expect, context};
 use crate::statements::statement;
-use crate::util::{file_path, identifier, ignored, symbolic, tag_parser, type_ref};
+use crate::util::{file_path, identifier, ignored, symbolic, tag_parser, type_ref, deepest_alt};
 use crate::{IResult, Span};
 use hir::expression::HighExpression;
 use hir::{RawFunctionRef, RawSyntaxLevel};
@@ -49,7 +49,7 @@ pub fn literal(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
 /// Parses a block of statements enclosed in braces into a CodeBlock
 pub fn block(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     delimited(
-        expect(tag_parser("{"), "opening brace '{'", Some("blocks must start with '{'")),
+        context(tag_parser("{"), "opening brace '{'", Some("blocks must start with '{'")),
         map(tuple((many0(statement), expression)), |(body, value)| {
             HighExpression::CodeBlock {
                 body,

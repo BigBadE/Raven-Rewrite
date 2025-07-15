@@ -17,6 +17,7 @@ use syntax::util::translation::{translate_iterable, Translatable};
 use syntax::util::{CompileError, Context};
 
 use syntax::{ContextSyntaxLevel, GenericFunctionRef, GenericTypeRef, Syntax, SyntaxLevel};
+use syntax::util::pretty_print::PrettyPrint;
 
 /// The HIR expression type and impls
 pub mod expression;
@@ -306,6 +307,12 @@ impl<'a> Translate<GenericFunctionRef, HirFunctionContext<'a>> for RawFunctionRe
 
 fn check_imports<F: Fn(FilePath, &mut HirFunctionContext) -> Result<T, CompileError>, T>(
     context: &mut HirFunctionContext, path: &FilePath, creator: F) -> Result<Option<T>, CompileError> {
+    let mut current = context.file.clone();
+    current.append(&mut path.clone());
+    if context.source.syntax.types.contains_key(&RawTypeRef { path: current.clone(), generics: vec![] }) {
+        return Ok(Some(creator(current, context)?));
+    }
+
     for import in &context.source.imports[&context.file] {
         if import.last().unwrap() != path.first().unwrap() {
             continue;

@@ -152,3 +152,36 @@ where
         }
     }
 }
+
+pub fn context<'a, I, O, F>(
+    mut parser: F,
+    expected: &'static str,
+    suggestion: Option<&'static str>,
+) -> impl FnMut(I) -> IResult<'a, I, O>
+where
+    F: FnMut(I) -> IResult<'a, I, O>,
+    I: Clone,
+    ParserError<'a>: ParseError<I>,
+{
+    move |input: I| {
+        match parser(input.clone()) {
+            Ok(result) => Ok(result),
+            Err(nom::Err::Error(_)) => {
+                let mut error = ParserError::from_error_kind(
+                    input,
+                    ErrorKind::Tag
+                );
+                error.kind = ParserErrorKind::ExpectedToken(expected.to_string());
+
+                if let Some(sugg) = suggestion {
+                    error = error.with_suggestion(sugg.to_string());
+                }
+
+                // Key difference: returns Error, not Failure
+                Err(nom::Err::Error(error))
+            }
+            Err(nom::Err::Failure(err)) => Err(nom::Err::Failure(err)),
+            Err(nom::Err::Incomplete(needed)) => Err(nom::Err::Incomplete(needed)),
+        }
+    }
+}
