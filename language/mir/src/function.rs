@@ -61,7 +61,8 @@ impl<'a> Translate<(), MirFunctionContext<'a>> for HighFunction<HighSyntaxLevel>
                 context.set_terminator(MediumTerminator::Return(None));
             }
         } else {
-            context.set_terminator(HighSyntaxLevel::translate_terminator(&self.body.terminator, context)?);
+            let terminator = HighSyntaxLevel::translate_terminator(&self.body.terminator, context)?;
+            context.set_terminator(terminator);
         }
 
         let function = MediumFunction::<MediumSyntaxLevel> {

@@ -9,7 +9,7 @@ use hir::statement::HighStatement;
 use nom::Parser;
 use nom::combinator::opt;
 use nom::multi::many0;
-use nom::sequence::{delimited, terminated, tuple};
+use nom::sequence::{delimited, tuple};
 use crate::errors::expect;
 
 /// Parser for function bodies

@@ -1,16 +1,15 @@
-use indexmap::IndexMap;
 use crate::code::function_body;
-use crate::errors::{expect, context};
+use crate::structure::generics;
 use crate::util::{identifier_symbolic, ignored, modifiers, parameter, tag_parser, type_ref};
 use crate::{IResult, Span};
 use hir::function::HighFunction;
 use hir::{RawSyntaxLevel, RawTypeRef};
+use indexmap::IndexMap;
 use lasso::Spur;
-use nom::Parser;
-use nom::combinator::{map, opt};
+use nom::combinator::opt;
 use nom::multi::separated_list0;
-use nom::sequence::{delimited, preceded, tuple};
-use crate::structure::generics;
+use nom::sequence::{delimited, preceded};
+use nom::Parser;
 
 /// Parser for function declarations
 pub fn function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {

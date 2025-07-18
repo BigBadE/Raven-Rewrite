@@ -199,11 +199,10 @@ pub async fn parse_file(
                 nom::Err::Error(parser_err) | nom::Err::Failure(parser_err) => {
                     let remaining = parser_err.span.fragment();
                     if !remaining.trim().is_empty() {
-                        let preview = remaining.chars().take(100).collect::<String>();
                         let line_info = format!("at line {}", parser_err.span.location_line());
                         CompileError::Basic(format!(
-                            "Parse error {}: {}\nUnparsed content: {:?}",
-                            line_info, error_msg, preview
+                            "Parse error {}: {}",
+                            line_info, error_msg
                         ))
                     } else {
                         CompileError::Basic(error_msg)

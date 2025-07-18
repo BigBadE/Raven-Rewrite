@@ -1,16 +1,15 @@
 use crate::code::code_block_returnless;
-use crate::errors::context;
 use crate::expressions::expression;
 use crate::util::{ignored, tag_parser};
 use crate::{IResult, Span};
-use hir::RawSyntaxLevel;
 use hir::function::HighTerminator;
 use hir::statement::{Conditional, HighStatement};
-use nom::Parser;
+use hir::RawSyntaxLevel;
 use nom::branch::alt;
 use nom::combinator::{map, opt};
 use nom::multi::many0;
 use nom::sequence::{delimited, preceded, terminated, tuple};
+use nom::Parser;
 
 /// Parses a statement, which ends with a semicolon
 pub fn statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {

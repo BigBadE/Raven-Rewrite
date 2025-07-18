@@ -1,13 +1,12 @@
-use crate::errors::{expect, context};
+use crate::errors::{context, expect};
 use crate::function::function;
 use crate::structure::parse_structure;
 use crate::util::{file_path, ignored, tag_parser};
 use crate::{IResult, Span, TopLevelItem};
-use nom::Parser;
 use nom::branch::alt;
 use nom::combinator::map;
-use nom::error::ParseError;
 use nom::sequence::{delimited, preceded, terminated};
+use nom::Parser;
 use syntax::util::path::FilePath;
 
 /// Parses a top-level element in the source code
