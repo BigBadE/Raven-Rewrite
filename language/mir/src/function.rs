@@ -5,7 +5,7 @@ use std::mem;
 use hir::HighSyntaxLevel;
 use syntax::{FunctionRef, GenericFunctionRef, SyntaxLevel};
 use syntax::structure::Modifier;
-use syntax::structure::traits::Function;
+use syntax::structure::traits::{Function, Terminator};
 use syntax::structure::visitor::Translate;
 use syntax::util::CompileError;
 use syntax::util::translation::{translate_iterable, Translatable};
@@ -54,12 +54,14 @@ impl<'a> Translate<(), MirFunctionContext<'a>> for HighFunction<HighSyntaxLevel>
             HighSyntaxLevel::translate_stmt(statement, context)?;
         }
 
-        // Return void if we have no return at the very end
-        if matches!(
-            context.code_blocks[context.current_block].terminator,
-            MediumTerminator::Unreachable
-        ) {
-            context.set_terminator(MediumTerminator::Return(None));
+        // Process the function body terminator if it's not None
+        if self.body.terminator.is_none() {
+            // Return void if we have no return at the very end
+            if let MediumTerminator::Unreachable = context.code_blocks[context.current_block].terminator {
+                context.set_terminator(MediumTerminator::Return(None));
+            }
+        } else {
+            context.set_terminator(HighSyntaxLevel::translate_terminator(&self.body.terminator, context)?);
         }
 
         let function = MediumFunction::<MediumSyntaxLevel> {
@@ -95,7 +97,7 @@ impl<'a> Translate<FunctionRef, MirFunctionContext<'a>> for GenericFunctionRef {
             generics: translate_iterable(&self.generics, context,
                                          |generic, context|
                                              Ok((generic.clone(), Translate::translate(generic, context)?)))?,
-            context
+            context,
         })
     }
 }

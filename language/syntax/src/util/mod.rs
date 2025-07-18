@@ -1,6 +1,7 @@
 use crate::util::path::FilePath;
 use crate::{ContextSyntaxLevel, SyntaxLevel};
 use anyhow::Error;
+use owo_colors::OwoColorize;
 use std::fmt;
 
 /// Utility functions for paths
@@ -45,8 +46,8 @@ impl From<fmt::Error> for CompileError {
 impl fmt::Display for CompileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CompileError::Internal(err) => write!(f, "Internal error:\n{}", err),
-            CompileError::Basic(msg) => write!(f, "\n{}", msg),
+            CompileError::Internal(err) => write!(f, "{}\n{}", "Internal error:".red(), err.to_string().red()),
+            CompileError::Basic(msg) => write!(f, "\n{}", msg.red()),
             CompileError::Multi(errors) => {
                 writeln!(f)?;
                 for (i, error) in errors.iter().enumerate() {

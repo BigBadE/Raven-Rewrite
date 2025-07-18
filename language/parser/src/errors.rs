@@ -4,6 +4,7 @@ use std::fmt::Write;
 use lasso::ThreadedRodeo;
 use crate::{IResult, Span};
 use nom::error::{ErrorKind, ParseError};
+use owo_colors::OwoColorize;
 use syntax::util::CompileError;
 use syntax::util::pretty_print::{NestedWriter, PrettyPrint};
 
@@ -43,7 +44,27 @@ impl<'a> ParseError<Span<'a>> for ParserError<'a> {
     }
 
     fn append(_input: Span, kind: ErrorKind, mut other: Self) -> Self {
-        other.context.push(format!("{:?}", kind));
+        // Filter out unfriendly nom parser error kinds from being shown to users
+        match kind {
+            // Skip these technical parser details that aren't helpful to end users
+            ErrorKind::Tag | ErrorKind::TakeWhile1 | ErrorKind::TakeUntil | 
+            ErrorKind::Many0 | ErrorKind::Many1 | ErrorKind::Alt | 
+            ErrorKind::Complete | ErrorKind::Verify => {
+                // Don't add these to context
+            }
+            // Only add meaningful error kinds that help users understand the issue
+            _ => {
+                let friendly_msg = match kind {
+                    ErrorKind::Digit => "expected a number".to_string(),
+                    ErrorKind::Alpha => "expected a letter".to_string(),
+                    ErrorKind::AlphaNumeric => "expected a letter or number".to_string(),
+                    ErrorKind::Space => "expected whitespace".to_string(),
+                    ErrorKind::Eof => "unexpected end of file".to_string(),
+                    _ => return other, // Skip other unfriendly error kinds
+                };
+                other.context.push(friendly_msg);
+            }
+        }
         other
     }
 }
@@ -84,26 +105,26 @@ impl<W: Write> PrettyPrint<W> for ParserError<'_> {
         let source_line = self.get_source_line();
 
         // Main error message (like Rust's format)
-        writeln!(writer, "error: {}", self.kind)?;
-        write!(writer, "  --> ")?;
+        writeln!(writer, "{}: {}", "error".red().bold(), self.kind.to_string().red())?;
+        write!(writer, "  {} ", "-->".blue().bold())?;
         self.span.extra.file.format(interner, writer)?;
-        writeln!(writer, ":{}:{}", line_num, col_num)?;
+        writeln!(writer, ":{}:{}", line_num.to_string().blue(), col_num.to_string().blue())?;
 
-        writeln!(writer, "   |")?;
-        writeln!(writer, "{:2} | {}", line_num, source_line)?;
-        writeln!(writer, "   |")?;
+        writeln!(writer, "   {}", "|".blue().bold())?;
+        writeln!(writer, "{:2} {} {}", line_num.to_string().blue(), "|".blue().bold(), source_line)?;
+        writeln!(writer, "   {}", "|".blue().bold())?;
 
         // Add context if available
         if !self.context.is_empty() {
-            writeln!(writer, "   |")?;
+            writeln!(writer, "   {}", "|".blue().bold())?;
             for ctx in &self.context {
-                writeln!(writer, "   = note: {}", ctx)?;
+                writeln!(writer, "   {} {}: {}", "=".blue().bold(), "note".blue().bold(), ctx.yellow())?;
             }
         }
 
         // Add suggestions
         for suggestion in &self.suggestions {
-            writeln!(writer, "   = help: {}", suggestion)?;
+            writeln!(writer, "   {} {}: {}", "=".blue().bold(), "help".green().bold(), suggestion.green())?;
         }
 
         Ok(())

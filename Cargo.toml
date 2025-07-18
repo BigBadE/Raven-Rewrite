@@ -32,6 +32,9 @@ lasso = { version = "0.7.3", features = ["multi-threaded", "serialize"] }
 anyhow = "1.0.71"
 thiserror = "2.0.12"
 
+# Colors
+owo-colors = "4.1.0"
+
 hir = { path = "language/hir" }
 mir = { path = "language/mir" }
 parser = { path = "language/parser" }
