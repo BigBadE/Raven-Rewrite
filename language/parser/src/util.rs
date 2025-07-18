@@ -95,6 +95,15 @@ pub fn parameter(input: Span) -> IResult<Span, (Spur, RawTypeRef)> {
         .parse(input)
 }
 
+/// Parser for struct fields (supports modifiers)
+pub fn struct_field(input: Span) -> IResult<Span, (Spur, RawTypeRef)> {
+    tuple((
+        preceded(modifiers, identifier), // Parse modifiers then identifier, but only return identifier
+        preceded(delimited(ignored, expect(tag_parser(":"), "colon ':'", Some("struct fields use ':' to separate name and type")), ignored), type_ref),
+    ))
+        .parse(input)
+}
+
 /// Parser for modifiers
 pub fn modifiers(input: Span) -> IResult<Span, Vec<Modifier>> {
     many0(modifier).parse(input)

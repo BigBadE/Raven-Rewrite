@@ -7,8 +7,8 @@ use hir::function::HighFunction;
 use hir::types::HighType;
 use hir::{create_syntax, RawSource, RawSyntaxLevel};
 use lasso::{Spur, ThreadedRodeo};
-use nom::multi::many1;
-use nom::sequence::delimited;
+use nom::multi::many0;
+use nom::sequence::preceded;
 use nom_locate::LocatedSpan;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -140,16 +140,20 @@ fn add_file_to_syntax(
     for function in file.functions {
         if function.modifiers.contains(&Modifier::OPERATION) {
             match function.parameters.len() {
-                1 => source
-                    .pre_unary_operations
-                    .entry(function.reference.path.last().unwrap().clone())
-                    .or_default()
-                    .push(function.reference.path.clone().into()),
-                2 => source
-                    .binary_operations
-                    .entry(function.reference.path.last().unwrap().clone())
-                    .or_default()
-                    .push(function.reference.path.clone().into()),
+                1 => {
+                    source
+                        .pre_unary_operations
+                        .entry(function.reference.path.last().unwrap().clone())
+                        .or_default()
+                        .push(function.reference.path.clone().into());
+                },
+                2 => {
+                    source
+                        .binary_operations
+                        .entry(function.reference.path.last().unwrap().clone())
+                        .or_default()
+                        .push(function.reference.path.clone().into());
+                },
                 _ => {
                     errors.push(CompileError::Basic(
                         "Expected operation to only have 1 or 2 args".to_string(),
@@ -179,10 +183,76 @@ pub async fn parse_file(
         .map_err(|err| CompileError::Internal(err.into()))?;
 
     let mut file = File::default();
-    file.extend(
-        many1(delimited(ignored, parse_top_element, ignored))(
-            Span::new_extra(&parsing, ParseContext { interner, file: file_path, parsing: &parsing }))
-            .map_err(|err| CompileError::Basic(format!("{}", print_err(&err).unwrap())))?.1);
+    
+    // Parse all top-level elements
+    let (remaining, elements) = many0(preceded(ignored, parse_top_element))(
+        Span::new_extra(&parsing, ParseContext { interner, file: file_path.clone(), parsing: &parsing }))
+        .map_err(|err| {
+            // Provide more detailed error information
+            let error_msg = match print_err(&err) {
+                Ok(msg) => msg,
+                Err(_) => "Failed to parse file".to_string(),
+            };
+            
+            // Add context about what might have been left unparsed
+            match &err {
+                nom::Err::Error(parser_err) | nom::Err::Failure(parser_err) => {
+                    let remaining = parser_err.span.fragment();
+                    if !remaining.trim().is_empty() {
+                        let preview = remaining.chars().take(100).collect::<String>();
+                        let line_info = format!("at line {}", parser_err.span.location_line());
+                        CompileError::Basic(format!(
+                            "Parse error {}: {}\nUnparsed content: {:?}",
+                            line_info, error_msg, preview
+                        ))
+                    } else {
+                        CompileError::Basic(error_msg)
+                    }
+                }
+                _ => CompileError::Basic(error_msg),
+            }
+        })?;
+    
+    // Check if there's any meaningful unparsed content (ignoring trailing whitespace/comments)
+    let remaining_after_ignored = match ignored(remaining.clone()) {
+        Ok((remaining, _)) => remaining,
+        Err(_) => remaining, // If ignored parsing fails, use original remaining
+    };
+    if !remaining_after_ignored.fragment().is_empty() {
+        let preview = remaining_after_ignored.fragment().chars().take(100).collect::<String>();
+        let line_info = format!("at line {}", remaining_after_ignored.location_line());
+        
+        return Err(CompileError::Basic(format!(
+            "Parse error {}: Unexpected content after parsing completed\nUnparsed content: {:?}",
+            line_info, preview
+        )));
+    }
+    
+    // Ensure we parsed at least one element
+    if elements.is_empty() {
+        return Err(CompileError::Basic("No valid top-level elements found in file".to_string()));
+    }
+    
+    file.extend(elements);
+
+    // Optional validation: warn if file seems to have incomplete parsing
+    // This helps catch cases where parsing stops unexpectedly
+    if parsing.contains("fn ") || parsing.contains("struct ") || parsing.contains("trait ") {
+        let function_count = parsing.matches("fn ").count();
+        let struct_count = parsing.matches("struct ").count(); 
+        let trait_count = parsing.matches("trait ").count();
+        let total_expected = function_count + struct_count + trait_count;
+        let total_parsed = file.functions.len() + file.types.len();
+        
+        // Only warn in debug builds to avoid performance impact in release
+        #[cfg(debug_assertions)]
+        if total_parsed < total_expected {
+            eprintln!(
+                "Warning: Possible incomplete parsing in {:?}. Expected ~{} elements, parsed {}",
+                file_path, total_expected, total_parsed
+            );
+        }
+    }
 
     Ok(file)
 }

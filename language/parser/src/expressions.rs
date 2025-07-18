@@ -1,6 +1,6 @@
 use crate::errors::{expect, context};
 use crate::statements::statement;
-use crate::util::{file_path, identifier, ignored, symbolic, tag_parser, type_ref, deepest_alt};
+use crate::util::{file_path, identifier, ignored, symbolic, tag_parser, type_ref};
 use crate::{IResult, Span};
 use hir::expression::HighExpression;
 use hir::{RawFunctionRef, RawSyntaxLevel};
@@ -16,33 +16,33 @@ use syntax::structure::literal::Literal;
 /// Parses a term, an expression that can't be recursive
 pub fn term(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     alt((
-        literal,
-        block,
-        assignment,
         function_call,
-        create_struct,
+        literal,
         variable,
+        block,
+        create_struct,
     ))(input)
 }
 
 /// Parses an expression, which can be recursive
 pub fn expression(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
-    delimited(ignored, alt((operation, term)), ignored)
+    delimited(ignored, alt((assignment, operation, term)), ignored)
         .parse(input)
 }
 
 /// Parses a variable name into an Expression::Variable
 pub fn variable(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     map(alphanumeric1, |ident: Span| {
-        HighExpression::Variable(input.extra.intern(ident.to_string()))
-    })(input.clone())
+        HighExpression::Variable(ident.extra.intern(ident.fragment()))
+    })(input)
 }
 
 /// Parses a digit literal into an Expression::Literal
 /// TODO handle more literals
 pub fn literal(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     map(digit1, |digits: Span| {
-        HighExpression::Literal(Literal::I64(digits.parse().unwrap()))
+        let value = digits.fragment().parse::<i64>().unwrap_or(0);
+        HighExpression::Literal(Literal::I64(value))
     })(input)
 }
 
@@ -65,9 +65,9 @@ pub fn block(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
 pub fn assignment(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     map(
         tuple((
-            opt(tag("let")),
-            delimited(ignored, identifier, ignored),
-            preceded(expect(tag_parser("="), "assignment operator '='", Some("use '=' to assign values")), expression),
+            opt(terminated(tag_parser("let"), ignored)),
+            identifier,
+            preceded(delimited(ignored, tag_parser("="), ignored), expression),
         )),
         |(declaration, variable, value)| HighExpression::Assignment {
             declaration: declaration.is_some(),
@@ -78,33 +78,58 @@ pub fn assignment(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> 
     .parse(input)
 }
 
-/// Parses a function call expression with a target identifier,
-/// a dot, a function name, and a parenthesized, comma-separated list of expressions.
-/// Grammar: identifier \".\" identifier \"(\" [expression {\",\" expression}] \")\"
+/// Parses a function call expression
+/// Grammar: [identifier \".\"] file_path [\"<\" type_list \">\"] \"(\" [expression_list] \")\"
 pub fn function_call(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
-    map(
-        tuple((
-            opt(terminated(identifier, expect(tag_parser("."), "dot '.' for method calls", Some("use '.' to call methods on objects")))),
-            file_path,
-            opt(delimited(expect(tag_parser("<"), "opening angle bracket '<'", Some("generic arguments start with '<'")), separated_list0(
-                tag(","),
-                delimited(ignored, type_ref, ignored),
-            ), expect(tag_parser(">"), "closing angle bracket '>'", Some("generic arguments end with '>'")))),
-            delimited(
-                expect(tag_parser("("), "opening parenthesis '('", Some("function arguments must be enclosed in parentheses")),
-                separated_list0(tag(","), preceded(ignored, expression)),
-                expect(tag_parser(")"), "closing parenthesis ')'", Some("function arguments must end with ')'")),
-            ),
-        )),
-        |(target, function, generics, args)| HighExpression::FunctionCall {
-            function: RawFunctionRef {
-                path: function,
-                generics: generics.unwrap_or_default(),
+    alt((
+        // Method call: target.method(args)
+        map(
+            tuple((
+                terminated(identifier, tag_parser(".")),
+                file_path,
+                opt(delimited(tag_parser("<"), separated_list0(
+                    tag(","),
+                    delimited(ignored, type_ref, ignored),
+                ), tag_parser(">"))),
+                delimited(
+                    tag_parser("("),
+                    separated_list0(delimited(ignored, tag_parser(","), ignored), delimited(ignored, expression, ignored)),
+                    tag_parser(")"),
+                ),
+            )),
+            |(target, function, generics, args)| HighExpression::FunctionCall {
+                function: RawFunctionRef {
+                    path: function,
+                    generics: generics.unwrap_or_default(),
+                },
+                target: Some(Box::new(HighExpression::Variable(target))),
+                arguments: args,
             },
-            target: target.map(|span| Box::new(HighExpression::Variable(span))),
-            arguments: args,
-        },
-    )(input)
+        ),
+        // Regular function call: function(args)
+        map(
+            tuple((
+                file_path,
+                opt(delimited(tag_parser("<"), separated_list0(
+                    tag(","),
+                    delimited(ignored, type_ref, ignored),
+                ), tag_parser(">"))),
+                delimited(
+                    tag_parser("("),
+                    separated_list0(delimited(ignored, tag_parser(","), ignored), delimited(ignored, expression, ignored)),
+                    tag_parser(")"),
+                ),
+            )),
+            |(function, generics, args)| HighExpression::FunctionCall {
+                function: RawFunctionRef {
+                    path: function,
+                    generics: generics.unwrap_or_default(),
+                },
+                target: None,
+                arguments: args,
+            },
+        ),
+    ))(input)
 }
 
 /// Parses a struct creation expression.
@@ -116,7 +141,7 @@ pub fn create_struct(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel
             delimited(
                 delimited(ignored, expect(tag_parser("{"), "opening brace '{'", Some("struct creation starts with '{'")), ignored),
                 separated_list0(
-                    tag(","),
+                    tag_parser(","),
                     tuple((
                         preceded(ignored, identifier),
                         preceded(preceded(ignored, expect(tag_parser(":"), "colon ':'", Some("struct fields use ':' to separate name and value"))), preceded(ignored, expression)),
@@ -133,32 +158,19 @@ pub fn create_struct(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel
 }
 
 /// Parses an operation from left to right, such as +, -, *, /, !, etc.
-/// Works on unary and binary
 /// Uses term to prevent infinite recursion
 pub fn operation(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
-    alt((
-        map(
-            tuple((opt(term), symbolic, expression)),
-            |(first, symbol, second)| match first {
-                Some(first) => HighExpression::BinaryOperation {
-                    symbol,
-                    first: Box::new(first),
-                    second: Box::new(second),
-                },
-                None => HighExpression::UnaryOperation {
-                    pre: true,
-                    symbol,
-                    value: Box::new(second),
-                },
-            },
-        ),
-        map(tuple((term, symbolic)), |(value, symbol)| {
-            HighExpression::UnaryOperation {
-                pre: false,
-                symbol,
-                value: Box::new(value),
-            }
-        }),
-    ))
+    map(
+        tuple((
+            delimited(ignored, term, ignored),
+            symbolic,
+            delimited(ignored, term, ignored)
+        )),
+        |(first, symbol, second)| HighExpression::BinaryOperation {
+            symbol,
+            first: Box::new(first),
+            second: Box::new(second),
+        },
+    )
     .parse(input)
 }

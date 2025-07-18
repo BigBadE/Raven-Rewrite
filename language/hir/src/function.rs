@@ -73,8 +73,10 @@ Translate<(), HirFunctionContext<'ctx>> for HighFunction<I>
         &self,
         context: &mut HirFunctionContext<'_>,
     ) -> Result<(), CompileError> {
+        let function_ref = I::translate_func_ref(&self.reference, context)?;
+
         let function = HighFunction::<HighSyntaxLevel> {
-            reference: I::translate_func_ref(&self.reference, context)?,
+            reference: function_ref,
             modifiers: self.modifiers.clone(),
             body: CodeBlock {
                 statements: translate_iterable(&self.body.statements, context, I::translate_stmt)?,
@@ -90,7 +92,7 @@ Translate<(), HirFunctionContext<'ctx>> for HighFunction<I>
                 .map(|ty| I::translate_type_ref(ty, context))
                 .transpose()?,
         };
-
+        
         context.syntax.functions.insert(function.reference.clone(), function);
         Ok(())
     }

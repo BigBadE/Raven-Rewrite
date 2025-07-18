@@ -7,7 +7,6 @@ use hir::function::HighFunction;
 use hir::{RawSyntaxLevel, RawTypeRef};
 use lasso::Spur;
 use nom::Parser;
-use nom::bytes::complete::tag;
 use nom::combinator::{map, opt};
 use nom::multi::separated_list0;
 use nom::sequence::{delimited, preceded, tuple};
@@ -15,36 +14,36 @@ use crate::structure::generics;
 
 /// Parser for function declarations
 pub fn function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {
-    map(
-        tuple((
-            modifiers,
-            preceded(delimited(ignored, context(tag_parser("fn"), "function keyword 'fn'", Some("functions must start with 'fn'")), ignored), expect(identifier_symbolic, "function name", Some("function names must be valid identifiers"))),
-            generics,
-            parameter_list,
-            return_type,
-            function_body,
-        )),
-        |(modifiers, name, generics, parameters, return_type, body)| {
-            let mut reference = input.extra.file.clone();
-            reference.push(name);
-            HighFunction {
-                reference: reference.into(),
-                modifiers,
-                generics: IndexMap::from_iter(generics.into_iter()),
-                parameters,
-                return_type,
-                body,
-            }
-        },
-    )(input.clone())
+    let original_input = input.clone();
+    
+    let (input, modifiers) = modifiers(input)?;
+    let (input, _) = delimited(ignored, tag_parser("fn"), ignored)(input)?;
+    let (input, name) = identifier_symbolic(input)?;
+    let (input, generics) = generics(input)?;
+    let (input, parameters) = parameter_list(input)?;
+    let (input, return_type) = return_type(input)?;
+    let (input, body) = function_body(input)?;
+    
+    let mut reference = original_input.extra.file.clone();
+    reference.push(name);
+    let result = HighFunction {
+        reference: reference.into(),
+        modifiers,
+        generics: IndexMap::from_iter(generics.into_iter()),
+        parameters,
+        return_type,
+        body,
+    };
+    
+    Ok((input, result))
 }
 
 /// Parser for parameter lists
 fn parameter_list(input: Span) -> IResult<Span, Vec<(Spur, RawTypeRef)>> {
     delimited(
-        delimited(ignored, expect(tag_parser("("), "opening parenthesis '('", Some("parameter lists must start with '('")), ignored),
-        separated_list0(delimited(ignored, tag(","), ignored), parameter),
-        delimited(ignored, expect(tag_parser(")"), "closing parenthesis ')'", Some("parameter lists must end with ')'")), ignored),
+        delimited(ignored, tag_parser("("), ignored),
+        separated_list0(delimited(ignored, tag_parser(","), ignored), parameter),
+        delimited(ignored, tag_parser(")"), ignored),
     )
     .parse(input)
 }

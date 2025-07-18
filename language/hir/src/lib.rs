@@ -261,7 +261,7 @@ impl<'a> Translate<GenericTypeRef, HirFunctionContext<'a>> for RawTypeRef {
             return Ok(GenericTypeRef::Generic { reference: self.path.clone() });
         }
 
-        if let Some(found) = check_imports(context, &self.path(), |path, context| {
+        if let Some(found) = check_imports(context, &self.path(), true, |path, context| {
             Ok(GenericTypeRef::Struct {
                 reference: path,
                 generics: translate_iterable(&self.generics, context, |ty, context| {
@@ -272,7 +272,11 @@ impl<'a> Translate<GenericTypeRef, HirFunctionContext<'a>> for RawTypeRef {
             return Ok(found);
         }
 
-        todo!()
+        Err(CompileError::Basic(format!(
+            "Failed to resolve type reference {} in file {}",
+            self.path().format_top(&context.source.syntax.symbols, String::new())?,
+            context.file.format_top(&context.source.syntax.symbols, String::new())?
+        )))
     }
 }
 
@@ -290,7 +294,7 @@ impl<'a> Translate<GenericFunctionRef, HirFunctionContext<'a>> for RawFunctionRe
             });
         }
 
-        if let Some(found) = check_imports(context, &self.path(), |path, context| {
+        if let Some(found) = check_imports(context, &self.path(), false, |path, context| {
             Ok(GenericFunctionRef {
                 reference: path,
                 generics: translate_iterable(&self.generics, context, |ty, context| {
@@ -301,15 +305,24 @@ impl<'a> Translate<GenericFunctionRef, HirFunctionContext<'a>> for RawFunctionRe
             return Ok(found);
         }
 
-        todo!()
+        Err(CompileError::Basic(format!(
+            "Failed to resolve function reference {} in file {}",
+            self.path().format_top(&context.source.syntax.symbols, String::new())?,
+            context.file.format_top(&context.source.syntax.symbols, String::new())?
+        )))
     }
 }
 
 fn check_imports<F: Fn(FilePath, &mut HirFunctionContext) -> Result<T, CompileError>, T>(
-    context: &mut HirFunctionContext, path: &FilePath, creator: F) -> Result<Option<T>, CompileError> {
+    context: &mut HirFunctionContext, path: &FilePath, types: bool, creator: F) -> Result<Option<T>, CompileError> {
     let mut current = context.file.clone();
     current.append(&mut path.clone());
-    if context.source.syntax.types.contains_key(&RawTypeRef { path: current.clone(), generics: vec![] }) {
+    let target = |key: &FilePath| if types {
+        context.source.syntax.types.contains_key(&key.clone().into())
+    } else {
+        context.source.syntax.functions.contains_key(&key.clone().into())
+    };
+    if target(&current) {
         return Ok(Some(creator(current, context)?));
     }
 
@@ -317,7 +330,7 @@ fn check_imports<F: Fn(FilePath, &mut HirFunctionContext) -> Result<T, CompileEr
         if import.last().unwrap() != path.first().unwrap() {
             continue;
         }
-        if context.source.syntax.types.contains_key(&import.clone().into()) {
+        if target(&import) {
             let mut reference = import.clone();
             reference.append(&mut path.iter().cloned().skip(1).collect());
             return Ok(Some(creator(reference, context)?));

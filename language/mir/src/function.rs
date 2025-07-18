@@ -43,6 +43,13 @@ impl<'a> Translate<(), MirFunctionContext<'a>> for HighFunction<HighSyntaxLevel>
             return Ok(());
         }
 
+        // Register function parameters as local variables and generate StorageLive statements
+        for (param_name, param_type) in &self.parameters {
+            let type_ref = HighSyntaxLevel::translate_type_ref(param_type, context)?;
+            let local_var = context.get_or_create_local(*param_name, type_ref.clone());
+            context.push_statement(crate::statement::MediumStatement::StorageLive(local_var, type_ref));
+        }
+
         for statement in &self.body.statements {
             HighSyntaxLevel::translate_stmt(statement, context)?;
         }

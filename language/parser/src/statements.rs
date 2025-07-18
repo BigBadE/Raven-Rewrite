@@ -1,14 +1,13 @@
 use crate::code::code_block_returnless;
-use crate::errors::expect;
+use crate::errors::context;
 use crate::expressions::expression;
-use crate::util::{ignored, tag_parser, deepest_alt};
+use crate::util::{ignored, tag_parser};
 use crate::{IResult, Span};
 use hir::RawSyntaxLevel;
 use hir::function::HighTerminator;
 use hir::statement::{Conditional, HighStatement};
 use nom::Parser;
 use nom::branch::alt;
-use nom::bytes::complete::tag;
 use nom::combinator::{map, opt};
 use nom::multi::many0;
 use nom::sequence::{delimited, preceded, terminated, tuple};
@@ -26,7 +25,7 @@ pub fn statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
             map(expression, HighStatement::Expression),
         )),
         ignored,
-    ), delimited(ignored, expect(tag_parser(";"), "semicolon ';'", Some("statements must end with ';'")), ignored))
+    ), delimited(ignored, tag_parser(";"), ignored))
         .parse(input)
 }
 
@@ -44,7 +43,7 @@ pub fn flow_changer(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>>
 
 /// Parses an if statement
 pub fn if_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
-    preceded(tag("if"),
+    preceded(tag_parser("if"),
              tuple((parse_conditional, many0(parse_else_if), opt(parse_else))).map(
                  |(first_cond, extra_conds, else_branch)| {
                      let mut conditions = vec![first_cond];
@@ -62,7 +61,7 @@ pub fn if_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>>
 /// Parses a for statement
 pub fn for_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     preceded(
-        tag("for"),
+        tag_parser("for"),
         parse_conditional.map(|condition| HighStatement::For { condition }),
     )
         .parse(input)
@@ -71,7 +70,7 @@ pub fn for_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>
 /// Parses a while statement
 pub fn while_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
     preceded(
-        tag("while"),
+        tag_parser("while"),
         parse_conditional.map(|condition| HighStatement::While { condition }),
     )
         .parse(input)
@@ -79,7 +78,7 @@ pub fn while_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLeve
 
 /// Parses a loop statement
 pub fn loop_statement(input: Span) -> IResult<Span, HighStatement<RawSyntaxLevel>> {
-    preceded(tag("loop"), code_block_returnless.map(|body| HighStatement::Loop { body }))
+    preceded(tag_parser("loop"), code_block_returnless.map(|body| HighStatement::Loop { body }))
         .parse(input)
 }
 
@@ -95,11 +94,11 @@ fn parse_conditional(input: Span) -> IResult<Span, Conditional<RawSyntaxLevel>> 
 
 /// Parses an "else if" clause.
 fn parse_else_if(input: Span) -> IResult<Span, Conditional<RawSyntaxLevel>> {
-    preceded(preceded(tag("else"), delimited(ignored, tag("if"), ignored)), parse_conditional)
+    preceded(preceded(tag_parser("else"), delimited(ignored, tag_parser("if"), ignored)), parse_conditional)
         .parse(input)
 }
 
 /// Parses an "else" clause.
 fn parse_else(input: Span) -> IResult<Span, Vec<HighStatement<RawSyntaxLevel>>> {
-    preceded(tag("else"), code_block_returnless).parse(input)
+    preceded(tag_parser("else"), code_block_returnless).parse(input)
 }

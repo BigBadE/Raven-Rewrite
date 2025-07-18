@@ -1,22 +1,22 @@
 use crate::errors::{expect, context};
 use crate::function::function;
 use crate::structure::parse_structure;
-use crate::util::{file_path, ignored, deepest_alt, tag_parser};
+use crate::util::{file_path, ignored, tag_parser};
 use crate::{IResult, Span, TopLevelItem};
 use nom::Parser;
 use nom::branch::alt;
-use nom::bytes::complete::tag;
 use nom::combinator::map;
+use nom::error::ParseError;
 use nom::sequence::{delimited, preceded, terminated};
 use syntax::util::path::FilePath;
 
 /// Parses a top-level element in the source code
 pub fn parse_top_element(input: Span) -> IResult<Span, TopLevelItem> {
-    deepest_alt!(input,
+    alt((
         map(parse_import, |import| TopLevelItem::Import(import)),
         map(function, |function| TopLevelItem::Function(function)),
         map(parse_structure, |types| TopLevelItem::Type(types))
-    )
+    ))(input)
 }
 
 /// Parses an import statement

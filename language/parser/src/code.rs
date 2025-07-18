@@ -1,13 +1,12 @@
 use crate::expressions::expression;
 use crate::statements::statement;
-use crate::util::ignored;
+use crate::util::{ignored, tag_parser};
 use crate::{IResult, Span};
 use hir::RawSyntaxLevel;
 use hir::expression::HighExpression;
 use hir::function::{CodeBlock, HighTerminator};
 use hir::statement::HighStatement;
 use nom::Parser;
-use nom::bytes::complete::tag;
 use nom::combinator::opt;
 use nom::multi::many0;
 use nom::sequence::{delimited, terminated, tuple};
@@ -35,9 +34,9 @@ pub fn code_block(
     ),
 > {
     delimited(
-        delimited(ignored, tag("{"), ignored),
-        tuple((many0(terminated(statement, ignored)), opt(expression))),
-        delimited(ignored, tag("}"), ignored),
+        delimited(ignored, tag_parser("{"), ignored),
+        tuple((many0(statement), opt(expression))),
+        delimited(ignored, tag_parser("}"), ignored),
     )
     .parse(input)
 }
@@ -45,9 +44,9 @@ pub fn code_block(
 /// Parser for code blocks (with no return)
 pub fn code_block_returnless(input: Span) -> IResult<Span, Vec<HighStatement<RawSyntaxLevel>>> {
     delimited(
-        delimited(ignored, tag("{"), ignored),
-        many0(terminated(statement, ignored)),
-        delimited(ignored, tag("}"), ignored),
+        delimited(ignored, tag_parser("{"), ignored),
+        many0(statement),
+        delimited(ignored, tag_parser("}"), ignored),
     )
     .parse(input)
 }

@@ -1,4 +1,4 @@
-fn basic_function() {
+pub fn basic_function() {
 
 }
 
