@@ -25,7 +25,11 @@ pub fn type_ref(input: Span) -> IResult<Span, RawTypeRef> {
     map(
         tuple((
             file_path,
-            opt(delimited(tag("<"), separated_list0(delimited(ignored, tag(","), ignored), type_ref), tag(">"))),
+            opt(delimited(
+                tag("<"), 
+                separated_list0(tag(","), delimited(ignored, type_ref, ignored)), 
+                expect(tag_parser(">"), "closing angle bracket '>'", Some("generic types must end with '>'")),
+            )),
         )),
         |(path, generics)| RawTypeRef { path, generics: generics.unwrap_or_default() },
     )(input)

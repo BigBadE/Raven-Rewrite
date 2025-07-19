@@ -17,10 +17,10 @@ use syntax::structure::literal::Literal;
 pub fn term(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     alt((
         function_call,
+        create_struct,
         literal,
         variable,
         block,
-        create_struct,
     ))(input)
 }
 
@@ -135,26 +135,24 @@ pub fn function_call(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel
 /// Parses a struct creation expression.
 /// Grammar: identifier \"{\" [identifier \":\" expression {\",\" identifier \":\" expression}] \"}\"
 pub fn create_struct(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
-    map(
+    // Use a complete parser that only succeeds if the entire pattern matches
+    let (input, target_struct) = type_ref(input)?;
+    let (input, _) = delimited(ignored, tag_parser("{"), ignored)(input)?;
+    
+    let (input, fields) = separated_list0(
+        tag_parser(","),
         tuple((
-            type_ref,
-            delimited(
-                delimited(ignored, expect(tag_parser("{"), "opening brace '{'", Some("struct creation starts with '{'")), ignored),
-                separated_list0(
-                    tag_parser(","),
-                    tuple((
-                        preceded(ignored, identifier),
-                        preceded(preceded(ignored, expect(tag_parser(":"), "colon ':'", Some("struct fields use ':' to separate name and value"))), preceded(ignored, expression)),
-                    )),
-                ),
-                delimited(ignored, expect(tag_parser("}"), "closing brace '}'", Some("struct creation ends with '}'")), ignored),
-            ),
+            preceded(ignored, identifier),
+            preceded(preceded(ignored, expect(tag_parser(":"), "colon ':'", Some("struct fields use ':' to separate name and value"))), preceded(ignored, expression)),
         )),
-        |(target_struct, fields)| HighExpression::CreateStruct {
-            target_struct,
-            fields,
-        },
-    )(input)
+    )(input)?;
+    
+    let (input, _) = delimited(ignored, expect(tag_parser("}"), "closing brace '}'", Some("struct creation ends with '}'")), ignored)(input)?;
+    
+    Ok((input, HighExpression::CreateStruct {
+        target_struct,
+        fields,
+    }))
 }
 
 /// Parses an operation from left to right, such as +, -, *, /, !, etc.
