@@ -1,3 +1,5 @@
+#![feature(let_chains)]
+
 /// The MIR expression type and impls
 pub mod expression;
 /// The MIR function type and impls
@@ -19,7 +21,7 @@ use crate::types::MediumType;
 use hir::expression::HighExpression;
 use hir::function::{CodeBlock, HighFunction, HighTerminator};
 use hir::statement::HighStatement;
-use hir::types::HighType;
+use hir::types::{HighType, TypeData};
 use hir::{HighSyntaxLevel, HirSource};
 use lasso::Spur;
 use serde::{Deserialize, Serialize};
@@ -151,23 +153,26 @@ pub struct MirFunctionContext<'a> {
     /// All generics in scope
     generics: HashMap<GenericTypeRef, TypeRef>,
     /// The output syntax
-    output: &'a mut Syntax<MediumSyntaxLevel>
+    output: &'a mut Syntax<MediumSyntaxLevel>,
 }
 
 impl<'a> MirContext<'a> {
     /// Creates a new MIR context
     fn new(source: &'a HirSource) -> Self {
-        Self { source, output: Syntax {
-            symbols: source.syntax.symbols.clone(),
-            functions: HashMap::new(),
-            types: HashMap::new(),
-        } }
+        Self {
+            source,
+            output: Syntax {
+                symbols: source.syntax.symbols.clone(),
+                functions: HashMap::new(),
+                types: HashMap::new(),
+            },
+        }
     }
 }
 
 impl<'a> MirFunctionContext<'a> {
     /// Creates a MIR function context
-    fn new(source: &'a HirSource,  output: &'a mut Syntax<MediumSyntaxLevel>) -> Self {
+    fn new(source: &'a HirSource, output: &'a mut Syntax<MediumSyntaxLevel>) -> Self {
         Self {
             code_blocks: vec![CodeBlock {
                 statements: vec![],
@@ -186,11 +191,37 @@ impl<'a> MirFunctionContext<'a> {
 
     /// Translates a place to its type
     pub fn translate(&self, place: &Place) -> TypeRef {
-        let local = self.var_types[place.local].clone();
-        for _projection in &place.projection {
-            todo!()
+        let mut current_type = self.var_types[place.local].clone();
+        for projection in &place.projection {
+            match projection {
+                PlaceElem::Field(field_name) => {
+                    let generic_type_ref = GenericTypeRef::from(current_type.clone());
+                    if let Some(struct_def) = self.source.syntax.types.get(&generic_type_ref) &&
+                        let TypeData::Struct { fields } = &struct_def.data &&
+                        let Some((_, field_type)) = fields.iter().find(|(name, _)| name == field_name) {
+                        match field_type {
+                            GenericTypeRef::Struct { reference, generics: _ } => {
+                                current_type = reference.clone();
+                            }
+                            GenericTypeRef::Generic { reference } => {
+                                current_type = reference.clone();
+                            }
+                        }
+                    } else {
+                        panic!("Error during field access translation!");
+                    }
+                }
+                PlaceElem::Deref => {
+                    // For dereference, we'd need to handle pointer/reference types
+                    todo!("Dereference not implemented")
+                }
+                PlaceElem::Index(_) => {
+                    // For indexing, we'd need to handle array types
+                    todo!("Indexing not implemented")
+                }
+            }
         }
-        local
+        current_type
     }
 
     /// Create a new basic block and return its ID
@@ -312,7 +343,7 @@ impl Translatable<HighSyntaxLevel, MediumSyntaxLevel> for HighSyntaxLevel {
 }
 
 impl<'a>
-    Translate<MediumTerminator<MediumSyntaxLevel>, MirFunctionContext<'a>> for HighTerminator<HighSyntaxLevel>
+Translate<MediumTerminator<MediumSyntaxLevel>, MirFunctionContext<'a>> for HighTerminator<HighSyntaxLevel>
 {
     fn translate(
         &self,

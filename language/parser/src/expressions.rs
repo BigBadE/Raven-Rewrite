@@ -1,3 +1,4 @@
+use std::mem;
 use crate::errors::{expect, context};
 use crate::statements::statement;
 use crate::util::{file_path, identifier, ignored, symbolic, tag_parser, type_ref};
@@ -15,13 +16,55 @@ use syntax::structure::literal::Literal;
 
 /// Parses a term, an expression that can't be recursive
 pub fn term(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
-    alt((
-        function_call,
+    // First parse atoms (non-postfix expressions)
+    let (input, base) = alt((
+        standalone_function_call,
         create_struct,
         literal,
         variable,
         block,
-    ))(input)
+    ))(input)?;
+
+    // Then handle postfix operations (field access and method calls)
+    parse_postfix(input, base)
+}
+
+/// Parse postfix operations like field access and method calls
+fn parse_postfix(mut input: Span, mut expr: HighExpression<RawSyntaxLevel>) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
+    loop {
+        let Ok((after_ident, ident)) = preceded(tag_parser("."), identifier)(input.clone()) else {
+            break;
+        };
+
+        // Check if this is a method call (has parentheses) or field access
+        let paren_result = tag_parser("(")(after_ident.clone());
+        if let Ok((after_paren, _)) = paren_result {
+            // This is a method call
+            let (after_close, args) = terminated(separated_list0(
+                delimited(ignored, tag_parser(","), ignored),
+                delimited(ignored, expression, ignored),
+            ), tag_parser(")")).parse(after_paren)?;
+
+            expr = HighExpression::FunctionCall {
+                function: RawFunctionRef {
+                    path: vec![ident],
+                    generics: vec![],
+                },
+                target: Some(Box::new(expr)),
+                arguments: args,
+            };
+            input = after_close;
+        } else {
+            // This is field access
+            expr = HighExpression::FieldAccess {
+                object: Box::new(expr),
+                field: ident,
+            };
+            input = after_ident;
+        }
+    }
+
+    Ok((input, expr))
 }
 
 /// Parses an expression, which can be recursive
@@ -75,61 +118,34 @@ pub fn assignment(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> 
             value: Box::new(value),
         },
     )
-    .parse(input)
+        .parse(input)
 }
 
-/// Parses a function call expression
-/// Grammar: [identifier \".\"] file_path [\"<\" type_list \">\"] \"(\" [expression_list] \")\"
-pub fn function_call(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
-    alt((
-        // Method call: target.method(args)
-        map(
-            tuple((
-                terminated(identifier, tag_parser(".")),
-                file_path,
-                opt(delimited(tag_parser("<"), separated_list0(
-                    tag(","),
-                    delimited(ignored, type_ref, ignored),
-                ), tag_parser(">"))),
-                delimited(
-                    tag_parser("("),
-                    separated_list0(delimited(ignored, tag_parser(","), ignored), delimited(ignored, expression, ignored)),
-                    tag_parser(")"),
-                ),
-            )),
-            |(target, function, generics, args)| HighExpression::FunctionCall {
-                function: RawFunctionRef {
-                    path: function,
-                    generics: generics.unwrap_or_default(),
-                },
-                target: Some(Box::new(HighExpression::Variable(target))),
-                arguments: args,
+/// Parses a standalone function call expression (not a method call)
+/// Grammar: file_path [\"<\" type_list \">\"] \"(\" [expression_list] \")\"
+pub fn standalone_function_call(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
+    map(
+        tuple((
+            file_path,
+            opt(delimited(tag_parser("<"), separated_list0(
+                tag(","),
+                delimited(ignored, type_ref, ignored),
+            ), tag_parser(">"))),
+            delimited(
+                tag_parser("("),
+                separated_list0(delimited(ignored, tag_parser(","), ignored), delimited(ignored, expression, ignored)),
+                tag_parser(")"),
+            ),
+        )),
+        |(function, generics, args)| HighExpression::FunctionCall {
+            function: RawFunctionRef {
+                path: function,
+                generics: generics.unwrap_or_default(),
             },
-        ),
-        // Regular function call: function(args)
-        map(
-            tuple((
-                file_path,
-                opt(delimited(tag_parser("<"), separated_list0(
-                    tag(","),
-                    delimited(ignored, type_ref, ignored),
-                ), tag_parser(">"))),
-                delimited(
-                    tag_parser("("),
-                    separated_list0(delimited(ignored, tag_parser(","), ignored), delimited(ignored, expression, ignored)),
-                    tag_parser(")"),
-                ),
-            )),
-            |(function, generics, args)| HighExpression::FunctionCall {
-                function: RawFunctionRef {
-                    path: function,
-                    generics: generics.unwrap_or_default(),
-                },
-                target: None,
-                arguments: args,
-            },
-        ),
-    ))(input)
+            target: None,
+            arguments: args,
+        },
+    )(input)
 }
 
 /// Parses a struct creation expression.
@@ -138,7 +154,7 @@ pub fn create_struct(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel
     // Use a complete parser that only succeeds if the entire pattern matches
     let (input, target_struct) = type_ref(input)?;
     let (input, _) = delimited(ignored, tag_parser("{"), ignored)(input)?;
-    
+
     let (input, fields) = separated_list0(
         tag_parser(","),
         tuple((
@@ -146,9 +162,9 @@ pub fn create_struct(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel
             preceded(preceded(ignored, expect(tag_parser(":"), "colon ':'", Some("struct fields use ':' to separate name and value"))), preceded(ignored, expression)),
         )),
     )(input)?;
-    
+
     let (input, _) = delimited(ignored, expect(tag_parser("}"), "closing brace '}'", Some("struct creation ends with '}'")), ignored)(input)?;
-    
+
     Ok((input, HighExpression::CreateStruct {
         target_struct,
         fields,
@@ -170,5 +186,5 @@ pub fn operation(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
             second: Box::new(second),
         },
     )
-    .parse(input)
+        .parse(input)
 }

@@ -251,6 +251,9 @@ HighExpression<HighSyntaxLevel>
                 vec![first, second],
                 context,
             )?,
+            HighExpression::FieldAccess { object, field } => {
+                translate_field_access(object, field, context)?
+            }
         })
     }
 }
@@ -269,6 +272,69 @@ fn translate_variable<'a>(
         })?,
         projection: vec![],
     })))
+}
+
+fn translate_field_access<'a>(
+    object: &HighExpression<HighSyntaxLevel>,
+    field: &Spur,
+    context: &mut MirFunctionContext<'a>,
+) -> Result<MediumExpression<MediumSyntaxLevel>, CompileError> {
+    // Translate the object expression to get its place
+    let object_place = translate_expr_to_place(object, context)?;
+    
+    // Add field projection to the place
+    let mut projection = object_place.projection;
+    projection.push(crate::PlaceElem::Field(*field));
+    
+    Ok(MediumExpression::Use(Operand::Copy(Place {
+        local: object_place.local,
+        projection,
+    })))
+}
+
+/// Convert an expression to a place for field access
+fn translate_expr_to_place<'a>(
+    expr: &HighExpression<HighSyntaxLevel>,
+    context: &mut MirFunctionContext<'a>,
+) -> Result<Place, CompileError> {
+    match expr {
+        HighExpression::Variable(var) => {
+            let local = context.get_local(*var).cloned().ok_or_else(|| {
+                CompileError::Basic(format!(
+                    "Unknown variable: {}",
+                    context.source.syntax.symbols.resolve(var)
+                ))
+            })?;
+            Ok(Place {
+                local,
+                projection: vec![],
+            })
+        }
+        HighExpression::FieldAccess { object, field } => {
+            let mut object_place = translate_expr_to_place(object, context)?;
+            object_place.projection.push(crate::PlaceElem::Field(*field));
+            Ok(object_place)
+        }
+        _ => {
+            // For complex expressions, we need to create a temporary
+            let translated = HighSyntaxLevel::translate_expr(expr, context)?;
+            let ty = translated.get_type(context)?.ok_or_else(|| {
+                CompileError::Basic("Cannot access field on void expression".to_string())
+            })?;
+            let temp = context.create_temp(ty);
+            context.push_statement(crate::statement::MediumStatement::Assign {
+                place: Place {
+                    local: temp,
+                    projection: vec![],
+                },
+                value: translated,
+            });
+            Ok(Place {
+                local: temp,
+                projection: vec![],
+            })
+        }
+    }
 }
 
 fn translate_code_block<'a>(

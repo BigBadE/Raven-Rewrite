@@ -171,6 +171,10 @@ impl<T: PrettyPrintableSyntaxLevel<W>, W: Write> PrettyPrint<W> for HighExpressi
                 write_parameters(interner, fields, writer)?;
                 write!(writer, " }}")
             }
+            HighExpression::FieldAccess { object, field } => {
+                object.format(interner, writer)?;
+                write!(writer, ".{}", interner.resolve(field))
+            }
         }
     }
 }

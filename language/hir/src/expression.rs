@@ -68,6 +68,13 @@ pub enum HighExpression<T: SyntaxLevel> {
         /// The fields to set and their values
         fields: Vec<(Spur, T::Expression)>,
     },
+    /// Field access
+    FieldAccess {
+        /// The object to access the field from
+        object: Box<T::Expression>,
+        /// The field name
+        field: Spur,
+    },
 }
 
 impl<T: SyntaxLevel> Clone for HighExpression<T> {
@@ -102,6 +109,10 @@ impl<T: SyntaxLevel> Clone for HighExpression<T> {
             HighExpression::CreateStruct { target_struct, fields } => HighExpression::CreateStruct {
                 target_struct: target_struct.clone(),
                 fields: fields.clone(),
+            },
+            HighExpression::FieldAccess { object, field } => HighExpression::FieldAccess {
+                object: object.clone(),
+                field: *field,
             }
         }
     }
@@ -166,6 +177,10 @@ impl<'ctx, I: SyntaxLevel + Translatable<I, O>, O: ContextSyntaxLevel<I>>
                 symbol: *symbol,
                 first: Box::new(I::translate_expr(first, context)?),
                 second: Box::new(I::translate_expr(second, context)?),
+            },
+            HighExpression::FieldAccess { object, field } => HighExpression::FieldAccess {
+                object: Box::new(I::translate_expr(object, context)?),
+                field: *field,
             },
         })
     }
