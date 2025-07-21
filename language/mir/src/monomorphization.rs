@@ -4,9 +4,7 @@ use anyhow::anyhow;
 use hir::function::HighFunction;
 use hir::types::{HighType, TypeData};
 use hir::HighSyntaxLevel;
-use lasso::ThreadedRodeo;
 use syntax::structure::visitor::Translate;
-use syntax::util::pretty_print::PrettyPrint;
 use syntax::util::CompileError;
 use syntax::{get_monomorphized_name, FunctionRef, GenericFunctionRef, GenericTypeRef, TypeRef};
 
@@ -24,7 +22,8 @@ impl Translate<TypeRef, MonomorphizationContext<'_, '_>> for HighType<HighSyntax
         };
 
         // Clone the type and update the reference
-        let monomorphized_reference = get_monomorphized_name(&reference, &context.generics.values(), &context.context.output.symbols)?;
+        let monomorphized_reference = get_monomorphized_name(&reference, context.generics.values(),
+                                                             &context.context.output.symbols)?;
         let mut inner_context = MirFunctionContext::new(context.context.source, context.context.output);
         inner_context.generics = context.generics.clone();
         let mut temp = (*self).clone();
@@ -55,7 +54,7 @@ impl Translate<TypeRef, MonomorphizationContext<'_, '_>> for HighType<HighSyntax
 impl Translate<FunctionRef, MonomorphizationContext<'_, '_>> for HighFunction<HighSyntaxLevel> {
     fn translate(&self, context: &mut MonomorphizationContext) -> Result<FunctionRef, CompileError> {
         // Clone the function and update the reference
-        let monomorphized_reference = get_monomorphized_name(&self.reference.reference, &context.generics.values(),
+        let monomorphized_reference = get_monomorphized_name(&self.reference.reference, context.generics.values(),
                                                                 &context.context.output.symbols)?;
         let mut inner_context = MirFunctionContext::new(context.context.source, context.context.output);
         inner_context.generics = context.generics.clone();

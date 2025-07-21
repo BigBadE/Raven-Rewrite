@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use syntax::structure::traits::Type;
 use syntax::structure::visitor::Translate;
 use syntax::structure::Modifier;
-use syntax::util::pretty_print::PrettyPrint;
 use syntax::util::translation::Translatable;
 use syntax::util::CompileError;
 use syntax::{get_monomorphized_name, GenericTypeRef, SyntaxLevel, TypeRef};
@@ -124,9 +123,9 @@ fn translate_parameterized_struct(
 ) -> Result<TypeRef, CompileError> {
     let translated_generics = generics.iter()
         .map(|generic| Translate::translate(generic, context))
-        .collect()?;
+        .collect::<Result<Vec<_>, _>>()?;
     let monomorphized_reference = get_monomorphized_name(reference,
-                                                         &translated_generics, &context.source.syntax.symbols)?;
+                                                         translated_generics.iter(), &context.source.syntax.symbols)?;
 
     if context.output.types.contains_key(&monomorphized_reference) {
         return Ok(monomorphized_reference);

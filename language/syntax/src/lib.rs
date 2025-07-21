@@ -86,11 +86,12 @@ impl TypeReference for TypeRef {
 }
 
 /// Converts the reference to the monomorphized version by appending the generics to the last segment
-pub fn get_monomorphized_name(reference: &TypeRef, generics: &dyn Iterator<Item=TypeRef>, interner: &ThreadedRodeo) -> Result<TypeRef, CompileError> {
+pub fn get_monomorphized_name<'a, I: Iterator<Item=&'a TypeRef>>
+(reference: &TypeRef, generics: I, interner: &ThreadedRodeo) -> Result<TypeRef, CompileError> {
     let mut reference = reference.clone();
     let last = reference.last_mut().unwrap();
     let mut string = interner.resolve(last).to_string();
-    for generic in generics.values() {
+    for generic in generics {
         string.push('_');
         generic.format_top(interner, &mut string)?;
     }
