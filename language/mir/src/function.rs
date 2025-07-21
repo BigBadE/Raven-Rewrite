@@ -2,13 +2,14 @@ use crate::{MediumSyntaxLevel, MediumTerminator, MirFunctionContext};
 use hir::function::{CodeBlock, HighFunction};
 use serde::{Deserialize, Serialize};
 use std::mem;
+use std::collections::HashMap;
 use hir::HighSyntaxLevel;
-use syntax::{FunctionRef, GenericFunctionRef, SyntaxLevel};
+use syntax::{FunctionRef, GenericFunctionRef, GenericTypeRef, SyntaxLevel};
 use syntax::structure::Modifier;
 use syntax::structure::traits::{Function, Terminator};
 use syntax::structure::visitor::Translate;
 use syntax::util::CompileError;
-use syntax::util::translation::{translate_iterable, Translatable};
+use syntax::util::translation::Translatable;
 use crate::monomorphization::MonomorphizationContext;
 
 /// A function in the MIR.
@@ -93,11 +94,25 @@ impl<'a> Translate<FunctionRef, MirFunctionContext<'a>> for GenericFunctionRef {
             return Ok(self.reference.clone());
         }
 
-        Translate::<FunctionRef, MonomorphizationContext>::
-        translate(&context.source.syntax.functions[self], &mut MonomorphizationContext {
-            generics: translate_iterable(&self.generics, context,
-                                         |generic, context|
-                                             Ok((generic.clone(), Translate::translate(generic, context)?)))?,
+        let base_function_ref = GenericFunctionRef {
+            reference: self.reference.clone(),
+            generics: vec![],
+        };
+        
+        let base_function = &context.source.syntax.functions[&base_function_ref];
+
+        let mut generics_map = HashMap::new();
+
+        if base_function.generics.len() == self.generics.len() {
+            for (generic_param_name, generic) in base_function.generics.keys().zip(&self.generics) {
+                let generic_key = GenericTypeRef::Generic { reference: vec![*generic_param_name] };
+                let concrete_type = Translate::translate(generic, context)?;
+                generics_map.insert(generic_key, concrete_type);
+            }
+        }
+
+        Translate::translate(base_function, &mut MonomorphizationContext {
+            generics: generics_map,
             context,
         })
     }

@@ -32,6 +32,34 @@ pub enum GenericTypeRef {
     },
 }
 
+impl GenericTypeRef {
+    pub fn substitute_generics_in_type(&self, generics: &HashMap<GenericTypeRef, TypeRef>) -> Result<GenericTypeRef, CompileError> {
+        match &self {
+            GenericTypeRef::Generic { reference } => {
+                let generic_key = GenericTypeRef::Generic { reference: reference.clone() };
+
+                // If this is a generic parameter, substitute it with the concrete type
+                if let Some(concrete_type) = generics.get(&generic_key) {
+                    Ok(GenericTypeRef::from(concrete_type.clone()))
+                } else {
+                    // If not found, keep as-is (shouldn't happen in correct code)
+                    Ok(self.clone())
+                }
+            }
+            GenericTypeRef::Struct { reference, generics: type_generics } => {
+                // Recursively substitute generics in the struct's type parameters
+                let substituted_generics: Result<Vec<_>, _> = type_generics.iter()
+                    .map(|generic| generic.substitute_generics_in_type(generics))
+                    .collect();
+                Ok(GenericTypeRef::Struct {
+                    reference: reference.clone(),
+                    generics: substituted_generics?,
+                })
+            }
+        }
+    }
+}
+
 impl From<TypeRef> for GenericTypeRef {
     fn from(reference: TypeRef) -> Self {
         GenericTypeRef::Struct { reference, generics: vec![] }
@@ -55,6 +83,19 @@ impl TypeReference for TypeRef {
     fn path(&self) -> FilePath {
         self.clone()
     }
+}
+
+/// Converts the reference to the monomorphized version by appending the generics to the last segment
+pub fn get_monomorphized_name(reference: &TypeRef, generics: &dyn Iterator<Item=TypeRef>, interner: &ThreadedRodeo) -> Result<TypeRef, CompileError> {
+    let mut reference = reference.clone();
+    let last = reference.last_mut().unwrap();
+    let mut string = interner.resolve(last).to_string();
+    for generic in generics.values() {
+        string.push('_');
+        generic.format_top(interner, &mut string)?;
+    }
+    *last = interner.get_or_intern(string);
+    Ok(reference)
 }
 
 /// A reference to a specific function
@@ -101,9 +142,7 @@ pub trait SyntaxLevel: Serialize + for<'a> Deserialize<'a> + Clone {
 
 pub trait PrettyPrintableSyntaxLevel<W: Write>: SyntaxLevel<TypeReference: PrettyPrint<W>,
     Type: PrettyPrint<W>, FunctionReference: PrettyPrint<W>, Function: PrettyPrint<W>,
-    Statement: PrettyPrint<W>, Expression: PrettyPrint<W>, Terminator: PrettyPrint<W>> {
-
-}
+    Statement: PrettyPrint<W>, Expression: PrettyPrint<W>, Terminator: PrettyPrint<W>> {}
 
 /// A SyntaxLevel that also contains a context type for translation.
 pub trait ContextSyntaxLevel<I: SyntaxLevel>: SyntaxLevel {
@@ -135,7 +174,7 @@ impl<W: Write> PrettyPrint<W> for GenericTypeRef {
             GenericTypeRef::Struct { reference, generics } => {
                 reference.format(interner, writer)?;
                 write_generics(interner, generics, writer)
-            },
+            }
             GenericTypeRef::Generic { reference } => {
                 reference.format(interner, writer)
             }
