@@ -91,6 +91,12 @@ impl<T: PrettyPrintableSyntaxLevel<W>, W: Write> PrettyPrint<W> for MediumStatem
             MediumStatement::StorageDead(local) => {
                 write!(writer, "StorageDead(_{});", local)
             },
+            MediumStatement::Call { function, args } => {
+                function.format(interner, writer)?;
+                write!(writer, "(")?;
+                write_comma_list(interner, args, writer)?;
+                write!(writer, ");")
+            },
             MediumStatement::Noop => write!(writer, "noop;"),
         }
     }

@@ -1,5 +1,5 @@
 use crate::{
-    LocalVar, MediumExpression, MediumSyntaxLevel, MediumTerminator, MirFunctionContext, Place,
+    LocalVar, MediumExpression, MediumSyntaxLevel, MediumTerminator, MirFunctionContext, Operand, Place,
 };
 use hir::statement::{Conditional, HighStatement};
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,13 @@ pub enum MediumStatement<T: SyntaxLevel> {
     StorageLive(LocalVar, T::TypeReference),
     /// Kills a local variable
     StorageDead(LocalVar),
+    /// A function call executed for side effects (void return)
+    Call {
+        /// The function to call
+        function: T::FunctionReference,
+        /// The arguments to pass
+        args: Vec<Operand>,
+    },
     /// A NOOP
     Noop,
 }
@@ -53,6 +60,21 @@ impl<'a>
                         },
                         value,
                     });
+                } else {
+                    // For void expressions (like function calls that return nothing),
+                    // we still need to execute them for their side effects
+                    match value {
+                        MediumExpression::FunctionCall { func, args, .. } => {
+                            // Use a proper Call statement for void function calls
+                            context.push_statement(MediumStatement::Call {
+                                function: func,
+                                args,
+                            });
+                        },
+                        _ => {
+                            // For other void expressions, we can safely ignore them
+                        }
+                    }
                 }
             }
             HighStatement::CodeBlock(expressions) => {

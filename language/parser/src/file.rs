@@ -1,6 +1,6 @@
 use crate::errors::{context, expect};
 use crate::function::function;
-use crate::structure::parse_structure;
+use crate::structure::{parse_structure, parse_impl};
 use crate::util::{file_path, ignored, tag_parser};
 use crate::{IResult, Span, TopLevelItem};
 use nom::branch::alt;
@@ -14,7 +14,8 @@ pub fn parse_top_element(input: Span) -> IResult<Span, TopLevelItem> {
     alt((
         map(parse_import, |import| TopLevelItem::Import(import)),
         map(function, |function| TopLevelItem::Function(function)),
-        map(parse_structure, |types| TopLevelItem::Type(types))
+        map(parse_structure, |types| TopLevelItem::Type(types)),
+        map(parse_impl, |impl_block| TopLevelItem::Impl(impl_block))
     ))(input)
 }
 

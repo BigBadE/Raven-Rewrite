@@ -1,4 +1,3 @@
-use std::mem;
 use crate::errors::{expect, context};
 use crate::statements::statement;
 use crate::util::{file_path, identifier, ignored, symbolic, tag_parser, type_ref};

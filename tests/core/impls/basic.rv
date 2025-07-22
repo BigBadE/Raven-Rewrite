@@ -1,0 +1,11 @@
+struct Testing {}
+
+impl Testing {
+    fn test() -> i32 {
+        return 42;
+    }
+}
+
+fn run() {
+    Testing {}.test();
+}

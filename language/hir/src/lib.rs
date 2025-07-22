@@ -4,6 +4,7 @@ use crate::expression::HighExpression;
 use crate::function::{HighFunction, HighTerminator};
 use crate::statement::HighStatement;
 use crate::types::HighType;
+use crate::impl_block::HighImpl;
 use indexmap::IndexMap;
 use lasso::{Spur, ThreadedRodeo};
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,8 @@ pub mod function;
 pub mod statement;
 /// The HIR type type and impls
 pub mod types;
+/// The HIR impl block type and impls
+pub mod impl_block;
 /// Pretty printing implementations for HIR types
 pub mod pretty_print;
 
@@ -37,6 +40,8 @@ pub struct RawSource {
     pub syntax: Syntax<RawSyntaxLevel>,
     /// Each file's imports
     pub imports: HashMap<FilePath, Vec<FilePath>>,
+    /// All impl blocks
+    pub impls: Vec<HighImpl<RawSyntaxLevel>>,
     /// All pre unary operations (like !true)
     pub pre_unary_operations: HashMap<Spur, Vec<GenericFunctionRef>>,
     /// All post unary operations (like foo?)
@@ -152,6 +157,8 @@ impl FunctionReference for RawFunctionRef {
 pub struct HirSource {
     /// The syntax
     pub syntax: Syntax<HighSyntaxLevel>,
+    /// All impl blocks
+    pub impls: Vec<HighImpl<HighSyntaxLevel>>,
     /// Unary operations before the value (like !true)
     pub pre_unary_operations: HashMap<Spur, Vec<GenericFunctionRef>>,
     /// Unary operations after the value (like foo?)
@@ -168,10 +175,46 @@ pub fn resolve_to_hir(source: RawSource) -> Result<HirSource, CompileError> {
         types: HashMap::default(),
     } };
 
+    // Translate impl blocks FIRST, so their functions are available during main syntax translation
+    let mut translated_impls = Vec::new();
+    for impl_block in &source.impls {
+        // Try to find the file where the target type is defined
+        let target_type_name = &impl_block.target_type.path()[0];
+        let impl_file = source.syntax.types.iter()
+            .find(|(type_ref, _)| type_ref.path().last() == Some(target_type_name))
+            .map(|(type_ref, _)| get_file_path(type_ref.path()))
+            .or_else(|| source.imports.keys().next().cloned())
+            .unwrap_or_else(|| vec![source.syntax.symbols.get_or_intern("main")]);
+            
+        let mut function_context = HirFunctionContext::new::<RawSyntaxLevel>(
+            &source,
+            impl_file,
+            &impl_block.generics,
+            &mut context.output,
+        )?;
+        impl_block.translate(&mut function_context)?;
+        translated_impls.push(HighImpl {
+            target_type: RawSyntaxLevel::translate_type_ref(&impl_block.target_type, &mut function_context)?,
+            generics: impl_block
+                .generics
+                .iter()
+                .map(|(name, generics)| {
+                    Ok::<_, CompileError>((
+                        name.clone(),
+                        translate_iterable(generics, &mut function_context, RawSyntaxLevel::translate_type_ref)?,
+                    ))
+                })
+                .collect::<Result<IndexMap<_, _>, _>>()?,
+            modifiers: impl_block.modifiers.clone(),
+            functions: Vec::new(), // Functions are already added to syntax by translate
+        });
+    }
+
     source.syntax.translate(&mut context)?;
 
     Ok(HirSource {
         syntax: context.output,
+        impls: translated_impls,
         pre_unary_operations: source.pre_unary_operations,
         post_unary_operations: source.post_unary_operations,
         binary_operations: source.binary_operations,
@@ -245,38 +288,7 @@ impl<
 /// Handle reference translations
 impl<'a> Translate<GenericTypeRef, HirFunctionContext<'a>> for RawTypeRef {
     fn translate(&self, context: &mut HirFunctionContext) -> Result<GenericTypeRef, CompileError> {
-        if context.source.syntax.types.contains_key(&self.path.clone().into()) {
-            return Ok(GenericTypeRef::Struct {
-                reference: self.path.clone(),
-                generics: translate_iterable(&self.generics, context, |ty, context| {
-                    ty.translate(context)
-                })?,
-            });
-        }
-
-        if self.generics.is_empty()
-            && self.path.len() == 1
-            && context.generics.contains_key(&self.path[0])
-        {
-            return Ok(GenericTypeRef::Generic { reference: self.path.clone() });
-        }
-
-        if let Some(found) = check_imports(context, &self.path(), true, |path, context| {
-            Ok(GenericTypeRef::Struct {
-                reference: path,
-                generics: translate_iterable(&self.generics, context, |ty, context| {
-                    ty.translate(context)
-                })?,
-            })
-        })? {
-            return Ok(found);
-        }
-
-        Err(CompileError::Basic(format!(
-            "Failed to resolve type reference {} in file {}",
-            self.path().format_top(&context.source.syntax.symbols, String::new())?,
-            context.file.format_top(&context.source.syntax.symbols, String::new())?
-        )))
+        resolve_type_reference(self, context)
     }
 }
 
@@ -285,31 +297,7 @@ impl<'a> Translate<GenericFunctionRef, HirFunctionContext<'a>> for RawFunctionRe
         &self,
         context: &mut HirFunctionContext<'a>,
     ) -> Result<GenericFunctionRef, CompileError> {
-        if context.source.syntax.functions.contains_key(&self.path.clone().into()) {
-            return Ok(GenericFunctionRef {
-                reference: self.path.clone(),
-                generics: translate_iterable(&self.generics, context, |ty, context| {
-                    ty.translate(context)
-                })?,
-            });
-        }
-
-        if let Some(found) = check_imports(context, &self.path(), false, |path, context| {
-            Ok(GenericFunctionRef {
-                reference: path,
-                generics: translate_iterable(&self.generics, context, |ty, context| {
-                    ty.translate(context)
-                })?,
-            })
-        })? {
-            return Ok(found);
-        }
-
-        Err(CompileError::Basic(format!(
-            "Failed to resolve function reference {} in file {}",
-            self.path().format_top(&context.source.syntax.symbols, String::new())?,
-            context.file.format_top(&context.source.syntax.symbols, String::new())?
-        )))
+        resolve_function_reference(self, context)
     }
 }
 
@@ -326,18 +314,141 @@ fn check_imports<F: Fn(FilePath, &mut HirFunctionContext) -> Result<T, CompileEr
         return Ok(Some(creator(current, context)?));
     }
 
-    for import in &context.source.imports[&context.file] {
-        if import.last().unwrap() != path.first().unwrap() {
-            continue;
-        }
-        if target(&import) {
-            let mut reference = import.clone();
-            reference.append(&mut path.iter().cloned().skip(1).collect());
-            return Ok(Some(creator(reference, context)?));
+    if let Some(imports) = context.source.imports.get(&context.file) {
+        
+        for import in imports {
+            if import.last().unwrap() != path.first().unwrap() {
+                continue;
+            }
+            if target(&import) {
+                let mut reference = import.clone();
+                reference.append(&mut path.iter().cloned().skip(1).collect());
+                return Ok(Some(creator(reference, context)?));
+            }
         }
     }
 
     Ok(None)
+}
+
+/// Common resolution logic for both types and functions
+enum ReferenceKind {
+    Type,
+    Function,
+}
+
+/// Shared resolution logic that both type and function references can use
+fn resolve_reference_common(
+    path: &FilePath,
+    context: &mut HirFunctionContext,
+    kind: ReferenceKind,
+) -> Result<Option<FilePath>, CompileError> {
+    let is_type = matches!(kind, ReferenceKind::Type);
+    
+    // Check if it exists directly in syntax
+    let syntax_check = if is_type {
+        context.source.syntax.types.contains_key(&path.clone().into())
+    } else {
+        context.source.syntax.functions.contains_key(&path.clone().into())
+    };
+    
+    if syntax_check {
+        return Ok(Some(path.clone()));
+    }
+
+    // For single-component paths, handle same-file resolution
+    if path.len() == 1 {
+        let name = &path[0];
+        
+        // Look for same-file resolution
+        let mut same_file_path = context.file.clone();
+        same_file_path.push(*name);
+        
+        let same_file_check = if is_type {
+            context.source.syntax.types.contains_key(&same_file_path.clone().into())
+        } else {
+            context.source.syntax.functions.contains_key(&same_file_path.clone().into())
+        };
+        
+        if same_file_check {
+            return Ok(Some(same_file_path));
+        }
+        
+        // For functions only: Check if any function in syntax.functions has this name as its last component (for method calls)
+        if !is_type {
+            for (func_ref, _) in &context.syntax.functions {
+                if func_ref.path().last() == Some(name) {
+                    return Ok(Some(func_ref.path()));
+                }
+            }
+        }
+    }
+
+    // Check imports
+    let import_result = check_imports(context, path, is_type, |import_path, _ctx| {
+        Ok(import_path)
+    })?;
+    
+    if let Some(import_path) = import_result {
+        return Ok(Some(import_path));
+    }
+
+    Ok(None)
+}
+
+/// Resolve type reference using shared logic
+fn resolve_type_reference(
+    raw_ref: &RawTypeRef,
+    context: &mut HirFunctionContext,
+) -> Result<GenericTypeRef, CompileError> {
+    // Check for generic parameters first (specific to types)
+    if raw_ref.generics.is_empty()
+        && raw_ref.path.len() == 1
+        && context.generics.contains_key(&raw_ref.path[0])
+    {
+        return Ok(GenericTypeRef::Generic { reference: raw_ref.path.clone() });
+    }
+
+    // Use common resolution logic
+    if let Some(resolved_path) = resolve_reference_common(&raw_ref.path, context, ReferenceKind::Type)? {
+        return Ok(GenericTypeRef::Struct {
+            reference: resolved_path,
+            generics: translate_iterable(&raw_ref.generics, context, |ty, context| {
+                ty.translate(context)
+            })?,
+        });
+    }
+
+    // Type resolution fails with error
+    Err(CompileError::Basic(format!(
+        "Failed to resolve type reference {} in file {}",
+        raw_ref.path().format_top(&context.source.syntax.symbols, String::new())?,
+        context.file.format_top(&context.source.syntax.symbols, String::new())?
+    )))
+}
+
+/// Resolve function reference using shared logic
+fn resolve_function_reference(
+    raw_ref: &RawFunctionRef,
+    context: &mut HirFunctionContext,
+) -> Result<GenericFunctionRef, CompileError> {
+    // Use common resolution logic
+    if let Some(resolved_path) = resolve_reference_common(&raw_ref.path, context, ReferenceKind::Function)? {
+        return Ok(GenericFunctionRef {
+            reference: resolved_path,
+            generics: translate_iterable(&raw_ref.generics, context, |ty, context| {
+                ty.translate(context)
+            })?,
+        });
+    }
+
+    // Function resolution allows pass-through for later resolution
+    Ok(GenericFunctionRef {
+        reference: raw_ref.path.clone(),
+        generics: translate_iterable(&raw_ref.generics, context, |ty, context| {
+            ty.translate(context)
+        })?,
+    })
 }
 
 impl Translatable<RawSyntaxLevel, HighSyntaxLevel> for RawSyntaxLevel {

@@ -1,5 +1,3 @@
-#![feature(let_chains)]
-
 /// The MIR expression type and impls
 pub mod expression;
 /// The MIR function type and impls

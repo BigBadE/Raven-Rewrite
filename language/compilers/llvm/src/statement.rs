@@ -1,4 +1,4 @@
-use crate::expression::{compile_expression, compile_literal};
+use crate::expression::{compile_expression, compile_literal, compile_operand};
 use crate::types::TypeManager;
 use anyhow::Error;
 use hir::function::CodeBlock;
@@ -108,6 +108,18 @@ pub fn compile_statement<'ctx>(
             let pointer = function_generator.variables[&local].0;
             function_generator.builder().build_free(pointer)?;
             // TODO handle dropping semantics
+        }
+        MediumStatement::Call { function, args } => {
+            // Handle void function calls directly without creating dummy variables
+            let func = function_generator.type_manager.function_type(function);
+            let args = args
+                .iter()
+                .map(|arg| compile_operand(function_generator, arg).map(|value| value.into()))
+                .collect::<Result<Vec<_>, Error>>()?;
+            function_generator
+                .builder()
+                .build_call(func, args.as_slice(), "void_call")?;
+            // Note: We ignore the result since this is a void call
         }
         MediumStatement::Noop => {}
     }

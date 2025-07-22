@@ -5,6 +5,7 @@ use anyhow::Error;
 use async_recursion::async_recursion;
 use hir::function::HighFunction;
 use hir::types::HighType;
+use hir::impl_block::HighImpl;
 use hir::{create_syntax, RawSource, RawSyntaxLevel};
 use lasso::{Spur, ThreadedRodeo};
 use nom::multi::many0;
@@ -67,6 +68,8 @@ pub struct File {
     pub functions: Vec<HighFunction<RawSyntaxLevel>>,
     /// The types in the file
     pub types: Vec<HighType<RawSyntaxLevel>>,
+    /// The impl blocks in the file
+    pub impls: Vec<HighImpl<RawSyntaxLevel>>,
 }
 
 /// A top level item, used to handle the different possible return types
@@ -77,6 +80,8 @@ pub enum TopLevelItem {
     Type(HighType<RawSyntaxLevel>),
     /// An import
     Import(FilePath),
+    /// An impl block
+    Impl(HighImpl<RawSyntaxLevel>),
 }
 
 impl Extend<TopLevelItem> for File {
@@ -90,6 +95,7 @@ impl Extend<TopLevelItem> for File {
                     self.imports.push(path);
                 }
                 TopLevelItem::Type(types) => self.types.push(types),
+                TopLevelItem::Impl(impl_block) => self.impls.push(impl_block),
             }
         }
     }
@@ -100,6 +106,7 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, CompileError> {
     let syntax = create_syntax();
     let mut source = RawSource {
         imports: HashMap::default(),
+        impls: Vec::new(),
         pre_unary_operations: HashMap::default(),
         post_unary_operations: HashMap::default(),
         binary_operations: HashMap::default(),
@@ -166,6 +173,10 @@ fn add_file_to_syntax(
 
     for types in file.types {
         source.syntax.types.insert(types.reference.clone(), types);
+    }
+
+    for impl_block in file.impls {
+        source.impls.push(impl_block);
     }
 
     source.imports.insert(file_path, file.imports);
@@ -240,8 +251,9 @@ pub async fn parse_file(
         let function_count = parsing.matches("fn ").count();
         let struct_count = parsing.matches("struct ").count(); 
         let trait_count = parsing.matches("trait ").count();
-        let total_expected = function_count + struct_count + trait_count;
-        let total_parsed = file.functions.len() + file.types.len();
+        let impl_count = parsing.matches("impl ").count();
+        let total_expected = function_count + struct_count + trait_count + impl_count;
+        let total_parsed = file.functions.len() + file.types.len() + file.impls.len();
         
         // Only warn in debug builds to avoid performance impact in release
         #[cfg(debug_assertions)]

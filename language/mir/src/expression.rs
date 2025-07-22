@@ -9,11 +9,34 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ops::Deref;
 use syntax::structure::literal::Literal;
-use syntax::structure::traits::Expression;
+use syntax::structure::traits::{Expression, FunctionReference};
 use syntax::structure::visitor::Translate;
+use syntax::util::pretty_print::PrettyPrint;
 use syntax::util::translation::{translate_fields, translate_iterable, Translatable};
 use syntax::util::CompileError;
 use syntax::{FunctionRef, GenericFunctionRef, GenericTypeRef, SyntaxLevel, TypeRef};
+
+/// Helper function to find a function definition, checking both regular functions and impl blocks
+fn find_function_definition<'a>(
+    function_ref: &GenericFunctionRef,
+    context: &'a MirFunctionContext,
+) -> Option<&'a HighFunction<HighSyntaxLevel>> {
+    // First, try to find in regular functions
+    if let Some(func) = context.source.syntax.functions.get(function_ref) {
+        return Some(func);
+    }
+
+    // If not found, search in impl blocks
+    for impl_block in &context.source.impls {
+        for func in &impl_block.functions {
+            if func.reference.path() == function_ref.reference.clone() {
+                return Some(func);
+            }
+        }
+    }
+
+    None
+}
 
 /// An expression in the MIR
 #[derive(Serialize, Deserialize, Clone)]
@@ -68,7 +91,9 @@ pub fn get_operand(
         value => {
             // This is checked to be non-void before.
             let ty = value.get_type(context)?.unwrap();
-            let temp = context.create_temp(ty);
+            let temp = context.create_temp(ty.clone());
+            // Emit StorageLive before assigning to the temporary variable
+            context.push_statement(MediumStatement::StorageLive(temp, ty));
             context.push_statement(MediumStatement::Assign {
                 place: Place {
                     local: temp,
@@ -90,7 +115,14 @@ pub fn translate_function<'a>(
     arguments: Vec<&HighExpression<HighSyntaxLevel>>,
     context: &mut MirFunctionContext<'a>,
 ) -> Result<MediumExpression<MediumSyntaxLevel>, CompileError> {
-    let func_def = &context.source.syntax.functions[function];
+    let func_def = find_function_definition(function, context)
+        .ok_or_else(|| {
+            CompileError::Basic(format!(
+                "Failed to resolve function reference {} in translation",
+                function.reference.format_top(&context.source.syntax.symbols, String::new()).unwrap_or_default()
+            ))
+        })?
+        .clone();
 
     if func_def.generics.is_empty() {
         return create_non_generic_function_call(function, arguments, context);
@@ -99,14 +131,14 @@ pub fn translate_function<'a>(
     let translated_args: Vec<Operand> = translate_iterable(&arguments, context, |arg, context| {
         HighSyntaxLevel::translate_expr(arg, context).and_then(|expr| get_operand(expr, context))
     })?;
-    let substitutions = infer_generic_types_with_partial(func_def, &translated_args, &function.generics, context)?;
+    let substitutions = infer_generic_types_with_partial(&func_def, &translated_args, &function.generics, context)?;
 
     if substitutions.is_empty() && function.generics.is_empty() {
         return create_non_generic_function_call(function, arguments, context);
     }
 
-    let complete_generics = build_complete_generics(func_def, &function.generics, &substitutions, context)?;
-    create_generic_function_call(function, func_def, complete_generics, translated_args, substitutions, context)
+    let complete_generics = build_complete_generics(&func_def, &function.generics, &substitutions, context)?;
+    create_generic_function_call(function, &func_def, complete_generics, translated_args, substitutions, context)
 }
 
 /// Creates a function call for non-generic functions or when no generics can be inferred
@@ -115,17 +147,27 @@ fn create_non_generic_function_call<'a>(
     arguments: Vec<&HighExpression<HighSyntaxLevel>>,
     context: &mut MirFunctionContext<'a>,
 ) -> Result<MediumExpression<MediumSyntaxLevel>, CompileError> {
-    let func_def = &context.source.syntax.functions[function];
+    let func_def = find_function_definition(function, context)
+        .ok_or_else(|| {
+            CompileError::Basic(format!(
+                "Failed to resolve function reference {} in non-generic translation",
+                function.reference.format_top(&context.source.syntax.symbols, String::new()).unwrap_or_default()
+            ))
+        })?
+        .clone();
+    
     let func_ref = HighSyntaxLevel::translate_func_ref(function, context)?;
     let args = translate_iterable(&arguments, context, |arg, context| {
         HighSyntaxLevel::translate_expr(arg, context).and_then(|expr| get_operand(expr, context))
     })?;
+    
+    let return_type = func_def.return_type.as_ref()
+        .map(|ret| HighSyntaxLevel::translate_type_ref(ret, context))
+        .transpose()?;
 
     Ok(MediumExpression::FunctionCall {
         func: func_ref,
-        return_type: func_def.return_type.as_ref()
-            .map(|ret| HighSyntaxLevel::translate_type_ref(ret, context))
-            .transpose()?,
+        return_type,
         args,
     })
 }

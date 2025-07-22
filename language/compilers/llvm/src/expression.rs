@@ -1,5 +1,5 @@
 use crate::statement::FunctionGenerator;
-use anyhow::{Context, Error};
+use anyhow::Error;
 use inkwell::values::BasicValueEnum;
 use mir::expression::MediumExpression;
 use mir::{MediumSyntaxLevel, Operand};
@@ -24,7 +24,7 @@ pub fn compile_expression<'a, 'b, 'ctx>(
                 .build_call(func, args.as_slice(), "func_call")?
                 .try_as_basic_value()
                 .left()
-                .context("Expected non-void function")?
+                .expect("Function call in expression context must return a value")
         }
         MediumExpression::CreateStruct {
             struct_type,

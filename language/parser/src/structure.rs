@@ -5,6 +5,7 @@ use crate::util::{identifier, ignored, modifiers, struct_field, tag_parser, type
 use crate::{IResult, Span};
 use hir::types::{HighType, TypeData};
 use hir::{RawSyntaxLevel, RawTypeRef};
+use hir::impl_block::HighImpl;
 use lasso::Spur;
 use nom::Parser;
 use nom::branch::alt;
@@ -76,4 +77,28 @@ pub fn generics(input: Span) -> IResult<Span, IndexMap<Spur, Vec<RawTypeRef>>> {
         generics.unwrap_or_default()
     })
     .parse(input)
+}
+
+/// Parses an impl block
+pub fn parse_impl(input: Span) -> IResult<Span, HighImpl<RawSyntaxLevel>> {
+    map(
+        tuple((
+            modifiers,
+            preceded(delimited(ignored, context(tag_parser("impl"), "impl keyword 'impl'", Some("impl blocks start with 'impl'")), ignored), expect(type_ref, "target type", Some("impl blocks must specify the type being implemented"))),
+            opt(generics),
+            delimited(
+                delimited(ignored, expect(tag_parser("{"), "opening brace '{'", Some("impl block bodies start with '{'")), ignored),
+                many0(delimited(ignored, function, ignored)),
+                delimited(ignored, expect(tag_parser("}"), "closing brace '}'", Some("impl block bodies end with '}'")), ignored),
+            ),
+        )),
+        |(modifiers, target_type, generics, functions)| {
+            HighImpl {
+                target_type,
+                generics: generics.unwrap_or_default(),
+                modifiers,
+                functions,
+            }
+        },
+    )(input)
 }
