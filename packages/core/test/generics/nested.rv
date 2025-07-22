@@ -2,6 +2,6 @@ struct NestedGeneric<T> {
     inner: T,
 }
 
-fn test(testing: NestedGeneric<NestedGeneric<i32>>) -> i32 {
+fn test_nested(testing: NestedGeneric<NestedGeneric<i32>>) -> i32 {
     return testing.inner.inner;
 }

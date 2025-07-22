@@ -17,6 +17,7 @@ nom_locate = "4.2.0"
 indexmap.workspace = true
 anyhow.workspace = true
 owo-colors.workspace = true
+toml = "0.8"
 
 # Core
 syntax.workspace = true

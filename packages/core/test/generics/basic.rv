@@ -7,9 +7,9 @@ struct SolidifiedGenericStruct {
 }
 
 fn basic_generic_function<T>(input: T) -> BasicGenericStruct<T> {
-    BasicGenericStruct { value: input }
+    return BasicGenericStruct { value: input };
 }
 
 fn solidified_generic_function(input: i32) -> BasicGenericStruct<i32> {
-    basic_generic_function(input)
+    return basic_generic_function(input);
 }

@@ -4,7 +4,7 @@ trait Testing {
 
 impl Testing for i64 {
     fn test() -> i64 {
-        42
+        return 42;
     }
 }
 
