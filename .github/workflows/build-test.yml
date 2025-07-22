@@ -38,7 +38,7 @@ jobs:
       - name: Install cranelift
         run: rustup component add rustc-codegen-cranelift-preview --toolchain nightly
       - name: Test
-        run: RUSTFLAGS="-C codegen-backend=llvm" cargo +nightly llvm-cov --lcov --output-path coverage.info --bin tests --verbose -- --nocapture
+        run: cargo +nightly llvm-cov --lcov --output-path coverage.info --bin tests --release --verbose -- --nocapture
       - name: Upload Coverage Report To Codecov
         # Codecov is broken on macos 13 currently.
         if: github.event_name == 'push' && github.repository == 'BigBadE/Raven-Rewrite' && matrix.os != 'macos-13'
