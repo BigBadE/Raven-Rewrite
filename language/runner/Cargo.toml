@@ -7,3 +7,4 @@ parser.workspace = true
 hir.workspace = true
 mir.workspace = true
 syntax.workspace = true
+lasso.workspace = true

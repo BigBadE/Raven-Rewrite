@@ -9,3 +9,5 @@ tokio.workspace = true
 
 runner.workspace = true
 compiler-llvm.workspace = true
+syntax.workspace = true
+lasso.workspace = true

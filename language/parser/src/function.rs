@@ -1,6 +1,6 @@
 use crate::code::function_body;
 use crate::structure::generics;
-use crate::util::{identifier_symbolic, ignored, modifiers, parameter, tag_parser, type_ref};
+use crate::util::{attributes, identifier_symbolic, ignored, modifiers, parameter, tag_parser, type_ref};
 use crate::{IResult, Span};
 use hir::function::HighFunction;
 use hir::{RawSyntaxLevel, RawTypeRef};
@@ -15,6 +15,7 @@ use nom::Parser;
 pub fn function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {
     let original_input = input.clone();
     
+    let (input, attrs) = attributes(input)?;
     let (input, modifiers) = modifiers(input)?;
     let (input, _) = delimited(ignored, tag_parser("fn"), ignored)(input)?;
     let (input, name) = identifier_symbolic(input)?;
@@ -27,6 +28,7 @@ pub fn function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {
     reference.push(name);
     let result = HighFunction {
         reference: reference.into(),
+        attributes: attrs,
         modifiers,
         generics: IndexMap::from_iter(generics.into_iter()),
         parameters,

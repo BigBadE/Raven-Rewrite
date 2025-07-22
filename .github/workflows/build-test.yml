@@ -35,8 +35,6 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
-      - name: Install cranelift
-        run: rustup component add rustc-codegen-cranelift-preview --toolchain nightly
       - name: Test
         run: cargo +nightly llvm-cov --lcov --output-path coverage.info --bin tests --release --verbose -- --nocapture
       - name: Upload Coverage Report To Codecov

@@ -3,7 +3,7 @@ use lasso::Spur;
 use serde::{Deserialize, Serialize};
 use syntax::structure::traits::{Function, Terminator};
 use syntax::structure::visitor::Translate;
-use syntax::structure::Modifier;
+use syntax::structure::{Attribute, Modifier};
 use syntax::util::translation::{translate_fields, translate_iterable, Translatable};
 use syntax::util::CompileError;
 use syntax::{ContextSyntaxLevel, SyntaxLevel};
@@ -16,6 +16,8 @@ use crate::types::HighType;
 pub struct HighFunction<T: SyntaxLevel> {
     /// The reference (file path) to the function
     pub reference: T::FunctionReference,
+    /// The attributes applied to the function (e.g., #[test])
+    pub attributes: Vec<Attribute>,
     /// The modifiers of the function
     pub modifiers: Vec<Modifier>,
     /// The parameters of the function
@@ -77,6 +79,7 @@ Translate<(), HirFunctionContext<'ctx>> for HighFunction<I>
 
         let function = HighFunction::<HighSyntaxLevel> {
             reference: function_ref,
+            attributes: self.attributes.clone(),
             modifiers: self.modifiers.clone(),
             body: CodeBlock {
                 statements: translate_iterable(&self.body.statements, context, I::translate_stmt)?,

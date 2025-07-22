@@ -10,7 +10,7 @@ use nom::multi::{many0, separated_list0, separated_list1};
 use nom::sequence::{delimited, pair, preceded, terminated, tuple};
 use nom::Err::Error;
 use nom::{error, Parser};
-use syntax::structure::{Modifier, MODIFIERS};
+use syntax::structure::{Attribute, AttributeArg, Modifier, MODIFIERS};
 use syntax::util::path::FilePath;
 use crate::errors::ParserError;
 use nom::error::ParseError;
@@ -126,4 +126,36 @@ pub fn ignored(input: Span) -> IResult<Span, ()> {
 /// A variant of nom's tag that uses the correct type annotations for our parser
 pub fn tag_parser(tag_str: &'static str) -> impl Fn(Span) -> IResult<Span, Span> {
     move |input: Span| tag(tag_str)(input)
+}
+
+/// Parses a single attribute like #[test] or #[derive(Clone)]
+pub fn attribute(input: Span) -> IResult<Span, Attribute> {
+    map(
+        tuple((
+            tag("#["),
+            delimited(ignored, identifier, ignored),
+            tag("]")
+        )),
+        |(_, name, _)| Attribute {
+            name,
+            args: Vec::new(),
+        }
+    )(input)
+}
+
+/// Parses attribute arguments
+pub fn attribute_arg(input: Span) -> IResult<Span, AttributeArg> {
+    alt((
+        map(identifier, AttributeArg::Identifier),
+        map(
+            delimited(tag("\""), take_until("\""), tag("\"")),
+            |s: Span| AttributeArg::String(s.to_string())
+        ),
+        map(attribute, AttributeArg::Nested),
+    ))(input)
+}
+
+/// Parses multiple attributes before a declaration
+pub fn attributes(input: Span) -> IResult<Span, Vec<Attribute>> {
+    many0(delimited(ignored, attribute, ignored))(input)
 }

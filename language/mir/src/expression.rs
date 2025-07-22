@@ -29,7 +29,7 @@ fn find_function_definition<'a>(
     // If not found, search in impl blocks
     for impl_block in &context.source.impls {
         for func in &impl_block.functions {
-            if func.reference.path() == function_ref.reference.clone() {
+            if func.reference.path() == function_ref.reference {
                 return Some(func);
             }
         }

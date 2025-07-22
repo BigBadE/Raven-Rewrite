@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{Display, Formatter};
+use lasso::Spur;
 
 /// Literal values like numbers or strings
 pub mod literal;
@@ -34,6 +35,43 @@ impl Display for Modifier {
         match self {
             Modifier::PUBLIC => write!(f, "pub"),
             Modifier::OPERATION => write!(f, "operation"),
+        }
+    }
+}
+
+/// An attribute that can be applied to functions, structs, etc.
+/// Similar to Rust's attribute system like #[test], #[derive(Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
+pub struct Attribute {
+    /// The name of the attribute (e.g., "test", "derive")
+    pub name: Spur,
+    /// Optional parameters/arguments for the attribute
+    pub args: Vec<AttributeArg>,
+}
+
+/// Arguments that can be passed to attributes
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
+pub enum AttributeArg {
+    /// A simple identifier like `Clone` in #[derive(Clone)]
+    Identifier(Spur),
+    /// A string literal like `"hello"` in #[doc = "hello"]
+    String(String),
+    /// A nested attribute for complex cases
+    Nested(Attribute),
+}
+
+impl Display for Attribute {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "#[{:?}]", self.name)
+    }
+}
+
+impl Display for AttributeArg {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            AttributeArg::Identifier(spur) => write!(f, "{:?}", spur),
+            AttributeArg::String(s) => write!(f, "\"{}\"", s),
+            AttributeArg::Nested(attr) => write!(f, "{}", attr),
         }
     }
 }
