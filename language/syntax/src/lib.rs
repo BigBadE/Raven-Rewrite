@@ -11,11 +11,41 @@ use std::fmt::Write;
 use std::sync::Arc;
 use crate::util::path::FilePath;
 use crate::util::pretty_print::{write_generics, NestedWriter, PrettyPrint};
+use std::path::PathBuf;
 
 /// The structure of the program in memory
 pub mod structure;
 /// Various utility functions
 pub mod util;
+
+/// A package dependency
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PackageDependency {
+    /// The name of the package
+    pub name: String,
+    /// The path to the package (for path dependencies)
+    pub path: Option<PathBuf>,
+    /// The version constraint (for registry dependencies)
+    pub version: Option<String>,
+}
+
+/// Package manifest structure
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PackageManifest {
+    /// Package information
+    pub package: PackageInfo,
+    /// Dependencies
+    pub dependencies: HashMap<String, PackageDependency>,
+}
+
+/// Package information
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PackageInfo {
+    /// The name of the package
+    pub name: String,
+    /// The version of the package
+    pub version: String,
+}
 
 /// A reference to a specific type
 #[derive(Clone, Hash, Ord, PartialOrd, PartialEq, Eq, Serialize, Deserialize)]

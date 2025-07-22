@@ -202,20 +202,33 @@ pub fn resolve_to_hir(source: RawSource) -> Result<HirSource, CompileError> {
                 .unwrap_or_else(|| vec![source.syntax.symbols.get_or_intern("main")])
         };
             
-        let mut function_context = HirFunctionContext::new::<RawSyntaxLevel>(
-            &source,
-            impl_file,
-            &impl_block.generics,
-            &mut context.output,
-        )?;
-        impl_block.translate(&mut function_context)?;
-        translated_impls.push(HighImpl {
-            trait_ref: impl_block.trait_ref
+        let (translated_trait_ref, translated_target_type, translated_generics, function_refs) = {
+            let mut function_context = HirFunctionContext::new::<RawSyntaxLevel>(
+                &source,
+                impl_file,
+                &impl_block.generics,
+                &mut context.output,
+            )?;
+            
+            // Store function references first
+            let mut function_refs = Vec::new();
+            for function in &impl_block.functions {
+                let func_ref = RawSyntaxLevel::translate_func_ref(&function.reference, &mut function_context)?;
+                function_refs.push(func_ref);
+            }
+            
+            // Translate the functions (this adds them to the global syntax)
+            for function in &impl_block.functions {
+                RawSyntaxLevel::translate_func(function, &mut function_context)?;
+            }
+            
+            // Translate other impl block data
+            let trait_ref = impl_block.trait_ref
                 .as_ref()
                 .map(|trait_ref| RawSyntaxLevel::translate_type_ref(trait_ref, &mut function_context))
-                .transpose()?,
-            target_type: RawSyntaxLevel::translate_type_ref(&impl_block.target_type, &mut function_context)?,
-            generics: impl_block
+                .transpose()?;
+            let target_type = RawSyntaxLevel::translate_type_ref(&impl_block.target_type, &mut function_context)?;
+            let generics = impl_block
                 .generics
                 .iter()
                 .map(|(name, generics)| {
@@ -224,9 +237,25 @@ pub fn resolve_to_hir(source: RawSource) -> Result<HirSource, CompileError> {
                         translate_iterable(generics, &mut function_context, RawSyntaxLevel::translate_type_ref)?,
                     ))
                 })
-                .collect::<Result<IndexMap<_, _>, _>>()?,
+                .collect::<Result<IndexMap<_, _>, _>>()?;
+            
+            (trait_ref, target_type, generics, function_refs)
+        };
+        
+        // Now collect the translated functions for the impl block (after function_context is dropped)
+        let mut translated_functions = Vec::new();
+        for func_ref in function_refs {
+            if let Some(translated_func) = context.output.functions.get(&func_ref.clone().into()) {
+                translated_functions.push(translated_func.clone());
+            }
+        }
+        
+        translated_impls.push(HighImpl {
+            trait_ref: translated_trait_ref,
+            target_type: translated_target_type,
+            generics: translated_generics,
             modifiers: impl_block.modifiers.clone(),
-            functions: Vec::new(), // Functions are already added to syntax by translate
+            functions: translated_functions, // Store copies of the translated functions
         });
     }
 

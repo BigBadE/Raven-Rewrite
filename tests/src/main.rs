@@ -1,7 +1,7 @@
 use anyhow::Error;
 use compiler_llvm::LowCompiler;
 use lasso::ThreadedRodeo;
-use runner::compile_source_with_hir;
+use runner::{compile_source_with_hir, compile_source_with_tests_and_hir};
 use std::path::PathBuf;
 use syntax::structure::Attribute;
 use syntax::util::pretty_print::PrettyPrint;
@@ -19,7 +19,11 @@ fn is_test_function(attributes: &[Attribute], symbols: &ThreadedRodeo) -> bool {
 
 #[tokio::test]
 async fn test() -> Result<(), Error> {
-    let (hir_functions, hir_symbols, mir) = compile_source_with_hir(PathBuf::from("core")).await?;
+    // Debug what directory we're looking in
+    let current_dir = std::env::current_dir()?;
+    println!("Current directory: {:?}", current_dir);
+    
+    let (hir_functions, hir_symbols, mir) = compile_source_with_tests_and_hir(PathBuf::from("..")).await?;
 
     println!("=== MIR ===");
     println!("{}", mir);
@@ -31,8 +35,8 @@ async fn test() -> Result<(), Error> {
     // Find all test functions from HIR (which has attributes)
     let mut test_functions = Vec::new();
     for (func_ref, func) in &hir_functions {
+        let func_path = func_ref.reference.format_top(&hir_symbols, String::new())?;
         if is_test_function(&func.attributes, &hir_symbols) {
-            let func_path = func_ref.reference.format_top(&hir_symbols, String::new())?;
             test_functions.push(func_path);
         }
     }

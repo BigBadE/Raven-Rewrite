@@ -18,9 +18,12 @@ use syntax::structure::Modifier;
 use syntax::util::path::{get_path, FilePath};
 use syntax::util::CompileError;
 use tokio::fs;
+use crate::dependency::{load_manifest, resolve_dependencies, discover_test_directories};
 
 /// Parses blocks of code
 mod code;
+/// Handles dependency resolution
+pub mod dependency;
 /// Handles errors
 mod errors;
 /// Parses expressions
@@ -103,6 +106,16 @@ impl Extend<TopLevelItem> for File {
 
 /// Parses a source directory into a `RawSource`.
 pub async fn parse_source(dir: PathBuf) -> Result<RawSource, CompileError> {
+    parse_source_with_dependencies(dir, true).await
+}
+
+/// Parses a source directory including tests into a `RawSource`.
+pub async fn parse_source_with_tests(dir: PathBuf) -> Result<RawSource, CompileError> {
+    parse_source_with_dependencies_and_tests(dir, true, true).await
+}
+
+/// Parses a source directory into a `RawSource` with optional dependency and test resolution.
+pub async fn parse_source_with_dependencies_and_tests(dir: PathBuf, resolve_deps: bool, include_tests: bool) -> Result<RawSource, CompileError> {
     let syntax = create_syntax();
     let mut source = RawSource {
         imports: HashMap::default(),
@@ -113,20 +126,40 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, CompileError> {
         syntax,
     };
     let mut errors = Vec::new();
-    for path in read_recursive(&dir)
-        .await
-        .map_err(|err| CompileError::Internal(err))?
-    {
-        // Parse a single file
-        let file_path = get_path(&source.syntax.symbols, &path, &dir);
-        let file = match parse_file(&path, file_path.clone(), source.syntax.symbols.clone()).await {
-            Ok(file) => file,
-            Err(err) => {
-                errors.push(err);
-                continue;
+    
+    // Load dependencies if requested
+    let mut package_roots = HashMap::new();
+    if resolve_deps {
+        if let Ok(manifest) = load_manifest(&dir).await {
+            match resolve_dependencies(&manifest, &dir).await {
+                Ok(deps) => package_roots = deps,
+                Err(err) => errors.push(CompileError::Internal(err)),
             }
-        };
-        errors.append(&mut add_file_to_syntax(&mut source, file, file_path));
+        }
+    }
+    
+    // Parse the main package
+    errors.append(&mut parse_package(&mut source, &dir, &dir).await);
+    
+    // Parse each dependency package
+    for (_package_name, package_path) in &package_roots {
+        errors.append(&mut parse_package(&mut source, package_path, package_path).await);
+    }
+    
+    // Parse test directories if requested
+    if include_tests {
+        // Add the main package to the package_roots map for test discovery
+        let mut all_packages = package_roots.clone();
+        all_packages.insert("main".to_string(), dir.clone());
+        
+        match discover_test_directories(&all_packages).await {
+            Ok(test_dirs) => {
+                for test_dir in test_dirs {
+                    errors.append(&mut parse_package(&mut source, &test_dir, &test_dir).await);
+                }
+            },
+            Err(err) => errors.push(CompileError::Internal(err)),
+        }
     }
 
     if !errors.is_empty() {
@@ -134,6 +167,40 @@ pub async fn parse_source(dir: PathBuf) -> Result<RawSource, CompileError> {
     }
 
     Ok(source)
+}
+
+/// Parses a source directory into a `RawSource` with optional dependency resolution.
+pub async fn parse_source_with_dependencies(dir: PathBuf, resolve_deps: bool) -> Result<RawSource, CompileError> {
+    parse_source_with_dependencies_and_tests(dir, resolve_deps, false).await
+}
+
+/// Parses a single package directory
+async fn parse_package(source: &mut RawSource, package_dir: &PathBuf, root_dir: &PathBuf) -> Vec<CompileError> {
+    let mut errors = Vec::new();
+    
+    match read_recursive(package_dir).await {
+        Ok(paths) => {
+            for path in paths {
+                // Skip non-.rv files
+                if !path.to_string_lossy().ends_with(".rv") {
+                    continue;
+                }
+                
+                let file_path = get_path(&source.syntax.symbols, &path, root_dir);
+                let file = match parse_file(&path, file_path.clone(), source.syntax.symbols.clone()).await {
+                    Ok(file) => file,
+                    Err(err) => {
+                        errors.push(err);
+                        continue;
+                    }
+                };
+                errors.append(&mut add_file_to_syntax(source, file, file_path));
+            }
+        },
+        Err(err) => errors.push(CompileError::Internal(err)),
+    }
+    
+    errors
 }
 
 fn add_file_to_syntax(

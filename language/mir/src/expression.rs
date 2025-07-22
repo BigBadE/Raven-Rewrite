@@ -38,6 +38,100 @@ fn find_function_definition<'a>(
     None
 }
 
+/// Helper function to resolve method calls on target objects
+fn resolve_method_call<'a>(
+    function_ref: &GenericFunctionRef,
+    target_expr: &HighExpression<HighSyntaxLevel>,
+    context: &'a mut MirFunctionContext,
+) -> Result<Option<&'a HighFunction<HighSyntaxLevel>>, CompileError> {
+    // Get the type of the target expression
+    let target_type = determine_expression_type(target_expr, context)?;
+    
+    // Look for the method in impl blocks for this type
+    for impl_block in &context.source.impls {
+        // Check if this impl block applies to the target type
+        if type_matches_impl_target(&target_type, &impl_block.target_type, context)? {
+            // Look for the method in this impl block
+            for func in &impl_block.functions {
+                let method_name = func.reference.path().last().copied();
+                let target_method_name = function_ref.reference.last().copied();
+                
+                if method_name == target_method_name {
+                    return Ok(Some(func));
+                }
+            }
+        }
+    }
+    
+    Ok(None)
+}
+
+/// Determine the type of an expression for method resolution
+fn determine_expression_type(
+    expr: &HighExpression<HighSyntaxLevel>,
+    context: &mut MirFunctionContext,
+) -> Result<GenericTypeRef, CompileError> {
+    let result = match expr {
+        HighExpression::Literal(lit) => {
+            Ok(GenericTypeRef::from(lit.get_type(&context.source.syntax.symbols)))
+        }
+        HighExpression::Variable(var) => {
+            let local_idx = context.local_vars.get(var).ok_or_else(|| {
+                CompileError::Basic(format!(
+                    "Unknown variable: {}",
+                    context.source.syntax.symbols.resolve(var)
+                ))
+            })?;
+            let var_type = &context.var_types[*local_idx];
+            Ok(GenericTypeRef::from(var_type.clone()))
+        }
+        HighExpression::CreateStruct { target_struct, .. } => {
+            Ok(GenericTypeRef::from(target_struct.clone()))
+        }
+        HighExpression::FunctionCall { .. } => {
+            // For function calls, we'd need to resolve the return type
+            // For now, let's not support chained method calls
+            Err(CompileError::Basic("Method calls on function call results not yet supported".to_string()))
+        }
+        HighExpression::FieldAccess { .. } => {
+            // For field access, we'd need to resolve the field type
+            // For now, let's not support method calls on field access
+            Err(CompileError::Basic("Method calls on field access not yet supported".to_string()))
+        }
+        _ => {
+            Err(CompileError::Basic("Cannot determine type for method call target".to_string()))
+        }
+    };
+    
+    
+    result
+}
+
+/// Check if a type matches an impl block's target type
+fn type_matches_impl_target(
+    target_type: &GenericTypeRef,
+    impl_target: &GenericTypeRef,
+    _context: &MirFunctionContext,
+) -> Result<bool, CompileError> {
+    // For now, do simple type matching
+    // This could be enhanced later for generic types
+    match (target_type, impl_target) {
+        (
+            GenericTypeRef::Struct { reference: target_ref, generics: target_generics },
+            GenericTypeRef::Struct { reference: impl_ref, generics: impl_generics }
+        ) => {
+            if target_ref == impl_ref && target_generics.len() == impl_generics.len() {
+                // For now, assume they match if base types match
+                // TODO: Handle generic type parameters properly
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        }
+        _ => Ok(target_type == impl_target)
+    }
+}
+
 /// An expression in the MIR
 #[derive(Serialize, Deserialize, Clone)]
 pub enum MediumExpression<T: SyntaxLevel> {
@@ -109,6 +203,53 @@ pub fn get_operand(
     }
 }
 
+/// Translates a method call with a target object
+pub fn translate_method_call<'a>(
+    function: &GenericFunctionRef,
+    target: &HighExpression<HighSyntaxLevel>,
+    arguments: Vec<&HighExpression<HighSyntaxLevel>>,
+    context: &mut MirFunctionContext<'a>,
+) -> Result<MediumExpression<MediumSyntaxLevel>, CompileError> {
+    // Try to resolve the method call
+    let method_name = function.reference.last()
+        .map(|name| context.source.syntax.symbols.resolve(name))
+        .unwrap_or("unknown");
+    let func_def = resolve_method_call(function, target, context)?
+        .ok_or_else(|| {
+            CompileError::Basic(format!(
+                "Failed to resolve method reference {} in translation",
+                method_name
+            ))
+        })?
+        .clone();
+
+    // Create the combined arguments with target as first argument
+    let combined_args = vec![target].into_iter().chain(arguments).collect();
+
+    // Create a proper function reference for the resolved method
+    let resolved_function_ref = GenericFunctionRef {
+        reference: func_def.reference.path().clone(),
+        generics: function.generics.clone(),
+    };
+
+    // Use the resolved function for translation
+    if func_def.generics.is_empty() {
+        return create_non_generic_function_call_with_def(&func_def, &resolved_function_ref, combined_args, context);
+    }
+
+    let translated_args: Vec<Operand> = translate_iterable(&combined_args, context, |arg, context| {
+        HighSyntaxLevel::translate_expr(arg, context).and_then(|expr| get_operand(expr, context))
+    })?;
+    let substitutions = infer_generic_types_with_partial(&func_def, &translated_args, &resolved_function_ref.generics, context)?;
+
+    if substitutions.is_empty() && resolved_function_ref.generics.is_empty() {
+        return create_non_generic_function_call_with_def(&func_def, &resolved_function_ref, combined_args, context);
+    }
+
+    let complete_generics = build_complete_generics(&func_def, &resolved_function_ref.generics, &substitutions, context)?;
+    create_generic_function_call(&resolved_function_ref, &func_def, complete_generics, translated_args, substitutions, context)
+}
+
 /// Translates a single function into its MIR equivalent.
 pub fn translate_function<'a>(
     function: &GenericFunctionRef,
@@ -156,6 +297,16 @@ fn create_non_generic_function_call<'a>(
         })?
         .clone();
     
+    create_non_generic_function_call_with_def(&func_def, function, arguments, context)
+}
+
+/// Creates a function call for non-generic functions with a provided function definition
+fn create_non_generic_function_call_with_def<'a>(
+    func_def: &HighFunction<HighSyntaxLevel>,
+    function: &GenericFunctionRef,
+    arguments: Vec<&HighExpression<HighSyntaxLevel>>,
+    context: &mut MirFunctionContext<'a>,
+) -> Result<MediumExpression<MediumSyntaxLevel>, CompileError> {
     let func_ref = HighSyntaxLevel::translate_func_ref(function, context)?;
     let args = translate_iterable(&arguments, context, |arg, context| {
         HighSyntaxLevel::translate_expr(arg, context).and_then(|expr| get_operand(expr, context))
@@ -256,14 +407,18 @@ HighExpression<HighSyntaxLevel>
                 target,
                 arguments,
             } => {
-                let combined_args = target
-                    .as_ref()
-                    .map(|target| vec![target.deref()])
-                    .unwrap_or_default()
-                    .into_iter()
-                    .chain(arguments)
-                    .collect();
-                translate_function(function, combined_args, context)?
+                match target {
+                    Some(target_expr) => {
+                        // This is a method call (obj.method())
+                        let arg_refs: Vec<&HighExpression<HighSyntaxLevel>> = arguments.iter().collect();
+                        translate_method_call(function, target_expr.deref(), arg_refs, context)?
+                    }
+                    None => {
+                        // This is a regular function call (function())
+                        let arg_refs: Vec<&HighExpression<HighSyntaxLevel>> = arguments.iter().collect();
+                        translate_function(function, arg_refs, context)?
+                    }
+                }
             }
             // For create-struct, translate the type and each field.
             HighExpression::CreateStruct {

@@ -31,22 +31,28 @@ pub fn get_path(interner: &ThreadedRodeo, file: &PathBuf, root: &PathBuf) -> Fil
         .filter_map(|comp| comp.as_os_str().to_str())
         .map(|str| str.to_string())
         .collect::<Vec<_>>();
+    
+    // Remove "test", "src", "..", and "packages" directories from the path
+    components = components.into_iter()
+        .filter(|comp| comp != "test" && comp != "src" && comp != ".." && comp != "packages")
+        .collect();
 
     // Remove the file extension
     let len = components.len() - 1;
     components[len] = components[len].replace(".rv", "");
 
-    // Add the root directory
-    components.insert(
-        0,
-        root.components()
-            .last()
-            .unwrap()
-            .as_os_str()
-            .to_str()
-            .unwrap()
-            .to_string(),
-    );
+    // Add the root directory, but handle special cases like ".." and "."
+    let root_name = root.components()
+        .last()
+        .unwrap()
+        .as_os_str()
+        .to_str()
+        .unwrap();
+    
+    // Skip adding problematic root names
+    if root_name != ".." && root_name != "." {
+        components.insert(0, root_name.to_string());
+    }
 
     components
         .iter()
