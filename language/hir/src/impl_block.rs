@@ -13,6 +13,8 @@ use crate::function::HighFunction;
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(bound(deserialize = "T: for<'a> Deserialize<'a>"))]
 pub struct HighImpl<T: SyntaxLevel> {
+    /// The trait being implemented (None for inherent impl blocks like "impl Type")
+    pub trait_ref: Option<T::TypeReference>,
     /// The type being implemented for
     pub target_type: T::TypeReference,
     /// The impl block's generics
@@ -28,6 +30,12 @@ impl<'ctx, I: SyntaxLevel<Type = crate::types::HighType<I>, Function = HighFunct
 Translate<(), HirFunctionContext<'ctx>> for HighImpl<I>
 {
     fn translate(&self, context: &mut HirFunctionContext<'_>) -> Result<(), CompileError> {
+        // Validate trait reference translation if present
+        let _trait_ref = self.trait_ref
+            .as_ref()
+            .map(|trait_ref| I::translate_type_ref(trait_ref, context))
+            .transpose()?;
+            
         // Validate target type translation
         let _target_type = I::translate_type_ref(&self.target_type, context)?;
         

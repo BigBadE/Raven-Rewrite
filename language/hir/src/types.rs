@@ -80,7 +80,9 @@ Translate<(), HirFunctionContext<'ctx>> for HighType<I>
                 TypeData::Struct { fields } => TypeData::Struct {
                     fields: translate_fields(fields, context, I::translate_type_ref)?,
                 },
-                TypeData::Trait { .. } => return Ok(()),
+                TypeData::Trait { functions: _ } => TypeData::Trait {
+                    functions: Vec::new(), // Trait functions are signatures only, actual functions come from impl blocks
+                },
             },
         };
         context.syntax.types.insert(types.reference.clone(), types);

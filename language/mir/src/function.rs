@@ -51,19 +51,25 @@ impl<'a> Translate<(), MirFunctionContext<'a>> for HighFunction<HighSyntaxLevel>
             context.push_statement(crate::statement::MediumStatement::StorageLive(local_var, type_ref));
         }
 
-        for statement in &self.body.statements {
-            HighSyntaxLevel::translate_stmt(statement, context)?;
-        }
+        // Handle optional body (trait function signatures have no body)
+        if let Some(body) = &self.body {
+            for statement in &body.statements {
+                HighSyntaxLevel::translate_stmt(statement, context)?;
+            }
 
-        // Process the function body terminator if it's not None
-        if self.body.terminator.is_none() {
-            // Return void if we have no return at the very end
-            if let MediumTerminator::Unreachable = context.code_blocks[context.current_block].terminator {
-                context.set_terminator(MediumTerminator::Return(None));
+            // Process the function body terminator if it's not None
+            if body.terminator.is_none() {
+                // Return void if we have no return at the very end
+                if let MediumTerminator::Unreachable = context.code_blocks[context.current_block].terminator {
+                    context.set_terminator(MediumTerminator::Return(None));
+                }
+            } else {
+                let terminator = HighSyntaxLevel::translate_terminator(&body.terminator, context)?;
+                context.set_terminator(terminator);
             }
         } else {
-            let terminator = HighSyntaxLevel::translate_terminator(&self.body.terminator, context)?;
-            context.set_terminator(terminator);
+            // Trait function signatures without bodies - just return
+            context.set_terminator(MediumTerminator::Return(None));
         }
 
         let function = MediumFunction::<MediumSyntaxLevel> {

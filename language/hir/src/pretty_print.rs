@@ -29,8 +29,16 @@ impl<T: PrettyPrintableSyntaxLevel<W>, W: Write> PrettyPrint<W> for HighFunction
             return_type.format(interner, writer)?;
         }
 
-        write!(writer, " ")?;
-        self.body.format(interner, writer)
+        match &self.body {
+            Some(body) => {
+                write!(writer, " ")?;
+                body.format(interner, writer)
+            }
+            None => {
+                write!(writer, ";")?;
+                Ok(())
+            }
+        }
     }
 }
 

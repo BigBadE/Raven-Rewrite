@@ -10,6 +10,7 @@ use nom::combinator::opt;
 use nom::multi::separated_list0;
 use nom::sequence::{delimited, preceded};
 use nom::Parser;
+use nom::branch::alt;
 
 /// Parser for function declarations
 pub fn function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {
@@ -22,7 +23,10 @@ pub fn function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {
     let (input, generics) = generics(input)?;
     let (input, parameters) = parameter_list(input)?;
     let (input, return_type) = return_type(input)?;
-    let (input, body) = function_body(input)?;
+    let (input, body) = alt((
+        delimited(ignored, tag_parser(";"), ignored).map(|_| None),
+        function_body.map(Some),
+    ))(input)?;
     
     let mut reference = original_input.extra.file.clone();
     reference.push(name);

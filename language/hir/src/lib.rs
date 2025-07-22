@@ -175,16 +175,32 @@ pub fn resolve_to_hir(source: RawSource) -> Result<HirSource, CompileError> {
         types: HashMap::default(),
     } };
 
-    // Translate impl blocks FIRST, so their functions are available during main syntax translation
+    // Translate types FIRST so they're available when processing impl blocks
+    source.syntax.translate(&mut context)?;
+
+    // Then translate impl blocks, so their functions are available 
     let mut translated_impls = Vec::new();
     for impl_block in &source.impls {
-        // Try to find the file where the target type is defined
-        let target_type_name = &impl_block.target_type.path()[0];
-        let impl_file = source.syntax.types.iter()
-            .find(|(type_ref, _)| type_ref.path().last() == Some(target_type_name))
-            .map(|(type_ref, _)| get_file_path(type_ref.path()))
-            .or_else(|| source.imports.keys().next().cloned())
-            .unwrap_or_else(|| vec![source.syntax.symbols.get_or_intern("main")]);
+        // For trait implementations, determine file context from the trait, not the target type
+        let impl_file = if let Some(trait_ref) = &impl_block.trait_ref {
+            // For "impl Trait for Type", use the file where the trait is defined
+            let trait_name = &trait_ref.path()[0];
+            source.syntax.types.iter()
+                .find(|(type_ref, _)| type_ref.path().last() == Some(trait_name))
+                .map(|(type_ref, _)| get_file_path(type_ref.path()))
+                .unwrap_or_else(|| {
+                    // If trait not found in types, use the file where impl is defined (same file in most cases)
+                    vec![source.syntax.symbols.get_or_intern("core"), source.syntax.symbols.get_or_intern("basic"), source.syntax.symbols.get_or_intern("traits")]
+                })
+        } else {
+            // For "impl Type", use the file where the target type is defined
+            let target_type_name = &impl_block.target_type.path()[0];
+            source.syntax.types.iter()
+                .find(|(type_ref, _)| type_ref.path().last() == Some(target_type_name))
+                .map(|(type_ref, _)| get_file_path(type_ref.path()))
+                .or_else(|| source.imports.keys().next().cloned())
+                .unwrap_or_else(|| vec![source.syntax.symbols.get_or_intern("main")])
+        };
             
         let mut function_context = HirFunctionContext::new::<RawSyntaxLevel>(
             &source,
@@ -194,6 +210,10 @@ pub fn resolve_to_hir(source: RawSource) -> Result<HirSource, CompileError> {
         )?;
         impl_block.translate(&mut function_context)?;
         translated_impls.push(HighImpl {
+            trait_ref: impl_block.trait_ref
+                .as_ref()
+                .map(|trait_ref| RawSyntaxLevel::translate_type_ref(trait_ref, &mut function_context))
+                .transpose()?,
             target_type: RawSyntaxLevel::translate_type_ref(&impl_block.target_type, &mut function_context)?,
             generics: impl_block
                 .generics
@@ -209,8 +229,6 @@ pub fn resolve_to_hir(source: RawSource) -> Result<HirSource, CompileError> {
             functions: Vec::new(), // Functions are already added to syntax by translate
         });
     }
-
-    source.syntax.translate(&mut context)?;
 
     Ok(HirSource {
         syntax: context.output,

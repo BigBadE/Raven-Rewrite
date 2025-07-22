@@ -1,0 +1,13 @@
+trait Testing {
+    fn test() -> i64;
+}
+
+impl Testing for i64 {
+    fn test() -> i64 {
+        42
+    }
+}
+
+fn call_trait() {
+    123i64.test();
+}

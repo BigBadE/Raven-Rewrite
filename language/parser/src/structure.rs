@@ -84,7 +84,21 @@ pub fn parse_impl(input: Span) -> IResult<Span, HighImpl<RawSyntaxLevel>> {
     map(
         tuple((
             modifiers,
-            preceded(delimited(ignored, context(tag_parser("impl"), "impl keyword 'impl'", Some("impl blocks start with 'impl'")), ignored), expect(type_ref, "target type", Some("impl blocks must specify the type being implemented"))),
+            preceded(
+                delimited(ignored, context(tag_parser("impl"), "impl keyword 'impl'", Some("impl blocks start with 'impl'")), ignored),
+                alt((
+                    // impl Trait for Type
+                    map(
+                        tuple((
+                            type_ref,
+                            preceded(delimited(ignored, tag_parser("for"), ignored), type_ref),
+                        )),
+                        |(trait_ref, target_type)| (Some(trait_ref), target_type)
+                    ),
+                    // impl Type
+                    map(type_ref, |target_type| (None, target_type))
+                ))
+            ),
             opt(generics),
             delimited(
                 delimited(ignored, expect(tag_parser("{"), "opening brace '{'", Some("impl block bodies start with '{'")), ignored),
@@ -92,8 +106,9 @@ pub fn parse_impl(input: Span) -> IResult<Span, HighImpl<RawSyntaxLevel>> {
                 delimited(ignored, expect(tag_parser("}"), "closing brace '}'", Some("impl block bodies end with '}'")), ignored),
             ),
         )),
-        |(modifiers, target_type, generics, functions)| {
+        |(modifiers, (trait_ref, target_type), generics, functions)| {
             HighImpl {
+                trait_ref,
                 target_type,
                 generics: generics.unwrap_or_default(),
                 modifiers,

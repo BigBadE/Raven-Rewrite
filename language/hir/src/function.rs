@@ -26,8 +26,8 @@ pub struct HighFunction<T: SyntaxLevel> {
     pub generics: IndexMap<Spur, Vec<T::TypeReference>>,
     /// The return type of the function
     pub return_type: Option<T::TypeReference>,
-    /// The body of the function
-    pub body: CodeBlock<T>,
+    /// The body of the function (None for trait function signatures)
+    pub body: Option<CodeBlock<T>>,
 }
 
 /// A block of code
@@ -81,9 +81,12 @@ Translate<(), HirFunctionContext<'ctx>> for HighFunction<I>
             reference: function_ref,
             attributes: self.attributes.clone(),
             modifiers: self.modifiers.clone(),
-            body: CodeBlock {
-                statements: translate_iterable(&self.body.statements, context, I::translate_stmt)?,
-                terminator: I::translate_terminator(&self.body.terminator, context)?,
+            body: match &self.body {
+                Some(body) => Some(CodeBlock {
+                    statements: translate_iterable(&body.statements, context, I::translate_stmt)?,
+                    terminator: I::translate_terminator(&body.terminator, context)?,
+                }),
+                None => None,
             },
             parameters: translate_fields(&self.parameters, context, I::translate_type_ref)?,
             generics: translate_iterable(&self.generics, context,
