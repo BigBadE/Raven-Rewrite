@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use hir::{resolve_to_hir, HighSyntaxLevel, HirSource};
+use hir::{resolve_to_hir, HighSyntaxLevel};
 use mir::{MediumSyntaxLevel, resolve_to_mir};
 use parser::parse_source;
 use std::path::PathBuf;

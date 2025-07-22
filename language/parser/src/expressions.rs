@@ -6,8 +6,8 @@ use hir::expression::HighExpression;
 use hir::{RawFunctionRef, RawSyntaxLevel};
 use nom::Parser;
 use nom::branch::alt;
-use nom::bytes::complete::tag;
-use nom::character::complete::{alphanumeric1, digit1};
+use nom::bytes::complete::{tag, take_until, take_while_m_n};
+use nom::character::complete::{alphanumeric1, digit1, char as nom_char};
 use nom::combinator::{map, opt};
 use nom::multi::{many0, separated_list0};
 use nom::sequence::{delimited, preceded, terminated, tuple};
@@ -79,13 +79,113 @@ pub fn variable(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
     })(input)
 }
 
-/// Parses a digit literal into an Expression::Literal
-/// TODO handle more literals
+/// Parses all literal types: numbers, strings, booleans, characters
 pub fn literal(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
-    map(digit1, |digits: Span| {
-        let value = digits.fragment().parse::<i64>().unwrap_or(0);
-        HighExpression::Literal(Literal::I64(value))
-    })(input)
+    alt((
+        boolean_literal,
+        string_literal,
+        character_literal,
+        float_literal,
+        integer_literal,
+    ))(input)
+}
+
+/// Parses boolean literals: true, false
+fn boolean_literal(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
+    alt((
+        map(tag("true"), |_| HighExpression::Literal(Literal::Bool(true))),
+        map(tag("false"), |_| HighExpression::Literal(Literal::Bool(false))),
+    ))(input)
+}
+
+/// Parses string literals: "hello world"
+fn string_literal(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
+    let input_clone = input.clone();
+    let (remaining, content) = delimited(nom_char('"'), take_until("\""), nom_char('"'))(input)?;
+    let string_content = content.fragment().to_string();
+    let interned = input_clone.extra.intern(string_content);
+    Ok((remaining, HighExpression::Literal(Literal::String(interned))))
+}
+
+/// Parses character literals: 'a', '\n', '\t'
+fn character_literal(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
+    map(
+        delimited(
+            nom_char('\''),
+            alt((
+                // Escape sequences
+                preceded(nom_char('\\'), alt((
+                    map(nom_char('n'), |_| '\n'),
+                    map(nom_char('t'), |_| '\t'),
+                    map(nom_char('r'), |_| '\r'),
+                    map(nom_char('\\'), |_| '\\'),
+                    map(nom_char('\''), |_| '\''),
+                    map(nom_char('"'), |_| '"'),
+                ))),
+                // Regular character
+                map(take_while_m_n(1, 1, |c| c != '\''), |s: Span| {
+                    s.fragment().chars().next().unwrap_or('\0')
+                }),
+            )),
+            nom_char('\'')
+        ),
+        |ch| HighExpression::Literal(Literal::Char(ch))
+    )(input)
+}
+
+/// Parses floating point literals: 3.14, 2.0f32
+fn float_literal(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
+    let (remaining, (whole, _, frac, suffix)) = tuple((
+        digit1,
+        nom_char('.'),
+        digit1,
+        opt(alt((tag("f32"), tag("f64")))),
+    ))(input)?;
+    
+    let float_str = format!("{}.{}", whole.fragment(), frac.fragment());
+    let literal = match suffix.as_ref().map(|s| s.fragment()) {
+        Some(&"f32") => {
+            let value = float_str.parse::<f32>().unwrap_or(0.0);
+            HighExpression::Literal(Literal::F32(value))
+        }
+        _ => {
+            let value = float_str.parse::<f64>().unwrap_or(0.0);
+            HighExpression::Literal(Literal::F64(value))
+        }
+    };
+    
+    Ok((remaining, literal))
+}
+
+/// Parses integer literals: 42, 123i32, 456u64
+fn integer_literal(input: Span) -> IResult<Span, HighExpression<RawSyntaxLevel>> {
+    let (remaining, (digits, suffix)) = tuple((
+        digit1,
+        opt(alt((tag("i64"), tag("i32"), tag("u64"), tag("u32")))),
+    ))(input)?;
+    
+    let int_str = digits.fragment();
+    let literal = match suffix.as_ref().map(|s| s.fragment()) {
+        Some(&"i32") => {
+            let value = int_str.parse::<i32>().unwrap_or(0);
+            HighExpression::Literal(Literal::I32(value))
+        }
+        Some(&"u64") => {
+            let value = int_str.parse::<u64>().unwrap_or(0);
+            HighExpression::Literal(Literal::U64(value))
+        }
+        Some(&"u32") => {
+            let value = int_str.parse::<u32>().unwrap_or(0);
+            HighExpression::Literal(Literal::U32(value))
+        }
+        _ => {
+            // Default to i64
+            let value = int_str.parse::<i64>().unwrap_or(0);
+            HighExpression::Literal(Literal::I64(value))
+        }
+    };
+    
+    Ok((remaining, literal))
 }
 
 /// Parses a block of statements enclosed in braces into a CodeBlock
