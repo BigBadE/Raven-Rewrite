@@ -1,0 +1,13 @@
+trait Test {
+    fn test() -> i32 {
+        42
+    }
+}
+
+impl<T> Test for T {
+
+}
+
+fn main() {
+    42.test();
+}
