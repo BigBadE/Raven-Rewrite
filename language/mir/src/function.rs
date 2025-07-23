@@ -40,7 +40,10 @@ impl<'a> Translate<(), MirFunctionContext<'a>> for HighFunction<HighSyntaxLevel>
         context: &mut MirFunctionContext<'a>,
     ) -> Result<(), CompileError> {
         // Only translate non-generic functions.
-        if !self.generics.is_empty() {
+        // Check both function-level generics and parameter types for generic references
+        if !self.generics.is_empty() || self.parameters.iter().any(|(_, param_type)| {
+            matches!(param_type, GenericTypeRef::Generic { .. })
+        }) {
             return Ok(());
         }
 

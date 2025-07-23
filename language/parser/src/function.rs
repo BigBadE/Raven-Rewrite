@@ -1,6 +1,6 @@
 use crate::code::function_body;
 use crate::structure::generics;
-use crate::util::{attributes, identifier_symbolic, ignored, modifiers, parameter, tag_parser, type_ref};
+use crate::util::{attributes, identifier_symbolic, ignored, modifiers, parameter, self_parameter, tag_parser, type_ref};
 use crate::{IResult, Span};
 use hir::function::HighFunction;
 use hir::{RawSyntaxLevel, RawTypeRef};
@@ -47,7 +47,7 @@ pub fn function(input: Span) -> IResult<Span, HighFunction<RawSyntaxLevel>> {
 fn parameter_list(input: Span) -> IResult<Span, Vec<(Spur, RawTypeRef)>> {
     delimited(
         delimited(ignored, tag_parser("("), ignored),
-        separated_list0(delimited(ignored, tag_parser(","), ignored), parameter),
+        separated_list0(delimited(ignored, tag_parser(","), ignored), alt((self_parameter, parameter))),
         delimited(ignored, tag_parser(")"), ignored),
     )
     .parse(input)

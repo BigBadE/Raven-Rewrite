@@ -67,6 +67,32 @@ pub fn parameter(input: Span) -> IResult<Span, (Spur, RawTypeRef)> {
         .parse(input)
 }
 
+/// Parser for self parameter (self or self: Type)
+/// For now, we'll parse self as a regular parameter and handle the special semantics in HIR
+pub fn self_parameter(input: Span) -> IResult<Span, (Spur, RawTypeRef)> {
+    alt((
+        // self
+        map(
+            tag_parser("self"),
+            move |s| {
+                // We'll create a placeholder type reference that HIR can interpret as Self
+                let self_type = RawTypeRef {
+                    path: vec![s.extra.intern("Self")],
+                    generics: vec![],
+                };
+                (s.extra.intern("self"), self_type)
+            }
+        ),
+        // self: Type
+        tuple((
+            preceded(ignored, tag_parser("self")),
+            preceded(delimited(ignored, expect(tag_parser(":"), "colon ':'", Some("self parameters can use ':' to specify explicit type")), ignored), type_ref),
+        ))
+        .map(|(s, type_ref)| (s.extra.intern("self"), type_ref))
+    ))
+    .parse(input)
+}
+
 /// Parser for struct fields (supports modifiers)
 pub fn struct_field(input: Span) -> IResult<Span, (Spur, RawTypeRef)> {
     tuple((

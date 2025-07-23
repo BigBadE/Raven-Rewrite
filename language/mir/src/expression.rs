@@ -13,8 +13,10 @@ use syntax::structure::traits::{Expression, FunctionReference};
 use syntax::structure::visitor::Translate;
 use syntax::util::pretty_print::PrettyPrint;
 use syntax::util::translation::{translate_fields, translate_iterable, Translatable};
+use type_system;
 use syntax::util::CompileError;
 use syntax::{FunctionRef, GenericFunctionRef, GenericTypeRef, SyntaxLevel, TypeRef};
+use type_system::check_type;
 
 /// Helper function to find a function definition, checking both regular functions and impl blocks
 fn find_function_definition<'a>(
@@ -44,27 +46,41 @@ fn resolve_method_call<'a>(
     target_expr: &HighExpression<HighSyntaxLevel>,
     context: &'a mut MirFunctionContext,
 ) -> Result<Option<&'a HighFunction<HighSyntaxLevel>>, CompileError> {
-    // Get the type of the target expression
     let target_type = determine_expression_type(target_expr, context)?;
+    let target_method_name = function_ref.reference.last().copied();
     
-    // Look for the method in impl blocks for this type
-    for impl_block in &context.source.impls {
-        // Check if this impl block applies to the target type
-        if type_matches_impl_target(&target_type, &impl_block.target_type, context)? {
-            // Look for the method in this impl block
-            for func in &impl_block.functions {
-                let method_name = func.reference.path().last().copied();
-                let target_method_name = function_ref.reference.last().copied();
-                
-                if method_name == target_method_name {
+    // First, try to find methods with self parameters in HIR functions
+    for (func_ref, func) in &context.source.syntax.functions {
+        // Check if this function has a self parameter
+        if let Some((param_name, param_type)) = func.parameters.first() {
+            if context.source.syntax.symbols.resolve(param_name) == "self" {
+                let method_name = func_ref.reference.last().copied();
+                // Check that the name and type matches
+                if method_name == target_method_name && check_type(&context.source.syntax.symbols, target_type.clone(),
+                                                                   param_type.clone(), HashMap::new()).is_ok() {
                     return Ok(Some(func));
                 }
             }
         }
     }
     
+    // If no self method found, also check HIR functions for non-self methods that might be in impl blocks
+    for (func_ref, func) in &context.source.syntax.functions {
+        let method_name = func_ref.reference.last().copied();
+        if method_name == target_method_name {
+            let has_self = func.parameters.first()
+                .map(|(name, _)| context.source.syntax.symbols.resolve(name) == "self")
+                .unwrap_or(false);
+            
+            if !has_self {
+                return Ok(Some(func));
+            }
+        }
+    }
+    
     Ok(None)
 }
+
 
 /// Determine the type of an expression for method resolution
 fn determine_expression_type(

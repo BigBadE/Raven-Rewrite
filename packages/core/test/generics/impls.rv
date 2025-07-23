@@ -1,11 +1,11 @@
 trait Test {
-    fn test() -> i32 {
-        42
-    }
+    fn test(self) -> i32;
 }
 
 impl<T> Test for T {
-
+    fn test(self) -> i32 {
+        return 42;
+    }
 }
 
 fn main() {

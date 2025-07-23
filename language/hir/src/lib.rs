@@ -210,6 +210,10 @@ pub fn resolve_to_hir(source: RawSource) -> Result<HirSource, CompileError> {
                 &mut context.output,
             )?;
             
+            // First translate the target type so we can set it as the impl_target for Self resolution
+            let target_type = RawSyntaxLevel::translate_type_ref(&impl_block.target_type, &mut function_context)?;
+            function_context.impl_target = Some(target_type.clone());
+            
             // Store function references first
             let mut function_refs = Vec::new();
             for function in &impl_block.functions {
@@ -227,7 +231,6 @@ pub fn resolve_to_hir(source: RawSource) -> Result<HirSource, CompileError> {
                 .as_ref()
                 .map(|trait_ref| RawSyntaxLevel::translate_type_ref(trait_ref, &mut function_context))
                 .transpose()?;
-            let target_type = RawSyntaxLevel::translate_type_ref(&impl_block.target_type, &mut function_context)?;
             let generics = impl_block
                 .generics
                 .iter()
@@ -290,6 +293,8 @@ pub struct HirFunctionContext<'a> {
     pub file: FilePath,
     /// The output syntax
     pub syntax: &'a mut Syntax<HighSyntaxLevel>,
+    /// The current impl target type (for resolving Self)
+    pub impl_target: Option<GenericTypeRef>,
 }
 
 impl<'a> HirFunctionContext<'a> {
@@ -306,6 +311,7 @@ impl<'a> HirFunctionContext<'a> {
             generics: IndexMap::default(),
             file,
             syntax,
+            impl_target: None,
         };
 
         context.generics = translate_iterable(generics, &mut context, |(key, types), context| {
@@ -448,6 +454,16 @@ fn resolve_type_reference(
     raw_ref: &RawTypeRef,
     context: &mut HirFunctionContext,
 ) -> Result<GenericTypeRef, CompileError> {
+    // Handle Self placeholders from parser
+    if raw_ref.path.len() == 1 {
+        let path_str = context.source.syntax.symbols.resolve(&raw_ref.path[0]);
+        if path_str == "Self" {
+            if let Some(impl_target) = &context.impl_target {
+                return Ok(impl_target.clone());
+            }
+        }
+    }
+    
     // Check for generic parameters first (specific to types)
     if raw_ref.generics.is_empty()
         && raw_ref.path.len() == 1
