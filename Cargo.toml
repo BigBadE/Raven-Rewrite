@@ -1,56 +1,73 @@
-cargo-features = ["codegen-backend"]
 [workspace]
-resolver = "3"
-
-exclude = [
-    "language/compilers"
-]
-
+resolver = "2"
 members = [
-    "language/*",
-    "language/compilers/llvm",
-    "tests"
+    "crates/foundation/*",
+    "crates/parser/*",
+    "crates/analysis/*",
+    "crates/codegen/*",
+    "crates/language-support/*",
+    "crates/analyzer/*",
+    "crates/cli/*",
+    "crates/testing/*",
 ]
 
 [workspace.package]
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["Raven Contributors"]
+repository = "https://github.com/yourusername/raven"
 
 [workspace.dependencies]
-tokio = { version = "1.44.2", features = ["fs", "rt-multi-thread", "macros"] }
-serde = { version = "1.0.219", features = ["derive", "rc"] }
+# Incremental compilation
+salsa = "0.16"
 
-# Util
-async-recursion = "1.1.1"
-lazy_static = "1.5.0"
-indexmap = { version = "2.10.0", features = ["serde"] }
+# Parsing
+tree-sitter = "0.22"
+tree-sitter-rust = "0.21"
 
-# String interning
-lasso = { version = "0.7.3", features = ["multi-threaded", "serialize"] }
+# Code generation
+cranelift = "0.109"
+cranelift-jit = "0.109"
+cranelift-module = "0.109"
+inkwell = { version = "0.4", features = ["llvm18-0"] }
+
+# Error reporting
+miette = { version = "7.0", features = ["fancy"] }
+codespan-reporting = "0.11"
+
+# Utilities
+lasso = { version = "0.7", features = ["multi-threaded"] }
+indexmap = "2.0"
+rustc-hash = "2.0"
+
+# Async/IO
+tokio = { version = "1.35", features = ["fs", "rt-multi-thread", "macros"] }
+
+# Serialization (for caching)
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3"
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+
+# Testing
+expect-test = "1.5"
 
 # Error handling
-anyhow = "1.0.71"
-thiserror = "2.0.12"
+anyhow = "1.0"
+thiserror = "1.0"
 
-# Colors
-owo-colors = "4.1.0"
+# Common types
+derive_more = "0.99"
 
-hir = { path = "language/hir" }
-mir = { path = "language/mir" }
-parser = { path = "language/parser" }
-runner = { path = "language/runner" }
-syntax = { path = "language/syntax" }
-type_system = { path = "language/type_system" }
-
-compiler-llvm = { path = "language/compilers/llvm" }
-
-# Enable a small amount of optimization in the dev profile.
 [profile.dev]
-opt-level = 1
-lto = false
-codegen-backend = "cranelift"
+opt-level = 0
 
-# Enable a large amount of optimization in the dev profile for dependencies.
 [profile.dev.package."*"]
 opt-level = 3
-codegen-backend = "cranelift"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 16

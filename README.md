@@ -1,20 +1,99 @@
-# Raven
+# Raven Language & Analysis Framework
 
-[![codecov](https://codecov.io/gh/BigBadE/Raven-Rewrite/graph/badge.svg?token=FeExMvT7w1)](https://codecov.io/gh/BigBadE/Raven-Rewrite)
-[![DeepSource](https://app.deepsource.com/gh/BigBadE/Raven-Rewrite.svg/?label=active+issues&show_trend=true&token=Q4sospH9xYMKaXCKqCWahjxG)](https://app.deepsource.com/gh/BigBadE/Raven-Rewrite/)
-[![CodeScene Average Code Health](https://codescene.io/projects/65635/status-badges/average-code-health)](https://codescene.io/projects/65635)
+A next-generation compiler and code analysis framework built on incremental compilation.
 
-# Building
+## Project Status: Phase 0 - Foundation ✅
 
-The build script will handle installing all dependencies needed, but you need to manually add Cranelift to your system:
+Core workspace structure established with 4 foundation crates implemented.
 
-rustup component add rustc-codegen-cranelift-preview --toolchain nightly
+## Goals
 
-You will also need the latest C++ build tools, which can be downloaded with Visual Studio Installer.
+1. **Raven Compiler** - Fast, incremental systems programming language
+   - Rust-compatible syntax (using tree-sitter-rust)
+   - Sub-second dev iteration times
+   - Multiple backends (Interpreter → Cranelift → LLVM)
+   - Salsa-powered incremental compilation
 
-# Common errors
+2. **Analysis Framework** - Multi-language code analysis
+   - Support Rust, Python, JavaScript, Go, and more
+   - Code metrics, linting, duplicate detection
+   - Incremental re-analysis
+   - Language-agnostic query API
 
-## Linker errors
+## Quick Start
 
-- Make sure you have the latest version of the C++ build tools installed.
-- Run cargo clean
+```bash
+# Check that everything builds
+cargo check
+
+# Build all crates
+cargo build
+
+# Run tests (when implemented)
+cargo test
+
+# Build specific crate
+cargo build -p rv-span
+```
+
+## Project Structure
+
+```
+crates/
+├── foundation/      # Core infrastructure
+│   ├── rv-span/      ✅ Source spans and file locations
+│   ├── rv-intern/    ✅ String interning with lasso
+│   ├── rv-arena/     ✅ Indexed arena allocator
+│   ├── rv-database/  ✅ Salsa database (placeholder)
+│   ├── rv-syntax/    🚧 Syntax tree traits
+│   └── rv-vfs/       🚧 Virtual file system
+│
+├── parser/          🚧 tree-sitter-rust integration
+├── analysis/        🚧 HIR, MIR, type system
+├── codegen/         🚧 Interpreter, Cranelift, LLVM backends
+├── language-support/🚧 Multi-language adapters
+├── analyzer/        🚧 Metrics, lints, duplicates
+├── cli/             🚧 Command-line interfaces
+└── testing/         🚧 Test utilities and fixtures
+```
+
+## Documentation
+
+- **[PLAN.md](./PLAN.md)** - Complete 48-week development roadmap
+- **[CLAUDE.md](./CLAUDE.md)** - Development guidelines and architecture notes
+
+## Key Technologies
+
+- **Salsa** - Incremental query system for fast recompilation
+- **tree-sitter** - Multi-language parsing with error recovery
+- **Cranelift** - Fast JIT compilation for development builds
+- **LLVM** - Production-grade optimization for release builds
+- **Rust 2021** - Implementation language
+
+## Development Workflow
+
+All dependencies are managed at workspace level in the root `Cargo.toml`:
+
+```bash
+# Add a new workspace dependency
+# Edit Cargo.toml [workspace.dependencies]
+
+# Use in a crate
+# crates/*/Cargo.toml:
+# some-crate = { workspace = true }
+```
+
+## Next Steps
+
+See **Phase 1** in [PLAN.md](./PLAN.md):
+- Implement Salsa query system
+- Define HIR and MIR data structures
+- Create test infrastructure
+
+## License
+
+MIT OR Apache-2.0
+
+---
+
+**Note:** This is a from-scratch rewrite. The previous implementation has been archived in git stash.

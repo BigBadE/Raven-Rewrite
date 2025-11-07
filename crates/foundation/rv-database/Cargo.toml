@@ -1,0 +1,8 @@
+[package]
+name = "rv-database"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+salsa = { workspace = true }
