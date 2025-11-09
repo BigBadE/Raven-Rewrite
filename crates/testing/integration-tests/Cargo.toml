@@ -1,0 +1,28 @@
+[package]
+name = "integration-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+rv-database = { path = "../../foundation/rv-database" }
+rv-vfs = { path = "../../foundation/rv-vfs" }
+rv-span = { path = "../../foundation/rv-span" }
+rv-intern = { path = "../../foundation/rv-intern" }
+rv-syntax = { path = "../../foundation/rv-syntax" }
+rv-parser = { path = "../../parser/rv-parser" }
+rv-hir = { path = "../../analysis/rv-hir" }
+rv-hir-lower = { path = "../../analysis/rv-hir-lower" }
+rv-ty = { path = "../../analysis/rv-ty" }
+rv-mir = { path = "../../analysis/rv-mir" }
+rv-interpreter = { path = "../../codegen/rv-interpreter" }
+rv-cranelift = { path = "../../codegen/rv-cranelift" }
+rv-llvm-backend = { path = "../../codegen/rv-llvm-backend", optional = true }
+lang-raven = { path = "../../language-support/lang-raven" }
+magpie = { path = "../../cli/magpie" }
+anyhow.workspace = true
+
+[dev-dependencies]
+expect-test.workspace = true
+indexmap.workspace = true

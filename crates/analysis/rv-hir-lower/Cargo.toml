@@ -1,0 +1,15 @@
+[package]
+name = "rv-hir-lower"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rv-arena.workspace = true
+rv-hir.workspace = true
+rv-intern.workspace = true
+rv-span.workspace = true
+rv-syntax.workspace = true
+la-arena.workspace = true
+
+[lints]
+workspace = true

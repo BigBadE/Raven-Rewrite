@@ -1,0 +1,111 @@
+warning: C:\current_projects\Raven-Rewrite\crates\cli\magpie\Cargo.toml: file `C:\current_projects\Raven-Rewrite\crates\cli\magpie\src\main.rs` found to be present in multiple build targets:
+  * `lib` target `magpie`
+  * `bin` target `magpie`
+warning: unused import: `PatternId`
+ --> crates\analysis\rv-hir\src\exhaustiveness.rs:5:51
+  |
+5 | use crate::{Body, LiteralKind, MatchArm, Pattern, PatternId};
+  |                                                   ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `rv-hir` (lib) generated 1 warning (run `cargo fix --lib -p rv-hir` to apply 1 suggestion)
+warning: unreachable pattern
+   --> crates\analysis\rv-mir\src\lower.rs:588:13
+    |
+588 |             _ => {
+    |             ^ no value can reach this
+    |
+note: multiple earlier patterns match some of the same values
+   --> crates\analysis\rv-mir\src\lower.rs:588:13
+    |
+140 |               Expr::Literal { kind, span } => {
+    |               ---------------------------- matches some of the same values
+...
+152 |               Expr::Variable { name, def: _, span } => {
+    |               ------------------------------------- matches some of the same values
+...
+177 | /             Expr::BinaryOp {
+178 | |                 op,
+179 | |                 left,
+180 | |                 right,
+181 | |                 span,
+182 | |             } => {
+    | |_____________- matches some of the same values
+...
+197 |               Expr::UnaryOp { op, operand, span } => {
+    |               ----------------------------------- matches some of the same values
+...
+588 |               _ => {
+    |               ^ ...and 8 other patterns collectively make this unreachable
+    = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: `rv-mir` (lib) generated 1 warning
+warning: unused import: `rv_ty::TyContext`
+  --> crates\cli\magpie\src\backends\llvm.rs:24:13
+   |
+24 |         use rv_ty::TyContext;
+   |             ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `main` is never used
+  --> crates\cli\magpie\src\main.rs:70:4
+   |
+70 | fn main() -> Result<()> {
+   |    ^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `get_project_dir` is never used
+  --> crates\cli\magpie\src\main.rs:85:4
+   |
+85 | fn get_project_dir(cli: &Cli) -> PathBuf {
+   |    ^^^^^^^^^^^^^^^
+
+warning: function `cmd_build` is never used
+  --> crates\cli\magpie\src\main.rs:91:4
+   |
+91 | fn cmd_build(cli: &Cli) -> Result<()> {
+   |    ^^^^^^^^^
+
+warning: function `cmd_run` is never used
+   --> crates\cli\magpie\src\main.rs:118:4
+    |
+118 | fn cmd_run(cli: &Cli, args: &[String]) -> Result<()> {
+    |    ^^^^^^^
+
+warning: function `cmd_test` is never used
+   --> crates\cli\magpie\src\main.rs:137:4
+    |
+137 | fn cmd_test(cli: &Cli) -> Result<()> {
+    |    ^^^^^^^^
+
+warning: function `cmd_check` is never used
+   --> crates\cli\magpie\src\main.rs:174:4
+    |
+174 | fn cmd_check(cli: &Cli) -> Result<()> {
+    |    ^^^^^^^^^
+
+warning: function `cmd_clean` is never used
+   --> crates\cli\magpie\src\main.rs:186:4
+    |
+186 | fn cmd_clean(cli: &Cli) -> Result<()> {
+    |    ^^^^^^^^^
+
+warning: function `cmd_new` is never used
+   --> crates\cli\magpie\src\main.rs:197:4
+    |
+197 | fn cmd_new(name: String, lib: bool) -> Result<()> {
+    |    ^^^^^^^
+
+warning: `magpie` (lib) generated 9 warnings (run `cargo fix --lib -p magpie` to apply 1 suggestion)
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.69s
+     Running tests\magpie_tests.rs (C:\target\debug\deps\magpie_tests-abf668d3b7f075cb.exe)
+
+running 1 test
+error: test failed, to rerun pass `-p integration-tests --test magpie_tests`
+
+Caused by:
+  process didn't exit successfully: `C:\target\debug\deps\magpie_tests-abf668d3b7f075cb.exe` (exit code: 0xc0000005, STATUS_ACCESS_VIOLATION)
+note: test exited abnormally; to see the full output pass --no-capture to the harness.

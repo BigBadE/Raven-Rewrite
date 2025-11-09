@@ -1,0 +1,12 @@
+[package]
+name = "lang-raven"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rv-syntax = { path = "../../foundation/rv-syntax" }
+rv-span = { path = "../../foundation/rv-span" }
+tree-sitter.workspace = true
+tree-sitter-rust.workspace = true
+anyhow.workspace = true

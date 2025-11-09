@@ -1,0 +1,15 @@
+[package]
+name = "rv-duplicates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rv-hir = { path = "../../analysis/rv-hir" }
+rv-span = { path = "../../foundation/rv-span" }
+rv-intern = { path = "../../foundation/rv-intern" }
+rustc-hash = { workspace = true }
+serde = { workspace = true }
+
+[lints]
+workspace = true

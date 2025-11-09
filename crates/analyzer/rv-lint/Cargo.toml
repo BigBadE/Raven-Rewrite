@@ -1,0 +1,15 @@
+[package]
+name = "rv-lint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rv-hir = { path = "../../analysis/rv-hir" }
+rv-metrics = { path = "../rv-metrics" }
+rv-span = { path = "../../foundation/rv-span" }
+rv-intern = { path = "../../foundation/rv-intern" }
+serde = { workspace = true }
+
+[lints]
+workspace = true

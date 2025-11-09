@@ -1,0 +1,10 @@
+[package]
+name = "basic-arithmetic"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[[bin]]
+name = "basic-arithmetic"
+path = "src/main.rs"

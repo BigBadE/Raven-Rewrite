@@ -1,5 +1,5 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "crates/foundation/*",
     "crates/parser/*",
@@ -13,61 +13,202 @@ members = [
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Raven Contributors"]
 repository = "https://github.com/yourusername/raven"
 
 [workspace.dependencies]
+# Internal crates - foundation
+rv-arena = { path = "crates/foundation/rv-arena" }
+rv-database = { path = "crates/foundation/rv-database" }
+rv-intern = { path = "crates/foundation/rv-intern" }
+rv-span = { path = "crates/foundation/rv-span" }
+rv-syntax = { path = "crates/foundation/rv-syntax" }
+rv-vfs = { path = "crates/foundation/rv-vfs" }
+
+# Internal crates - parser
+rv-parser = { path = "crates/parser/rv-parser" }
+
+# Internal crates - analysis
+rv-hir = { path = "crates/analysis/rv-hir" }
+rv-hir-lower = { path = "crates/analysis/rv-hir-lower" }
+rv-mir = { path = "crates/analysis/rv-mir" }
+rv-ty = { path = "crates/analysis/rv-ty" }
+
+# Internal crates - codegen
+rv-interpreter = { path = "crates/codegen/rv-interpreter" }
+rv-cranelift = { path = "crates/codegen/rv-cranelift" }
+rv-llvm-backend = { path = "crates/codegen/rv-llvm-backend" }
+rv-mono = { path = "crates/analysis/rv-mono" }
+
+# Internal crates - analyzer
+rv-metrics = { path = "crates/analyzer/rv-metrics" }
+rv-lint = { path = "crates/analyzer/rv-lint" }
+rv-duplicates = { path = "crates/analyzer/rv-duplicates" }
+
+# Internal crates - language support
+lang-raven = { path = "crates/language-support/lang-raven" }
+
+# Internal crates - testing
+integration-tests = { path = "crates/testing/integration-tests" }
+
 # Incremental compilation
-salsa = "0.16"
+salsa = "0.24"
 
 # Parsing
-tree-sitter = "0.22"
-tree-sitter-rust = "0.21"
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
 
 # Code generation
-cranelift = "0.109"
-cranelift-jit = "0.109"
-cranelift-module = "0.109"
-inkwell = { version = "0.4", features = ["llvm18-0"] }
+cranelift = "0.125"
+cranelift-jit = "0.125"
+cranelift-module = "0.125"
+cranelift-codegen = "0.125"
+inkwell = { version = "0.6", features = ["llvm18-1"] }
 
 # Error reporting
-miette = { version = "7.0", features = ["fancy"] }
-codespan-reporting = "0.11"
+miette = { version = "7.6", features = ["fancy"] }
+codespan-reporting = "0.13"
 
 # Utilities
-lasso = { version = "0.7", features = ["multi-threaded"] }
-indexmap = "2.0"
-rustc-hash = "2.0"
+lasso = { version = "0.7", features = ["multi-threaded", "serialize"] }
+indexmap = "2.12"
+rustc-hash = "2.1"
+la-arena = "0.3"
 
 # Async/IO
-tokio = { version = "1.35", features = ["fs", "rt-multi-thread", "macros"] }
+tokio = { version = "1.48", features = ["fs", "rt-multi-thread", "macros"] }
 
 # Serialization (for caching)
 serde = { version = "1.0", features = ["derive"] }
-bincode = "1.3"
+serde_json = "1.0"
+bincode = "2.0"
+toml = "0.8"
 
 # CLI
-clap = { version = "4.4", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"] }
+colored = "2.1"
 
 # Testing
-expect-test = "1.5"
+expect-test = "1.0"
 
 # Error handling
 anyhow = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 
 # Common types
-derive_more = "0.99"
+derive_more = { version = "2.0", features = ["full"] }
+
+# Build dependencies (for LLVM auto-download)
+cc = "1.0"
+reqwest = { version = "0.12", features = ["blocking"] }
+zip = "2.1"
+
 
 [profile.dev]
-opt-level = 0
+incremental = true
+opt-level = 1
+debug = 1
+codegen-units = 256
+lto = false
 
 [profile.dev.package."*"]
 opt-level = 3
 
 [profile.release]
-opt-level = 3
+codegen-units = 1
 lto = "thin"
-codegen-units = 16
+# Note: panic="abort" removed to allow dylib builds to work
+opt-level = 3
+
+[profile.bench]
+debug = true
+strip = false
+
+# CI profile: Optimized for minimal disk usage in GitHub Actions
+[profile.ci]
+inherits = "dev"
+opt-level = "s"
+debug = 0
+strip = "symbols"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+warnings = "deny"
+future-incompatible = "deny"
+let-underscore = "deny"
+nonstandard-style = "deny"
+refining-impl-trait = "deny"
+unused = { level = "deny", priority = -1 }
+missing_docs = "deny"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+
+# Strict lints, should not be changed.
+[workspace.lints.clippy]
+all = "deny"
+complexity = "deny"
+correctness = "deny"
+nursery = "deny"
+pedantic = "deny"
+perf = "deny"
+style = "deny"
+suspicious = "deny"
+
+# Complexity
+only_used_in_recursion = { level = "allow", priority = 1 }
+
+# Nursery
+future_not_send = { level = "allow", priority = 1 }
+missing_const_for_fn = { level = "allow", priority = 1 }
+significant_drop_tightening = { level = "allow", priority = 1 }
+
+# Pedantic
+cast_possible_truncation = { level = "allow", priority = 1 }
+cast_possible_wrap = { level = "allow", priority = 1 }
+cast_precision_loss = { level = "allow", priority = 1 }
+cast_sign_loss = { level = "allow", priority = 1 }
+must_use_candidate = { level = "allow", priority = 1 }
+wildcard_imports = { level = "allow", priority = 1 }
+
+# Restriction
+absolute_paths = { level = "deny", priority = 1 }
+allow_attributes_without_reason = { level = "deny", priority = 1 }
+assertions_on_result_states = { level = "deny", priority = 1 }
+clone_on_ref_ptr = { level = "deny", priority = 1 }
+expect_used = { level = "deny", priority = 1 }
+if_then_some_else_none = { level = "deny", priority = 1 }
+let_underscore_must_use = { level = "deny", priority = 1 }
+min_ident_chars = { level = "deny", priority = 1 }
+multiple_inherent_impl = { level = "deny", priority = 1 }
+mutex_atomic = { level = "deny", priority = 1 }
+mutex_integer = { level = "deny", priority = 1 }
+panic = { level = "deny", priority = 1 }
+print_stderr = { level = "deny", priority = 1 }
+print_stdout = { level = "deny", priority = 1 }
+redundant_type_annotations = { level = "deny", priority = 1 }
+renamed_function_params = { level = "deny", priority = 1 }
+rest_pat_in_fully_bound_structs = { level = "deny", priority = 1 }
+return_and_then = { level = "deny", priority = 1 }
+same_name_method = { level = "deny", priority = 1 }
+self_named_module_files = { level = "deny", priority = 1 }
+semicolon_inside_block = { level = "deny", priority = 1 }
+separated_literal_suffix = { level = "deny", priority = 1 }
+shadow_unrelated = { level = "deny", priority = 1 }
+single_char_lifetime_names = { level = "deny", priority = 1 }
+string_lit_chars_any = { level = "deny", priority = 1 }
+tests_outside_test_module = { level = "deny", priority = 1 }
+todo = { level = "deny", priority = 1 }
+try_err = { level = "deny", priority = 1 }
+undocumented_unsafe_blocks = { level = "deny", priority = 1 }
+unimplemented = { level = "deny", priority = 1 }
+unnecessary_safety_comment = { level = "deny", priority = 1 }
+unnecessary_safety_doc = { level = "deny", priority = 1 }
+unnecessary_self_imports = { level = "deny", priority = 1 }
+unneeded_field_pattern = { level = "deny", priority = 1 }
+unreachable = { level = "deny", priority = 1 }
+unused_result_ok = { level = "deny", priority = 1 }
+unused_trait_names = { level = "deny", priority = 1 }
+unwrap_used = { level = "deny", priority = 1 }

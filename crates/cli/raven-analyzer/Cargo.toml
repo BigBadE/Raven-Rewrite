@@ -1,0 +1,25 @@
+[package]
+name = "raven-analyzer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "raven-analyzer"
+path = "src/main.rs"
+
+[dependencies]
+rv-syntax = { path = "../../foundation/rv-syntax" }
+rv-hir = { path = "../../analysis/rv-hir" }
+rv-hir-lower = { path = "../../analysis/rv-hir-lower" }
+rv-metrics = { path = "../../analyzer/rv-metrics" }
+rv-lint = { path = "../../analyzer/rv-lint" }
+rv-duplicates = { path = "../../analyzer/rv-duplicates" }
+lang-raven = { path = "../../language-support/lang-raven" }
+clap = { workspace = true }
+anyhow = { workspace = true }
+colored = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

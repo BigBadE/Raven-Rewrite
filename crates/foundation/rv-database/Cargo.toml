@@ -5,4 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-salsa = { workspace = true }
+salsa.workspace = true
+rv-span = { path = "../rv-span" }
+rv-vfs = { path = "../rv-vfs" }
+rv-intern = { path = "../rv-intern" }
+anyhow.workspace = true

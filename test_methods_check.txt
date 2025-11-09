@@ -1,0 +1,305 @@
+
+running 1 test
+
+==== Testing project: 01-basic-arithmetic ====
+
+  -- Interpreter Backend --
+Testing basic-arithmetic v0.1.0
+Running test: test_addition
+  ✓ test_addition
+Running test: test_multiplication
+  ✓ test_multiplication
+Running test: test_division
+  ✓ test_division
+Running test: test_subtraction
+  ✓ test_subtraction
+Running test: test_complex_expression
+  ✓ test_complex_expression
+
+  -- JIT Backend --
+Testing basic-arithmetic v0.1.0 (JIT)
+Running test: test_subtraction
+  ✓ test_subtraction
+Running test: test_multiplication
+  ✓ test_multiplication
+Running test: test_addition
+  ✓ test_addition
+Running test: test_division
+  ✓ test_division
+Running test: test_complex_expression
+  ✓ test_complex_expression
+
+  -- LLVM Backend --
+LLVM backend compiled successfully
+Note: LLVM backend currently runs entry point only
+Entry point returned: 1
+  ✓ test_addition (compiled)
+  ✓ test_multiplication (compiled)
+  ✓ test_subtraction (compiled)
+  ✓ test_division (compiled)
+  ✓ test_complex_expression (compiled)
+
+==== Testing project: 02-control-flow ====
+
+  -- Interpreter Backend --
+Testing control-flow v0.1.0
+Running test: test_if_true
+  ✓ test_if_true
+Running test: test_if_false
+  ✓ test_if_false
+Running test: test_nested_if
+  ✓ test_nested_if
+Running test: test_if_with_arithmetic
+  ✓ test_if_with_arithmetic
+
+  -- JIT Backend --
+Testing control-flow v0.1.0 (JIT)
+Running test: test_if_true
+  ✓ test_if_true
+Running test: test_nested_if
+  ✓ test_nested_if
+Running test: test_if_with_arithmetic
+  ✓ test_if_with_arithmetic
+Running test: test_if_false
+  ✓ test_if_false
+
+  -- LLVM Backend --
+LLVM backend compiled successfully
+Note: LLVM backend currently runs entry point only
+Entry point returned: 1
+  ✓ test_nested_if (compiled)
+  ✓ test_if_false (compiled)
+  ✓ test_if_true (compiled)
+  ✓ test_if_with_arithmetic (compiled)
+
+==== Testing project: 03-comparisons ====
+
+  -- Interpreter Backend --
+Testing comparisons v0.1.0
+Running test: test_less_than
+  ✓ test_less_than
+Running test: test_greater_than
+  ✓ test_greater_than
+Running test: test_greater_equal
+  ✓ test_greater_equal
+Running test: test_equality
+  ✓ test_equality
+Running test: test_inequality
+  ✓ test_inequality
+Running test: test_less_equal
+  ✓ test_less_equal
+
+  -- JIT Backend --
+Testing comparisons v0.1.0 (JIT)
+Running test: test_equality
+  ✓ test_equality
+Running test: test_inequality
+  ✓ test_inequality
+Running test: test_less_than
+  ✓ test_less_than
+Running test: test_less_equal
+  ✓ test_less_equal
+Running test: test_greater_than
+  ✓ test_greater_than
+Running test: test_greater_equal
+  ✓ test_greater_equal
+
+  -- LLVM Backend --
+LLVM backend compiled successfully
+Note: LLVM backend currently runs entry point only
+Entry point returned: 1
+  ✓ test_less_than (compiled)
+  ✓ test_inequality (compiled)
+  ✓ test_greater_than (compiled)
+  ✓ test_less_equal (compiled)
+  ✓ test_greater_equal (compiled)
+  ✓ test_equality (compiled)
+
+==== Testing project: 10-generics ====
+
+  -- Interpreter Backend --
+Testing generics v0.1.0
+Running test: test_max_equal
+  ✓ test_max_equal
+Running test: test_identity_different_value
+  ✓ test_identity_different_value
+Running test: test_max_reversed
+  ✓ test_max_reversed
+Running test: test_identity
+  ✓ test_identity
+Running test: test_max
+  ✓ test_max
+
+  -- JIT Backend --
+Testing generics v0.1.0 (JIT)
+Running test: test_max_reversed
+  ✓ test_max_reversed
+Running test: test_identity
+  ✓ test_identity
+Running test: test_max_equal
+  ✓ test_max_equal
+Running test: test_max
+  ✓ test_max
+Running test: test_identity_different_value
+  ✓ test_identity_different_value
+
+  -- LLVM Backend --
+LLVM backend compiled successfully
+Note: LLVM backend currently runs entry point only
+Entry point returned: 0
+  ✓ test_max (compiled)
+  ✓ test_max_equal (compiled)
+  ✓ test_identity_different_value (compiled)
+  ✓ test_max_reversed (compiled)
+  ✓ test_identity (compiled)
+
+==== Testing project: 11-pattern-matching ====
+
+  -- Interpreter Backend --
+Testing pattern-matching v0.1.0
+Running test: test_pattern_binding_with_literal
+  ✓ test_pattern_binding_with_literal
+Running test: test_match_2_ordered
+  ✓ test_match_2_ordered
+Running test: test_pattern_binding
+  ✓ test_pattern_binding
+Running test: test_match_2_reversed
+  ✓ test_match_2_reversed
+Running test: test_match_1_ordered
+  ✓ test_match_1_ordered
+Running test: test_match_wildcard_ordered
+  ✓ test_match_wildcard_ordered
+
+  -- JIT Backend --
+Testing pattern-matching v0.1.0 (JIT)
+Running test: test_pattern_binding
+  ✓ test_pattern_binding
+Running test: test_pattern_binding_with_literal
+  ✓ test_pattern_binding_with_literal
+Running test: test_match_2_ordered
+  ✓ test_match_2_ordered
+Running test: test_match_2_reversed
+  ✓ test_match_2_reversed
+Running test: test_match_wildcard_ordered
+  ✓ test_match_wildcard_ordered
+Running test: test_match_1_ordered
+  ✓ test_match_1_ordered
+
+  -- LLVM Backend --
+LLVM backend compiled successfully
+Note: LLVM backend currently runs entry point only
+Entry point returned: 1
+  ✓ test_match_wildcard_ordered (compiled)
+  ✓ test_match_1_ordered (compiled)
+  ✓ test_pattern_binding (compiled)
+  ✓ test_pattern_binding_with_literal (compiled)
+  ✓ test_match_2_ordered (compiled)
+  ✓ test_match_2_reversed (compiled)
+
+==== Testing project: 11-structs ====
+
+  -- Interpreter Backend --
+Testing test-structs v0.1.0
+
+  -- JIT Backend --
+Testing test-structs v0.1.0 (JIT)
+
+  -- LLVM Backend --
+LLVM backend compiled successfully
+Note: LLVM backend currently runs entry point only
+Entry point returned: 0
+  ✓ test_struct_creation (compiled)
+
+==== Testing project: 12-methods ====
+
+  -- Interpreter Backend --
+Testing test-methods v0.1.0
+Running test: test_method_call
+  ✓ test_method_call
+Running test: test_method_with_computation
+  ✗ test_method_with_computation - type mismatch: expected Unit, got Int(10)
+
+  -- JIT Backend --
+Testing test-methods v0.1.0 (JIT)
+Running test: test_method_with_computation
+  ✓ test_method_with_computation
+Running test: test_method_call
+  ✓ test_method_call
+
+  -- LLVM Backend --
+Compilation failed: Expected struct type for field access but got IntType(IntType { int_type: Type { address: 0x2838ebc8620, llvm_type: "i32" } })
+  ✗ test_method_call - compilation failed
+  ✗ test_method_with_computation - compilation failed
+
+==== Testing project: 13-advanced-patterns ====
+
+  -- Interpreter Backend --
+Testing advanced-patterns v0.1.0
+Running test: test_or_pattern
+  ✓ test_or_pattern
+Running test: test_range_inclusive
+  ✓ test_range_inclusive
+Running test: test_range_exclusive
+  ✓ test_range_exclusive
+Running test: test_combined_patterns
+  ✓ test_combined_patterns
+
+  -- JIT Backend --
+Testing advanced-patterns v0.1.0 (JIT)
+Running test: test_combined_patterns
+  ✓ test_combined_patterns
+Running test: test_range_inclusive
+  ✓ test_range_inclusive
+Running test: test_range_exclusive
+  ✓ test_range_exclusive
+Running test: test_or_pattern
+  ✓ test_or_pattern
+
+  -- LLVM Backend --
+LLVM backend compiled successfully
+Note: LLVM backend currently runs entry point only
+Entry point returned: 0
+  ✓ test_combined_patterns (compiled)
+  ✓ test_or_pattern (compiled)
+  ✓ test_range_inclusive (compiled)
+  ✓ test_range_exclusive (compiled)
+
+==== Testing project: 14-traits ====
+
+  -- Interpreter Backend --
+Testing traits v0.1.0
+
+  -- JIT Backend --
+Testing traits v0.1.0 (JIT)
+
+  -- LLVM Backend --
+LLVM backend compiled successfully
+Note: LLVM backend currently runs entry point only
+Entry point returned: 0
+
+==== Testing project: 15-extern-ffi ====
+
+  -- Interpreter Backend --
+Testing extern-ffi v0.1.0
+
+  -- JIT Backend --
+Testing extern-ffi v0.1.0 (JIT)
+
+  -- LLVM Backend --
+LLVM backend compiled successfully
+Note: LLVM backend currently runs entry point only
+Entry point returned: 42
+
+==== Summary ====
+Total projects tested: 10
+Total tests passed: 94
+Total tests failed: 3
+test test_all_projects ... FAILED
+
+failures:
+
+failures:
+    test_all_projects
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s
+

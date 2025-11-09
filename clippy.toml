@@ -1,0 +1,11 @@
+check-private-items = true
+
+allowed-idents-below-min-chars = ["rc", "Rc", "ui", "Ui", "UI", "id", "Id", "io", "Io", "fs", "x", "y", "f", "x0", "y0", "x1", "y1", "_", "'_"]
+absolute-paths-max-segments = 0
+cognitive-complexity-threshold = 15
+enforce-iter-loop-reborrow = true
+excessive-nesting-threshold = 5
+min-ident-chars-threshold = 2
+too-many-arguments-threshold = 5
+too-many-lines-threshold = 75
+type-complexity-threshold = 125

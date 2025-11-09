@@ -1,0 +1,66 @@
+
+running 1 test
+test test_all_projects ... 
+==== Testing project: 01-basic-arithmetic ====
+
+  -- Interpreter Backend --
+Testing basic-arithmetic v0.1.0
+Running test: test_multiplication
+  ✓ test_multiplication
+Running test: test_division
+  ✓ test_division
+Running test: test_addition
+  ✓ test_addition
+Running test: test_subtraction
+  ✓ test_subtraction
+Running test: test_complex_expression
+  ✓ test_complex_expression
+
+  -- JIT Backend --
+Testing basic-arithmetic v0.1.0 (JIT)
+Running test: test_addition
+  ✓ test_addition
+Running test: test_subtraction
+  ✓ test_subtraction
+Running test: test_division
+  ✓ test_division
+Running test: test_multiplication
+  ✓ test_multiplication
+Running test: test_complex_expression
+  ✓ test_complex_expression
+
+  -- LLVM Backend --
+LLVM backend compiled successfully
+Note: LLVM backend currently runs entry point only
+Entry point returned: 0
+  ✓ test_complex_expression (compiled)
+  ✓ test_subtraction (compiled)
+  ✓ test_division (compiled)
+  ✓ test_multiplication (compiled)
+  ✓ test_addition (compiled)
+
+==== Testing project: 02-control-flow ====
+
+  -- Interpreter Backend --
+Testing control-flow v0.1.0
+Running test: test_if_true
+  ✓ test_if_true
+Running test: test_if_false
+  ✓ test_if_false
+Running test: test_if_with_arithmetic
+  ✓ test_if_with_arithmetic
+Running test: test_nested_if
+  ✓ test_nested_if
+
+  -- JIT Backend --
+Testing control-flow v0.1.0 (JIT)
+Running test: test_if_false
+  ✓ test_if_false
+Running test: test_nested_if
+  ✓ test_nested_if
+Running test: test_if_true
+  ✓ test_if_true
+Running test: test_if_with_arithmetic
+  ✓ test_if_with_arithmetic
+
+  -- LLVM Backend --

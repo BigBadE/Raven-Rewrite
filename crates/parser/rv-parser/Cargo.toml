@@ -1,0 +1,18 @@
+[package]
+name = "rv-parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rv-span = { path = "../../foundation/rv-span" }
+rv-intern = { path = "../../foundation/rv-intern" }
+rv-syntax = { path = "../../foundation/rv-syntax" }
+rv-database = { path = "../../foundation/rv-database" }
+lang-raven = { path = "../../language-support/lang-raven" }
+tree-sitter.workspace = true
+miette.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+salsa.workspace = true
+codespan-reporting.workspace = true

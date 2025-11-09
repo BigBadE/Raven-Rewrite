@@ -1,0 +1,26 @@
+[package]
+name = "raven"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "raven"
+path = "src/main.rs"
+
+[dependencies]
+rv-syntax = { path = "../../foundation/rv-syntax" }
+rv-hir = { path = "../../analysis/rv-hir" }
+rv-hir-lower = { path = "../../analysis/rv-hir-lower" }
+rv-mir = { path = "../../analysis/rv-mir" }
+rv-intern = { path = "../../foundation/rv-intern" }
+rv-interpreter = { path = "../../codegen/rv-interpreter" }
+rv-cranelift = { path = "../../codegen/rv-cranelift" }
+rv-llvm-backend = { path = "../../codegen/rv-llvm-backend" }
+lang-raven = { path = "../../language-support/lang-raven" }
+clap = { workspace = true }
+anyhow = { workspace = true }
+colored = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,129 @@
+# To switch to this for faster build times, copy it and rename it config.toml.
+
+[env]
+# Auto-download LLVM location
+# The build.rs in rv-llvm-backend will download LLVM to this location
+# Use absolute path for compatibility
+LLVM_SYS_180_PREFIX = "C:/current_projects/Raven-Rewrite/target/llvm/target"
+
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = [
+    # LLD linker
+    #
+    # You may need to install it:
+    #
+    # - Ubuntu: `sudo apt-get install lld clang`
+    # - Fedora: `sudo dnf install lld clang`
+    # - Arch: `sudo pacman -S lld clang`
+    #"-Clink-arg=-fuse-ld=lld",
+
+    # Mold linker
+    #
+    # You may need to install it:
+    #
+    # - Ubuntu: `sudo apt-get install mold clang`
+    # - Fedora: `sudo dnf install mold clang`
+    # - Arch: `sudo pacman -S mold clang`
+    "-Clink-arg=-fuse-ld=mold",
+
+    # Dynamic linking for faster builds
+    "-Cprefer-dynamic",
+
+    # Nightly
+    #"-Zshare-generics=y",
+    "-Zthreads=0",
+]
+# Some systems may experience linker performance issues when running doc tests.
+# See https://github.com/bevyengine/bevy/issues/12207 for details.
+rustdocflags = [
+    # LLD linker
+    "-Clink-arg=-fuse-ld=lld",
+
+    # Mold linker
+    # "-Clink-arg=-fuse-ld=mold",
+]
+
+[target.x86_64-apple-darwin]
+rustflags = [
+    # LLD linker
+    #
+    # The default ld64 linker is faster, you should continue using it instead.
+    #
+    # You may need to install it:
+    #
+    # Brew: `brew install llvm`
+    # Manually: <https://lld.llvm.org/MachO/index.html>
+    # "-Clink-arg=-fuse-ld=/usr/local/opt/llvm/bin/ld64.lld",
+
+    # Dynamic linking for faster builds
+    "-Cprefer-dynamic",
+
+    # Nightly
+    #"-Zshare-generics=y",
+    #"-Zthreads=0",
+]
+
+[target.aarch64-apple-darwin]
+rustflags = [
+    # LLD linker
+    #
+    # The default ld64 linker is faster, you should continue using it instead.
+    #
+    # You may need to install it:
+    #
+    # Brew: `brew install llvm`
+    # Manually: <https://lld.llvm.org/MachO/index.html>
+    # "-Clink-arg=-fuse-ld=/opt/homebrew/opt/llvm/bin/ld64.lld",
+
+    # Dynamic linking for faster builds
+    "-Cprefer-dynamic",
+
+    # Nightly
+    #"-Zshare-generics=y",
+    #"-Zthreads=0",
+]
+
+[target.x86_64-pc-windows-msvc]
+# LLD linker
+#
+# You may need to install it:
+#
+# ```
+# cargo install -f cargo-binutils
+# rustup component add llvm-tools
+# ```
+linker = "rust-lld.exe"
+rustdocflags = ["-Clinker=rust-lld.exe"]
+rustflags = [
+    # NOTE: -Cprefer-dynamic is NOT compatible with LLVM on Windows
+    # Removed to allow rv-llvm-backend to build
+
+    # Nightly
+    #"-Zshare-generics=n",
+    #"-Zthreads=0",
+]
+
+[build]
+rustflags = ["-Z", "threads=8"]
+
+[unstable]
+codegen-backend = true
+
+# Use cranelift for dev builds on non-Windows platforms only
+[target.x86_64-unknown-linux-gnu.profile.dev]
+codegen-backend = "cranelift"
+
+[target.x86_64-apple-darwin.profile.dev]
+codegen-backend = "cranelift"
+
+[target.aarch64-apple-darwin.profile.dev]
+codegen-backend = "cranelift"
+
+# Release builds use LLVM (default) and static linking
+[profile.release]
+# Remove prefer-dynamic for release builds - static linking
+# LLVM is the default codegen backend
+
+[llvm-cov]
+merge = true

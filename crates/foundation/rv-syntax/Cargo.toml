@@ -5,3 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+rv-span = { path = "../rv-span" }
+rv-intern = { path = "../rv-intern" }
+rv-arena = { path = "../rv-arena" }
+tree-sitter.workspace = true
+anyhow.workspace = true

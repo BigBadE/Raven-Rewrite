@@ -26,7 +26,11 @@ impl Interner {
     }
 
     pub fn try_resolve(&self, sym: &Symbol) -> Option<String> {
-        self.inner.lock().unwrap().try_resolve(sym).map(|s| s.to_string())
+        self.inner
+            .lock()
+            .unwrap()
+            .try_resolve(sym)
+            .map(|s| s.to_string())
     }
 }
 

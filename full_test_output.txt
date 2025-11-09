@@ -1,0 +1,341 @@
+warning: C:\current_projects\Raven-Rewrite\crates\cli\magpie\Cargo.toml: file `C:\current_projects\Raven-Rewrite\crates\cli\magpie\src\main.rs` found to be present in multiple build targets:
+  * `lib` target `magpie`
+  * `bin` target `magpie`
+warning: unused import: `PatternId`
+ --> crates\analysis\rv-hir\src\exhaustiveness.rs:5:51
+  |
+5 | use crate::{Body, LiteralKind, MatchArm, Pattern, PatternId};
+  |                                                   ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `rv-hir` (lib) generated 1 warning (run `cargo fix --lib -p rv-hir` to apply 1 suggestion)
+warning: unreachable pattern
+   --> crates\analysis\rv-mir\src\lower.rs:588:13
+    |
+588 |             _ => {
+    |             ^ no value can reach this
+    |
+note: multiple earlier patterns match some of the same values
+   --> crates\analysis\rv-mir\src\lower.rs:588:13
+    |
+140 |               Expr::Literal { kind, span } => {
+    |               ---------------------------- matches some of the same values
+...
+152 |               Expr::Variable { name, def: _, span } => {
+    |               ------------------------------------- matches some of the same values
+...
+177 | /             Expr::BinaryOp {
+178 | |                 op,
+179 | |                 left,
+180 | |                 right,
+181 | |                 span,
+182 | |             } => {
+    | |_____________- matches some of the same values
+...
+197 |               Expr::UnaryOp { op, operand, span } => {
+    |               ----------------------------------- matches some of the same values
+...
+588 |               _ => {
+    |               ^ ...and 8 other patterns collectively make this unreachable
+    = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: `rv-mir` (lib) generated 1 warning
+warning: unused import: `rv_ty::TyContext`
+  --> crates\cli\magpie\src\backends\llvm.rs:24:13
+   |
+24 |         use rv_ty::TyContext;
+   |             ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `main` is never used
+  --> crates\cli\magpie\src\main.rs:70:4
+   |
+70 | fn main() -> Result<()> {
+   |    ^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `get_project_dir` is never used
+  --> crates\cli\magpie\src\main.rs:85:4
+   |
+85 | fn get_project_dir(cli: &Cli) -> PathBuf {
+   |    ^^^^^^^^^^^^^^^
+
+warning: function `cmd_build` is never used
+  --> crates\cli\magpie\src\main.rs:91:4
+   |
+91 | fn cmd_build(cli: &Cli) -> Result<()> {
+   |    ^^^^^^^^^
+
+warning: function `cmd_run` is never used
+   --> crates\cli\magpie\src\main.rs:118:4
+    |
+118 | fn cmd_run(cli: &Cli, args: &[String]) -> Result<()> {
+    |    ^^^^^^^
+
+warning: function `cmd_test` is never used
+   --> crates\cli\magpie\src\main.rs:137:4
+    |
+137 | fn cmd_test(cli: &Cli) -> Result<()> {
+    |    ^^^^^^^^
+
+warning: function `cmd_check` is never used
+   --> crates\cli\magpie\src\main.rs:174:4
+    |
+174 | fn cmd_check(cli: &Cli) -> Result<()> {
+    |    ^^^^^^^^^
+
+warning: function `cmd_clean` is never used
+   --> crates\cli\magpie\src\main.rs:186:4
+    |
+186 | fn cmd_clean(cli: &Cli) -> Result<()> {
+    |    ^^^^^^^^^
+
+warning: function `cmd_new` is never used
+   --> crates\cli\magpie\src\main.rs:197:4
+    |
+197 | fn cmd_new(name: String, lib: bool) -> Result<()> {
+    |    ^^^^^^^
+
+warning: `magpie` (lib) generated 9 warnings (run `cargo fix --lib -p magpie` to apply 1 suggestion)
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.65s
+     Running tests\magpie_tests.rs (C:\target\debug\deps\magpie_tests-abf668d3b7f075cb.exe)
+
+running 1 test
+
+==== Testing project: 01-basic-arithmetic ====
+
+  -- Interpreter Backend --
+Testing basic-arithmetic v0.1.0
+Running test: test_addition
+  ✓ test_addition
+Running test: test_multiplication
+  ✓ test_multiplication
+Running test: test_subtraction
+  ✓ test_subtraction
+Running test: test_complex_expression
+  ✓ test_complex_expression
+Running test: test_division
+  ✓ test_division
+
+  -- JIT Backend --
+Testing basic-arithmetic v0.1.0 (JIT)
+Running test: test_division
+  ✓ test_division
+Running test: test_subtraction
+  ✓ test_subtraction
+Running test: test_multiplication
+  ✓ test_multiplication
+Running test: test_complex_expression
+  ✓ test_complex_expression
+Running test: test_addition
+  ✓ test_addition
+
+  -- LLVM Backend --
+LLVM backend compiled successfully
+Note: LLVM backend currently runs entry point only
+Entry point returned: 1
+  ✓ test_addition (compiled)
+  ✓ test_subtraction (compiled)
+  ✓ test_multiplication (compiled)
+  ✓ test_division (compiled)
+  ✓ test_complex_expression (compiled)
+
+==== Testing project: 02-control-flow ====
+
+  -- Interpreter Backend --
+Testing control-flow v0.1.0
+Running test: test_nested_if
+  ✓ test_nested_if
+Running test: test_if_false
+  ✓ test_if_false
+Running test: test_if_true
+  ✓ test_if_true
+Running test: test_if_with_arithmetic
+  ✓ test_if_with_arithmetic
+
+  -- JIT Backend --
+Testing control-flow v0.1.0 (JIT)
+Running test: test_if_true
+  ✓ test_if_true
+Running test: test_if_false
+  ✓ test_if_false
+Running test: test_if_with_arithmetic
+  ✓ test_if_with_arithmetic
+Running test: test_nested_if
+  ✓ test_nested_if
+
+  -- LLVM Backend --
+LLVM backend compiled successfully
+Note: LLVM backend currently runs entry point only
+Entry point returned: 0
+  ✓ test_if_true (compiled)
+  ✓ test_if_false (compiled)
+  ✓ test_if_with_arithmetic (compiled)
+  ✓ test_nested_if (compiled)
+
+==== Testing project: 03-comparisons ====
+
+  -- Interpreter Backend --
+Testing comparisons v0.1.0
+Running test: test_greater_equal
+  ✓ test_greater_equal
+Running test: test_greater_than
+  ✓ test_greater_than
+Running test: test_equality
+  ✓ test_equality
+Running test: test_less_than
+  ✓ test_less_than
+Running test: test_less_equal
+  ✓ test_less_equal
+Running test: test_inequality
+  ✓ test_inequality
+
+  -- JIT Backend --
+Testing comparisons v0.1.0 (JIT)
+Running test: test_less_equal
+  ✓ test_less_equal
+Running test: test_greater_equal
+  ✓ test_greater_equal
+Running test: test_inequality
+  ✓ test_inequality
+Running test: test_equality
+  ✓ test_equality
+Running test: test_less_than
+  ✓ test_less_than
+Running test: test_greater_than
+  ✓ test_greater_than
+
+  -- LLVM Backend --
+LLVM backend compiled successfully
+Note: LLVM backend currently runs entry point only
+Entry point returned: 1
+  ✓ test_equality (compiled)
+  ✓ test_greater_equal (compiled)
+  ✓ test_greater_than (compiled)
+  ✓ test_inequality (compiled)
+  ✓ test_less_equal (compiled)
+  ✓ test_less_than (compiled)
+
+==== Testing project: 10-generics ====
+
+  -- Interpreter Backend --
+Testing generics v0.1.0
+Running test: test_identity
+  ✓ test_identity
+Running test: test_max
+  ✓ test_max
+Running test: test_max_equal
+  ✓ test_max_equal
+Running test: test_identity_different_value
+  ✓ test_identity_different_value
+Running test: test_max_reversed
+  ✓ test_max_reversed
+
+  -- JIT Backend --
+Testing generics v0.1.0 (JIT)
+Running test: test_identity
+  ✓ test_identity
+Running test: test_max
+  ✓ test_max
+Running test: test_identity_different_value
+  ✓ test_identity_different_value
+Running test: test_max_reversed
+  ✓ test_max_reversed
+Running test: test_max_equal
+  ✓ test_max_equal
+
+  -- LLVM Backend --
+LLVM backend compiled successfully
+Note: LLVM backend currently runs entry point only
+Entry point returned: 0
+  ✓ test_identity_different_value (compiled)
+  ✓ test_identity (compiled)
+  ✓ test_max (compiled)
+  ✓ test_max_reversed (compiled)
+  ✓ test_max_equal (compiled)
+
+==== Testing project: 11-pattern-matching ====
+
+  -- Interpreter Backend --
+
+>>> Executing test_match_wildcard_ordered
+<<< Result: Ok(Bool(true))
+
+
+>>> Executing test_match_2_reversed
+<<< Result: Ok(Bool(true))
+
+
+>>> Executing test_match_2_ordered
+<<< Result: Ok(Bool(true))
+
+
+>>> Executing test_match_1_ordered
+<<< Result: Ok(Bool(true))
+
+Testing pattern-matching v0.1.0
+Running test: test_pattern_binding
+  ✓ test_pattern_binding
+Running test: test_match_wildcard_ordered
+  ✓ test_match_wildcard_ordered
+Running test: test_match_2_reversed
+  ✓ test_match_2_reversed
+Running test: test_match_2_ordered
+  ✓ test_match_2_ordered
+Running test: test_match_1_ordered
+  ✓ test_match_1_ordered
+Running test: test_pattern_binding_with_literal
+  ✓ test_pattern_binding_with_literal
+
+  -- JIT Backend --
+Testing pattern-matching v0.1.0 (JIT)
+Running test: test_pattern_binding
+  ✓ test_pattern_binding
+Running test: test_match_wildcard_ordered
+  ✓ test_match_wildcard_ordered
+Running test: test_pattern_binding_with_literal
+  ✓ test_pattern_binding_with_literal
+Running test: test_match_1_ordered
+  ✓ test_match_1_ordered
+Running test: test_match_2_reversed
+  ✓ test_match_2_reversed
+Running test: test_match_2_ordered
+  ✓ test_match_2_ordered
+
+  -- LLVM Backend --
+LLVM backend compiled successfully
+Note: LLVM backend currently runs entry point only
+Entry point returned: 0
+  ✓ test_match_2_reversed (compiled)
+  ✓ test_match_1_ordered (compiled)
+  ✓ test_match_wildcard_ordered (compiled)
+  ✓ test_pattern_binding (compiled)
+  ✓ test_pattern_binding_with_literal (compiled)
+  ✓ test_match_2_ordered (compiled)
+
+==== Testing project: 11-structs ====
+
+  -- Interpreter Backend --
+Testing test-structs v0.1.0
+
+  -- JIT Backend --
+Testing test-structs v0.1.0 (JIT)
+
+  -- LLVM Backend --
+
+thread 'test_all_projects' (9400) panicked at E:\cargo\registry\src\index.crates.io-1949cf8c6b5b557f\inkwell-0.5.0\src\values\enums.rs:309:13:
+Found StructValue(StructValue { struct_value: Value { name: "load2", address: 0x22bd5cc6d70, is_const: false, is_null: false, is_undef: false, llvm_value: "  %load2 = load { i32, i32 }, ptr %local_6, align 4", llvm_type: "{ i32, i32 }" } }) but expected the IntValue variant
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test test_all_projects ... FAILED
+
+failures:
+
+failures:
+    test_all_projects
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+error: test failed, to rerun pass `-p integration-tests --test magpie_tests`

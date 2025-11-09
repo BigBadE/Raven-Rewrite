@@ -1,0 +1,16 @@
+[package]
+name = "rv-mir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rv-span = { path = "../../foundation/rv-span" }
+rv-intern = { path = "../../foundation/rv-intern" }
+rv-arena = { path = "../../foundation/rv-arena" }
+rv-hir = { path = "../rv-hir" }
+rv-ty = { path = "../rv-ty" }
+serde.workspace = true
+indexmap.workspace = true
+rustc-hash.workspace = true
+lasso.workspace = true
