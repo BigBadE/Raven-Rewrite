@@ -18,7 +18,7 @@ impl<'ctx> TypeLowering<'ctx> {
         match ty {
             MirType::Int => self.context.i32_type().into(),
             MirType::Float => self.context.f64_type().into(),
-            MirType::Bool => self.context.bool_type().into(),
+            MirType::Bool => self.context.i32_type().into(), // Use i32 for booleans
             MirType::String => {
                 // String as pointer to i8 array
                 self.context.ptr_type(inkwell::AddressSpace::default()).into()
@@ -61,9 +61,18 @@ impl<'ctx> TypeLowering<'ctx> {
                 // Slice types as pointers for now
                 self.context.ptr_type(inkwell::AddressSpace::default()).into()
             }
-            MirType::Tuple(_) => {
-                // Tuple types as pointers for now
-                self.context.ptr_type(inkwell::AddressSpace::default()).into()
+            MirType::Tuple(elements) => {
+                // Create proper LLVM struct type for tuples
+                if elements.is_empty() {
+                    // Empty tuple = unit type
+                    self.context.i32_type().into()
+                } else {
+                    let element_types: Vec<BasicTypeEnum<'ctx>> = elements
+                        .iter()
+                        .map(|elem_ty| self.lower_type(elem_ty))
+                        .collect();
+                    self.context.struct_type(&element_types, false).into()
+                }
             }
             MirType::Ref { .. } => {
                 // Reference types become pointers

@@ -23,6 +23,8 @@ pub struct MirFunction {
     pub locals: Vec<Local>,
     /// Entry block ID
     pub entry_block: BasicBlockId,
+    /// Number of parameters (first N locals are parameters)
+    pub param_count: usize,
 }
 
 /// Local variable declaration
@@ -116,7 +118,7 @@ pub type BasicBlockId = usize;
 pub struct LocalId(pub u32);
 
 /// Place where a value can be stored
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Place {
     /// Base local variable
     pub local: LocalId,
@@ -136,7 +138,7 @@ impl Place {
 }
 
 /// Place projection element
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PlaceElem {
     /// Dereference (*place)
     Deref,
@@ -397,10 +399,16 @@ impl MirBuilder {
                 basic_blocks: vec![entry_block],
                 locals: Vec::new(),
                 entry_block: 0,
+                param_count: 0,
             },
             current_block: Some(0),
             next_local: 0,
         }
+    }
+
+    /// Sets the number of parameters for this function
+    pub fn set_param_count(&mut self, count: usize) {
+        self.function.param_count = count;
     }
 
     /// Creates a new basic block and returns its ID

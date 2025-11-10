@@ -1,5 +1,7 @@
 //! Integration test utilities for the Raven compiler
 
+pub mod multi_file;
+
 use anyhow::Result;
 use rv_database::{RootDatabase, SourceFile};
 use std::fs;

@@ -450,6 +450,7 @@ impl<'ctx> Interpreter<'ctx> {
                 hir_func,
                 ty_ctx,
                 &hir_ctx.structs,
+                &hir_ctx.enums,
                 &hir_ctx.impl_blocks,
                 &hir_ctx.functions,
                 &hir_ctx.types,

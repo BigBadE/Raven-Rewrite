@@ -4,6 +4,7 @@
 //! generic functions for each unique type combination.
 
 use indexmap::IndexMap;
+use std::collections::HashMap;
 use rv_hir::FunctionId;
 use rv_hir_lower::LoweringContext;
 use rv_mir::{MirFunction, MirType};
@@ -69,7 +70,7 @@ impl MonoContext {
 
 /// Monomorphization collector
 ///
-/// Walks MIR and collects all generic function instantiations needed
+/// Walks HIR expressions and collects all generic function instantiations needed
 pub struct MonoCollector {
     /// Functions that need to be instantiated with specific types
     needed_instances: Vec<(FunctionId, Vec<MirType>)>,
@@ -95,7 +96,7 @@ impl MonoCollector {
                 if let Statement::Assign { rvalue, .. } = stmt {
                     if let RValue::Call { func, args, .. } = rvalue {
                         // Extract argument types from operands
-                        let arg_types: Vec<MirType> = args.iter().map(|operand| {
+                        let arg_types: Vec<MirType> = args.iter().enumerate().map(|(_idx, operand)| {
                             match operand {
                                 Operand::Copy(place) | Operand::Move(place) => {
                                     // Find the local type
@@ -169,14 +170,21 @@ impl Default for MonoCollector {
 ///
 /// Takes HIR lowering context and ty context, and generates specialized MIR functions
 /// for each (FunctionId, type_args) pair collected
+///
+/// Returns: (Vec<MirFunction>, HashMap mapping (template_id, types) -> instance_id)
 pub fn monomorphize_functions(
     hir_ctx: &LoweringContext,
-    ty_ctx: &TyContext,
+    _ty_ctx: &TyContext,
     needed_instances: &[(FunctionId, Vec<MirType>)],
-) -> Vec<MirFunction> {
-    use std::collections::HashSet;
+    mut next_func_id: u32,
+) -> (Vec<MirFunction>, HashMap<(FunctionId, Vec<MirType>), FunctionId>) {
+    use std::collections::{HashMap, HashSet};
+    use rv_intern::Symbol;
+    use rv_ty::TypeInference;
+
     let mut generated = Vec::new();
     let mut seen = HashSet::new();
+    let mut instance_map = HashMap::new();
 
     for (func_id, type_args) in needed_instances {
         // Skip duplicates
@@ -187,19 +195,53 @@ pub fn monomorphize_functions(
 
         // Look up the HIR function
         if let Some(hir_func) = hir_ctx.functions.get(func_id) {
-            // Lower to MIR (type substitution happens during lowering via ty_ctx)
-            let mir_func = rv_mir::lower::LoweringContext::lower_function(
-                hir_func,
-                ty_ctx,
+            // Generate a unique FunctionId for this monomorphized instance
+            let instance_id = FunctionId(next_func_id);
+            next_func_id += 1;
+
+            // Record the mapping from (template_id, types) -> instance_id
+            instance_map.insert((*func_id, type_args.clone()), instance_id);
+
+            // Create type substitution map: generic param name -> concrete MirType
+            let mut type_subst: HashMap<Symbol, MirType> = HashMap::new();
+            for (i, generic_param) in hir_func.generics.iter().enumerate() {
+                if let Some(concrete_ty) = type_args.get(i) {
+                    type_subst.insert(generic_param.name, concrete_ty.clone());
+                }
+            }
+
+            // Create a new type context for this monomorphized instance
+            // Run type inference on this specific function with concrete types
+            let mut type_inference = TypeInference::with_hir_context(
+                &hir_ctx.impl_blocks,
+                &hir_ctx.functions,
+                &hir_ctx.types,
                 &hir_ctx.structs,
+                &hir_ctx.enums,
+                &hir_ctx.traits,
+                &hir_ctx.interner,
+            );
+
+            // TODO: Pre-populate type_inference with concrete types for generic parameters
+            // For now, run type inference normally on the function
+            type_inference.infer_function(hir_func);
+
+            // Lower to MIR with type substitution and unique instance ID
+            let mir_func = rv_mir::lower::LoweringContext::lower_function_with_subst(
+                hir_func,
+                type_inference.context(),
+                &hir_ctx.structs,
+                &hir_ctx.enums,
                 &hir_ctx.impl_blocks,
                 &hir_ctx.functions,
                 &hir_ctx.types,
                 &hir_ctx.traits,
+                &type_subst,
+                instance_id,
             );
             generated.push(mir_func);
         }
     }
 
-    generated
+    (generated, instance_map)
 }

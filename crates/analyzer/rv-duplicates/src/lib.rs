@@ -148,7 +148,8 @@ fn get_expr_span(expr: &Expr) -> Option<FileSpan> {
         | Expr::Field { span, .. }
         | Expr::MethodCall { span, .. }
         | Expr::StructConstruct { span, .. }
-        | Expr::EnumVariant { span, .. } => Some(*span),
+        | Expr::EnumVariant { span, .. }
+        | Expr::Closure { span, .. } => Some(*span),
     }
 }
 
@@ -232,6 +233,11 @@ fn hash_expr(body: &Body, expr_id: ExprId) -> u64 {
             for field_expr in fields {
                 hash_expr(body, *field_expr).hash(&mut hasher);
             }
+        }
+        Expr::Closure { params, body: closure_body, .. } => {
+            "Closure".hash(&mut hasher);
+            params.len().hash(&mut hasher);
+            hash_expr(body, *closure_body).hash(&mut hasher);
         }
     }
 

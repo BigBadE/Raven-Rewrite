@@ -130,8 +130,74 @@ impl<'ctx> Unifier<'ctx> {
                 self.unify(**left_inner, **right_inner)
             }
 
-            // Primitive types and named types - must match exactly
-            (left_kind, right_kind) if left_kind == right_kind => Ok(()),
+            // Primitives - must match exactly (nominal equality)
+            (TyKind::Int, TyKind::Int)
+            | (TyKind::Float, TyKind::Float)
+            | (TyKind::Bool, TyKind::Bool)
+            | (TyKind::String, TyKind::String)
+            | (TyKind::Unit, TyKind::Unit)
+            | (TyKind::Never, TyKind::Never) => Ok(()),
+
+            // Named types - compare TypeDefId for nominal equality
+            (TyKind::Named { def: left_def, args: left_args, .. }, TyKind::Named { def: right_def, args: right_args, .. }) => {
+                // Check that type definitions match (nominal typing)
+                if left_def != right_def {
+                    return Err(UnificationError::Mismatch {
+                        expected: left,
+                        found: right,
+                    });
+                }
+
+                // Unify generic arguments
+                if left_args.len() != right_args.len() {
+                    return Err(UnificationError::Mismatch {
+                        expected: left,
+                        found: right,
+                    });
+                }
+
+                for (left_arg, right_arg) in left_args.iter().zip(right_args.iter()) {
+                    self.unify(*left_arg, *right_arg)?;
+                }
+
+                Ok(())
+            }
+
+            // Struct types - compare TypeDefId for nominal equality
+            (TyKind::Struct { def_id: left_def, .. }, TyKind::Struct { def_id: right_def, .. }) => {
+                if left_def == right_def {
+                    Ok(())
+                } else {
+                    Err(UnificationError::Mismatch {
+                        expected: left,
+                        found: right,
+                    })
+                }
+            }
+
+            // Enum types - compare TypeDefId for nominal equality
+            (TyKind::Enum { def_id: left_def, .. }, TyKind::Enum { def_id: right_def, .. }) => {
+                if left_def == right_def {
+                    Ok(())
+                } else {
+                    Err(UnificationError::Mismatch {
+                        expected: left,
+                        found: right,
+                    })
+                }
+            }
+
+            // Generic parameters - must have same index
+            (TyKind::Param { index: left_idx, .. }, TyKind::Param { index: right_idx, .. }) => {
+                if left_idx == right_idx {
+                    Ok(())
+                } else {
+                    Err(UnificationError::Mismatch {
+                        expected: left,
+                        found: right,
+                    })
+                }
+            }
 
             // Error type unifies with anything
             (TyKind::Error, _) | (_, TyKind::Error) => Ok(()),

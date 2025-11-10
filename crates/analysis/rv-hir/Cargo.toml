@@ -8,4 +8,5 @@ license.workspace = true
 rv-span = { path = "../../foundation/rv-span" }
 rv-intern = { path = "../../foundation/rv-intern" }
 rv-arena = { path = "../../foundation/rv-arena" }
+rustc-hash.workspace = true
 serde.workspace = true

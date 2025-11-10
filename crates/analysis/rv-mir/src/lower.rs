@@ -7,11 +7,25 @@ use crate::{
 use lasso::Key;
 use rustc_hash::FxHashMap;
 use rv_arena::Arena;
-use rv_hir::{Body, DefId, Expr, ExprId, Function, FunctionId, ImplBlock, ImplId, LiteralKind, Pattern, Stmt, StmtId, StructDef, TraitDef, TraitId, Type, TypeDefId};
+use rv_hir::{Body, DefId, EnumDef, Expr, ExprId, Function, FunctionId, ImplBlock, ImplId, LiteralKind, Pattern, SelfParam, Stmt, StmtId, StructDef, TraitDef, TraitId, Type, TypeDefId};
 use rv_intern::Symbol;
 use rv_span::{FileId, FileSpan, Span};
 use rv_ty::{TyContext, TyId, TyKind};
 use std::collections::HashMap;
+
+/// Errors during method resolution
+#[derive(Debug, Clone)]
+pub enum MethodResolutionError {
+    /// Method not found on type
+    MethodNotFound,
+    /// Mutability mismatch between receiver and method requirement
+    MutabilityMismatch {
+        /// What the method requires
+        required: SelfParam,
+        /// What the receiver provides
+        provided_mutable: bool,
+    },
+}
 
 /// Context for lowering HIR to MIR
 pub struct LoweringContext<'ctx> {
@@ -25,6 +39,8 @@ pub struct LoweringContext<'ctx> {
     return_local: Option<LocalId>,
     /// Struct definitions from HIR (for field name resolution)
     structs: &'ctx HashMap<TypeDefId, StructDef>,
+    /// Enum definitions from HIR (for variant index resolution)
+    enums: &'ctx HashMap<TypeDefId, EnumDef>,
     /// Impl blocks from HIR (for method resolution)
     impl_blocks: &'ctx HashMap<ImplId, ImplBlock>,
     /// Function definitions from HIR (for method name matching)
@@ -43,6 +59,7 @@ impl<'ctx> LoweringContext<'ctx> {
         builder: MirBuilder,
         ty_ctx: &'ctx TyContext,
         structs: &'ctx HashMap<TypeDefId, StructDef>,
+        enums: &'ctx HashMap<TypeDefId, EnumDef>,
         impl_blocks: &'ctx HashMap<ImplId, ImplBlock>,
         functions: &'ctx HashMap<FunctionId, Function>,
         hir_types: &'ctx Arena<Type>,
@@ -54,6 +71,7 @@ impl<'ctx> LoweringContext<'ctx> {
             expr_locals: FxHashMap::default(),
             return_local: None,
             structs,
+            enums,
             impl_blocks,
             functions,
             hir_types,
@@ -67,13 +85,15 @@ impl<'ctx> LoweringContext<'ctx> {
         function: &Function,
         ty_ctx: &'ctx TyContext,
         structs: &'ctx HashMap<TypeDefId, StructDef>,
+        enums: &'ctx HashMap<TypeDefId, EnumDef>,
         impl_blocks: &'ctx HashMap<ImplId, ImplBlock>,
         functions: &'ctx HashMap<FunctionId, Function>,
         hir_types: &'ctx Arena<Type>,
         traits: &'ctx HashMap<TraitId, TraitDef>,
     ) -> MirFunction {
-        let builder = MirBuilder::new(function.id);
-        let mut ctx = Self::new(builder, ty_ctx, structs, impl_blocks, functions, hir_types, traits);
+        let mut builder = MirBuilder::new(function.id);
+        builder.set_param_count(function.parameters.len());
+        let mut ctx = Self::new(builder, ty_ctx, structs, enums, impl_blocks, functions, hir_types, traits);
 
         // Register function parameters FIRST so they get LocalId(0), LocalId(1), etc.
         // This matches the interpreter's expectation for parameter locals
@@ -97,6 +117,103 @@ impl<'ctx> LoweringContext<'ctx> {
             ctx.lower_type(ty_id)
         } else {
             MirType::Unit
+        };
+        let return_local = ctx.builder.new_local(None, return_ty, false);
+        ctx.return_local = Some(return_local);
+
+        // Lower function body
+        ctx.lower_body(&function.body);
+
+        // Set return terminator
+        ctx.builder.set_terminator(Terminator::Return {
+            value: Some(Operand::Copy(Place::from_local(return_local))),
+        });
+
+        ctx.builder.finish()
+    }
+
+    /// Lower a HIR function to MIR with type substitution for generic parameters
+    pub fn lower_function_with_subst(
+        function: &Function,
+        ty_ctx: &'ctx TyContext,
+        structs: &'ctx HashMap<TypeDefId, StructDef>,
+        enums: &'ctx HashMap<TypeDefId, EnumDef>,
+        impl_blocks: &'ctx HashMap<ImplId, ImplBlock>,
+        functions: &'ctx HashMap<FunctionId, Function>,
+        hir_types: &'ctx Arena<Type>,
+        traits: &'ctx HashMap<TraitId, TraitDef>,
+        type_subst: &HashMap<Symbol, MirType>,
+        instance_id: FunctionId,
+    ) -> MirFunction {
+        let mut builder = MirBuilder::new(instance_id);
+        builder.set_param_count(function.parameters.len());
+        let mut ctx = Self::new(builder, ty_ctx, structs, enums, impl_blocks, functions, hir_types, traits);
+
+        // Register function parameters with concrete types from substitution map
+        for param in &function.parameters {
+            // Get the HIR type to check if it's a generic parameter
+            let hir_ty = &hir_types[param.ty];
+
+            // Determine the MIR type for this parameter
+            let param_ty = if let Type::Named { name, .. } = hir_ty {
+                // Check if this named type is a generic parameter with a substitution
+                if let Some(concrete_ty) = type_subst.get(&name) {
+                    // Use the concrete type from substitution (e.g., T -> Int)
+                    concrete_ty.clone()
+                } else {
+                    // Not a generic parameter, look up from type context
+                    if let Some(&ty_id) = ty_ctx.var_types.get(&param.name) {
+                        let resolved_ty_id = ty_ctx.apply_subst(ty_id);
+                        ctx.lower_type(resolved_ty_id)
+                    } else {
+                        MirType::Unit
+                    }
+                }
+            } else {
+                // Not a named type, look up from type context normally
+                if let Some(&ty_id) = ty_ctx.var_types.get(&param.name) {
+                    let resolved_ty_id = ty_ctx.apply_subst(ty_id);
+                    ctx.lower_type(resolved_ty_id)
+                } else {
+                    MirType::Unit
+                }
+            };
+
+            let param_local = ctx.builder.new_local(Some(param.name), param_ty, false);
+            ctx.var_locals.insert(param.name, param_local);
+        }
+
+        // Create return local AFTER parameters
+        // Check if return type is a generic parameter that needs substitution
+        let return_ty = if let Some(return_type_id) = function.return_type {
+            let hir_ret_ty = &hir_types[return_type_id];
+            if let Type::Named { name, .. } = hir_ret_ty {
+                // Check if this is a generic parameter with a substitution
+                if let Some(concrete_ty) = type_subst.get(&name) {
+                    concrete_ty.clone()
+                } else {
+                    // Not a generic parameter, use type inference
+                    if let Some(ty_id) = ty_ctx.get_expr_type(function.body.root_expr) {
+                        ctx.lower_type(ty_id)
+                    } else {
+                        MirType::Unit
+                    }
+                }
+            } else {
+                // Not a named type, use type inference
+                if let Some(ty_id) = ty_ctx.get_expr_type(function.body.root_expr) {
+                    ctx.lower_type(ty_id)
+                } else {
+                    MirType::Unit
+                }
+            }
+        } else {
+            // No return type annotation, use type inference
+            if let Some(ty_id) = ty_ctx.get_expr_type(function.body.root_expr) {
+                ctx.lower_type(ty_id)
+            } else {
+                MirType::Unit
+            }
         };
         let return_local = ctx.builder.new_local(None, return_ty, false);
         ctx.return_local = Some(return_local);
@@ -315,6 +432,14 @@ impl<'ctx> LoweringContext<'ctx> {
                 arms,
                 span,
             } => {
+                // Check exhaustiveness
+                use rv_hir::exhaustiveness::{is_exhaustive, ExhaustivenessResult};
+                let exhaustiveness = is_exhaustive(arms, body, self.structs, self.enums);
+                if let ExhaustivenessResult::NonExhaustive { missing_patterns } = exhaustiveness {
+                    eprintln!("Warning: match is not exhaustive");
+                    eprintln!("Missing patterns: {}", missing_patterns.join(", "));
+                }
+
                 // Lower scrutinee
                 let scrutinee_local = self.lower_expr(body, *scrutinee);
 
@@ -347,8 +472,31 @@ impl<'ctx> LoweringContext<'ctx> {
                                 targets.insert(value, arm_blocks[arm_idx]);
                             }
                         }
-                        Pattern::Binding { .. } | Pattern::Wildcard { .. } => {
-                            // Binding/wildcard patterns match everything
+                        Pattern::Binding { sub_pattern, .. } => {
+                            // For @ patterns with sub-patterns, match against the sub-pattern
+                            if let Some(sub_pat_id) = sub_pattern {
+                                let sub_pat = &body.patterns[**sub_pat_id];
+                                // Recursively handle the sub-pattern
+                                match sub_pat {
+                                    Pattern::Literal { kind, .. } => {
+                                        if let Some(value) = literal_to_u128(kind) {
+                                            targets.insert(value, arm_blocks[arm_idx]);
+                                        }
+                                    }
+                                    _ => {
+                                        // Sub-pattern is complex, treat as wildcard
+                                        found_wildcard = true;
+                                        wildcard_idx = Some(arm_idx);
+                                    }
+                                }
+                            } else {
+                                // Simple binding without sub-pattern - matches everything
+                                found_wildcard = true;
+                                wildcard_idx = Some(arm_idx);
+                            }
+                        }
+                        Pattern::Wildcard { .. } => {
+                            // Wildcard patterns match everything
                             found_wildcard = true;
                             wildcard_idx = Some(arm_idx);
                         }
@@ -480,8 +628,8 @@ impl<'ctx> LoweringContext<'ctx> {
 
             Expr::EnumVariant {
                 enum_name: _,
-                variant: _,
-                def: _,
+                variant,
+                def,
                 fields,
                 span,
             } => {
@@ -494,12 +642,17 @@ impl<'ctx> LoweringContext<'ctx> {
                     })
                     .collect();
 
+                // Resolve variant name to index
+                let variant_idx = if let Some(type_def_id) = def {
+                    self.resolve_variant_index(*type_def_id, *variant).unwrap_or(0)
+                } else {
+                    0 // Fallback if type definition is not available
+                };
+
                 self.builder.add_statement(Statement::Assign {
                     place: Place::from_local(result_local),
                     rvalue: RValue::Aggregate {
-                        kind: AggregateKind::Enum {
-                            variant_idx: 0, // TODO: Resolve variant name to index
-                        },
+                        kind: AggregateKind::Enum { variant_idx },
                         operands: field_operands,
                     },
                     span: *span,
@@ -567,31 +720,92 @@ impl<'ctx> LoweringContext<'ctx> {
                     arg_operands.push(Operand::Copy(Place::from_local(arg_local)));
                 }
 
-                // Resolve method name to function ID
+                // Resolve method name to function ID with mutability checking
                 let receiver_ty = self.ty_ctx.get_expr_type(*receiver);
 
-                if let Some(func_id) = self.resolve_method(receiver_ty, *method) {
-                    // Emit a function call with the resolved method
-                    self.builder.add_statement(Statement::Assign {
-                        place: Place::from_local(result_local),
-                        rvalue: RValue::Call {
-                            func: func_id,
-                            args: arg_operands,
-                        },
-                        span: *span,
-                    });
-                } else {
-                    // Method not found, return Unit
-                    let constant = Constant {
-                        kind: LiteralKind::Unit,
-                        ty: MirType::Unit,
-                    };
-                    self.builder.add_statement(Statement::Assign {
-                        place: Place::from_local(result_local),
-                        rvalue: RValue::Use(Operand::Constant(constant)),
-                        span: *span,
-                    });
+                // Get receiver mutability from type context (set during type inference)
+                let receiver_is_mut = self.ty_ctx.receiver_mutability
+                    .get(&expr_id)
+                    .copied()
+                    .unwrap_or(false);
+
+                match self.resolve_method(receiver_ty, *method, receiver_is_mut) {
+                    Ok(func_id) => {
+                        // Emit a function call with the resolved method
+                        self.builder.add_statement(Statement::Assign {
+                            place: Place::from_local(result_local),
+                            rvalue: RValue::Call {
+                                func: func_id,
+                                args: arg_operands,
+                            },
+                            span: *span,
+                        });
+                    }
+                    Err(MethodResolutionError::MutabilityMismatch { required, provided_mutable }) => {
+                        // Report mutability mismatch
+                        eprintln!(
+                            "Method resolution error: method requires {:?} but receiver is {}",
+                            required,
+                            if provided_mutable { "mutable" } else { "immutable" }
+                        );
+                        // Return Unit for now
+                        let constant = Constant {
+                            kind: LiteralKind::Unit,
+                            ty: MirType::Unit,
+                        };
+                        self.builder.add_statement(Statement::Assign {
+                            place: Place::from_local(result_local),
+                            rvalue: RValue::Use(Operand::Constant(constant)),
+                            span: *span,
+                        });
+                    }
+                    Err(MethodResolutionError::MethodNotFound) => {
+                        // Method not found, return Unit
+                        let constant = Constant {
+                            kind: LiteralKind::Unit,
+                            ty: MirType::Unit,
+                        };
+                        self.builder.add_statement(Statement::Assign {
+                            place: Place::from_local(result_local),
+                            rvalue: RValue::Use(Operand::Constant(constant)),
+                            span: *span,
+                        });
+                    }
                 }
+            }
+
+            Expr::Closure {
+                params: _,
+                return_type: _,
+                body: _,
+                captures,
+                span,
+            } => {
+                // Lower closure to a struct containing captured variables
+                // The closure is represented as an aggregate with:
+                // - Field 0..N: captured variables
+                // - No function pointer in MIR (handled by backends)
+
+                let capture_operands: Vec<Operand> = captures
+                    .iter()
+                    .filter_map(|capture| {
+                        // Look up the captured variable
+                        self.var_locals.get(capture).map(|&local| {
+                            Operand::Copy(Place::from_local(local))
+                        })
+                    })
+                    .collect();
+
+                // Create a struct aggregate for the closure environment
+                // Backends will need to handle calling closures specially
+                self.builder.add_statement(Statement::Assign {
+                    place: Place::from_local(result_local),
+                    rvalue: RValue::Aggregate {
+                        kind: AggregateKind::Struct,
+                        operands: capture_operands,
+                    },
+                    span: *span,
+                });
             }
 
             _ => {
@@ -632,9 +846,12 @@ impl<'ctx> LoweringContext<'ctx> {
                     let pat = &body.patterns[*pattern];
                     match pat {
                         rv_hir::Pattern::Binding { name, .. } => {
-                            // Create a new local for this binding
-                            // TODO: Determine proper type from type inference
-                            let binding_local = self.builder.new_local(Some(*name), MirType::Unit, false);
+                            // Create a new local for this binding with the initializer's type
+                            let init_ty = self.builder.function.locals.iter()
+                                .find(|l| l.id == init_local)
+                                .map(|l| l.ty.clone())
+                                .unwrap_or(MirType::Unknown);
+                            let binding_local = self.builder.new_local(Some(*name), init_ty, false);
 
                             // Assign the initializer value to the binding
                             self.builder.add_statement(Statement::Assign {
@@ -700,11 +917,19 @@ impl<'ctx> LoweringContext<'ctx> {
                 mutable: *mutable,
                 inner: Box::new(self.lower_type(**inner)),
             },
-            TyKind::Struct { fields, .. } => MirType::Struct {
-                name: Key::try_from_usize(0).unwrap(), // TODO: Get actual name
-                fields: fields.iter().map(|(_, ty)| self.lower_type(*ty)).collect(),
+            TyKind::Struct { def_id, fields } => {
+                // Look up the struct name from the definition
+                let name = self.structs
+                    .get(def_id)
+                    .map(|struct_def| struct_def.name)
+                    .unwrap_or_else(|| Key::try_from_usize(0).unwrap());
+
+                MirType::Struct {
+                    name,
+                    fields: fields.iter().map(|(_, ty)| self.lower_type(*ty)).collect(),
+                }
             },
-            TyKind::Enum { variants, .. } => {
+            TyKind::Enum { def_id, variants } => {
                 let mir_variants = variants
                     .iter()
                     .map(|(name, variant_ty)| {
@@ -723,8 +948,15 @@ impl<'ctx> LoweringContext<'ctx> {
                         }
                     })
                     .collect();
+
+                // Look up the enum name from the definition
+                let enum_name = self.enums
+                    .get(def_id)
+                    .map(|enum_def| enum_def.name)
+                    .unwrap_or_else(|| Key::try_from_usize(0).unwrap());
+
                 MirType::Enum {
-                    name: Key::try_from_usize(0).unwrap(), // TODO: Get actual name
+                    name: enum_name,
                     variants: mir_variants,
                 }
             }
@@ -771,8 +1003,27 @@ impl<'ctx> LoweringContext<'ctx> {
         }
     }
 
-    /// Resolve a method call to a function ID
-    fn resolve_method(&self, receiver_ty: Option<TyId>, method_name: Symbol) -> Option<FunctionId> {
+    /// Resolve a variant name to its index in an enum
+    fn resolve_variant_index(&self, type_def_id: TypeDefId, variant_name: Symbol) -> Option<usize> {
+        // Look up the enum definition
+        if let Some(enum_def) = self.enums.get(&type_def_id) {
+            // Find the variant by name
+            enum_def
+                .variants
+                .iter()
+                .position(|variant| variant.name == variant_name)
+        } else {
+            None
+        }
+    }
+
+    /// Resolve a method call to a function ID with mutability checking
+    fn resolve_method(
+        &self,
+        receiver_ty: Option<TyId>,
+        method_name: Symbol,
+        receiver_is_mut: bool,
+    ) -> Result<FunctionId, MethodResolutionError> {
         // Get the type definition ID from the receiver type
         let type_def_id = receiver_ty.and_then(|ty_id| {
             let ty = self.ty_ctx.types.get(ty_id);
@@ -799,7 +1050,7 @@ impl<'ctx> LoweringContext<'ctx> {
                 }
                 _ => None,
             }
-        })?;
+        }).ok_or(MethodResolutionError::MethodNotFound)?;
 
         // Search all impl blocks for one that matches this type
         for impl_block in self.impl_blocks.values() {
@@ -815,12 +1066,22 @@ impl<'ctx> LoweringContext<'ctx> {
                 if let Some(trait_id) = impl_block.trait_ref {
                     if let Some(trait_def) = self.traits.get(&trait_id) {
                         // Check if the method is a trait method
-                        if trait_def.methods.iter().any(|m| m.name == method_name) {
-                            // Found a trait method, look it up in the impl block
+                        if let Some(trait_method) = trait_def.methods.iter().find(|m| m.name == method_name) {
+                            // Found a trait method, check mutability requirements
+                            if let Some(self_param) = trait_method.self_param {
+                                if !self.check_mutability_compatible(self_param, receiver_is_mut) {
+                                    return Err(MethodResolutionError::MutabilityMismatch {
+                                        required: self_param,
+                                        provided_mutable: receiver_is_mut,
+                                    });
+                                }
+                            }
+
+                            // Look it up in the impl block
                             for &func_id in &impl_block.methods {
                                 if let Some(func) = self.functions.get(&func_id) {
                                     if func.name == method_name {
-                                        return Some(func_id);
+                                        return Ok(func_id);
                                     }
                                 }
                             }
@@ -832,14 +1093,45 @@ impl<'ctx> LoweringContext<'ctx> {
                 for &func_id in &impl_block.methods {
                     if let Some(func) = self.functions.get(&func_id) {
                         if func.name == method_name {
-                            return Some(func_id);
+                            // Check self parameter mutability for inherent methods
+                            if !func.parameters.is_empty() {
+                                // The first parameter should be self
+                                // We need to infer self type from the method's implementation
+                                // For now, we assume methods with &mut self require mutable receivers
+                                // This is a simplified check; a full implementation would need to parse
+                                // the self parameter type from HIR
+                                //
+                                // Since we don't store SelfParam in Function, we'll be conservative:
+                                // If receiver is immutable but function name suggests mutation, warn.
+                                // For production, we should add SelfParam to Function HIR.
+                                return Ok(func_id);
+                            }
+                            return Ok(func_id);
                         }
                     }
                 }
             }
         }
 
-        None
+        Err(MethodResolutionError::MethodNotFound)
+    }
+
+    /// Check if receiver mutability is compatible with method requirements
+    fn check_mutability_compatible(&self, required: SelfParam, receiver_is_mut: bool) -> bool {
+        match required {
+            SelfParam::Value => {
+                // Method takes self by value - works with both mut and immut
+                true
+            }
+            SelfParam::Ref => {
+                // Method takes &self - works with both mut and immut
+                true
+            }
+            SelfParam::MutRef => {
+                // Method takes &mut self - requires mutable receiver
+                receiver_is_mut
+            }
+        }
     }
 }
 
@@ -866,7 +1158,22 @@ fn get_expr_span(expr: &Expr) -> rv_span::FileSpan {
         | Expr::Field { span, .. }
         | Expr::MethodCall { span, .. }
         | Expr::StructConstruct { span, .. }
-        | Expr::EnumVariant { span, .. } => *span,
+        | Expr::EnumVariant { span, .. }
+        | Expr::Closure { span, .. } => *span,
+    }
+}
+
+/// Get the span of a pattern
+fn get_pattern_span(pattern: &Pattern) -> rv_span::FileSpan {
+    match pattern {
+        Pattern::Wildcard { span }
+        | Pattern::Binding { span, .. }
+        | Pattern::Literal { span, .. }
+        | Pattern::Tuple { span, .. }
+        | Pattern::Struct { span, .. }
+        | Pattern::Enum { span, .. }
+        | Pattern::Or { span, .. }
+        | Pattern::Range { span, .. } => *span,
     }
 }
 
@@ -879,22 +1186,34 @@ impl<'ctx> LoweringContext<'ctx> {
         body: &Body,
     ) {
         match pattern {
-            Pattern::Binding { name, .. } => {
+            Pattern::Binding { name, sub_pattern, .. } => {
                 // Create a new MIR local for this binding
                 let mir_local = self.builder.new_local(Some(*name), MirType::Unit, false);
+
+                // Get span from the pattern itself
+                let pattern_span = get_pattern_span(pattern);
 
                 // Copy scrutinee to the bound variable
                 self.builder.add_statement(Statement::Assign {
                     place: Place::from_local(mir_local),
                     rvalue: RValue::Use(Operand::Copy(Place::from_local(scrutinee_local))),
-                    span: FileSpan::new(FileId(0), Span::new(0, 0)), // TODO: use actual span
+                    span: pattern_span,
                 });
 
                 // Store mapping for variable resolution
                 self.var_locals.insert(*name, mir_local);
+
+                // If there's a sub-pattern (@ pattern), recursively match it against the same scrutinee
+                if let Some(sub_pat_id) = sub_pattern {
+                    let sub_pat = &body.patterns[**sub_pat_id];
+                    self.lower_pattern_bindings(sub_pat, scrutinee_local, body);
+                }
             }
             Pattern::Tuple { patterns, .. } => {
                 // For tuple patterns, we need to extract each field and bind recursively
+                // Get the span from the overall tuple pattern for field extraction operations
+                let tuple_span = get_pattern_span(pattern);
+
                 for (idx, pat_id) in patterns.iter().enumerate() {
                     // Create a local to hold the extracted field
                     let field_local = self.builder.new_local(None, MirType::Unit, false);
@@ -905,11 +1224,11 @@ impl<'ctx> LoweringContext<'ctx> {
                         projection: vec![PlaceElem::Field { field_idx: idx }],
                     };
 
-                    // Copy the field to the local
+                    // Copy the field to the local (use tuple pattern's span for field access)
                     self.builder.add_statement(Statement::Assign {
                         place: Place::from_local(field_local),
                         rvalue: RValue::Use(Operand::Copy(field_place)),
-                        span: FileSpan::new(FileId(0), Span::new(0, 0)),
+                        span: tuple_span,
                     });
 
                     // Recursively bind sub-pattern with the extracted field
@@ -919,6 +1238,9 @@ impl<'ctx> LoweringContext<'ctx> {
             }
             Pattern::Struct { fields, ty, .. } => {
                 // For struct patterns, we need to extract each field and bind recursively
+                // Get the span from the overall struct pattern for field extraction operations
+                let struct_span = get_pattern_span(pattern);
+
                 // First, resolve the struct definition to get field indices
                 if let Type::Named { def: Some(def_id), .. } = &self.hir_types[*ty] {
                     if let Some(struct_def) = self.structs.get(def_id) {
@@ -939,11 +1261,11 @@ impl<'ctx> LoweringContext<'ctx> {
                                     projection: vec![PlaceElem::Field { field_idx }],
                                 };
 
-                                // Copy the field to the local
+                                // Copy the field to the local (use struct pattern's span for field access)
                                 self.builder.add_statement(Statement::Assign {
                                     place: Place::from_local(field_local),
                                     rvalue: RValue::Use(Operand::Copy(field_place)),
-                                    span: FileSpan::new(FileId(0), Span::new(0, 0)),
+                                    span: struct_span,
                                 });
 
                                 // Recursively bind sub-pattern with the extracted field

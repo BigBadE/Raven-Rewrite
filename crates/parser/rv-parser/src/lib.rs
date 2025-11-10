@@ -8,37 +8,7 @@ pub use error::ParseError;
 
 use lang_raven::RavenLanguage;
 use miette::SourceSpan;
-use rv_database::{RavenDb, SourceFile};
 use rv_syntax::{Language, SyntaxNode};
-use std::sync::Arc;
-
-/// Parse a source file to a concrete syntax tree
-pub fn parse_file(db: &dyn RavenDb, file: SourceFile) -> Arc<ParseResult> {
-    let path = file.path(db);
-    let filename = path.to_string_lossy().to_string();
-    let contents = std::fs::read_to_string(&path);
-
-    let result = match contents {
-        Ok(text) => {
-            let mut result = parse_source(&text);
-            // Add filename context to all errors
-            result.errors = result
-                .errors
-                .into_iter()
-                .map(|err| err.with_source(filename.clone(), text.clone()))
-                .collect();
-            result
-        }
-        Err(err) => ParseResult {
-            syntax: None,
-            errors: vec![ParseError::IoError {
-                message: format!("Failed to load file {filename}: {err}"),
-            }],
-        },
-    };
-
-    Arc::new(result)
-}
 
 /// Result of parsing a source file
 #[derive(Debug, Clone)]

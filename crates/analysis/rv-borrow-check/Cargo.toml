@@ -1,0 +1,16 @@
+[package]
+name = "rv-borrow-check"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rv-span.workspace = true
+rv-intern.workspace = true
+rv-hir.workspace = true
+rv-mir.workspace = true
+rv-lifetime.workspace = true
+rustc-hash.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

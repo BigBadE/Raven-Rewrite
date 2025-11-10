@@ -32,3 +32,4 @@ rv-llvm-backend = { path = "../../codegen/rv-llvm-backend" }
 rv-mono = { path = "../../analysis/rv-mono" }
 rv-syntax = { path = "../../foundation/rv-syntax" }
 lang-raven = { path = "../../language-support/lang-raven" }
+rv-hir = { version = "0.1.0", path = "../../analysis/rv-hir" }

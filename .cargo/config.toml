@@ -99,6 +99,9 @@ rustflags = [
     # NOTE: -Cprefer-dynamic is NOT compatible with LLVM on Windows
     # Removed to allow rv-llvm-backend to build
 
+    # Increase stack size to 8MB to prevent stack overflow with LLVM compilation
+    "-C", "link-args=/STACK:8388608",
+
     # Nightly
     #"-Zshare-generics=n",
     #"-Zthreads=0",

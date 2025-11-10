@@ -3,12 +3,15 @@
 use crate::{ScopeId, ScopeTree, SymbolId, SymbolKind, SymbolTable};
 use rv_hir::{
     AssociatedType, AssociatedTypeImpl, Body, DefId, EnumDef, Expr, ExprId, ExternalFunction,
-    FieldDef, Function, FunctionId, GenericParam, ImplBlock, ImplId, LiteralKind, LocalId,
-    Parameter, Pattern, PatternId, SelfParam, Stmt, StmtId, StructDef, TraitBound, TraitDef,
-    TraitId, TraitMethod, Type, TypeDefId, TypeId, VariantDef, VariantFields, Visibility,
-    WhereClause,
+    FieldDef, Function, FunctionId, GenericParam, ImplBlock, ImplId, Item, LiteralKind, LocalId,
+    ModuleDef, ModuleId, Parameter, Pattern, PatternId, SelfParam, Stmt, StmtId, StructDef,
+    TraitBound, TraitDef, TraitId, TraitMethod, Type, TypeDefId, TypeId, UseItem, VariantDef,
+    VariantFields, Visibility, WhereClause,
 };
 use rv_intern::{Interner, Symbol as InternedString};
+use rv_macro::{
+    BuiltinMacroKind, MacroDef, MacroExpansionContext, MacroKind,
+};
 use rv_span::{FileId, FileSpan};
 use rv_syntax::{SyntaxKind, SyntaxNode};
 use std::collections::HashMap;
@@ -41,6 +44,10 @@ pub struct LoweringContext {
     pub impl_blocks: HashMap<ImplId, ImplBlock>,
     /// Next impl block ID
     next_impl_id: u32,
+    /// HIR modules
+    pub modules: HashMap<ModuleId, ModuleDef>,
+    /// Next module ID
+    next_module_id: u32,
     /// Map from symbol IDs to `DefIds`
     pub symbol_defs: HashMap<SymbolId, DefId>,
     /// File ID for creating spans
@@ -51,13 +58,21 @@ pub struct LoweringContext {
     next_local_id: u32,
     /// Current impl block's self type (for resolving `self` parameters)
     current_impl_self_ty: Option<TypeId>,
+    /// Macro expansion context
+    pub macro_context: MacroExpansionContext,
 }
 
 impl LoweringContext {
     /// Create a new lowering context
     pub fn new() -> Self {
+        let interner = Interner::new();
+        let mut macro_context = MacroExpansionContext::new(interner.clone());
+
+        // Register builtin macros
+        Self::register_builtin_macros(&mut macro_context, &interner);
+
         Self {
-            interner: Interner::new(),
+            interner,
             scope_tree: ScopeTree::new(),
             symbols: SymbolTable::new(),
             functions: HashMap::new(),
@@ -70,11 +85,33 @@ impl LoweringContext {
             next_trait_id: 0,
             impl_blocks: HashMap::new(),
             next_impl_id: 0,
+            modules: HashMap::new(),
+            next_module_id: 0,
             symbol_defs: HashMap::new(),
             file_id: FileId(0),
             types: rv_arena::Arena::new(),
             next_local_id: 0,
             current_impl_self_ty: None,
+            macro_context,
+        }
+    }
+
+    /// Register builtin macros
+    fn register_builtin_macros(macro_context: &mut MacroExpansionContext, interner: &Interner) {
+        let builtins = [
+            ("println", BuiltinMacroKind::Println),
+            ("vec", BuiltinMacroKind::Vec),
+            ("assert", BuiltinMacroKind::Assert),
+            ("format", BuiltinMacroKind::Format),
+        ];
+
+        for (index, (name, kind)) in builtins.iter().enumerate() {
+            macro_context.register_macro(MacroDef {
+                id: rv_macro::ast::MacroId(index as u32),
+                name: interner.intern(name),
+                kind: MacroKind::Builtin { expander: *kind },
+                span: FileSpan::new(FileId(0), rv_span::Span::new(0, 0)),
+            });
         }
     }
 
@@ -115,6 +152,13 @@ impl LoweringContext {
         self.next_trait_id += 1;
         id
     }
+
+    /// Allocate a new module ID
+    fn alloc_module_id(&mut self) -> ModuleId {
+        let id = ModuleId(self.next_module_id);
+        self.next_module_id += 1;
+        id
+    }
 }
 
 impl Default for LoweringContext {
@@ -147,6 +191,12 @@ fn lower_items(ctx: &mut LoweringContext, current_scope: ScopeId, children: &[Sy
             SyntaxKind::Trait => lower_trait(ctx, current_scope, child),
             SyntaxKind::Unknown(ref s) if s == "extern_block" || s == "foreign_mod_item" => {
                 lower_extern_block(ctx, current_scope, child);
+            }
+            SyntaxKind::Unknown(ref s) if s == "mod_item" => {
+                lower_module(ctx, current_scope, child);
+            }
+            SyntaxKind::Unknown(ref s) if s == "use_declaration" => {
+                lower_use(ctx, child);
             }
             _ => {}
         }
@@ -252,15 +302,48 @@ fn lower_function(ctx: &mut LoweringContext, current_scope: ScopeId, node: &Synt
         }
     }
 
-    // Create HIR function
+    // Create HIR function (without resolution yet)
+    let function_temp = Function {
+        id: function_id,
+        name: name_interned,
+        span: file_span,
+        generics: generics.clone(),
+        parameters: parameters.clone(),
+        return_type,
+        body,
+        is_external: false,
+    };
+
+    // Run name resolution on the body
+    let resolution_result = rv_resolve::NameResolver::resolve(
+        &function_temp.body,
+        &function_temp,
+        &ctx.interner,
+    );
+
+    // Fill in def field for Variable expressions using resolution results
+    let mut body_with_resolution = function_temp.body;
+    for (expr_id, def_id) in &resolution_result.resolutions {
+        if let rv_hir::Expr::Variable { def, .. } = &mut body_with_resolution.exprs[*expr_id] {
+            *def = Some(*def_id);
+        }
+    }
+
+    // Store resolution results in body
+    body_with_resolution.resolution = Some(rv_hir::BodyResolution {
+        expr_resolutions: resolution_result.resolutions,
+        pattern_locals: resolution_result.pattern_locals,
+    });
+
+    // Create final function with resolution
     let function = Function {
         id: function_id,
         name: name_interned,
         span: file_span,
         generics,
         parameters,
-        return_type,
-        body,
+        return_type: function_temp.return_type,
+        body: body_with_resolution,
         is_external: false,
     };
 
@@ -328,7 +411,7 @@ fn is_expr_node(node: &SyntaxNode) -> bool {
             | SyntaxKind::If
             | SyntaxKind::Match
             | SyntaxKind::Identifier
-    ) || matches!(&node.kind, SyntaxKind::Unknown(name) if name == "field_expression" || name == "struct_expression" || name == "self")
+    ) || matches!(&node.kind, SyntaxKind::Unknown(name) if name == "field_expression" || name == "struct_expression" || name == "self" || name == "closure_expression")
 }
 
 /// Lower an expression
@@ -372,6 +455,9 @@ fn lower_expr(
             }
             "struct_expression" => {
                 lower_struct_construct(ctx, current_scope, node, body)
+            }
+            "closure_expression" => {
+                lower_closure(ctx, current_scope, node, body)
             }
             "self" => {
                 // `self` is a reference to the first parameter
@@ -868,6 +954,7 @@ fn lower_pattern(
                             return Some(body.patterns.alloc(Pattern::Binding {
                                 name: name_sym,
                                 mutable: false,
+                                sub_pattern: None,
                                 span: file_span,
                             }));
                         }
@@ -895,6 +982,7 @@ fn lower_pattern(
                 Pattern::Binding {
                     name: name_sym,
                     mutable: false,
+                    sub_pattern: None,
                     span: file_span,
                 }
             }
@@ -936,6 +1024,7 @@ fn lower_pattern(
                                     let binding_pat = body.patterns.alloc(Pattern::Binding {
                                         name: field_name,
                                         mutable: false,
+                                        sub_pattern: None,
                                         span: ctx.file_span(field_child),
                                     });
                                     field_patterns.push((field_name, binding_pat));
@@ -1077,6 +1166,39 @@ fn lower_pattern(
                 Pattern::Wildcard { span: file_span }
             }
         }
+        SyntaxKind::Unknown(ref name) if name == "as_pattern" => {
+            // Parse @ pattern: binding @ sub_pattern
+            // tree-sitter produces: (as_pattern pattern: <pattern> alias: <identifier>)
+            // where pattern is the sub-pattern and alias is the binding name
+            let mut binding_name = None;
+            let mut sub_pattern_node = None;
+
+            for child in &node.children {
+                if child.kind == SyntaxKind::Identifier {
+                    // This is the binding name (alias)
+                    binding_name = Some(ctx.intern(&child.text));
+                } else if matches!(&child.kind, SyntaxKind::Literal | SyntaxKind::Unknown(_)) {
+                    // This is the sub-pattern to match against
+                    sub_pattern_node = Some(child);
+                }
+            }
+
+            // Lower the sub-pattern recursively
+            let sub_pat_id = sub_pattern_node.and_then(|node| lower_pattern(ctx, current_scope, node, body));
+
+            // Create binding pattern with sub-pattern
+            if let Some(name) = binding_name {
+                Pattern::Binding {
+                    name,
+                    mutable: false,
+                    sub_pattern: sub_pat_id.map(Box::new),
+                    span: file_span,
+                }
+            } else {
+                // Fallback if no binding name found
+                Pattern::Wildcard { span: file_span }
+            }
+        }
         _ => {
             // Unknown pattern type, treat as wildcard
             Pattern::Wildcard { span: file_span }
@@ -1095,9 +1217,19 @@ fn lower_let_stmt(
 ) -> StmtId {
     let file_span = ctx.file_span(node);
 
-    // Extract pattern and initializer
+    // Extract pattern, initializer, and mutability
     let mut pattern_id = None;
     let mut initializer = None;
+    let mut is_mutable = false;
+
+    // Check for 'mut' keyword
+    for child in &node.children {
+        if let SyntaxKind::Unknown(ref s) = child.kind {
+            if s == "mut" || s == "mutable_specifier" {
+                is_mutable = true;
+            }
+        }
+    }
 
     for child in &node.children {
         if child.kind == SyntaxKind::Identifier {
@@ -1124,7 +1256,8 @@ fn lower_let_stmt(
             let pat_file_span = ctx.file_span(child);
             pattern_id = Some(body.patterns.alloc(Pattern::Binding {
                 name: name_sym,
-                mutable: false,
+                mutable: is_mutable,
+                sub_pattern: None,
                 span: pat_file_span,
             }));
         } else if is_expr_node(child) {
@@ -1138,6 +1271,7 @@ fn lower_let_stmt(
         }),
         ty: None,
         initializer,
+        mutable: is_mutable,
         span: file_span,
     })
 }
@@ -1970,6 +2104,470 @@ fn lower_external_function(ctx: &mut LoweringContext, node: &SyntaxNode, abi: Op
     };
 
     ctx.external_functions.insert(func_id, external_fn);
+}
+
+/// Lower a closure expression
+fn lower_closure(
+    ctx: &mut LoweringContext,
+    current_scope: ScopeId,
+    node: &SyntaxNode,
+    body: &mut Body,
+) -> ExprId {
+    let file_span = ctx.file_span(node);
+
+    // Parse closure parameters from closure_parameters node: |x, y|
+    let mut params = vec![];
+    for child in &node.children {
+        if let SyntaxKind::Unknown(ref kind) = child.kind {
+            if kind == "closure_parameters" {
+                // Extract parameters from inside the pipes
+                for param_child in &child.children {
+                    if param_child.kind == SyntaxKind::Identifier {
+                        let param_name = ctx.intern(&param_child.text);
+                        // Create a TypeId for Unknown type (will be inferred)
+                        let param_ty = ctx.types.alloc(Type::Unknown {
+                            span: ctx.file_span(param_child),
+                        });
+                        params.push(Parameter {
+                            name: param_name,
+                            ty: param_ty,
+                            span: ctx.file_span(param_child),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Parse return type annotation if present (-> Type)
+    let mut return_type = None;
+    let mut found_arrow = false;
+    for child in &node.children {
+        if let SyntaxKind::Unknown(ref kind) = child.kind {
+            if kind == "->" {
+                found_arrow = true;
+                continue;
+            }
+        }
+        if found_arrow && child.kind == SyntaxKind::Type {
+            return_type = Some(lower_type_node(ctx, child));
+            break;
+        }
+    }
+
+    // Create a new scope for the closure body
+    let closure_scope = ctx.scope_tree.create_child(current_scope, node.span);
+
+    // Add parameters to closure scope
+    for param in &params {
+        let param_name_str = ctx.interner.resolve(&param.name).to_string();
+        let param_symbol = ctx.symbols.add(
+            param.name,
+            SymbolKind::Local,
+            param.span.span,
+            closure_scope,
+        );
+        ctx.scope_tree.add_symbol(closure_scope, param_name_str, param_symbol);
+    }
+
+    // Find and lower the closure body expression
+    let body_expr = find_closure_body(ctx, closure_scope, node, body);
+
+    // Analyze captures: find all free variables in the body
+    let captures = analyze_captures(ctx, closure_scope, current_scope, body, body_expr);
+
+    body.exprs.alloc(Expr::Closure {
+        params,
+        return_type,
+        body: body_expr,
+        captures,
+        span: file_span,
+    })
+}
+
+/// Find the body expression in a closure node
+fn find_closure_body(
+    ctx: &mut LoweringContext,
+    closure_scope: ScopeId,
+    node: &SyntaxNode,
+    body: &mut Body,
+) -> ExprId {
+    // The body can be either a block or a single expression
+    for child in &node.children {
+        if child.kind == SyntaxKind::Block {
+            // Block body: |x| { x + 1 }
+            return lower_block(ctx, closure_scope, child, body);
+        } else if is_expr_node(child) {
+            // Expression body: |x| x + 1
+            return lower_expr(ctx, closure_scope, child, body);
+        }
+    }
+
+    // Fallback to unit if no body found
+    let file_span = ctx.file_span(node);
+    body.exprs.alloc(Expr::Literal {
+        kind: LiteralKind::Unit,
+        span: file_span,
+    })
+}
+
+/// Analyze captures for a closure body
+///
+/// Returns a vector of variables that are:
+/// - Referenced in the closure body
+/// - Not defined in the closure's parameter list
+/// - Defined in an outer scope (free variables)
+fn analyze_captures(
+    ctx: &LoweringContext,
+    closure_scope: ScopeId,
+    parent_scope: ScopeId,
+    body: &Body,
+    body_expr: ExprId,
+) -> Vec<rv_intern::Symbol> {
+    let mut captures = std::collections::HashSet::new();
+    collect_free_vars(ctx, closure_scope, parent_scope, body, body_expr, &mut captures);
+    captures.into_iter().collect()
+}
+
+/// Recursively collect free variables from an expression
+fn collect_free_vars(
+    ctx: &LoweringContext,
+    closure_scope: ScopeId,
+    parent_scope: ScopeId,
+    body: &Body,
+    expr_id: ExprId,
+    captures: &mut std::collections::HashSet<rv_intern::Symbol>,
+) {
+    let expr = &body.exprs[expr_id];
+
+    match expr {
+        Expr::Variable { name, .. } => {
+            // Check if this variable is defined in the closure scope
+            let local_def = ctx.scope_tree.resolve(closure_scope, &ctx.interner.resolve(name));
+            // Check if this variable is defined in parent scope (captured)
+            let parent_def = ctx.scope_tree.resolve(parent_scope, &ctx.interner.resolve(name));
+
+            // Variable is captured if:
+            // - Not defined locally in closure
+            // - Defined in parent scope
+            if local_def.is_none() && parent_def.is_some() {
+                captures.insert(*name);
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            collect_free_vars(ctx, closure_scope, parent_scope, body, *left, captures);
+            collect_free_vars(ctx, closure_scope, parent_scope, body, *right, captures);
+        }
+        Expr::UnaryOp { operand, .. } => {
+            collect_free_vars(ctx, closure_scope, parent_scope, body, *operand, captures);
+        }
+        Expr::Call { callee, args, .. } => {
+            collect_free_vars(ctx, closure_scope, parent_scope, body, *callee, captures);
+            for arg in args {
+                collect_free_vars(ctx, closure_scope, parent_scope, body, *arg, captures);
+            }
+        }
+        Expr::Block { statements, expr, .. } => {
+            // Collect from statements
+            for stmt_id in statements {
+                collect_free_vars_stmt(ctx, closure_scope, parent_scope, body, *stmt_id, captures);
+            }
+            // Collect from trailing expression
+            if let Some(trailing) = expr {
+                collect_free_vars(ctx, closure_scope, parent_scope, body, *trailing, captures);
+            }
+        }
+        Expr::If { condition, then_branch, else_branch, .. } => {
+            collect_free_vars(ctx, closure_scope, parent_scope, body, *condition, captures);
+            collect_free_vars(ctx, closure_scope, parent_scope, body, *then_branch, captures);
+            if let Some(else_expr) = else_branch {
+                collect_free_vars(ctx, closure_scope, parent_scope, body, *else_expr, captures);
+            }
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            collect_free_vars(ctx, closure_scope, parent_scope, body, *scrutinee, captures);
+            for arm in arms {
+                collect_free_vars(ctx, closure_scope, parent_scope, body, arm.body, captures);
+            }
+        }
+        Expr::Field { base, .. } => {
+            collect_free_vars(ctx, closure_scope, parent_scope, body, *base, captures);
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            collect_free_vars(ctx, closure_scope, parent_scope, body, *receiver, captures);
+            for arg in args {
+                collect_free_vars(ctx, closure_scope, parent_scope, body, *arg, captures);
+            }
+        }
+        Expr::StructConstruct { fields, .. } => {
+            for (_, field_expr) in fields {
+                collect_free_vars(ctx, closure_scope, parent_scope, body, *field_expr, captures);
+            }
+        }
+        Expr::EnumVariant { fields, .. } => {
+            for field_expr in fields {
+                collect_free_vars(ctx, closure_scope, parent_scope, body, *field_expr, captures);
+            }
+        }
+        Expr::Closure { body: closure_body, .. } => {
+            // Recursively analyze nested closures
+            collect_free_vars(ctx, closure_scope, parent_scope, body, *closure_body, captures);
+        }
+        Expr::Literal { .. } => {
+            // Literals don't capture variables
+        }
+    }
+}
+
+/// Collect free variables from a statement
+fn collect_free_vars_stmt(
+    ctx: &LoweringContext,
+    closure_scope: ScopeId,
+    parent_scope: ScopeId,
+    body: &Body,
+    stmt_id: StmtId,
+    captures: &mut std::collections::HashSet<rv_intern::Symbol>,
+) {
+    let stmt = &body.stmts[stmt_id];
+
+    match stmt {
+        Stmt::Let { initializer, .. } => {
+            if let Some(init_expr) = initializer {
+                collect_free_vars(ctx, closure_scope, parent_scope, body, *init_expr, captures);
+            }
+        }
+        Stmt::Expr { expr, .. } => {
+            collect_free_vars(ctx, closure_scope, parent_scope, body, *expr, captures);
+        }
+        Stmt::Return { value, .. } => {
+            if let Some(val_expr) = value {
+                collect_free_vars(ctx, closure_scope, parent_scope, body, *val_expr, captures);
+            }
+        }
+    }
+}
+
+/// Lower a module declaration
+fn lower_module(ctx: &mut LoweringContext, current_scope: ScopeId, node: &SyntaxNode) -> ModuleDef {
+    // Extract module name
+    let name = node
+        .children
+        .iter()
+        .find(|child| child.kind == SyntaxKind::Identifier)
+        .map(|child| ctx.intern(&child.text))
+        .unwrap_or_else(|| ctx.intern("_"));
+
+    let module_id = ctx.alloc_module_id();
+    let file_span = ctx.file_span(node);
+
+    // Extract visibility (pub or private)
+    let visibility = extract_visibility(node);
+
+    // Create a scope for the module
+    let module_scope = ctx.scope_tree.create_child(current_scope, node.span);
+
+    // Add module symbol to parent scope
+    let symbol_id = ctx.symbols.add(
+        name,
+        SymbolKind::Function, // Using Function as a placeholder since we don't have SymbolKind::Module
+        node.span,
+        current_scope,
+    );
+    ctx.scope_tree.add_symbol(current_scope, ctx.interner.resolve(&name).to_string(), symbol_id);
+    let def_id = DefId::Module(module_id);
+    ctx.symbols.set_def_id(symbol_id, def_id);
+    ctx.symbol_defs.insert(symbol_id, def_id);
+
+    // Parse module body
+    let mut items = Vec::new();
+    let mut submodules = Vec::new();
+
+    for child in &node.children {
+        let is_block = matches!(child.kind, SyntaxKind::Block);
+        let is_decl_list = if let SyntaxKind::Unknown(ref s) = child.kind {
+            s == "declaration_list"
+        } else {
+            false
+        };
+
+        if is_block || is_decl_list {
+            // Module body contains items
+            for item_node in &child.children {
+                    match item_node.kind {
+                        SyntaxKind::Function => {
+                            // Get function count before lowering
+                            let func_count_before = ctx.functions.len();
+                            lower_function(ctx, module_scope, item_node);
+                            // Find the newly added function
+                            if ctx.functions.len() > func_count_before {
+                                if let Some((&func_id, _)) = ctx.functions.iter().max_by_key(|(id, _)| id.0) {
+                                    items.push(Item::Function(func_id));
+                                }
+                            }
+                        }
+                        SyntaxKind::Struct => {
+                            let struct_count_before = ctx.structs.len();
+                            lower_struct(ctx, module_scope, item_node);
+                            if ctx.structs.len() > struct_count_before {
+                                if let Some((&type_id, _)) = ctx.structs.iter().max_by_key(|(id, _)| id.0) {
+                                    items.push(Item::Struct(type_id));
+                                }
+                            }
+                        }
+                        SyntaxKind::Enum => {
+                            let enum_count_before = ctx.enums.len();
+                            lower_enum(ctx, module_scope, item_node);
+                            if ctx.enums.len() > enum_count_before {
+                                if let Some((&type_id, _)) = ctx.enums.iter().max_by_key(|(id, _)| id.0) {
+                                    items.push(Item::Enum(type_id));
+                                }
+                            }
+                        }
+                        SyntaxKind::Trait => {
+                            let trait_count_before = ctx.traits.len();
+                            lower_trait(ctx, module_scope, item_node);
+                            if ctx.traits.len() > trait_count_before {
+                                if let Some((&trait_id, _)) = ctx.traits.iter().max_by_key(|(id, _)| id.0) {
+                                    items.push(Item::Trait(trait_id));
+                                }
+                            }
+                        }
+                        SyntaxKind::Impl => {
+                            let impl_count_before = ctx.impl_blocks.len();
+                            lower_impl(ctx, module_scope, item_node);
+                            if ctx.impl_blocks.len() > impl_count_before {
+                                if let Some((&impl_id, _)) = ctx.impl_blocks.iter().max_by_key(|(id, _)| id.0) {
+                                    items.push(Item::Impl(impl_id));
+                                }
+                            }
+                        }
+                        SyntaxKind::Unknown(ref s) if s == "mod_item" => {
+                            // Nested module
+                            let submodule = lower_module(ctx, module_scope, item_node);
+                            submodules.push(submodule.id);
+                            items.push(Item::Module(submodule.id));
+                        }
+                        SyntaxKind::Unknown(ref s) if s == "use_declaration" => {
+                            // Use declaration
+                            if let Some(use_item) = lower_use(ctx, item_node) {
+                                items.push(Item::Use(use_item));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+        }
+    }
+
+    let module_def = ModuleDef {
+        id: module_id,
+        name,
+        items,
+        submodules,
+        visibility,
+        span: file_span,
+    };
+
+    ctx.modules.insert(module_id, module_def.clone());
+    module_def
+}
+
+/// Lower a use declaration (import)
+fn lower_use(ctx: &mut LoweringContext, node: &SyntaxNode) -> Option<UseItem> {
+    let file_span = ctx.file_span(node);
+    let visibility = extract_visibility(node);
+
+    // Extract the use path
+    let path = extract_use_path(ctx, node)?;
+
+    // Extract optional alias (as Name)
+    let alias = extract_use_alias(ctx, node);
+
+    Some(UseItem {
+        path,
+        alias,
+        visibility,
+        span: file_span,
+    })
+}
+
+/// Extract use path from a use declaration node
+fn extract_use_path(ctx: &mut LoweringContext, node: &SyntaxNode) -> Option<Vec<InternedString>> {
+    // Look for the argument/path in the use declaration
+    for child in &node.children {
+        if let SyntaxKind::Unknown(ref s) = child.kind {
+            // tree-sitter represents paths as scoped_identifier or identifier
+            if s == "scoped_identifier" || s == "scoped_use_list" {
+                let mut path = Vec::new();
+                extract_path_segments(ctx, child, &mut path);
+                if !path.is_empty() {
+                    return Some(path);
+                }
+            }
+        } else if child.kind == SyntaxKind::Identifier {
+            // Simple single-segment path
+            return Some(vec![ctx.intern(&child.text)]);
+        }
+    }
+    None
+}
+
+/// Extract path segments recursively from a scoped identifier
+fn extract_path_segments(ctx: &mut LoweringContext, node: &SyntaxNode, path: &mut Vec<InternedString>) {
+    match &node.kind {
+        SyntaxKind::Identifier => {
+            path.push(ctx.intern(&node.text));
+        }
+        SyntaxKind::Unknown(ref s) if s == "scoped_identifier" => {
+            // Process path (left side) first
+            for child in &node.children {
+                if let SyntaxKind::Unknown(ref child_s) = child.kind {
+                    if child_s == "scoped_identifier" || child_s == "identifier" {
+                        extract_path_segments(ctx, child, path);
+                    }
+                } else if child.kind == SyntaxKind::Identifier {
+                    // This could be either the path or the name part
+                    path.push(ctx.intern(&child.text));
+                }
+            }
+        }
+        _ => {
+            // Recurse into children
+            for child in &node.children {
+                extract_path_segments(ctx, child, path);
+            }
+        }
+    }
+}
+
+/// Extract alias from use declaration (as Name)
+fn extract_use_alias(ctx: &mut LoweringContext, node: &SyntaxNode) -> Option<InternedString> {
+    // Look for "as" keyword followed by identifier
+    let mut found_as = false;
+    for child in &node.children {
+        if let SyntaxKind::Unknown(ref s) = child.kind {
+            if s == "as" {
+                found_as = true;
+                continue;
+            }
+        }
+        if found_as && child.kind == SyntaxKind::Identifier {
+            return Some(ctx.intern(&child.text));
+        }
+    }
+    None
+}
+
+/// Extract visibility from a syntax node
+fn extract_visibility(node: &SyntaxNode) -> Visibility {
+    for child in &node.children {
+        if let SyntaxKind::Unknown(ref s) = child.kind {
+            if s == "pub" || s == "visibility_modifier" {
+                return Visibility::Public;
+            }
+        }
+    }
+    Visibility::Private
 }
 
 /// Rust v0 name mangling (simplified version)

@@ -36,19 +36,15 @@ pub fn compile_to_native_with_externals(
     let module_name = format!("raven_module_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
     let backend = LLVMBackend::new(&module_name, opt_level)?;
 
-    // Compile all functions together (allows cross-function calls and external calls)
-    backend.compile_functions_with_externals(functions, external_functions)?;
+    // Write object file directly (combined compile + write for efficiency)
+    let obj_path = output_path.with_extension("o");
+    backend.compile_and_write_object(functions, external_functions, &obj_path)?;
 
     // Debug: Write LLVM IR to file
     if std::env::var("DEBUG_LLVM_IR").is_ok() {
         let ir_path = output_path.with_extension("ll");
         std::fs::write(&ir_path, backend.to_llvm_ir())?;
-        eprintln!("DEBUG: LLVM IR written to {}", ir_path.display());
     }
-
-    // Write object file
-    let obj_path = output_path.with_extension("o");
-    backend.write_object_file(&obj_path)?;
 
     // Link object file to executable
     // Use the first function as entry point (typically func_0 or main)

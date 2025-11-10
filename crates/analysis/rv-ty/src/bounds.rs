@@ -21,14 +21,19 @@ impl BoundChecker {
     #[must_use]
     pub fn new(
         traits: HashMap<TraitId, TraitDef>,
-        _impl_blocks: &HashMap<rv_hir::ImplId, ImplBlock>,
+        impl_blocks: &HashMap<rv_hir::ImplId, ImplBlock>,
         types: Arena<Type>,
     ) -> Self {
         // Group impl blocks by the type they implement for
-        let impls: HashMap<TypeDefId, Vec<ImplBlock>> = HashMap::new();
+        let mut impls: HashMap<TypeDefId, Vec<ImplBlock>> = HashMap::new();
 
-        // TODO: Extract TypeDefId from self_ty and group impl blocks
-        // This will be implemented when we add proper type resolution
+        // Extract TypeDefId from self_ty and group impl blocks
+        for impl_block in impl_blocks.values() {
+            // Extract the TypeDefId from self_ty if it's a Named type
+            if let Some(type_def_id) = Self::extract_type_def_id_static(&types, impl_block.self_ty) {
+                impls.entry(type_def_id).or_default().push(impl_block.clone());
+            }
+        }
 
         Self {
             traits,
@@ -148,7 +153,12 @@ impl BoundChecker {
 
     /// Extract TypeDefId from a TypeId (helper method)
     fn extract_type_def_id(&self, type_id: TypeId) -> Option<TypeDefId> {
-        let ty = &self.types[type_id];
+        Self::extract_type_def_id_static(&self.types, type_id)
+    }
+
+    /// Extract TypeDefId from a TypeId (static helper for use in constructor)
+    fn extract_type_def_id_static(types: &Arena<Type>, type_id: TypeId) -> Option<TypeDefId> {
+        let ty = &types[type_id];
         match ty {
             Type::Named { def, .. } => *def,
             _ => None,

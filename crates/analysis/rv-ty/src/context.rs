@@ -23,6 +23,8 @@ pub struct TyContext {
     pub def_types: FxHashMap<DefId, TyId>,
     /// Variable types (for parameters and let bindings)
     pub var_types: FxHashMap<rv_intern::Symbol, TyId>,
+    /// Receiver mutability for method calls (ExprId → is_mutable)
+    pub receiver_mutability: FxHashMap<ExprId, bool>,
 }
 
 impl TyContext {
@@ -35,6 +37,7 @@ impl TyContext {
             expr_types: FxHashMap::default(),
             def_types: FxHashMap::default(),
             var_types: FxHashMap::default(),
+            receiver_mutability: FxHashMap::default(),
         }
     }
 

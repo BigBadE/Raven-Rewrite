@@ -9,4 +9,11 @@ salsa.workspace = true
 rv-span = { path = "../rv-span" }
 rv-vfs = { path = "../rv-vfs" }
 rv-intern = { path = "../rv-intern" }
+rv-hir = { path = "../../analysis/rv-hir" }
+rv-mir = { path = "../../analysis/rv-mir" }
+rv-ty = { path = "../../analysis/rv-ty" }
+rv-parser = { path = "../../parser/rv-parser" }
+rv-hir-lower = { path = "../../analysis/rv-hir-lower" }
+rv-syntax = { path = "../rv-syntax" }
 anyhow.workspace = true
+la-arena.workspace = true

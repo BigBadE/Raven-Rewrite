@@ -92,6 +92,9 @@ fn cyclomatic_complexity_expr(body: &Body, expr_id: ExprId) -> usize {
                 complexity += cyclomatic_complexity_expr(body, *field_expr);
             }
         }
+        Expr::Closure { body: closure_body, .. } => {
+            complexity += cyclomatic_complexity_expr(body, *closure_body);
+        }
         Expr::Literal { .. } | Expr::Variable { .. } => {}
     }
 
@@ -182,6 +185,9 @@ fn cognitive_complexity_expr(body: &Body, expr_id: ExprId, nesting: usize) -> us
                 complexity += cognitive_complexity_expr(body, *field_expr, nesting);
             }
         }
+        Expr::Closure { body: closure_body, .. } => {
+            complexity += cognitive_complexity_expr(body, *closure_body, nesting + 1);
+        }
         Expr::Literal { .. } | Expr::Variable { .. } => {}
     }
 
@@ -261,6 +267,9 @@ fn max_nesting_depth_expr(body: &Body, expr_id: ExprId, current_depth: usize) ->
             for field_expr in fields {
                 max_depth = max_depth.max(max_nesting_depth_expr(body, *field_expr, current_depth));
             }
+        }
+        Expr::Closure { body: closure_body, .. } => {
+            max_depth = max_depth.max(max_nesting_depth_expr(body, *closure_body, current_depth + 1));
         }
         Expr::Literal { .. } | Expr::Variable { .. } => {}
     }

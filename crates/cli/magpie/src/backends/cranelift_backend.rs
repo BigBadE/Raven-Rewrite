@@ -63,6 +63,8 @@ impl CraneliftBackend {
                 &hir_ctx.functions,
                 &hir_ctx.types,
                 &hir_ctx.structs,
+                &hir_ctx.enums,
+                &hir_ctx.traits,
                 &hir_ctx.interner,
             );
             type_inference.infer_function(function);
@@ -76,6 +78,7 @@ impl CraneliftBackend {
                     hir_func,
                     type_inference.context(),
                     &hir_ctx.structs,
+                    &hir_ctx.enums,
                     &hir_ctx.impl_blocks,
                     &hir_ctx.functions,
                     &hir_ctx.types,

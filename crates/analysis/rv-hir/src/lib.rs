@@ -16,6 +16,10 @@ pub type StmtId = Idx<Stmt>;
 pub type TypeId = Idx<Type>;
 pub type PatternId = Idx<Pattern>;
 
+/// Unique ID for a macro
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MacroId(pub u32);
+
 /// Definition IDs for cross-referencing
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub enum DefId {
@@ -29,6 +33,8 @@ pub enum DefId {
     Impl(ImplId),
     /// Variable/local binding
     Local(LocalId),
+    /// Module definition
+    Module(ModuleId),
 }
 
 /// Unique ID for a function
@@ -51,6 +57,10 @@ pub struct ImplId(pub u32);
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LocalId(pub u32);
 
+/// Unique ID for a module
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ModuleId(pub u32);
+
 /// HIR representation of a file
 #[derive(Debug, Clone)]
 pub struct HirFile {
@@ -62,6 +72,75 @@ pub struct HirFile {
     pub traits: Vec<TraitId>,
     /// Implementation blocks in this file
     pub impls: Vec<ImplId>,
+    /// Root module for this file
+    pub root_module: Option<ModuleId>,
+}
+
+/// Module definition
+#[derive(Debug, Clone)]
+pub struct ModuleDef {
+    /// Unique ID
+    pub id: ModuleId,
+    /// Module name
+    pub name: Symbol,
+    /// Items in this module
+    pub items: Vec<Item>,
+    /// Submodules
+    pub submodules: Vec<ModuleId>,
+    /// Visibility
+    pub visibility: Visibility,
+    /// Source location
+    pub span: FileSpan,
+}
+
+/// Item in a module (function, type, trait, impl, module, use)
+#[derive(Debug, Clone)]
+pub enum Item {
+    /// Function definition
+    Function(FunctionId),
+    /// Struct definition
+    Struct(TypeDefId),
+    /// Enum definition
+    Enum(TypeDefId),
+    /// Trait definition
+    Trait(TraitId),
+    /// Implementation block
+    Impl(ImplId),
+    /// Submodule
+    Module(ModuleId),
+    /// Use declaration (import)
+    Use(UseItem),
+}
+
+/// Use declaration (import)
+#[derive(Debug, Clone)]
+pub struct UseItem {
+    /// Path segments (mod1::mod2::Item)
+    pub path: Vec<Symbol>,
+    /// Optional alias (as Name)
+    pub alias: Option<Symbol>,
+    /// Visibility
+    pub visibility: Visibility,
+    /// Source location
+    pub span: FileSpan,
+}
+
+/// Path for module resolution
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ModulePath {
+    /// Path segments
+    pub segments: Vec<Symbol>,
+}
+
+/// Module tree for a crate
+#[derive(Debug, Clone)]
+pub struct ModuleTree {
+    /// All modules indexed by ID
+    pub modules: std::collections::HashMap<ModuleId, ModuleDef>,
+    /// Root module ID
+    pub root: ModuleId,
+    /// Path to module mapping
+    pub path_to_module: std::collections::HashMap<ModulePath, ModuleId>,
 }
 
 /// Struct definition
@@ -319,6 +398,17 @@ pub struct Body {
     pub patterns: Arena<Pattern>,
     /// Root expression
     pub root_expr: ExprId,
+    /// Name resolution results (filled in by rv-resolve)
+    pub resolution: Option<BodyResolution>,
+}
+
+/// Name resolution results for a function body
+#[derive(Debug, Clone)]
+pub struct BodyResolution {
+    /// Mapping from variable expression IDs to their definitions
+    pub expr_resolutions: rustc_hash::FxHashMap<ExprId, DefId>,
+    /// Mapping from pattern bindings to local IDs
+    pub pattern_locals: rustc_hash::FxHashMap<PatternId, LocalId>,
 }
 
 impl Body {
@@ -337,6 +427,7 @@ impl Body {
             stmts: Arena::new(),
             patterns: Arena::new(),
             root_expr,
+            resolution: None,
         }
     }
 }
@@ -468,6 +559,19 @@ pub enum Expr {
         /// Source location
         span: FileSpan,
     },
+    /// Closure expression
+    Closure {
+        /// Closure parameters
+        params: Vec<Parameter>,
+        /// Optional return type annotation
+        return_type: Option<TypeId>,
+        /// Body expression
+        body: ExprId,
+        /// Variables captured from environment (free variables in body)
+        captures: Vec<Symbol>,
+        /// Source location
+        span: FileSpan,
+    },
 }
 
 /// Match arm
@@ -492,6 +596,8 @@ pub enum Stmt {
         ty: Option<TypeId>,
         /// Initializer expression
         initializer: Option<ExprId>,
+        /// Whether the binding is mutable
+        mutable: bool,
         /// Source location
         span: FileSpan,
     },
@@ -525,6 +631,8 @@ pub enum Pattern {
         name: Symbol,
         /// Is mutable
         mutable: bool,
+        /// Optional sub-pattern for @ patterns (x @ SomePattern)
+        sub_pattern: Option<Box<PatternId>>,
         /// Source location
         span: FileSpan,
     },

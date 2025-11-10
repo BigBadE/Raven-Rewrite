@@ -10,7 +10,7 @@ use inkwell::passes::PassManager;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
 };
-use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
+use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::IntPredicate;
 use rv_hir::{ExternalFunction, FunctionId, LiteralKind};
@@ -23,10 +23,21 @@ use std::path::Path;
 
 pub struct LLVMBackend {
     context: Context,
+    module_name: String,
+    opt_level: OptLevel,
+    // Store compiled module and compiler state
+    // SAFETY: This uses unsafe code to work around self-referential struct limitations
+    // The compiler borrows from context with a lifetime, but we ensure the context
+    // lives as long as the LLVMBackend, making this safe.
+    compiled_state: std::cell::RefCell<Option<CompiledState>>,
+}
+
+struct CompiledState {
+    ir: String,
 }
 
 impl LLVMBackend {
-    pub fn new(_module_name: &str, _opt_level: OptLevel) -> Result<Self> {
+    pub fn new(module_name: &str, opt_level: OptLevel) -> Result<Self> {
         use std::sync::Once;
         static INIT: Once = Once::new();
 
@@ -40,34 +51,105 @@ impl LLVMBackend {
 
         Ok(Self {
             context,
+            module_name: module_name.to_string(),
+            opt_level,
+            compiled_state: std::cell::RefCell::new(None),
         })
     }
 
-    /// Compile functions and write to object file
-    /// This method takes ownership of parameters to ensure proper scoping
-    pub fn compile_and_write(
+    pub fn compile_and_write_object(
         &self,
-        module_name: &str,
         functions: &[MirFunction],
         external_functions: &HashMap<FunctionId, ExternalFunction>,
         output_path: &Path,
-        opt_level: OptLevel,
     ) -> Result<()> {
-        // Create compiler with borrowed context
-        let compiler = Compiler::new(&self.context, module_name, opt_level);
-
-        // Compile all functions
+        let compiler = Compiler::new(&self.context, &self.module_name, self.opt_level);
         compiler.compile_functions_with_externals(functions, external_functions)?;
 
-        // Debug: Write LLVM IR to file
-        if std::env::var("DEBUG_LLVM_IR").is_ok() {
-            let ir_path = output_path.with_extension("ll");
-            std::fs::write(&ir_path, compiler.module.print_to_string().to_string())?;
-            eprintln!("DEBUG: LLVM IR written to {}", ir_path.display());
-        }
+        // Store IR for debugging
+        let ir = compiler.module.print_to_string().to_string();
+        *self.compiled_state.borrow_mut() = Some(CompiledState { ir });
 
-        // Write object file
+        // Write object file directly from the compiler's module
         compiler.write_object_file(output_path)?;
+
+        Ok(())
+    }
+
+    pub fn compile_functions_with_externals(
+        &self,
+        functions: &[MirFunction],
+        external_functions: &HashMap<FunctionId, ExternalFunction>,
+    ) -> Result<()> {
+        let compiler = Compiler::new(&self.context, &self.module_name, self.opt_level);
+        compiler.compile_functions_with_externals(functions, external_functions)?;
+
+        // Get IR string for later use
+        let ir = compiler.module.print_to_string().to_string();
+
+        *self.compiled_state.borrow_mut() = Some(CompiledState { ir });
+
+        Ok(())
+    }
+
+    pub fn compile_functions(
+        &self,
+        functions: &[MirFunction],
+    ) -> Result<()> {
+        self.compile_functions_with_externals(functions, &HashMap::new())
+    }
+
+    pub fn to_llvm_ir(&self) -> String {
+        self.compiled_state
+            .borrow()
+            .as_ref()
+            .map(|state| state.ir.clone())
+            .unwrap_or_else(|| "".to_string())
+    }
+
+    pub fn write_object_file(&self, output_path: &Path) -> Result<()> {
+        if let Some(state) = self.compiled_state.borrow().as_ref() {
+            // Create a new module from the IR string
+            let memory_buffer = inkwell::memory_buffer::MemoryBuffer::create_from_memory_range(
+                state.ir.as_bytes(),
+                &self.module_name
+            );
+            let module = self.context.create_module_from_ir(memory_buffer)
+                .map_err(|e| anyhow::anyhow!("Failed to parse IR: {}", e))?;
+
+            // Write object file
+            self.write_module_to_object(&module, output_path)
+        } else {
+            anyhow::bail!("No compiled IR available. Call compile_functions_with_externals first.")
+        }
+    }
+
+    fn write_module_to_object(
+        &self,
+        module: &Module,
+        output_path: &Path,
+    ) -> Result<()> {
+        let triple = TargetMachine::get_default_triple();
+        let target = Target::from_triple(&triple)
+            .map_err(|e| anyhow::anyhow!("Failed to create target from triple: {}", e))?;
+
+        let cpu = TargetMachine::get_host_cpu_name();
+        let features = TargetMachine::get_host_cpu_features();
+
+        let target_machine = target
+            .create_target_machine(
+                &triple,
+                cpu.to_str().unwrap_or("generic"),
+                features.to_str().unwrap_or(""),
+                self.opt_level.to_inkwell(),
+                RelocMode::Default,
+                CodeModel::Default,
+            )
+            .ok_or_else(|| anyhow::anyhow!("Failed to create target machine"))?;
+
+        target_machine
+            .write_to_file(module, FileType::Object, output_path)
+            .map_err(|e| anyhow::anyhow!("Failed to write object file: {}", e))?;
 
         Ok(())
     }
@@ -156,30 +238,27 @@ impl<'ctx> Compiler<'ctx> {
         // Phase 0: Declare all external functions
         let mut llvm_functions = self.declare_external_functions(external_funcs);
 
-        // Phase 1: Scan all functions to infer parameter counts from call sites
-        let mut param_counts: HashMap<FunctionId, usize> = HashMap::new();
+        // Phase 1: Declare all regular functions (external functions already declared)
 
         for mir_func in mir_funcs {
-            for bb in &mir_func.basic_blocks {
-                for stmt in &bb.statements {
-                    if let Statement::Assign { rvalue, .. } = stmt {
-                        if let RValue::Call { func, args } = rvalue {
-                            // This tells us how many parameters the called function has
-                            param_counts.insert(*func, args.len());
-                        }
+            // Use the param_count field from MirFunction directly
+            let param_count = mir_func.param_count;
+
+            // Create function signature using actual parameter types from MIR locals
+            // Parameters are the first N locals in MIR (LocalId(0), LocalId(1), ...)
+            use inkwell::types::BasicMetadataTypeEnum;
+            use rv_mir::LocalId;
+            let param_types: Vec<BasicMetadataTypeEnum> = (0..param_count)
+                .map(|i| {
+                    // Find the local with this LocalId
+                    let local_id = LocalId(i as u32);
+                    if let Some(local) = mir_func.locals.iter().find(|local| local.id == local_id) {
+                        let basic_type = self.type_lowering.lower_type(&local.ty);
+                        basic_type.into()
+                    } else {
+                        self.context.i32_type().into()
                     }
-                }
-            }
-        }
-
-        // Phase 2: Declare all regular functions (external functions already declared)
-
-        for mir_func in mir_funcs {
-            let param_count = param_counts.get(&mir_func.id).copied().unwrap_or(0);
-
-            // Create function signature with parameters
-            let param_types: Vec<_> = (0..param_count)
-                .map(|_| self.context.i32_type().into())
+                })
                 .collect();
             let fn_type = self.context.i32_type().fn_type(&param_types, false);
 
@@ -259,7 +338,7 @@ impl<'ctx> Compiler<'ctx> {
 }
 
 struct FunctionCodegen<'a, 'ctx> {
-    backend: &'a LLVMBackend<'ctx>,
+    compiler: &'a Compiler<'ctx>,
     function: FunctionValue<'ctx>,
     mir_func: &'a MirFunction,
     locals: HashMap<LocalId, BasicValueEnum<'ctx>>,
@@ -269,13 +348,13 @@ struct FunctionCodegen<'a, 'ctx> {
 
 impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
     fn new(
-        backend: &'a LLVMBackend<'ctx>,
+        compiler: &'a Compiler<'ctx>,
         function: FunctionValue<'ctx>,
         mir_func: &'a MirFunction,
         llvm_functions: &'a HashMap<rv_hir::FunctionId, FunctionValue<'ctx>>,
     ) -> Self {
         Self {
-            backend,
+            compiler,
             function,
             mir_func,
             locals: HashMap::new(),
@@ -284,8 +363,21 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
         }
     }
 
+    // Helper methods to access compiler fields
+    fn context(&self) -> &'ctx Context {
+        self.compiler.context
+    }
+
+    fn builder(&self) -> &Builder<'ctx> {
+        &self.compiler.builder
+    }
+
+    fn type_lowering(&self) -> &TypeLowering<'ctx> {
+        &self.compiler.type_lowering
+    }
+
     fn build(&mut self) -> Result<()> {
-        let context = self.context;
+        let context = self.compiler.context;
 
         // Create all basic blocks
         for (idx, _) in self.mir_func.basic_blocks.iter().enumerate() {
@@ -296,15 +388,29 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
 
         // Position at entry block
         if let Some(entry_bb) = self.blocks.get(&self.mir_func.entry_block) {
-            self.builder.position_at_end(*entry_bb);
+            self.builder().position_at_end(*entry_bb);
         }
 
         // Allocate space for all locals
         for local in &self.mir_func.locals {
-            let llvm_type = self.type_lowering.lower_type(&local.ty);
-            let alloca = self.builder.build_alloca(llvm_type, &format!("local_{}", local.id.0))
+            let llvm_type = self.type_lowering().lower_type(&local.ty);
+            let alloca = self.builder().build_alloca(llvm_type, &format!("local_{}", local.id.0))
                 .map_err(|e| anyhow::anyhow!("Failed to create alloca: {}", e))?;
             self.locals.insert(local.id, alloca.into());
+        }
+
+        // Initialize function parameters by storing them into their local allocas
+        // MIR represents parameters as the first N locals
+        let llvm_params = self.function.get_params();
+        for (param_idx, param_value) in llvm_params.iter().enumerate() {
+            // Parameters are the first locals (LocalId(0), LocalId(1), ...)
+            let local_id = LocalId(param_idx as u32);
+            if let Some(local_alloca) = self.locals.get(&local_id) {
+                if let BasicValueEnum::PointerValue(ptr) = local_alloca {
+                    self.builder().build_store(*ptr, *param_value)
+                        .map_err(|e| anyhow::anyhow!("Failed to store parameter: {}", e))?;
+                }
+            }
         }
 
         // Compile each basic block
@@ -318,7 +424,7 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
     fn compile_basic_block(&mut self, _idx: usize, bb: &BasicBlock) -> Result<()> {
         // Position builder at this block
         if let Some(llvm_bb) = self.blocks.get(&bb.id) {
-            self.builder.position_at_end(*llvm_bb);
+            self.builder().position_at_end(*llvm_bb);
         }
 
         // Compile statements
@@ -352,21 +458,21 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
                             .map(|l| &l.ty);
 
                         if let Some(ty) = local_ty {
-                            let expected_type = self.type_lowering.lower_type(ty);
+                            let expected_type = self.type_lowering().lower_type(ty);
                             if let BasicTypeEnum::IntType(expected_int_type) = expected_type {
                                 let expected_width = expected_int_type.get_bit_width();
 
                                 // Convert if widths don't match
                                 if value_width < expected_width {
                                     // Zero-extend smaller values (e.g., i1 -> i32)
-                                    value = self.builder.build_int_z_extend(
+                                    value = self.builder().build_int_z_extend(
                                         value_int,
                                         expected_int_type,
                                         "zext"
                                     ).map_err(|e| anyhow::anyhow!("Failed to zero-extend: {}", e))?.into();
                                 } else if value_width > expected_width {
                                     // Truncate larger values
-                                    value = self.builder.build_int_truncate(
+                                    value = self.builder().build_int_truncate(
                                         value_int,
                                         expected_int_type,
                                         "trunc"
@@ -376,7 +482,7 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
                         }
                     }
 
-                    self.builder.build_store(ptr, value)
+                    self.builder().build_store(ptr, value)
                         .map_err(|e| anyhow::anyhow!("Failed to build store: {}", e))?;
                 }
             }
@@ -421,36 +527,133 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
                     .collect();
 
                 // Call the function
-                let call_site = self.builder
+                let call_site = self.builder()
                     .build_call(*callee, &args_metadata, "call")
                     .map_err(|e| anyhow::anyhow!("Failed to build call: {}", e))?;
 
                 // Get return value
                 let return_value = call_site.try_as_basic_value().left()
-                    .unwrap_or_else(|| self.context.i32_type().const_int(0, false).into());
+                    .unwrap_or_else(|| self.context().i32_type().const_int(0, false).into());
 
                 Ok(return_value)
             }
 
-            RValue::Ref { .. } => {
-                // TODO: Implement references
-                Ok(self.context.i32_type().const_int(0, false).into())
+            RValue::Ref { place, .. } => {
+                // Get the address of the place (place already evaluates to a pointer from get_place)
+                // Since locals are allocated with build_alloca, get_place returns a pointer value
+                let place_ptr = self.get_place(place)?;
+
+                // The place is already a pointer (alloca returns pointer type)
+                // For references, we just return this pointer directly
+                if let BasicValueEnum::PointerValue(_) = place_ptr {
+                    Ok(place_ptr)
+                } else {
+                    anyhow::bail!("Expected pointer value for reference, got: {:?}", place_ptr)
+                }
             }
 
             RValue::Aggregate { kind, operands } => {
-                // For now, represent aggregates as the first field value
-                // This is a simplified implementation - proper support would create struct types
                 match kind {
-                    AggregateKind::Struct | AggregateKind::Tuple | AggregateKind::Array(_) => {
-                        if let Some(first_operand) = operands.first() {
-                            self.compile_operand(first_operand)
-                        } else {
-                            Ok(self.context.i32_type().const_int(0, false).into())
+                    AggregateKind::Struct | AggregateKind::Tuple => {
+                        // Create a struct/tuple aggregate with all fields
+                        if operands.is_empty() {
+                            // Empty struct/tuple - return unit value
+                            return Ok(self.context().i32_type().const_int(0, false).into());
                         }
+
+                        // Compile all field values
+                        let field_values: Result<Vec<BasicValueEnum>> = operands
+                            .iter()
+                            .map(|op| self.compile_operand(op))
+                            .collect();
+                        let field_values = field_values?;
+
+                        // Create struct type with the correct number of fields
+                        let field_types: Vec<BasicTypeEnum> = field_values
+                            .iter()
+                            .map(|val| val.get_type())
+                            .collect();
+
+                        let struct_type = self.context().struct_type(&field_types, false);
+                        let mut aggregate_value = struct_type.get_undef();
+
+                        // Insert each field value
+                        for (i, field_val) in field_values.into_iter().enumerate() {
+                            aggregate_value = self.builder()
+                                .build_insert_value(aggregate_value, field_val, i as u32, &format!("field_{}", i))
+                                .map_err(|e| anyhow::anyhow!("Failed to insert field {}: {}", i, e))?
+                                .into_struct_value();
+                        }
+
+                        Ok(aggregate_value.into())
                     }
-                    AggregateKind::Enum { .. } => {
-                        // TODO: Implement enum aggregates
-                        Ok(self.context.i32_type().const_int(0, false).into())
+                    AggregateKind::Array(_element_ty) => {
+                        // Create an array aggregate
+                        // Array size is determined by the number of operands
+                        if operands.is_empty() {
+                            // Empty array - return zero-sized array
+                            let i32_type = self.context().i32_type();
+                            return Ok(i32_type.array_type(0).const_zero().into());
+                        }
+
+                        // Compile all element values
+                        let element_values: Result<Vec<BasicValueEnum>> = operands
+                            .iter()
+                            .map(|op| self.compile_operand(op))
+                            .collect();
+                        let element_values = element_values?;
+
+                        let array_size = element_values.len();
+
+                        // Get element type from first element
+                        let element_type = element_values[0].get_type();
+                        let array_type = element_type.array_type(array_size as u32);
+                        let mut array_value = array_type.get_undef();
+
+                        // Insert each element
+                        for (i, elem_val) in element_values.into_iter().enumerate() {
+                            array_value = self.builder()
+                                .build_insert_value(array_value, elem_val, i as u32, &format!("elem_{}", i))
+                                .map_err(|e| anyhow::anyhow!("Failed to insert element {}: {}", i, e))?
+                                .into_array_value();
+                        }
+
+                        Ok(array_value.into())
+                    }
+                    AggregateKind::Enum { variant_idx } => {
+                        // Enum: create struct with tag (discriminant) and data fields
+                        // Layout: { i32 tag, ...variant_fields }
+                        let tag_value = self.context().i32_type().const_int(*variant_idx as u64, false);
+
+                        // Compile variant field values
+                        let field_values: Result<Vec<BasicValueEnum>> = operands
+                            .iter()
+                            .map(|op| self.compile_operand(op))
+                            .collect();
+                        let mut field_values = field_values?;
+
+                        // Build field types: tag + variant fields
+                        let mut field_types = vec![self.context().i32_type().into()];
+                        field_types.extend(field_values.iter().map(|val| val.get_type()));
+
+                        let enum_struct_type = self.context().struct_type(&field_types, false);
+                        let mut enum_value = enum_struct_type.get_undef();
+
+                        // Insert tag as first field
+                        enum_value = self.builder()
+                            .build_insert_value(enum_value, tag_value, 0, "tag")
+                            .map_err(|e| anyhow::anyhow!("Failed to insert enum tag: {}", e))?
+                            .into_struct_value();
+
+                        // Insert variant fields
+                        for (i, field_val) in field_values.drain(..).enumerate() {
+                            enum_value = self.builder()
+                                .build_insert_value(enum_value, field_val, (i + 1) as u32, &format!("variant_field_{}", i))
+                                .map_err(|e| anyhow::anyhow!("Failed to insert enum field {}: {}", i, e))?
+                                .into_struct_value();
+                        }
+
+                        Ok(enum_value.into())
                     }
                 }
             }
@@ -466,10 +669,10 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
                     let place_ty = self.get_place_type(place)?;
 
                     // Get the LLVM type for this place
-                    let llvm_type = self.type_lowering.lower_type(&place_ty);
+                    let llvm_type = self.type_lowering().lower_type(&place_ty);
 
                     // Load value from place
-                    self.builder.build_load(llvm_type, ptr_val, "load")
+                    self.builder().build_load(llvm_type, ptr_val, "load")
                         .map_err(|e| anyhow::anyhow!("Failed to build load: {}", e))
                 } else {
                     Ok(ptr)
@@ -507,8 +710,12 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
                     }
                 }
                 PlaceElem::Deref => {
-                    // TODO: Implement dereference type resolution
-                    anyhow::bail!("Deref not implemented");
+                    // Dereference unwraps the reference type to get the inner type
+                    if let rv_mir::MirType::Ref { inner, .. } = &current_type {
+                        current_type = (**inner).clone();
+                    } else {
+                        anyhow::bail!("Cannot dereference non-reference type: {:?}", current_type);
+                    }
                 }
                 PlaceElem::Index(_) => {
                     // TODO: Implement array indexing type resolution
@@ -523,20 +730,24 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
     fn compile_constant(&self, constant: &Constant) -> Result<BasicValueEnum<'ctx>> {
         match &constant.kind {
             LiteralKind::Integer(val) => {
-                Ok(self.context.i32_type().const_int(*val as u64, false).into())
+                Ok(self.context().i32_type().const_int(*val as u64, false).into())
             }
             LiteralKind::Float(val) => {
-                Ok(self.context.f64_type().const_float(*val).into())
+                Ok(self.context().f64_type().const_float(*val).into())
             }
             LiteralKind::Bool(val) => {
-                Ok(self.context.bool_type().const_int(*val as u64, false).into())
+                // Use i32 for booleans for consistency with comparison operators
+                Ok(self.context().i32_type().const_int(*val as u64, false).into())
             }
-            LiteralKind::String(_) => {
-                // TODO: Implement string constants
-                Ok(self.context.i32_type().const_int(0, false).into())
+            LiteralKind::String(s) => {
+                // Create a global string constant and return pointer to it
+                let global_string = self.builder()
+                    .build_global_string_ptr(s, "str")
+                    .map_err(|e| anyhow::anyhow!("Failed to build global string: {}", e))?;
+                Ok(global_string.as_pointer_value().into())
             }
             LiteralKind::Unit => {
-                Ok(self.context.i32_type().const_int(0, false).into())
+                Ok(self.context().i32_type().const_int(0, false).into())
             }
         }
     }
@@ -559,46 +770,59 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
         let rhs_int = rhs.into_int_value();
 
         let result = match op {
-            BinaryOp::Add => self.builder.build_int_add(lhs_int, rhs_int, "add"),
-            BinaryOp::Sub => self.builder.build_int_sub(lhs_int, rhs_int, "sub"),
-            BinaryOp::Mul => self.builder.build_int_mul(lhs_int, rhs_int, "mul"),
-            BinaryOp::Div => self.builder.build_int_signed_div(lhs_int, rhs_int, "div"),
-            BinaryOp::Mod => self.builder.build_int_signed_rem(lhs_int, rhs_int, "mod"),
+            BinaryOp::Add => self.builder().build_int_add(lhs_int, rhs_int, "add"),
+            BinaryOp::Sub => self.builder().build_int_sub(lhs_int, rhs_int, "sub"),
+            BinaryOp::Mul => self.builder().build_int_mul(lhs_int, rhs_int, "mul"),
+            BinaryOp::Div => self.builder().build_int_signed_div(lhs_int, rhs_int, "div"),
+            BinaryOp::Mod => self.builder().build_int_signed_rem(lhs_int, rhs_int, "mod"),
             BinaryOp::Eq => {
-                let cmp = self.builder.build_int_compare(IntPredicate::EQ, lhs_int, rhs_int, "eq")
+                let cmp = self.builder().build_int_compare(IntPredicate::EQ, lhs_int, rhs_int, "eq")
                     .map_err(|e| anyhow::anyhow!("Failed to build comparison: {}", e))?;
-                return Ok(cmp.into());
+                // Extend i1 to i32 for consistency (MIR bool type maps to i32)
+                let extended = self.builder().build_int_z_extend(cmp, self.context().i32_type(), "bool_to_i32")
+                    .map_err(|e| anyhow::anyhow!("Failed to extend bool: {}", e))?;
+                return Ok(extended.into());
             }
             BinaryOp::Ne => {
-                let cmp = self.builder.build_int_compare(IntPredicate::NE, lhs_int, rhs_int, "ne")
+                let cmp = self.builder().build_int_compare(IntPredicate::NE, lhs_int, rhs_int, "ne")
                     .map_err(|e| anyhow::anyhow!("Failed to build comparison: {}", e))?;
-                return Ok(cmp.into());
+                let extended = self.builder().build_int_z_extend(cmp, self.context().i32_type(), "bool_to_i32")
+                    .map_err(|e| anyhow::anyhow!("Failed to extend bool: {}", e))?;
+                return Ok(extended.into());
             }
             BinaryOp::Lt => {
-                let cmp = self.builder.build_int_compare(IntPredicate::SLT, lhs_int, rhs_int, "lt")
+                let cmp = self.builder().build_int_compare(IntPredicate::SLT, lhs_int, rhs_int, "lt")
                     .map_err(|e| anyhow::anyhow!("Failed to build comparison: {}", e))?;
-                return Ok(cmp.into());
+                let extended = self.builder().build_int_z_extend(cmp, self.context().i32_type(), "bool_to_i32")
+                    .map_err(|e| anyhow::anyhow!("Failed to extend bool: {}", e))?;
+                return Ok(extended.into());
             }
             BinaryOp::Le => {
-                let cmp = self.builder.build_int_compare(IntPredicate::SLE, lhs_int, rhs_int, "le")
+                let cmp = self.builder().build_int_compare(IntPredicate::SLE, lhs_int, rhs_int, "le")
                     .map_err(|e| anyhow::anyhow!("Failed to build comparison: {}", e))?;
-                return Ok(cmp.into());
+                let extended = self.builder().build_int_z_extend(cmp, self.context().i32_type(), "bool_to_i32")
+                    .map_err(|e| anyhow::anyhow!("Failed to extend bool: {}", e))?;
+                return Ok(extended.into());
             }
             BinaryOp::Gt => {
-                let cmp = self.builder.build_int_compare(IntPredicate::SGT, lhs_int, rhs_int, "gt")
+                let cmp = self.builder().build_int_compare(IntPredicate::SGT, lhs_int, rhs_int, "gt")
                     .map_err(|e| anyhow::anyhow!("Failed to build comparison: {}", e))?;
-                return Ok(cmp.into());
+                let extended = self.builder().build_int_z_extend(cmp, self.context().i32_type(), "bool_to_i32")
+                    .map_err(|e| anyhow::anyhow!("Failed to extend bool: {}", e))?;
+                return Ok(extended.into());
             }
             BinaryOp::Ge => {
-                let cmp = self.builder.build_int_compare(IntPredicate::SGE, lhs_int, rhs_int, "ge")
+                let cmp = self.builder().build_int_compare(IntPredicate::SGE, lhs_int, rhs_int, "ge")
                     .map_err(|e| anyhow::anyhow!("Failed to build comparison: {}", e))?;
-                return Ok(cmp.into());
+                let extended = self.builder().build_int_z_extend(cmp, self.context().i32_type(), "bool_to_i32")
+                    .map_err(|e| anyhow::anyhow!("Failed to extend bool: {}", e))?;
+                return Ok(extended.into());
             }
-            BinaryOp::BitAnd => self.builder.build_and(lhs_int, rhs_int, "and"),
-            BinaryOp::BitOr => self.builder.build_or(lhs_int, rhs_int, "or"),
-            BinaryOp::BitXor => self.builder.build_xor(lhs_int, rhs_int, "xor"),
-            BinaryOp::Shl => self.builder.build_left_shift(lhs_int, rhs_int, "shl"),
-            BinaryOp::Shr => self.builder.build_right_shift(lhs_int, rhs_int, false, "shr"),
+            BinaryOp::BitAnd => self.builder().build_and(lhs_int, rhs_int, "and"),
+            BinaryOp::BitOr => self.builder().build_or(lhs_int, rhs_int, "or"),
+            BinaryOp::BitXor => self.builder().build_xor(lhs_int, rhs_int, "xor"),
+            BinaryOp::Shl => self.builder().build_left_shift(lhs_int, rhs_int, "shl"),
+            BinaryOp::Shr => self.builder().build_right_shift(lhs_int, rhs_int, false, "shr"),
         }
         .map_err(|e| anyhow::anyhow!("Failed to build binary op: {}", e))?;
 
@@ -614,11 +838,11 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
 
         let result = match op {
             UnaryOp::Neg => {
-                self.builder.build_int_neg(val_int, "neg")
+                self.builder().build_int_neg(val_int, "neg")
                     .map_err(|e| anyhow::anyhow!("Failed to build negation: {}", e))?
             }
             UnaryOp::Not => {
-                self.builder.build_not(val_int, "not")
+                self.builder().build_not(val_int, "not")
                     .map_err(|e| anyhow::anyhow!("Failed to build not: {}", e))?
             }
         };
@@ -635,28 +859,28 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
                     // Convert boolean (i1) to i32 if needed
                     let ret_val = if val.is_int_value() && val.into_int_value().get_type().get_bit_width() == 1 {
                         // Zero-extend i1 to i32
-                        self.builder.build_int_z_extend(
+                        self.builder().build_int_z_extend(
                             val.into_int_value(),
-                            self.context.i32_type(),
+                            self.context().i32_type(),
                             "bool_to_i32"
                         ).map_err(|e| anyhow::anyhow!("Failed to extend bool to i32: {}", e))?.into()
                     } else {
                         val
                     };
 
-                    self.builder.build_return(Some(&ret_val))
+                    self.builder().build_return(Some(&ret_val))
                         .map_err(|e| anyhow::anyhow!("Failed to build return: {}", e))?;
                 } else {
                     // Return void/unit
-                    let zero = self.context.i32_type().const_int(0, false);
-                    self.builder.build_return(Some(&zero))
+                    let zero = self.context().i32_type().const_int(0, false);
+                    self.builder().build_return(Some(&zero))
                         .map_err(|e| anyhow::anyhow!("Failed to build return: {}", e))?;
                 }
             }
 
             Terminator::Goto(target) => {
                 if let Some(target_bb) = self.blocks.get(target) {
-                    self.builder.build_unconditional_branch(*target_bb)
+                    self.builder().build_unconditional_branch(*target_bb)
                         .map_err(|e| anyhow::anyhow!("Failed to build branch: {}", e))?;
                 }
             }
@@ -684,17 +908,29 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
                     let discr_int = if discr_val.is_int_value() {
                         discr_val.into_int_value()
                     } else {
-                        anyhow::bail!("Discriminant is not an integer value");
+                        // Debug: print what type it actually is
+                        let type_str = if discr_val.is_pointer_value() {
+                            "PointerValue".to_string()
+                        } else if discr_val.is_struct_value() {
+                            "StructValue".to_string()
+                        } else if discr_val.is_array_value() {
+                            "ArrayValue".to_string()
+                        } else if discr_val.is_vector_value() {
+                            "VectorValue".to_string()
+                        } else {
+                            "Unknown".to_string()
+                        };
+                        anyhow::bail!("Discriminant is not an integer value, got: {}", type_str);
                     };
 
                     // Create comparison: discr_val != 0
                     let zero = if discr_int.get_type().get_bit_width() == 1 {
                         discr_int.get_type().const_int(0, false)
                     } else {
-                        self.context.i32_type().const_int(0, false)
+                        self.context().i32_type().const_int(0, false)
                     };
 
-                    let condition = self.builder.build_int_compare(
+                    let condition = self.builder().build_int_compare(
                         IntPredicate::NE,
                         discr_int,
                         zero,
@@ -702,13 +938,13 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
                     ).map_err(|e| anyhow::anyhow!("Failed to build comparison: {}", e))?;
 
                     // Build conditional branch
-                    self.builder.build_conditional_branch(condition, *then_bb, *else_bb)
+                    self.builder().build_conditional_branch(condition, *then_bb, *else_bb)
                         .map_err(|e| anyhow::anyhow!("Failed to build conditional branch: {}", e))?;
                 } else {
                     // More complex switch - not implemented yet
                     // For now, just jump to otherwise
                     if let Some(else_bb) = self.blocks.get(otherwise) {
-                        self.builder.build_unconditional_branch(*else_bb)
+                        self.builder().build_unconditional_branch(*else_bb)
                             .map_err(|e| anyhow::anyhow!("Failed to build branch: {}", e))?;
                     }
                 }
@@ -719,7 +955,7 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
             }
 
             Terminator::Unreachable => {
-                self.builder.build_unreachable()
+                self.builder().build_unreachable()
                     .map_err(|e| anyhow::anyhow!("Failed to build unreachable: {}", e))?;
             }
         }
@@ -747,12 +983,12 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
                         // Use GEP (GetElementPtr) to access struct field
                         if let BasicValueEnum::PointerValue(ptr_val) = local_val {
                             // Get the LLVM type from the MIR type
-                            let basic_type = self.type_lowering.lower_type(current_type);
+                            let basic_type = self.type_lowering().lower_type(current_type);
 
                             // Extract the actual struct type from BasicTypeEnum
                             if let BasicTypeEnum::StructType(struct_type) = basic_type {
                                 // GEP with struct_gep for type-safe field access
-                                let field_ptr = self.builder.build_struct_gep(
+                                let field_ptr = self.builder().build_struct_gep(
                                     struct_type,
                                     ptr_val,
                                     *field_idx as u32,
@@ -778,7 +1014,24 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
                         }
                     }
                     PlaceElem::Deref => {
-                        // TODO: Implement dereference
+                        // Dereference: load the pointer value, then use it as the new pointer
+                        if let BasicValueEnum::PointerValue(ptr_val) = local_val {
+                            // Get the type we're dereferencing from
+                            if let rv_mir::MirType::Ref { inner, .. } = current_type {
+                                // Load the pointer stored at ptr_val (double indirection)
+                                let llvm_ptr_type = self.type_lowering().lower_type(current_type);
+                                let loaded_ptr = self.builder().build_load(llvm_ptr_type, ptr_val, "deref_load")
+                                    .map_err(|e| anyhow::anyhow!("Failed to load pointer for deref: {}", e))?;
+
+                                // The loaded value should be a pointer to the inner type
+                                local_val = loaded_ptr;
+                                current_type = inner;
+                            } else {
+                                anyhow::bail!("Cannot dereference non-reference type: {:?}", current_type);
+                            }
+                        } else {
+                            anyhow::bail!("Cannot dereference non-pointer value");
+                        }
                     }
                     PlaceElem::Index(_) => {
                         // TODO: Implement array indexing

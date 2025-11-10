@@ -1,0 +1,16 @@
+[package]
+name = "rv-macro"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+rv-intern.workspace = true
+rv-span.workspace = true
+thiserror.workspace = true
+rustc-hash.workspace = true
+
+[lints]
+workspace = true

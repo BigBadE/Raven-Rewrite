@@ -33,8 +33,13 @@ rv-parser = { path = "crates/parser/rv-parser" }
 # Internal crates - analysis
 rv-hir = { path = "crates/analysis/rv-hir" }
 rv-hir-lower = { path = "crates/analysis/rv-hir-lower" }
+rv-resolve = { path = "crates/analysis/rv-resolve" }
 rv-mir = { path = "crates/analysis/rv-mir" }
 rv-ty = { path = "crates/analysis/rv-ty" }
+rv-const-eval = { path = "crates/analysis/rv-const-eval" }
+rv-macro = { path = "crates/analysis/rv-macro" }
+rv-lifetime = { path = "crates/analysis/rv-lifetime" }
+rv-borrow-check = { path = "crates/analysis/rv-borrow-check" }
 
 # Internal crates - codegen
 rv-interpreter = { path = "crates/codegen/rv-interpreter" }
@@ -92,6 +97,7 @@ colored = "2.1"
 
 # Testing
 expect-test = "1.0"
+tempfile = "3.13"
 
 # Error handling
 anyhow = "1.0"
