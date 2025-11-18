@@ -1,0 +1,6 @@
+fn main() -> i64 {
+    let x = 10;
+    let y = 20;
+    let z = x + y;
+    z
+}

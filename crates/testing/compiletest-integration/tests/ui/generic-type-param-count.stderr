@@ -1,0 +1,5 @@
+error: wrong number of type parameters: expected 1, found 2
+ --> tests/ui/generic-type-param-count.rs:6:5
+  |
+6 |     identity::<i64, i64>(42)
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^ expected 1 type parameter

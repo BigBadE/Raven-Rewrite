@@ -1,0 +1,5 @@
+error: missing field `y` in struct initialization
+ --> tests/ui/struct-field-missing.rs:7:13
+  |
+7 |     let p = Point { x: 10 };
+  |             ^^^^^^^^^^^^^^^ missing `y`

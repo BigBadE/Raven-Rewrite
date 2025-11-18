@@ -1,0 +1,5 @@
+error: no method named `undefined_method` found for type `Counter`
+ --> tests/ui/method-not-found.rs:7:7
+  |
+7 |     c.undefined_method()
+  |       ^^^^^^^^^^^^^^^^ method not found in `Counter`

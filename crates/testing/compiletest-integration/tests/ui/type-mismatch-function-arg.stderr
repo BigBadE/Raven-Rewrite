@@ -1,0 +1,5 @@
+error: type mismatch in function argument: expected i64, found String
+ --> tests/ui/type-mismatch-function-arg.rs:6:15
+  |
+6 |     takes_int("hello")
+  |               ^^^^^^^ expected i64, found String

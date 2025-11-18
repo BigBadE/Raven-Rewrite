@@ -1,0 +1,8 @@
+error: if and else branches have incompatible types
+ --> tests/ui/if-else-type-mismatch.rs:5:9
+  |
+3 |         42
+  |         -- expected because of this
+4 |     } else {
+5 |         "string"
+  |         ^^^^^^^^ expected i64, found String

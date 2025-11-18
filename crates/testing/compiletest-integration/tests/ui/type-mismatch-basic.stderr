@@ -1,0 +1,5 @@
+error: type mismatch: expected i64, found String
+ --> tests/ui/type-mismatch-basic.rs:2:18
+  |
+2 |     let x: i64 = "string";
+  |                  ^^^^^^^^ expected i64, found String

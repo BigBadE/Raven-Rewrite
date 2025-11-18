@@ -1,0 +1,5 @@
+error: undefined function `undefined_function`
+ --> tests/ui/undefined-function.rs:2:5
+  |
+2 |     undefined_function()
+  |     ^^^^^^^^^^^^^^^^^^ not found in this scope

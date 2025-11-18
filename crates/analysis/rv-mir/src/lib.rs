@@ -13,7 +13,7 @@ use rv_span::FileSpan;
 use serde::{Deserialize, Serialize};
 
 /// A MIR function representation
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MirFunction {
     /// The original HIR function ID
     pub id: FunctionId,
@@ -28,7 +28,7 @@ pub struct MirFunction {
 }
 
 /// Local variable declaration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Local {
     /// Local ID
     pub id: LocalId,
@@ -152,7 +152,7 @@ pub enum PlaceElem {
 pub type Projection = PlaceElem;
 
 /// Basic block in control flow graph
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BasicBlock {
     /// Block ID
     pub id: BasicBlockId,
@@ -163,7 +163,7 @@ pub struct BasicBlock {
 }
 
 /// MIR statement
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
     /// Assign an rvalue to a place
     Assign {
@@ -183,7 +183,7 @@ pub enum Statement {
 }
 
 /// Right-hand side value
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RValue {
     /// Use a value (copy or move)
     Use(Operand),
@@ -227,7 +227,7 @@ pub enum RValue {
 }
 
 /// Aggregate kind
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AggregateKind {
     /// Tuple
     Tuple,
@@ -243,7 +243,7 @@ pub enum AggregateKind {
 }
 
 /// Operand (value being used)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Operand {
     /// Copy a place's value
     Copy(Place),
@@ -254,7 +254,7 @@ pub enum Operand {
 }
 
 /// Constant value
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Constant {
     /// Literal value
     pub kind: LiteralKind,
@@ -263,7 +263,7 @@ pub struct Constant {
 }
 
 /// Block terminator (control flow)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Terminator {
     /// Unconditional jump to another block
     Goto(BasicBlockId),

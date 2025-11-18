@@ -9,7 +9,7 @@ use crate::ty::{TyId, TyKind, TyVarId};
 use thiserror::Error;
 
 /// Unification error
-#[derive(Error, Debug, Clone)]
+#[derive(Error, Debug, Clone, PartialEq)]
 pub enum UnificationError {
     /// Types cannot be unified
     #[error("type mismatch: cannot unify {expected:?} with {found:?}")]

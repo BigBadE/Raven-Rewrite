@@ -12,7 +12,7 @@ use thiserror::Error;
 pub use codespan_reporting;
 
 /// Parse error with rich diagnostic information
-#[derive(Error, Debug, Clone, Diagnostic)]
+#[derive(Error, Debug, Clone, Diagnostic, PartialEq, Eq)]
 pub enum ParseError {
     /// Syntax error with unexpected input
     #[error("unexpected token `{token}`")]

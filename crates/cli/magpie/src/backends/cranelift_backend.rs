@@ -30,19 +30,13 @@ impl CraneliftBackend {
 
     /// Load a source file into the database
     fn load_file(&mut self, path: &Path) -> Result<SourceFile> {
-        let contents = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read file: {}", path.display()))?;
-
-        let source_file = self.db.register_file(path)?;
-        self.db.set_file_contents(source_file, contents)?;
-
-        Ok(source_file)
+        self.db.register_file(path)
     }
 
     /// Compile and execute a function
     fn execute_function(&mut self, source_file: SourceFile, function_name: &str) -> Result<i64> {
         // Get file contents and parse
-        let contents = self.db.get_file_contents(source_file)?;
+        let contents = self.db.get_file_contents(source_file);
         let parse_result = rv_parser::parse_source(&contents);
 
         if let Some(syntax) = parse_result.syntax {
@@ -194,7 +188,7 @@ impl Backend for CraneliftBackend {
             let source_file = backend.load_file(&main_path)?;
 
             // Parse to find test functions
-            let contents = backend.db.get_file_contents(source_file)?;
+            let contents = backend.db.get_file_contents(source_file);
             let parse_result = rv_parser::parse_source(&contents);
 
             if let Some(syntax) = parse_result.syntax {
@@ -247,7 +241,7 @@ impl Backend for CraneliftBackend {
         // Parse and type-check the file
         let mut backend = Self::new()?;
         let source_file = backend.load_file(&main_path)?;
-        let contents = backend.db.get_file_contents(source_file)?;
+        let contents = backend.db.get_file_contents(source_file);
         let parse_result = rv_parser::parse_source(&contents);
 
         if parse_result.syntax.is_none() {

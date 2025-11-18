@@ -7,6 +7,7 @@ use anyhow::Result;
 use rv_hir::{FunctionId, ImplId, TraitId, TypeDefId};
 use rv_intern::Interner;
 use rv_vfs::VirtualFileSystem;
+use salsa::Setter;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -21,14 +22,14 @@ pub struct SourceFile {
 
 // Tracked functions (queries)
 #[salsa::tracked]
-pub fn parse_file(db: &dyn RavenDb, file: SourceFile) -> Arc<ParseResult> {
+pub fn parse_file(db: &dyn RavenDb, file: SourceFile) -> ParseResult {
     let text = file.text(db);
-    let result = rv_parser::parse_source(text);
+    let result = rv_parser::parse_source(&text);
 
-    Arc::new(ParseResult {
+    ParseResult {
         syntax: result.syntax,
         errors: result.errors,
-    })
+    }
 }
 
 #[salsa::tracked]
@@ -136,10 +137,13 @@ pub fn infer_function_types(
     );
 
     // Run type inference on the function
-    let result = type_inference.infer_function(&func_hir);
+    type_inference.infer_function(&func_hir);
+
+    // Extract results from type inference
+    let result = type_inference.finish();
 
     Arc::new(InferenceResult {
-        context: result.context,
+        context: result.ctx,
         errors: result.errors,
     })
 }
@@ -184,24 +188,9 @@ pub fn lower_function_to_mir(
     Arc::new(mir)
 }
 
-/// Salsa jar containing all tracked functions
-#[salsa::jar(db = RavenDb)]
-pub struct Jar(
-    SourceFile,
-    parse_file,
-    lower_to_hir,
-    file_functions,
-    function_hir,
-    file_type_defs,
-    file_traits,
-    file_impls,
-    infer_function_types,
-    function_signature,
-    lower_function_to_mir,
-);
-
 /// Main database trait for the Raven compiler
-pub trait RavenDb: salsa::DbWithJar<Jar> {
+#[salsa::db]
+pub trait RavenDb: salsa::Database {
     /// Get the virtual file system
     fn vfs(&self) -> &VirtualFileSystem;
 
@@ -210,7 +199,7 @@ pub trait RavenDb: salsa::DbWithJar<Jar> {
 }
 
 /// Parse result from parsing a file
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseResult {
     /// Converted syntax tree
     pub syntax: Option<rv_syntax::SyntaxNode>,
@@ -219,7 +208,7 @@ pub struct ParseResult {
 }
 
 /// HIR file data containing all top-level items
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HirFileData {
     /// Functions defined in this file
     pub functions: std::collections::HashMap<FunctionId, rv_hir::Function>,
@@ -238,7 +227,7 @@ pub struct HirFileData {
 }
 
 /// Type inference result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct InferenceResult {
     /// Type context with inferred types
     pub context: rv_ty::TyContext,
@@ -247,7 +236,7 @@ pub struct InferenceResult {
 }
 
 /// Function signature for type checking
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FunctionSignature {
     /// Parameter types
     pub params: Vec<rv_hir::TypeId>,
@@ -258,7 +247,8 @@ pub struct FunctionSignature {
 }
 
 /// Root database implementation
-#[salsa::db(Jar)]
+#[salsa::db]
+#[derive(Clone)]
 pub struct RootDatabase {
     storage: salsa::Storage<Self>,
     vfs: VirtualFileSystem,
@@ -295,7 +285,7 @@ impl RootDatabase {
 
     /// Gets file contents
     #[must_use]
-    pub fn get_file_contents(&self, source_file: SourceFile) -> &str {
+    pub fn get_file_contents(&self, source_file: SourceFile) -> String {
         source_file.text(self)
     }
 }
@@ -306,8 +296,10 @@ impl Default for RootDatabase {
     }
 }
 
+#[salsa::db]
 impl salsa::Database for RootDatabase {}
 
+#[salsa::db]
 impl RavenDb for RootDatabase {
     fn vfs(&self) -> &VirtualFileSystem {
         &self.vfs
@@ -334,6 +326,6 @@ mod tests {
         // Update contents - this should invalidate dependent queries
         database.set_file_contents(source_file, "fn test() {}".to_string());
         let contents2 = database.get_file_contents(source_file);
-        assert_eq!(contents2, "fn test() {}");
+        assert_eq!(contents2.as_str(), "fn test() {}");
     }
 }

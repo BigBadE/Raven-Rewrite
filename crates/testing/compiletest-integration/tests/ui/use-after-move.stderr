@@ -1,0 +1,9 @@
+error: use of moved value: `x`
+ --> tests/ui/use-after-move.rs:6:5
+  |
+4 |     let x = 42;
+  |         - move occurs because `x` has type `i64`
+5 |     let y = take_ownership(x);
+  |                            - value moved here
+6 |     x
+  |     ^ value used here after move

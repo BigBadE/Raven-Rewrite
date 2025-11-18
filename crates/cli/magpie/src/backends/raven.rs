@@ -46,8 +46,20 @@ impl RavenBackend {
         // Get type inference result for interpreter context
         let inference = rv_database::infer_function_types(&self.db, source_file, function_id);
 
+        // Create a temporary LoweringContext for the interpreter
+        // The interpreter needs access to functions for generic calls
+        use rv_hir_lower::LoweringContext;
+        let mut hir_ctx = LoweringContext::new();
+        hir_ctx.functions = hir_data.functions.clone();
+        hir_ctx.structs = hir_data.structs.clone();
+        hir_ctx.enums = hir_data.enums.clone();
+        hir_ctx.traits = hir_data.traits.clone();
+        hir_ctx.impl_blocks = hir_data.impl_blocks.clone();
+        hir_ctx.types = hir_data.types.clone();
+        hir_ctx.interner = hir_data.interner.clone();
+
         // Execute with interpreter (with HIR context for generic function calls)
-        let mut interpreter = Interpreter::new_with_context(&hir_data, &inference.context);
+        let mut interpreter = Interpreter::new_with_context(&hir_ctx, &inference.context);
 
         if function_name.contains("match") {
             eprintln!("\n>>> Executing {}", function_name);

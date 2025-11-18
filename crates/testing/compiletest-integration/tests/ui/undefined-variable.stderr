@@ -1,0 +1,5 @@
+error: undefined variable `undefined_var`
+ --> tests/ui/undefined-variable.rs:2:5
+  |
+2 |     undefined_var
+  |     ^^^^^^^^^^^^^ not found in this scope

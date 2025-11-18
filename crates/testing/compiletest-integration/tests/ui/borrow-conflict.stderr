@@ -1,0 +1,9 @@
+error: cannot borrow `x` as mutable because it is also borrowed as immutable
+ --> tests/ui/borrow-conflict.rs:4:14
+  |
+3 |     let r1 = &x;
+  |              -- immutable borrow occurs here
+4 |     let r2 = &mut x;
+  |              ^^^^^^ mutable borrow occurs here
+5 |     *r2
+  |     --- immutable borrow later used here

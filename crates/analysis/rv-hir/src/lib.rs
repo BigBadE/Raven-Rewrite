@@ -62,7 +62,7 @@ pub struct LocalId(pub u32);
 pub struct ModuleId(pub u32);
 
 /// HIR representation of a file
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HirFile {
     /// Functions defined in this file
     pub functions: Vec<FunctionId>,
@@ -77,7 +77,7 @@ pub struct HirFile {
 }
 
 /// Module definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ModuleDef {
     /// Unique ID
     pub id: ModuleId,
@@ -94,7 +94,7 @@ pub struct ModuleDef {
 }
 
 /// Item in a module (function, type, trait, impl, module, use)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Item {
     /// Function definition
     Function(FunctionId),
@@ -113,7 +113,7 @@ pub enum Item {
 }
 
 /// Use declaration (import)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UseItem {
     /// Path segments (mod1::mod2::Item)
     pub path: Vec<Symbol>,
@@ -133,7 +133,7 @@ pub struct ModulePath {
 }
 
 /// Module tree for a crate
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ModuleTree {
     /// All modules indexed by ID
     pub modules: std::collections::HashMap<ModuleId, ModuleDef>,
@@ -144,7 +144,7 @@ pub struct ModuleTree {
 }
 
 /// Struct definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StructDef {
     /// Unique ID
     pub id: TypeDefId,
@@ -159,7 +159,7 @@ pub struct StructDef {
 }
 
 /// Field definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FieldDef {
     /// Field name
     pub name: Symbol,
@@ -181,7 +181,7 @@ pub enum Visibility {
 }
 
 /// Enum definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EnumDef {
     /// Unique ID
     pub id: TypeDefId,
@@ -196,7 +196,7 @@ pub struct EnumDef {
 }
 
 /// Enum variant definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct VariantDef {
     /// Variant name
     pub name: Symbol,
@@ -207,7 +207,7 @@ pub struct VariantDef {
 }
 
 /// Variant field types
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum VariantFields {
     /// Unit variant (no fields)
     Unit,
@@ -218,7 +218,7 @@ pub enum VariantFields {
 }
 
 /// Function definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Function {
     /// Unique ID
     pub id: FunctionId,
@@ -239,7 +239,7 @@ pub struct Function {
 }
 
 /// External function declaration (from extern blocks)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExternalFunction {
     /// Unique ID
     pub id: FunctionId,
@@ -258,7 +258,7 @@ pub struct ExternalFunction {
 }
 
 /// Function parameter
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Parameter {
     /// Parameter name
     pub name: Symbol,
@@ -269,7 +269,7 @@ pub struct Parameter {
 }
 
 /// Generic parameter
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GenericParam {
     /// Parameter name
     pub name: Symbol,
@@ -280,7 +280,7 @@ pub struct GenericParam {
 }
 
 /// Trait bound
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TraitBound {
     /// Trait reference
     pub trait_ref: TraitId,
@@ -289,7 +289,7 @@ pub struct TraitBound {
 }
 
 /// Trait definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TraitDef {
     /// Unique ID
     pub id: TraitId,
@@ -308,7 +308,7 @@ pub struct TraitDef {
 }
 
 /// Associated type definition in a trait
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AssociatedType {
     /// Associated type name
     pub name: Symbol,
@@ -319,7 +319,7 @@ pub struct AssociatedType {
 }
 
 /// Trait method signature
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TraitMethod {
     /// Method name
     pub name: Symbol,
@@ -347,7 +347,7 @@ pub enum SelfParam {
 }
 
 /// Implementation block (impl Type { ... } or impl Trait for Type { ... })
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ImplBlock {
     /// Unique ID
     pub id: ImplId,
@@ -368,7 +368,7 @@ pub struct ImplBlock {
 }
 
 /// Associated type implementation in an impl block
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AssociatedTypeImpl {
     /// Associated type name
     pub name: Symbol,
@@ -379,7 +379,7 @@ pub struct AssociatedTypeImpl {
 }
 
 /// Where clause for generic bounds
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct WhereClause {
     /// Type being constrained
     pub ty: TypeId,
@@ -388,7 +388,7 @@ pub struct WhereClause {
 }
 
 /// Function body
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Body {
     /// Expression arena
     pub exprs: Arena<Expr>,
@@ -403,7 +403,7 @@ pub struct Body {
 }
 
 /// Name resolution results for a function body
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BodyResolution {
     /// Mapping from variable expression IDs to their definitions
     pub expr_resolutions: rustc_hash::FxHashMap<ExprId, DefId>,
@@ -439,7 +439,7 @@ impl Default for Body {
 }
 
 /// HIR expressions
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     /// Literal value
     Literal {
@@ -575,7 +575,7 @@ pub enum Expr {
 }
 
 /// Match arm
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MatchArm {
     /// Pattern
     pub pattern: PatternId,
@@ -586,7 +586,7 @@ pub struct MatchArm {
 }
 
 /// HIR statements
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     /// Let binding
     Let {
@@ -618,7 +618,7 @@ pub enum Stmt {
 }
 
 /// Patterns
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
     /// Wildcard pattern (_)
     Wildcard {
@@ -693,7 +693,7 @@ pub enum Pattern {
 }
 
 /// HIR types
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     /// Named type
     Named {
@@ -746,7 +746,7 @@ pub enum Type {
 }
 
 /// Literal kinds
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LiteralKind {
     /// Integer literal
     Integer(i64),

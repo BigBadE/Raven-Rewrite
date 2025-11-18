@@ -167,7 +167,7 @@ impl BoundChecker {
 }
 
 /// Bound checking error
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BoundError {
     /// A trait bound is not satisfied
     UnsatisfiedBound {

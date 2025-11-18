@@ -1,0 +1,9 @@
+error: `x` does not live long enough
+ --> tests/ui/lifetime-dangling-ref.rs:3:5
+  |
+1 | fn dangling() -> &i64 {
+  |                  ---- return type requires lifetime
+2 |     let x = 42;
+  |         - binding `x` declared here
+3 |     &x
+  |     ^^ returns a reference to data owned by the current function

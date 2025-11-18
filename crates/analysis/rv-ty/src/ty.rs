@@ -137,7 +137,7 @@ impl fmt::Display for TyVarId {
 }
 
 /// Type arena for allocating types
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct TyArena {
     arena: Arena<Ty>,
 }

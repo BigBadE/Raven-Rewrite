@@ -5,7 +5,7 @@ use lasso::ThreadedRodeo;
 use std::sync::{Arc, Mutex};
 
 /// Thread-safe string interner
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Interner {
     inner: Arc<Mutex<ThreadedRodeo>>,
 }
@@ -37,5 +37,12 @@ impl Interner {
 impl Default for Interner {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl PartialEq for Interner {
+    fn eq(&self, other: &Self) -> bool {
+        // Two interners are equal if they share the same underlying data
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 }

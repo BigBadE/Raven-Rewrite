@@ -21,7 +21,7 @@ pub struct InferenceResult {
 }
 
 /// Type error
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TypeError {
     /// Unification error
     Unification {

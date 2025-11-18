@@ -1,0 +1,7 @@
+error: duplicate definition of function `foo`
+ --> tests/ui/name-resolution-ambiguous.rs:2:1
+  |
+1 | fn foo() -> i64 { 1 }
+  | ----------------- first definition here
+2 | fn foo() -> i64 { 2 }
+  | ^^^^^^^^^^^^^^^^^^^^^ `foo` redefined here

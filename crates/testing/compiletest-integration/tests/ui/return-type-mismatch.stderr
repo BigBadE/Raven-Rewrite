@@ -1,0 +1,7 @@
+error: type mismatch: expected i64, found String
+ --> tests/ui/return-type-mismatch.rs:2:5
+  |
+1 | fn returns_wrong_type() -> i64 {
+  |                            --- expected `i64` because of return type
+2 |     "string"
+  |     ^^^^^^^^ expected i64, found String

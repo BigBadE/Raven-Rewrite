@@ -1,0 +1,5 @@
+error: no field `undefined_field` on type `Counter`
+ --> tests/ui/field-not-found.rs:7:7
+  |
+7 |     c.undefined_field
+  |       ^^^^^^^^^^^^^^^ field not found in `Counter`

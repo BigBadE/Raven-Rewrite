@@ -43,7 +43,7 @@ impl TestFixture {
 
         let source_file = self.db.register_file(absolute_path)?;
         self.db
-            .set_file_contents(source_file, contents.to_string())?;
+            .set_file_contents(source_file, contents.to_string());
         self.files.push(source_file);
         Ok(source_file)
     }
@@ -93,13 +93,10 @@ impl TestFixture {
     }
 
     /// Parse a file using its cached contents from the database
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if file contents cannot be retrieved
-    pub fn parse_file(&self, file: SourceFile) -> Result<rv_parser::ParseResult> {
-        let contents = self.db.get_file_contents(file)?;
-        Ok(rv_parser::parse_source(&contents))
+    #[must_use]
+    pub fn parse_file(&self, file: SourceFile) -> rv_parser::ParseResult {
+        let contents = self.db.get_file_contents(file);
+        rv_parser::parse_source(&contents)
     }
 }
 

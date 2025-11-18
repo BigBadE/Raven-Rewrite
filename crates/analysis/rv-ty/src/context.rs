@@ -10,6 +10,7 @@ use rustc_hash::FxHashMap;
 use rv_hir::{DefId, ExprId};
 
 /// Type checking context
+#[derive(Debug, Clone, PartialEq)]
 pub struct TyContext {
     /// Type arena
     pub types: TyArena,

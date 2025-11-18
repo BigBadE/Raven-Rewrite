@@ -1,0 +1,5 @@
+error: type mismatch in pattern: expected i64, found String
+ --> tests/ui/match-pattern-type-mismatch.rs:4:9
+  |
+4 |         "string" => 1,
+  |         ^^^^^^^^ expected i64, found String
