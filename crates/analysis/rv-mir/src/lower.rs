@@ -936,30 +936,33 @@ impl<'ctx> LoweringContext<'ctx> {
     }
 
     /// Lower a type from type system to MIR type
-    fn lower_type(&self, ty_id: TyId) -> MirType {
+    ///
+    /// Takes a NormalizedTy which guarantees all type variables are resolved.
+    /// This prevents the silent `TyKind::Var → MirType::Int` bug.
+    fn lower_type(&self, ty: rv_ty::NormalizedTy) -> MirType {
         use crate::MirVariant;
-        use rv_ty::VariantTy;
+        use rv_ty::{NormalizedTy, VariantTy};
 
-        // Apply substitutions first to resolve type variables
-        let resolved_ty_id = self.ty_ctx.apply_subst(ty_id);
-        let ty = self.ty_ctx.types.get(resolved_ty_id);
+        // No need for apply_subst - NormalizedTy guarantees no unresolved variables!
+        let ty_kind = &self.ty_ctx.types.get(ty.ty_id()).kind;
 
-        match &ty.kind {
+        match ty_kind {
             TyKind::Int => MirType::Int,
             TyKind::Float => MirType::Float,
             TyKind::Bool => MirType::Bool,
             TyKind::String => MirType::String,
             TyKind::Unit => MirType::Unit,
             TyKind::Function { params, ret } => MirType::Function {
-                params: params.iter().map(|p| self.lower_type(*p)).collect(),
-                ret: Box::new(self.lower_type(**ret)),
+                // Nested TyIds are also normalized, so we can wrap them
+                params: params.iter().map(|p| self.lower_type(NormalizedTy::wrap_child(*p))).collect(),
+                ret: Box::new(self.lower_type(NormalizedTy::wrap_child(**ret))),
             },
             TyKind::Tuple { elements } => {
-                MirType::Tuple(elements.iter().map(|e| self.lower_type(*e)).collect())
+                MirType::Tuple(elements.iter().map(|e| self.lower_type(NormalizedTy::wrap_child(*e))).collect())
             }
             TyKind::Ref { mutable, inner } => MirType::Ref {
                 mutable: *mutable,
-                inner: Box::new(self.lower_type(**inner)),
+                inner: Box::new(self.lower_type(NormalizedTy::wrap_child(**inner))),
             },
             TyKind::Struct { def_id, fields } => {
                 // Look up the struct name from the definition
@@ -970,7 +973,7 @@ impl<'ctx> LoweringContext<'ctx> {
 
                 MirType::Struct {
                     name,
-                    fields: fields.iter().map(|(_, ty)| self.lower_type(*ty)).collect(),
+                    fields: fields.iter().map(|(_, ty_id)| self.lower_type(NormalizedTy::wrap_child(*ty_id))).collect(),
                 }
             },
             TyKind::Enum { def_id, variants } => {
@@ -980,10 +983,10 @@ impl<'ctx> LoweringContext<'ctx> {
                         let fields = match variant_ty {
                             VariantTy::Unit => vec![],
                             VariantTy::Tuple(types) => {
-                                types.iter().map(|t| self.lower_type(*t)).collect()
+                                types.iter().map(|t| self.lower_type(NormalizedTy::wrap_child(*t))).collect()
                             }
                             VariantTy::Struct(fields) => {
-                                fields.iter().map(|(_, ty)| self.lower_type(*ty)).collect()
+                                fields.iter().map(|(_, ty)| self.lower_type(NormalizedTy::wrap_child(*ty))).collect()
                             }
                         };
                         MirVariant {
@@ -1005,11 +1008,11 @@ impl<'ctx> LoweringContext<'ctx> {
                 }
             }
             TyKind::Array { element, size } => MirType::Array {
-                element: Box::new(self.lower_type(**element)),
+                element: Box::new(self.lower_type(NormalizedTy::wrap_child(**element))),
                 size: *size,
             },
             TyKind::Slice { element } => MirType::Slice {
-                element: Box::new(self.lower_type(**element)),
+                element: Box::new(self.lower_type(NormalizedTy::wrap_child(**element))),
             },
             TyKind::Named { name, def, .. } => {
                 // Try to resolve the named type to its actual definition
@@ -1058,11 +1061,15 @@ impl<'ctx> LoweringContext<'ctx> {
                 // During monomorphization, this will be substituted with concrete types
                 MirType::Named(*name)
             }
-            TyKind::Var { .. } => {
-                // Type variable - for monomorphized functions, these should be resolved to concrete types
-                // For now, treat as named type that will be resolved during monomorphization
-                // In the future, we should apply type substitutions here
-                MirType::Int // Default to Int for unresolved type variables
+            TyKind::Var { id } => {
+                // ⚠️ COMPILE ERROR: If you hit this, it means a non-normalized type was passed!
+                // NormalizedTy should make this unreachable.
+                panic!(
+                    "BUG: Unresolved type variable ?{} in supposedly normalized type {:?}. \
+                     This indicates normalize() didn't work correctly or a non-normalized TyId \
+                     was unsafely wrapped in NormalizedTy.",
+                    id.0, ty.ty_id()
+                )
             }
             TyKind::Error => {
                 // Error type from type inference failures

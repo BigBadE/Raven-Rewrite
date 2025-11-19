@@ -22,7 +22,7 @@ pub mod unify;
 
 pub use bounds::{BoundChecker, BoundError};
 pub use constraint::{Constraint, ConstraintSource, Constraints};
-pub use context::TyContext;
+pub use context::{NormalizeError, NormalizedTy, TyContext};
 pub use infer::{InferenceResult, TypeError, TypeInference};
 pub use module_context::{FunctionSignature, ModuleTypeContext};
 pub use solver::{solve_constraints, ConstraintSolver, SolverResult};

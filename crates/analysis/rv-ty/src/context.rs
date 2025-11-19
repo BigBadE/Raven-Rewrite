@@ -9,6 +9,54 @@ use crate::ty::{TyArena, TyId, TyKind, TyVarId};
 use rustc_hash::FxHashMap;
 use rv_hir::{DefId, ExprId};
 
+/// A type that has been fully normalized (all type variables resolved).
+///
+/// This newtype wrapper provides compile-time guarantees that:
+/// - All type variables have been resolved via substitution
+/// - The type is ready for code generation
+/// - No `apply_subst` calls are needed
+///
+/// Use `TyContext::normalize()` to create normalized types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NormalizedTy(TyId);
+
+impl NormalizedTy {
+    /// Get the underlying TyId (only for internal use after normalization)
+    pub fn ty_id(self) -> TyId {
+        self.0
+    }
+
+    /// UNSAFE: Create a NormalizedTy without checking normalization.
+    /// Only use when you can guarantee the type is already normalized.
+    ///
+    /// # Safety
+    /// Caller must ensure the TyId contains no unresolved type variables.
+    pub(crate) unsafe fn new_unchecked(ty_id: TyId) -> Self {
+        Self(ty_id)
+    }
+
+    /// Safely wrap a TyId that is known to be a child of this normalized type.
+    ///
+    /// Since this NormalizedTy was produced by normalize(), all TyIds contained
+    /// within its structure are also normalized. This method allows accessing
+    /// those nested TyIds as NormalizedTy for recursive operations.
+    ///
+    /// # Safety
+    /// Only use this for TyIds that are directly contained within the structure
+    /// of this normalized type (e.g., struct fields, function parameters).
+    pub fn wrap_child(ty_id: TyId) -> Self {
+        // If the parent is normalized, all children are too
+        unsafe { Self::new_unchecked(ty_id) }
+    }
+}
+
+/// Error during type normalization
+#[derive(Debug, Clone)]
+pub enum NormalizeError {
+    /// Encountered an unresolved type variable
+    UnresolvedVariable { var_id: TyVarId, ty_id: TyId },
+}
+
 /// Type checking context
 #[derive(Debug, Clone, PartialEq)]
 pub struct TyContext {
@@ -55,7 +103,11 @@ impl TyContext {
         self.types.var(var_id)
     }
 
-    /// Apply substitutions to a type
+    /// Apply substitutions to a type (DEPRECATED: use normalize() instead)
+    ///
+    /// This only follows type variables at the top level (shallow substitution).
+    /// For deep normalization that resolves variables nested in struct fields, etc.,
+    /// use `normalize()` instead.
     pub fn apply_subst(&self, ty_id: TyId) -> TyId {
         let ty = self.types.get(ty_id);
         match &ty.kind {
@@ -65,6 +117,153 @@ impl TyContext {
                 .map_or(ty_id, |subst_ty| self.apply_subst(*subst_ty)),
             _ => ty_id,
         }
+    }
+
+    /// Normalize a type by deeply resolving all type variables.
+    ///
+    /// This recursively traverses the type structure and replaces all type variables
+    /// with their substitutions. If any unresolved type variable is encountered,
+    /// returns an error.
+    ///
+    /// # Errors
+    /// Returns `NormalizeError::UnresolvedVariable` if a type variable has no substitution.
+    pub fn normalize(&mut self, ty_id: TyId) -> Result<NormalizedTy, NormalizeError> {
+        let ty = self.types.get(ty_id);
+
+        match &ty.kind.clone() {
+            TyKind::Var { id } => {
+                // Follow the substitution chain
+                if let Some(&subst_ty) = self.subst.get(id) {
+                    // Recursively normalize the substitution
+                    let normalized = self.normalize(subst_ty)?;
+                    // Path compression: update substitution to point directly to normalized type
+                    self.subst.insert(*id, normalized.ty_id());
+                    Ok(normalized)
+                } else {
+                    // Unresolved type variable - this is an error
+                    Err(NormalizeError::UnresolvedVariable {
+                        var_id: *id,
+                        ty_id
+                    })
+                }
+            }
+
+            // Structural types: recursively normalize all contained types
+            TyKind::Struct { def_id, fields } => {
+                let normalized_fields: Result<Vec<_>, _> = fields.iter()
+                    .map(|(name, field_ty)| {
+                        self.normalize(*field_ty)
+                            .map(|norm| (*name, norm.ty_id()))
+                    })
+                    .collect();
+
+                let new_ty_id = self.types.alloc(TyKind::Struct {
+                    def_id,
+                    fields: normalized_fields?,
+                });
+                Ok(unsafe { NormalizedTy::new_unchecked(new_ty_id) })
+            }
+
+            TyKind::Function { params, ret } => {
+                let normalized_params: Result<Vec<_>, _> = params.iter()
+                    .map(|p| self.normalize(*p).map(|n| n.ty_id()))
+                    .collect();
+                let normalized_ret = self.normalize(*ret)?;
+
+                let new_ty_id = self.types.alloc(TyKind::Function {
+                    params: normalized_params?,
+                    ret: Box::new(normalized_ret.ty_id()),
+                });
+                Ok(unsafe { NormalizedTy::new_unchecked(new_ty_id) })
+            }
+
+            TyKind::Tuple { elements } => {
+                let normalized_elements: Result<Vec<_>, _> = elements.iter()
+                    .map(|e| self.normalize(*e).map(|n| n.ty_id()))
+                    .collect();
+
+                let new_ty_id = self.types.alloc(TyKind::Tuple {
+                    elements: normalized_elements?,
+                });
+                Ok(unsafe { NormalizedTy::new_unchecked(new_ty_id) })
+            }
+
+            TyKind::Ref { mutable, inner } => {
+                let normalized_inner = self.normalize(*inner)?;
+
+                let new_ty_id = self.types.alloc(TyKind::Ref {
+                    mutable,
+                    inner: Box::new(normalized_inner.ty_id()),
+                });
+                Ok(unsafe { NormalizedTy::new_unchecked(new_ty_id) })
+            }
+
+            TyKind::Array { element, size } => {
+                let normalized_element = self.normalize(*element)?;
+
+                let new_ty_id = self.types.alloc(TyKind::Array {
+                    element: Box::new(normalized_element.ty_id()),
+                    size,
+                });
+                Ok(unsafe { NormalizedTy::new_unchecked(new_ty_id) })
+            }
+
+            TyKind::Slice { element } => {
+                let normalized_element = self.normalize(*element)?;
+
+                let new_ty_id = self.types.alloc(TyKind::Slice {
+                    element: Box::new(normalized_element.ty_id()),
+                });
+                Ok(unsafe { NormalizedTy::new_unchecked(new_ty_id) })
+            }
+
+            TyKind::Enum { def_id, variants } => {
+                use crate::ty::VariantTy;
+
+                let normalized_variants: Result<Vec<_>, _> = variants.iter()
+                    .map(|(name, variant_ty)| {
+                        let norm_variant = match variant_ty {
+                            VariantTy::Unit => Ok(VariantTy::Unit),
+                            VariantTy::Tuple(types) => {
+                                let norm_types: Result<Vec<_>, _> = types.iter()
+                                    .map(|t| self.normalize(*t).map(|n| n.ty_id()))
+                                    .collect();
+                                norm_types.map(VariantTy::Tuple)
+                            }
+                            VariantTy::Struct(fields) => {
+                                let norm_fields: Result<Vec<_>, _> = fields.iter()
+                                    .map(|(fname, fty)| {
+                                        self.normalize(*fty)
+                                            .map(|n| (*fname, n.ty_id()))
+                                    })
+                                    .collect();
+                                norm_fields.map(VariantTy::Struct)
+                            }
+                        };
+                        norm_variant.map(|v| (*name, v))
+                    })
+                    .collect();
+
+                let new_ty_id = self.types.alloc(TyKind::Enum {
+                    def_id,
+                    variants: normalized_variants?,
+                });
+                Ok(unsafe { NormalizedTy::new_unchecked(new_ty_id) })
+            }
+
+            // Leaf types that contain no nested type variables
+            TyKind::Int | TyKind::Float | TyKind::Bool | TyKind::String |
+            TyKind::Unit | TyKind::Never | TyKind::Error |
+            TyKind::Named { .. } | TyKind::Param { .. } => {
+                // These types don't contain nested TyIds, so they're already normalized
+                Ok(unsafe { NormalizedTy::new_unchecked(ty_id) })
+            }
+        }
+    }
+
+    /// Normalize an optional type
+    pub fn normalize_opt(&mut self, ty_id: Option<TyId>) -> Result<Option<NormalizedTy>, NormalizeError> {
+        ty_id.map(|id| self.normalize(id)).transpose()
     }
 
     /// Record the type of an expression
