@@ -2,8 +2,7 @@
 //!
 //! Provides code quality metrics for HIR functions
 
-use rv_hir::visitor::ExprVisitor;
-use rv_hir::{Body, BinaryOp, Expr, ExprId, Function, Stmt, StmtId};
+use rv_hir::{Body, BinaryOp, Expr, ExprId, ExprVisitor, Function, Stmt, StmtId};
 use serde::{Deserialize, Serialize};
 
 /// Metrics for a single function
@@ -33,52 +32,65 @@ struct CyclomaticComplexityVisitor {
 impl ExprVisitor for CyclomaticComplexityVisitor {
     type Output = ();
 
+    fn get_node(__node_id: ExprId, ctx: &Body) -> &Expr {
+        &ctx.exprs[__node_id]
+    }
+
     fn visit_if(
         &mut self,
-        condition: ExprId,
-        then_branch: ExprId,
-        else_branch: Option<ExprId>,
-        _expr_id: ExprId,
-        body: &Body,
-    ) {
+        condition: &ExprId,
+        then_branch: &ExprId,
+        else_branch: &Option<ExprId>,
+        _span: &rv_span::FileSpan,
+        __node_id: ExprId,
+        ctx: &Body,
+    ) -> Self::Output {
         self.complexity += 1;
-        self.visit_expr(condition, body);
-        self.visit_expr(then_branch, body);
+        self.visit_id(*condition, ctx);
+        self.visit_id(*then_branch, ctx);
         if let Some(else_id) = else_branch {
-            self.visit_expr(else_id, body);
+            self.visit_id(*else_id, ctx);
         }
     }
 
-    fn visit_match(&mut self, scrutinee: ExprId, arms: &[rv_hir::MatchArm], _expr_id: ExprId, body: &Body) {
+    fn visit_match(
+        &mut self,
+        scrutinee: &ExprId,
+        arms: &Vec<rv_hir::MatchArm>,
+        _span: &rv_span::FileSpan,
+        __node_id: ExprId,
+        ctx: &Body,
+    ) -> Self::Output {
         self.complexity += arms.len().saturating_sub(1);
-        self.visit_expr(scrutinee, body);
+        self.visit_id(*scrutinee, ctx);
         for arm in arms {
-            self.visit_expr(arm.body, body);
+            self.visit_id(arm.body, ctx);
         }
     }
 
     fn visit_binary_op(
         &mut self,
-        op: BinaryOp,
-        left: ExprId,
-        right: ExprId,
-        _expr_id: ExprId,
-        body: &Body,
-    ) {
+        op: &BinaryOp,
+        left: &ExprId,
+        right: &ExprId,
+        _span: &rv_span::FileSpan,
+        __node_id: ExprId,
+        ctx: &Body,
+    ) -> Self::Output {
         if matches!(op, BinaryOp::And | BinaryOp::Or) {
             self.complexity += 1;
         }
-        self.visit_expr(left, body);
-        self.visit_expr(right, body);
+        self.visit_id(*left, ctx);
+        self.visit_id(*right, ctx);
     }
 
-    fn default_output(&mut self, _expr_id: ExprId, _body: &Body) {}
+    fn default_output(&mut self, __node_id: ExprId, _ctx: &Body) -> Self::Output {}
 }
 
 /// Calculates cyclomatic complexity
 pub fn cyclomatic_complexity(body: &Body) -> usize {
     let mut visitor = CyclomaticComplexityVisitor { complexity: 1 };
-    visitor.visit_expr(body.root_expr, body);
+    visitor.visit_id(body.root_expr, body);
     visitor.complexity
 }
 

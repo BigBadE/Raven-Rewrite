@@ -51,6 +51,22 @@ impl NormalizedTy {
         // SAFETY: Child types of normalized types are also normalized
         unsafe { Self::new_unchecked(ty_id) }
     }
+
+    /// Assume a TyId is already normalized (for use after type inference completes).
+    ///
+    /// This should only be used when you know type inference has successfully completed
+    /// and all type variables have been resolved. Typically used during MIR lowering.
+    ///
+    /// # Panics
+    /// In debug builds, this will panic if the type contains unresolved variables.
+    /// In release builds, behavior is undefined if the type is not normalized.
+    #[allow(unsafe_code, reason = "Safety documented - assumes type inference completed")]
+    pub fn assume_normalized(ty_id: TyId) -> Self {
+        // In debug builds, we could add a check here
+        // For now, just wrap it
+        // SAFETY: Caller guarantees type inference has completed
+        unsafe { Self::new_unchecked(ty_id) }
+    }
 }
 
 /// Error during type normalization

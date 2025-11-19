@@ -116,7 +116,7 @@ impl<'ctx> LoweringContext<'ctx> {
                     ctx.lower_hir_type_recursive(hir_ty)
                 } else {
                     // Type was successfully inferred
-                    ctx.lower_type(resolved_ty_id)
+                    ctx.lower_type(rv_ty::NormalizedTy::assume_normalized(resolved_ty_id))
                 }
             } else {
                 // No type inference info - use HIR type annotation
@@ -130,7 +130,7 @@ impl<'ctx> LoweringContext<'ctx> {
 
         // Create return local AFTER parameters
         let return_ty = if let Some(ty_id) = ty_ctx.get_expr_type(function.body.root_expr) {
-            ctx.lower_type(ty_id)
+            ctx.lower_type(rv_ty::NormalizedTy::assume_normalized(ty_id))
         } else {
             MirType::Unit
         };
@@ -181,7 +181,7 @@ impl<'ctx> LoweringContext<'ctx> {
                     // Not a generic parameter, look up from type context
                     if let Some(&ty_id) = ty_ctx.var_types.get(&param.name) {
                         let resolved_ty_id = ty_ctx.apply_subst(ty_id);
-                        ctx.lower_type(resolved_ty_id)
+                        ctx.lower_type(rv_ty::NormalizedTy::assume_normalized(resolved_ty_id))
                     } else {
                         MirType::Unit
                     }
@@ -190,7 +190,7 @@ impl<'ctx> LoweringContext<'ctx> {
                 // Not a named type, look up from type context normally
                 if let Some(&ty_id) = ty_ctx.var_types.get(&param.name) {
                     let resolved_ty_id = ty_ctx.apply_subst(ty_id);
-                    ctx.lower_type(resolved_ty_id)
+                    ctx.lower_type(rv_ty::NormalizedTy::assume_normalized(resolved_ty_id))
                 } else {
                     MirType::Unit
                 }
@@ -211,7 +211,7 @@ impl<'ctx> LoweringContext<'ctx> {
                 } else {
                     // Not a generic parameter, use type inference
                     if let Some(ty_id) = ty_ctx.get_expr_type(function.body.root_expr) {
-                        ctx.lower_type(ty_id)
+                        ctx.lower_type(rv_ty::NormalizedTy::assume_normalized(ty_id))
                     } else {
                         MirType::Unit
                     }
@@ -219,7 +219,7 @@ impl<'ctx> LoweringContext<'ctx> {
             } else {
                 // Not a named type, use type inference
                 if let Some(ty_id) = ty_ctx.get_expr_type(function.body.root_expr) {
-                    ctx.lower_type(ty_id)
+                    ctx.lower_type(rv_ty::NormalizedTy::assume_normalized(ty_id))
                 } else {
                     MirType::Unit
                 }
@@ -227,7 +227,7 @@ impl<'ctx> LoweringContext<'ctx> {
         } else {
             // No return type annotation, use type inference
             if let Some(ty_id) = ty_ctx.get_expr_type(function.body.root_expr) {
-                ctx.lower_type(ty_id)
+                ctx.lower_type(rv_ty::NormalizedTy::assume_normalized(ty_id))
             } else {
                 MirType::Unit
             }
@@ -278,7 +278,7 @@ impl<'ctx> LoweringContext<'ctx> {
                 expr, expr_id
             )
         });
-        let mir_ty = self.lower_type(ty_id);
+        let mir_ty = self.lower_type(rv_ty::NormalizedTy::assume_normalized(ty_id));
 
         // Create a temporary for the result
         let result_local = self.builder.new_local(None, mir_ty.clone(), false);
@@ -646,7 +646,7 @@ impl<'ctx> LoweringContext<'ctx> {
                 if let Some(ty_id) = base_ty_id {
                     let ty_kind = &self.ty_ctx.types.get(ty_id).kind;
                     eprintln!("DEBUG Field: base TyKind = {:?}", ty_kind);
-                    let mir_ty = self.lower_type(ty_id);
+                    let mir_ty = self.lower_type(rv_ty::NormalizedTy::assume_normalized(ty_id));
                     eprintln!("DEBUG Field: base MirType after lowering = {:?}", mir_ty);
                 }
 
