@@ -31,8 +31,8 @@ pub enum MethodResolutionError {
 pub struct LoweringContext<'ctx> {
     /// MIR builder
     builder: MirBuilder,
-    /// Type context
-    ty_ctx: &'ctx TyContext,
+    /// Type context (mutable for normalize())
+    ty_ctx: &'ctx mut TyContext,
     /// Map from HIR ExprId to MIR LocalId
     expr_locals: FxHashMap<ExprId, LocalId>,
     /// Return local (for storing return value)
@@ -59,7 +59,7 @@ impl<'ctx> LoweringContext<'ctx> {
     /// Create a new lowering context
     pub fn new(
         builder: MirBuilder,
-        ty_ctx: &'ctx TyContext,
+        ty_ctx: &'ctx mut TyContext,
         structs: &'ctx HashMap<TypeDefId, StructDef>,
         enums: &'ctx HashMap<TypeDefId, EnumDef>,
         impl_blocks: &'ctx HashMap<ImplId, ImplBlock>,
@@ -87,7 +87,7 @@ impl<'ctx> LoweringContext<'ctx> {
     /// Lower a HIR function to MIR
     pub fn lower_function(
         function: &Function,
-        ty_ctx: &'ctx TyContext,
+        ty_ctx: &'ctx mut TyContext,
         structs: &'ctx HashMap<TypeDefId, StructDef>,
         enums: &'ctx HashMap<TypeDefId, EnumDef>,
         impl_blocks: &'ctx HashMap<ImplId, ImplBlock>,
@@ -104,19 +104,19 @@ impl<'ctx> LoweringContext<'ctx> {
         // This matches the interpreter's expectation for parameter locals
         for param in &function.parameters {
             // Look up the parameter type from type inference var_types
-            // Apply substitutions to resolve type variables
-            let param_ty = if let Some(&ty_id) = ty_ctx.var_types.get(&param.name) {
-                let resolved_ty_id = ty_ctx.apply_subst(ty_id);
-
-                // Check if the type is still a type variable after substitution
-                // If so, fall back to the HIR type annotation
-                if matches!(ty_ctx.types.get(resolved_ty_id).kind, rv_ty::TyKind::Var { .. }) {
-                    // Type inference didn't resolve this - use HIR type annotation
-                    let hir_ty = &hir_types[param.ty];
-                    ctx.lower_hir_type_recursive(hir_ty)
-                } else {
-                    // Type was successfully inferred
-                    ctx.lower_type(rv_ty::NormalizedTy::assume_normalized(resolved_ty_id))
+            // Normalize to resolve type variables through substitution chains
+            let param_ty = if let Some(&ty_id) = ctx.ty_ctx.var_types.get(&param.name) {
+                // Use normalize() to follow the full substitution chain
+                match ctx.ty_ctx.normalize(ty_id) {
+                    Ok(normalized_ty) => {
+                        // Type was successfully normalized
+                        ctx.lower_type(normalized_ty)
+                    }
+                    Err(_) => {
+                        // Normalization failed (unresolved variable) - use HIR type annotation
+                        let hir_ty = &hir_types[param.ty];
+                        ctx.lower_hir_type_recursive(hir_ty)
+                    }
                 }
             } else {
                 // No type inference info - use HIR type annotation
@@ -129,8 +129,11 @@ impl<'ctx> LoweringContext<'ctx> {
         }
 
         // Create return local AFTER parameters
-        let return_ty = if let Some(ty_id) = ty_ctx.get_expr_type(function.body.root_expr) {
-            ctx.lower_type(rv_ty::NormalizedTy::assume_normalized(ty_id))
+        let return_ty = if let Some(ty_id) = ctx.ty_ctx.get_expr_type(function.body.root_expr) {
+            match ctx.ty_ctx.normalize(ty_id) {
+                Ok(normalized_ty) => ctx.lower_type(normalized_ty),
+                Err(_) => MirType::Unit, // Normalization failed - default to Unit
+            }
         } else {
             MirType::Unit
         };
@@ -151,7 +154,7 @@ impl<'ctx> LoweringContext<'ctx> {
     /// Lower a HIR function to MIR with type substitution for generic parameters
     pub fn lower_function_with_subst(
         function: &Function,
-        ty_ctx: &'ctx TyContext,
+        ty_ctx: &'ctx mut TyContext,
         structs: &'ctx HashMap<TypeDefId, StructDef>,
         enums: &'ctx HashMap<TypeDefId, EnumDef>,
         impl_blocks: &'ctx HashMap<ImplId, ImplBlock>,
@@ -179,18 +182,22 @@ impl<'ctx> LoweringContext<'ctx> {
                     concrete_ty.clone()
                 } else {
                     // Not a generic parameter, look up from type context
-                    if let Some(&ty_id) = ty_ctx.var_types.get(&param.name) {
-                        let resolved_ty_id = ty_ctx.apply_subst(ty_id);
-                        ctx.lower_type(rv_ty::NormalizedTy::assume_normalized(resolved_ty_id))
+                    if let Some(&ty_id) = ctx.ty_ctx.var_types.get(&param.name) {
+                        match ctx.ty_ctx.normalize(ty_id) {
+                            Ok(normalized_ty) => ctx.lower_type(normalized_ty),
+                            Err(_) => MirType::Unit,
+                        }
                     } else {
                         MirType::Unit
                     }
                 }
             } else {
                 // Not a named type, look up from type context normally
-                if let Some(&ty_id) = ty_ctx.var_types.get(&param.name) {
-                    let resolved_ty_id = ty_ctx.apply_subst(ty_id);
-                    ctx.lower_type(rv_ty::NormalizedTy::assume_normalized(resolved_ty_id))
+                if let Some(&ty_id) = ctx.ty_ctx.var_types.get(&param.name) {
+                    match ctx.ty_ctx.normalize(ty_id) {
+                        Ok(normalized_ty) => ctx.lower_type(normalized_ty),
+                        Err(_) => MirType::Unit,
+                    }
                 } else {
                     MirType::Unit
                 }
@@ -210,24 +217,33 @@ impl<'ctx> LoweringContext<'ctx> {
                     concrete_ty.clone()
                 } else {
                     // Not a generic parameter, use type inference
-                    if let Some(ty_id) = ty_ctx.get_expr_type(function.body.root_expr) {
-                        ctx.lower_type(rv_ty::NormalizedTy::assume_normalized(ty_id))
+                    if let Some(ty_id) = ctx.ty_ctx.get_expr_type(function.body.root_expr) {
+                        match ctx.ty_ctx.normalize(ty_id) {
+                            Ok(normalized_ty) => ctx.lower_type(normalized_ty),
+                            Err(_) => MirType::Unit,
+                        }
                     } else {
                         MirType::Unit
                     }
                 }
             } else {
                 // Not a named type, use type inference
-                if let Some(ty_id) = ty_ctx.get_expr_type(function.body.root_expr) {
-                    ctx.lower_type(rv_ty::NormalizedTy::assume_normalized(ty_id))
+                if let Some(ty_id) = ctx.ty_ctx.get_expr_type(function.body.root_expr) {
+                    match ctx.ty_ctx.normalize(ty_id) {
+                        Ok(normalized_ty) => ctx.lower_type(normalized_ty),
+                        Err(_) => MirType::Unit,
+                    }
                 } else {
                     MirType::Unit
                 }
             }
         } else {
             // No return type annotation, use type inference
-            if let Some(ty_id) = ty_ctx.get_expr_type(function.body.root_expr) {
-                ctx.lower_type(rv_ty::NormalizedTy::assume_normalized(ty_id))
+            if let Some(ty_id) = ctx.ty_ctx.get_expr_type(function.body.root_expr) {
+                match ctx.ty_ctx.normalize(ty_id) {
+                    Ok(normalized_ty) => ctx.lower_type(normalized_ty),
+                    Err(_) => MirType::Unit,
+                }
             } else {
                 MirType::Unit
             }
@@ -278,7 +294,19 @@ impl<'ctx> LoweringContext<'ctx> {
                 expr, expr_id
             )
         });
-        let mir_ty = self.lower_type(rv_ty::NormalizedTy::assume_normalized(ty_id));
+
+        // Normalize the type to resolve type variables
+        let mir_ty = match self.ty_ctx.normalize(ty_id) {
+            Ok(normalized_ty) => self.lower_type(normalized_ty),
+            Err(_) => {
+                // Normalization failed - this is a bug, but provide better error message
+                panic!(
+                    "Failed to normalize type for expression {:?} at {:?}. \
+                    Type contains unresolved variables. This indicates incomplete type inference.",
+                    expr, expr_id
+                )
+            }
+        };
 
         // Create a temporary for the result
         let result_local = self.builder.new_local(None, mir_ty.clone(), false);
@@ -646,8 +674,12 @@ impl<'ctx> LoweringContext<'ctx> {
                 if let Some(ty_id) = base_ty_id {
                     let ty_kind = &self.ty_ctx.types.get(ty_id).kind;
                     eprintln!("DEBUG Field: base TyKind = {:?}", ty_kind);
-                    let mir_ty = self.lower_type(rv_ty::NormalizedTy::assume_normalized(ty_id));
-                    eprintln!("DEBUG Field: base MirType after lowering = {:?}", mir_ty);
+                    if let Ok(normalized_ty) = self.ty_ctx.normalize(ty_id) {
+                        let mir_ty = self.lower_type(normalized_ty);
+                        eprintln!("DEBUG Field: base MirType after lowering = {:?}", mir_ty);
+                    } else {
+                        eprintln!("DEBUG Field: Failed to normalize base type");
+                    }
                 }
 
                 // Resolve field name to index

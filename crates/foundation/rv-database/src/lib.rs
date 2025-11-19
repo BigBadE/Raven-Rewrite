@@ -179,10 +179,13 @@ pub fn lower_function_to_mir(
     let inference = infer_function_types(db, file, function);
     let hir_data = lower_to_hir(db, file);
 
+    // Clone context to get a mutable version for normalization
+    let mut ty_ctx = inference.context.clone();
+
     // Lower to MIR
     let mir = rv_mir::lower::LoweringContext::lower_function(
         &func_hir,
-        &inference.context,
+        &mut ty_ctx,
         &hir_data.structs,
         &hir_data.enums,
         &hir_data.impl_blocks,
