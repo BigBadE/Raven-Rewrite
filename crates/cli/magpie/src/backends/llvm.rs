@@ -178,7 +178,7 @@ impl LLVMBackend {
         // Generate specialized versions of generic functions with proper type substitution
         // Calculate next available FunctionId for monomorphized instances
         let next_func_id = hir.functions.len() as u32;
-        let (mono_functions, _instance_map) = rv_mono::monomorphize_functions(
+        let (mono_functions, instance_map) = rv_mono::monomorphize_functions(
             &hir,
             type_inference.context(),
             collector.needed_instances(),
@@ -190,7 +190,7 @@ impl LLVMBackend {
         mir_functions.extend(mono_functions);
 
         // Remap Call instructions to use monomorphized instance IDs
-        remap_generic_calls(&mut mir_functions, &_instance_map, &hir);
+        remap_generic_calls(&mut mir_functions, &instance_map, &hir);
 
         // Compile MIR to LLVM IR and generate object file
         use rv_llvm_backend::{compile_to_native_with_externals, OptLevel};

@@ -107,7 +107,7 @@ impl CraneliftBackend {
 
             // Generate specialized versions of generic functions with proper type substitution
             let next_func_id = hir_ctx.functions.len() as u32;
-            let (mono_functions, _instance_map) = rv_mono::monomorphize_functions(
+            let (mono_functions, instance_map) = rv_mono::monomorphize_functions(
                 &hir_ctx,
                 type_inference.context(),
                 collector.needed_instances(),
@@ -116,6 +116,9 @@ impl CraneliftBackend {
 
             // Add monomorphized functions to the compilation set
             mir_functions.extend(mono_functions);
+
+            // Rewrite calls in existing MIR to use monomorphized instance IDs
+            rv_mono::rewrite_calls_to_instances(&mut mir_functions, &instance_map);
 
             // Compile all functions with Cranelift (supports function calls)
             if mir_functions.len() > 1 {

@@ -239,3 +239,84 @@ pub fn monomorphize_functions(
 
     (generated, instance_map)
 }
+
+/// Rewrite function calls in MIR to use monomorphized instance IDs
+///
+/// After monomorphization, we have new FunctionIds for specialized versions of generic functions.
+/// This function updates all Call sites in the given MIR functions to use the new instance IDs
+/// instead of the original template IDs.
+pub fn rewrite_calls_to_instances(
+    mir_funcs: &mut [MirFunction],
+    instance_map: &HashMap<(FunctionId, Vec<MirType>), FunctionId>,
+) {
+    use rv_mir::{Statement, Terminator, RValue, Operand};
+
+    for mir_func in mir_funcs {
+        // Rewrite calls in basic blocks
+        for bb in &mut mir_func.basic_blocks {
+            // Rewrite calls in statements
+            for stmt in &mut bb.statements {
+                if let Statement::Assign { rvalue, .. } = stmt {
+                    if let RValue::Call { func, args } = rvalue {
+                        // Extract argument types to look up in instance_map
+                        let arg_types: Vec<MirType> = args.iter().map(|operand| {
+                            match operand {
+                                Operand::Copy(place) | Operand::Move(place) => {
+                                    mir_func.locals.iter()
+                                        .find(|local| local.id == place.local)
+                                        .map(|local| local.ty.clone())
+                                        .unwrap_or(MirType::Unit)
+                                }
+                                Operand::Constant(constant) => {
+                                    use rv_hir::LiteralKind;
+                                    match &constant.kind {
+                                        LiteralKind::Integer(_) => MirType::Int,
+                                        LiteralKind::Float(_) => MirType::Float,
+                                        LiteralKind::Bool(_) => MirType::Bool,
+                                        LiteralKind::String(_) => MirType::String,
+                                        LiteralKind::Unit => MirType::Unit,
+                                    }
+                                }
+                            }
+                        }).collect();
+
+                        // Look up the monomorphized instance
+                        if let Some(&instance_id) = instance_map.get(&(*func, arg_types)) {
+                            *func = instance_id;
+                        }
+                    }
+                }
+            }
+
+            // Rewrite calls in terminators
+            if let Terminator::Call { func, args, .. } = &mut bb.terminator {
+                // Extract argument types
+                let arg_types: Vec<MirType> = args.iter().map(|operand| {
+                    match operand {
+                        Operand::Copy(place) | Operand::Move(place) => {
+                            mir_func.locals.iter()
+                                .find(|local| local.id == place.local)
+                                .map(|local| local.ty.clone())
+                                .unwrap_or(MirType::Unit)
+                        }
+                        Operand::Constant(constant) => {
+                            use rv_hir::LiteralKind;
+                            match &constant.kind {
+                                LiteralKind::Integer(_) => MirType::Int,
+                                LiteralKind::Float(_) => MirType::Float,
+                                LiteralKind::Bool(_) => MirType::Bool,
+                                LiteralKind::String(_) => MirType::String,
+                                LiteralKind::Unit => MirType::Unit,
+                            }
+                        }
+                    }
+                }).collect();
+
+                // Look up the monomorphized instance
+                if let Some(&instance_id) = instance_map.get(&(*func, arg_types)) {
+                    *func = instance_id;
+                }
+            }
+        }
+    }
+}
