@@ -103,22 +103,32 @@ impl<'ctx> LoweringContext<'ctx> {
         // Register function parameters FIRST so they get LocalId(0), LocalId(1), etc.
         // This matches the interpreter's expectation for parameter locals
         for param in &function.parameters {
+            let param_name_str = interner.resolve(&param.name);
+
             // Look up the parameter type from type inference var_types
             // Normalize to resolve type variables through substitution chains
             let param_ty = if let Some(&ty_id) = ctx.ty_ctx.var_types.get(&param.name) {
+                eprintln!("DEBUG MIR lower_function: param '{}' found in var_types with TyId {:?}", param_name_str, ty_id);
+                let ty_kind = &ctx.ty_ctx.types.get(ty_id).kind;
+                eprintln!("DEBUG MIR lower_function: param '{}' TyKind = {:?}", param_name_str, ty_kind);
+
                 // Use normalize() to follow the full substitution chain
                 match ctx.ty_ctx.normalize(ty_id) {
                     Ok(normalized_ty) => {
                         // Type was successfully normalized
-                        ctx.lower_type(normalized_ty)
+                        let mir_ty = ctx.lower_type(normalized_ty);
+                        eprintln!("DEBUG MIR lower_function: param '{}' MIR type = {:?}", param_name_str, mir_ty);
+                        mir_ty
                     }
                     Err(_) => {
+                        eprintln!("DEBUG MIR lower_function: param '{}' normalization FAILED, using HIR type", param_name_str);
                         // Normalization failed (unresolved variable) - use HIR type annotation
                         let hir_ty = &hir_types[param.ty];
                         ctx.lower_hir_type_recursive(hir_ty)
                     }
                 }
             } else {
+                eprintln!("DEBUG MIR lower_function: param '{}' NOT found in var_types, using HIR type", param_name_str);
                 // No type inference info - use HIR type annotation
                 let hir_ty = &hir_types[param.ty];
                 ctx.lower_hir_type_recursive(hir_ty)
