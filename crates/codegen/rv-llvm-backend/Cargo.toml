@@ -9,15 +9,18 @@ rv-mir = { workspace = true }
 rv-intern = { workspace = true }
 rv-span = { workspace = true }
 
-# LLVM bindings - llvm-sys handles linking automatically once LLVM_SYS_180_PREFIX is set
-inkwell = { version = "0.5", features = ["llvm18-0"] }
+# LLVM bindings - using no-llvm-linking so build.rs handles all linking
+inkwell = { version = "0.5", features = ["llvm18-0-no-llvm-linking"] }
 
 # Error handling
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 
 [build-dependencies]
-# LLVM download happens BEFORE any dependencies compile
-rv-llvm-download = { path = "../rv-llvm-download" }
+# Dependencies for downloading LLVM and manual linking
+anyhow = { workspace = true }
+cc = "1.0"
+reqwest = { version = "0.12", features = ["blocking"] }
+zip = "2.1"
 
 [dev-dependencies]
