@@ -9,6 +9,7 @@ members = [
     "crates/analyzer/*",
     "crates/cli/*",
     "crates/testing/*",
+    "crates/macros/*",
 ]
 
 [workspace.package]
@@ -107,6 +108,11 @@ thiserror = "2.0"
 # Common types
 derive_more = { version = "2.0", features = ["full"] }
 derive-visitor = "0.4"
+
+# Proc macros
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+quote = "1.0"
+proc-macro2 = "1.0"
 
 # Build dependencies (for LLVM auto-download)
 cc = "1.0"
