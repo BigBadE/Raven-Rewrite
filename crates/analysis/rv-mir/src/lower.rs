@@ -259,11 +259,12 @@ impl<'ctx> LoweringContext<'ctx> {
         }
 
         let expr = &body.exprs[expr_id];
-        let mir_ty = if let Some(ty_id) = self.ty_ctx.get_expr_type(expr_id) {
-            self.lower_type(ty_id)
-        } else {
-            MirType::Unknown
-        };
+        let ty_id = self.ty_ctx.get_expr_type(expr_id).expect(
+            "Type inference failed to produce a type for expression. \
+            This indicates a bug in type inference - all expressions must have resolved types \
+            before MIR lowering."
+        );
+        let mir_ty = self.lower_type(ty_id);
 
         // Create a temporary for the result
         let result_local = self.builder.new_local(None, mir_ty.clone(), false);
@@ -856,7 +857,7 @@ impl<'ctx> LoweringContext<'ctx> {
                             let init_ty = self.builder.function.locals.iter()
                                 .find(|l| l.id == init_local)
                                 .map(|l| l.ty.clone())
-                                .unwrap_or(MirType::Unknown);
+                                .expect("Failed to find type for initializer local. This indicates a bug in MIR lowering.");
                             let binding_local = self.builder.new_local(Some(*name), init_ty, false);
 
                             // Assign the initializer value to the binding
@@ -1120,7 +1121,13 @@ impl<'ctx> LoweringContext<'ctx> {
                     inner: Box::new(self.lower_hir_type_recursive(inner_ty)),
                 }
             }
-            Type::Unknown { .. } => MirType::Unknown,
+            Type::Unknown { .. } => {
+                panic!(
+                    "HIR contains Unknown type. \
+                    This indicates the HIR was not properly constructed - all types should be \
+                    concrete type references (Named, Generic, Function, etc.), not Unknown."
+                )
+            }
         }
     }
 

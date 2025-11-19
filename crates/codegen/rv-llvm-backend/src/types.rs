@@ -42,14 +42,6 @@ impl<'ctx> TypeLowering<'ctx> {
                 // Function types become function pointers
                 self.context.ptr_type(inkwell::AddressSpace::default()).into()
             }
-            MirType::Unknown => {
-                // Unknown types indicate a bug in type inference or lowering
-                panic!(
-                    "Unknown type encountered in LLVM codegen. \
-                    This indicates a bug in type inference - all types should be fully resolved \
-                    before reaching codegen."
-                )
-            }
             MirType::Struct { fields, .. } => {
                 // Create proper LLVM struct type with field layout
                 let field_types: Vec<BasicTypeEnum<'ctx>> = fields

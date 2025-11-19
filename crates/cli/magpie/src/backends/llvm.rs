@@ -36,7 +36,7 @@ fn remap_generic_calls(
                                             mir_func.locals.iter()
                                                 .find(|local| local.id == place.local)
                                                 .map(|local| local.ty.clone())
-                                                .unwrap_or(rv_mir::MirType::Unknown)
+                                                .expect("Failed to find local for generic call argument - internal compiler error")
                                         }
                                         Operand::Constant(constant) => {
                                             constant.ty.clone()
@@ -62,10 +62,10 @@ fn remap_generic_calls(
                                         use rv_hir::Type;
                                         let return_mir_ty = match hir_type {
                                             Type::Named { name, .. } => {
-                                                type_subst_map.get(name).cloned().unwrap_or(rv_mir::MirType::Unknown)
+                                                type_subst_map.get(name).cloned().expect("Failed to find type substitution for generic return type - internal compiler error")
                                             }
                                             // For other types, use first type arg as a fallback
-                                            _ => type_args.first().cloned().unwrap_or(rv_mir::MirType::Unknown)
+                                            _ => type_args.first().cloned().expect("No type arguments available for non-named return type - internal compiler error")
                                         };
 
                                         // Update the result local's type
@@ -92,7 +92,7 @@ fn remap_generic_calls(
                                     mir_func.locals.iter()
                                         .find(|local| local.id == place.local)
                                         .map(|local| local.ty.clone())
-                                        .unwrap_or(rv_mir::MirType::Unknown)
+                                        .expect("Failed to find local for generic call argument in terminator - internal compiler error")
                                 }
                                 Operand::Constant(constant) => constant.ty.clone(),
                             }

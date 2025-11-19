@@ -103,7 +103,7 @@ impl MonoCollector {
                                     mir.locals.iter()
                                         .find(|local| local.id == place.local)
                                         .map(|local| local.ty.clone())
-                                        .unwrap_or(MirType::Unknown)
+                                        .expect("Failed to find local type for monomorphization - internal compiler error")
                                 }
                                 Operand::Constant(constant) => {
                                     // Infer type from constant
@@ -133,7 +133,7 @@ impl MonoCollector {
                             mir.locals.iter()
                                 .find(|local| local.id == place.local)
                                 .map(|local| local.ty.clone())
-                                .unwrap_or(MirType::Unknown)
+                                .expect("Failed to find local type for monomorphization in terminator - internal compiler error")
                         }
                         Operand::Constant(constant) => {
                             use rv_hir::LiteralKind;

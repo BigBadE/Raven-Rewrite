@@ -560,7 +560,15 @@ impl JitCompiler {
             MirType::Float => types::F64,
             MirType::Unit => types::I64, // Represent unit as i64 for simplicity
             MirType::String => types::I64, // String as pointer (i64)
-            MirType::Named(_) => types::I64, // Named types as pointer (i64)
+            MirType::Named(name) => {
+                panic!(
+                    "Unresolved named type in Cranelift codegen: {:?}. \
+                    This indicates a bug in MIR lowering - primitive types should be resolved to \
+                    MirType::Int/Float/Bool/String, and user-defined types should be resolved to \
+                    MirType::Struct/Enum.",
+                    name
+                )
+            }
             MirType::Function { .. } => types::I64, // Function pointer
             MirType::Struct { .. } => types::I64, // Struct as pointer
             MirType::Enum { .. } => types::I64, // Enum as pointer
@@ -568,7 +576,6 @@ impl JitCompiler {
             MirType::Slice { .. } => types::I64, // Slice as pointer
             MirType::Tuple(_) => types::I64, // Tuple as pointer
             MirType::Ref { .. } => types::I64, // Reference as pointer
-            MirType::Unknown => types::I64,
         }
     }
 }
