@@ -329,15 +329,16 @@ impl<'a> TypeInference<'a> {
         interner: &rv_intern::Interner,
         depth: usize,
     ) -> TyId {
-        // Check cache first to prevent infinite recursion from cyclic types
+        // Prevent infinite recursion with depth limit
+        if depth > 50 {
+            // Too deep - likely a cycle, return a type variable
+            return self.ctx.fresh_ty_var();
+        }
+
+        // Check cache first to prevent redundant conversions
         if let Some(&cached_ty) = self.type_conversion_cache.get(&hir_ty_id) {
             return cached_ty;
         }
-
-        // For recursive types, insert a type variable first to break the cycle
-        // We'll update it later if needed
-        let placeholder = self.ctx.fresh_ty_var();
-        self.type_conversion_cache.insert(hir_ty_id, placeholder);
 
         let hir_type = &hir_types[hir_ty_id];
 
@@ -838,7 +839,9 @@ impl<'a> TypeInference<'a> {
                                     });
                                 }
 
-                                field_tys.push((*field_name, declared_ty));
+                                // Use expr_ty which is the inferred type from the actual expression
+                                // This is more likely to be concrete than declared_ty which might be a type variable
+                                field_tys.push((*field_name, expr_ty));
                             }
 
                             return self.ctx.types.alloc(TyKind::Struct {
