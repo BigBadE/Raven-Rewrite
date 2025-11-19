@@ -283,6 +283,18 @@ impl<'ctx> LoweringContext<'ctx> {
         // Create a temporary for the result
         let result_local = self.builder.new_local(None, mir_ty.clone(), false);
 
+        // Debug: log when creating locals for field access contexts
+        if matches!(expr, Expr::Variable { .. } | Expr::Field { .. }) {
+            eprintln!("DEBUG lower_expr: Created local {:?} with type {:?} for expr: {:?}",
+                result_local, mir_ty,
+                match expr {
+                    Expr::Variable { name, .. } => format!("Variable({})", self.interner.resolve(name)),
+                    Expr::Field { field, .. } => format!("Field({})", self.interner.resolve(field)),
+                    _ => "other".to_string()
+                }
+            );
+        }
+
         match expr {
             Expr::Literal { kind, span } => {
                 let constant = Constant {
@@ -622,18 +634,29 @@ impl<'ctx> LoweringContext<'ctx> {
             }
 
             Expr::Field { base, field, span } => {
+                eprintln!("DEBUG Field: Lowering field access for field '{}'", self.interner.resolve(field));
+
                 // Lower base expression
                 let base_local = self.lower_expr(body, *base);
+                eprintln!("DEBUG Field: base_local = {:?}", base_local);
 
-                // Get the type of the base expression
-                let base_ty = self.ty_ctx.get_expr_type(*base);
+                // Get the type of the base expression from type inference
+                let base_ty_id = self.ty_ctx.get_expr_type(*base);
+                eprintln!("DEBUG Field: base TyId from type inference = {:?}", base_ty_id);
+                if let Some(ty_id) = base_ty_id {
+                    let ty_kind = &self.ty_ctx.types.get(ty_id).kind;
+                    eprintln!("DEBUG Field: base TyKind = {:?}", ty_kind);
+                    let mir_ty = self.lower_type(ty_id);
+                    eprintln!("DEBUG Field: base MirType after lowering = {:?}", mir_ty);
+                }
 
                 // Resolve field name to index
-                let field_idx = if let Some(ty_id) = base_ty {
+                let field_idx = if let Some(ty_id) = base_ty_id {
                     self.resolve_field_index(ty_id, *field).unwrap_or(0)
                 } else {
                     0 // Fallback
                 };
+                eprintln!("DEBUG Field: field_idx = {}", field_idx);
 
                 let field_place = Place {
                     local: base_local,
