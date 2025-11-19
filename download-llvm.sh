@@ -30,10 +30,11 @@ fi
 
 # Create library symlinks for LLVM dependencies (needed on Linux without dev packages)
 echo "Setting up library symlinks..."
-mkdir -p "$LIB_DIR"
-ln -sf /usr/lib/x86_64-linux-gnu/libzstd.so.1 "$LIB_DIR/libzstd.so" 2>/dev/null || true
-ln -sf /usr/lib/x86_64-linux-gnu/libxml2.so.2 "$LIB_DIR/libxml2.so" 2>/dev/null || true
+LLVM_LIB_DIR="$LLVM_DIR/target/lib"
+mkdir -p "$LLVM_LIB_DIR"
+ln -sf /usr/lib/x86_64-linux-gnu/libzstd.so.1 "$LLVM_LIB_DIR/libzstd.so" 2>/dev/null || true
+ln -sf /usr/lib/x86_64-linux-gnu/libxml2.so.2 "$LLVM_LIB_DIR/libxml2.so" 2>/dev/null || true
 
 echo "Setup complete!"
 echo "LLVM_SYS_180_PREFIX=$LLVM_DIR/target"
-echo "Library search path: $LIB_DIR"
+echo "Library symlinks created in: $LLVM_LIB_DIR"
