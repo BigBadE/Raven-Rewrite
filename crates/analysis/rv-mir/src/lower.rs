@@ -1,8 +1,8 @@
 //! HIR → MIR lowering
 
 use crate::{
-    AggregateKind, BinaryOp, Constant, LocalId, MirBuilder, MirFunction, MirType, Operand, Place,
-    PlaceElem, RValue, Statement, Terminator, UnaryOp,
+    AggregateKind, BinaryOp, Constant, LocalId, MirBuilder, MirFunction, MirType, MirVariant,
+    Operand, Place, PlaceElem, RValue, Statement, Terminator, UnaryOp,
 };
 use lasso::Key;
 use rustc_hash::FxHashMap;
@@ -967,8 +967,121 @@ impl<'ctx> LoweringContext<'ctx> {
             TyKind::Slice { element } => MirType::Slice {
                 element: Box::new(self.lower_type(**element)),
             },
-            TyKind::Named { name, .. } => MirType::Named(*name),
+            TyKind::Named { name, def, .. } => {
+                // Try to resolve the named type to its actual definition
+                // Check if it's a struct
+                if let Some(struct_def) = self.structs.get(def) {
+                    // Create full struct type with fields by converting HIR types to MIR types
+                    let field_types: Vec<MirType> = struct_def.fields
+                        .iter()
+                        .map(|field| {
+                            let hir_ty = &self.hir_types[field.ty];
+                            self.lower_hir_type_recursive(hir_ty)
+                        })
+                        .collect();
+
+                    MirType::Struct {
+                        name: *name,
+                        fields: field_types,
+                    }
+                } else if let Some(enum_def) = self.enums.get(def) {
+                    // Create full enum type with variants
+                    let mir_variants: Vec<MirVariant> = enum_def.variants
+                        .iter()
+                        .map(|variant| {
+                            MirVariant {
+                                name: variant.name,
+                                fields: vec![], // Simplified for now
+                            }
+                        })
+                        .collect();
+
+                    MirType::Enum {
+                        name: *name,
+                        variants: mir_variants,
+                    }
+                } else {
+                    // Unknown named type, keep as Named
+                    MirType::Named(*name)
+                }
+            }
             _ => MirType::Unknown,
+        }
+    }
+
+    /// Helper function to recursively convert HIR Type to MirType
+    /// This is used when we need to convert struct field types from HIR to MIR
+    fn lower_hir_type_recursive(&self, hir_ty: &Type) -> MirType {
+        match hir_ty {
+            Type::Named { name, def: Some(def_id), .. } => {
+                // User-defined type - look up the struct/enum definition
+                if let Some(struct_def) = self.structs.get(def_id) {
+                    let field_types: Vec<MirType> = struct_def.fields
+                        .iter()
+                        .map(|field| {
+                            let field_hir_ty = &self.hir_types[field.ty];
+                            self.lower_hir_type_recursive(field_hir_ty)
+                        })
+                        .collect();
+
+                    MirType::Struct {
+                        name: *name,
+                        fields: field_types,
+                    }
+                } else if let Some(enum_def) = self.enums.get(def_id) {
+                    let mir_variants: Vec<MirVariant> = enum_def.variants
+                        .iter()
+                        .map(|variant| {
+                            MirVariant {
+                                name: variant.name,
+                                fields: vec![],
+                            }
+                        })
+                        .collect();
+
+                    MirType::Enum {
+                        name: *name,
+                        variants: mir_variants,
+                    }
+                } else {
+                    // Not a struct or enum, probably a built-in type
+                    MirType::Named(*name)
+                }
+            }
+            Type::Named { name, .. } => MirType::Named(*name),
+            Type::Generic { name, .. } => MirType::Named(*name),
+            Type::Function { params, ret, .. } => {
+                let param_types: Vec<MirType> = params
+                    .iter()
+                    .map(|p| {
+                        let param_ty = &self.hir_types[*p];
+                        self.lower_hir_type_recursive(param_ty)
+                    })
+                    .collect();
+                let ret_ty = &self.hir_types[**ret];
+                MirType::Function {
+                    params: param_types,
+                    ret: Box::new(self.lower_hir_type_recursive(ret_ty)),
+                }
+            }
+            Type::Tuple { elements, .. } => {
+                let element_types: Vec<MirType> = elements
+                    .iter()
+                    .map(|e| {
+                        let elem_ty = &self.hir_types[*e];
+                        self.lower_hir_type_recursive(elem_ty)
+                    })
+                    .collect();
+                MirType::Tuple(element_types)
+            }
+            Type::Reference { inner, mutable, .. } => {
+                let inner_ty = &self.hir_types[**inner];
+                MirType::Ref {
+                    mutable: *mutable,
+                    inner: Box::new(self.lower_hir_type_recursive(inner_ty)),
+                }
+            }
+            Type::Unknown { .. } => MirType::Unknown,
         }
     }
 
