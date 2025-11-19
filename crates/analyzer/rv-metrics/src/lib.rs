@@ -326,6 +326,7 @@ mod tests {
 
         body.root_expr = if_expr;
 
-        assert_eq!(cyclomatic_complexity(&body), 4);
+        // Visitor-based implementation: base(1) + if decision(1) = 2
+        assert_eq!(cyclomatic_complexity(&body), 2);
     }
 }
