@@ -234,7 +234,7 @@ pub fn monomorphize_functions(
             // Lower to MIR with type substitution and unique instance ID
             let mir_func = rv_mir::lower::LoweringContext::lower_function_with_subst(
                 hir_func,
-                type_inference.context(),
+                type_inference.context_mut(),
                 &hir_ctx.structs,
                 &hir_ctx.enums,
                 &hir_ctx.impl_blocks,

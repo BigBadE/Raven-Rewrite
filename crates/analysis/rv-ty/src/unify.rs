@@ -47,9 +47,10 @@ impl<'ctx> Unifier<'ctx> {
     ///
     /// Returns `UnificationError` if types cannot be unified
     pub fn unify(&mut self, left: TyId, right: TyId) -> Result<(), UnificationError> {
-        // Apply current substitutions
-        let left = self.ctx.apply_subst(left);
-        let right = self.ctx.apply_subst(right);
+        // Follow type variable chains (but don't normalize structural types yet)
+        // During unification, we're still building the substitution map
+        let left = self.ctx.follow_var(left);
+        let right = self.ctx.follow_var(right);
 
         // If same type, already unified
         if left == right {
@@ -251,7 +252,8 @@ impl<'ctx> Unifier<'ctx> {
             fn default_output(&mut self, _node_id: crate::ty::TyId, _ctx: &TyContext) {}
         }
 
-        let ty = self.ctx.apply_subst(ty);
+        // Don't normalize during occurs check - we need to detect cycles
+        // before they cause infinite recursion
         let mut checker = OccursChecker { var, found: false };
         checker.visit_id(ty, self.ctx);
         checker.found

@@ -446,9 +446,12 @@ impl<'ctx> Interpreter<'ctx> {
                 InterpreterError::InvalidOperation("No type context available".to_string())
             })?;
 
+            // Clone context for MIR lowering (needs mutable for normalize())
+            let mut ty_ctx_clone = ty_ctx.clone();
+
             let mir_func = rv_mir::lower::LoweringContext::lower_function(
                 hir_func,
-                ty_ctx,
+                &mut ty_ctx_clone,
                 &hir_ctx.structs,
                 &hir_ctx.enums,
                 &hir_ctx.impl_blocks,

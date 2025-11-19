@@ -74,7 +74,7 @@ impl CraneliftBackend {
             for (_func_id, hir_func) in &hir_ctx.functions {
                 let mir_func = LoweringContext::lower_function(
                     hir_func,
-                    type_inference.context(),
+                    type_inference.context_mut(),
                     &hir_ctx.structs,
                     &hir_ctx.enums,
                     &hir_ctx.impl_blocks,

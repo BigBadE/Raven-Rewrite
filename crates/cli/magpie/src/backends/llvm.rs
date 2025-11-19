@@ -164,7 +164,7 @@ impl LLVMBackend {
             .iter()
             .filter(|(_, func)| func.generics.is_empty())
             .map(|(_, func)| {
-                LoweringContext::lower_function(func, type_inference.context(), &hir.structs, &hir.enums, &hir.impl_blocks, &hir.functions, &hir.types, &hir.traits, &hir.interner)
+                LoweringContext::lower_function(func, type_inference.context_mut(), &hir.structs, &hir.enums, &hir.impl_blocks, &hir.functions, &hir.types, &hir.traits, &hir.interner)
             })
             .collect();
 
@@ -299,7 +299,7 @@ impl Backend for LLVMBackend {
             .iter()
             .filter(|(_, func)| func.generics.is_empty())
             .map(|(_, func)| {
-                LoweringContext::lower_function(func, type_inference.context(), &hir.structs, &hir.enums, &hir.impl_blocks, &hir.functions, &hir.types, &hir.traits, &hir.interner)
+                LoweringContext::lower_function(func, type_inference.context_mut(), &hir.structs, &hir.enums, &hir.impl_blocks, &hir.functions, &hir.types, &hir.traits, &hir.interner)
             })
             .collect();
 

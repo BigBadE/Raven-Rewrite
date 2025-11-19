@@ -127,18 +127,20 @@ impl TyContext {
         self.types.var(var_id)
     }
 
-    /// Apply substitutions to a type (DEPRECATED: use normalize() instead)
+    /// Follow type variable substitution chains (shallow - doesn't recurse into structural types).
     ///
-    /// This only follows type variables at the top level (shallow substitution).
-    /// For deep normalization that resolves variables nested in struct fields, etc.,
-    /// use `normalize()` instead.
-    pub fn apply_subst(&self, ty_id: TyId) -> TyId {
+    /// This is used during unification to follow chains of type variable substitutions.
+    /// Unlike `normalize()`, this does NOT recurse into structural types like Struct, Function, etc.
+    /// It only follows Var -> Var -> ... -> concrete type chains.
+    ///
+    /// This is safe to use during unification when the substitution map is still being built.
+    pub fn follow_var(&self, ty_id: TyId) -> TyId {
         let ty = self.types.get(ty_id);
         match &ty.kind {
             TyKind::Var { id } => self
                 .subst
                 .get(id)
-                .map_or(ty_id, |subst_ty| self.apply_subst(*subst_ty)),
+                .map_or(ty_id, |subst_ty| self.follow_var(*subst_ty)),
             _ => ty_id,
         }
     }

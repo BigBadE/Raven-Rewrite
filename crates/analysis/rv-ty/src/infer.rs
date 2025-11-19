@@ -167,6 +167,12 @@ impl<'a> TypeInference<'a> {
         &self.ctx
     }
 
+    /// Get a mutable reference to the type context
+    #[must_use]
+    pub fn context_mut(&mut self) -> &mut TyContext {
+        &mut self.ctx
+    }
+
     /// Push a new scope onto the scope stack
     fn push_scope(&mut self) {
         self.scope_stack.push(rustc_hash::FxHashMap::default());
