@@ -1,55 +1,41 @@
 # Building on Linux
 
+## Quick Start
+
+```bash
+# One-time setup
+./download-llvm.sh
+
+# Build (works forever after this)
+cargo build
+```
+
+That's it! The download script runs once, then all future builds just work with `cargo build`.
+
 ## Prerequisites
 
 - Rust nightly toolchain
-- clang and lld linker
-- System libraries: libzstd and libxml2 (runtime versions - usually already installed)
+- clang and lld linker (usually installed by default)
+- libzstd and libxml2 runtime libraries (usually installed by default)
 
-Install on Ubuntu/Debian:
+If needed, install on Ubuntu/Debian:
 ```bash
 sudo apt-get install clang lld
 ```
 
-## Build Steps
+## How It Works
 
-### 1. One-Time Setup: Download LLVM
+The `download-llvm.sh` script:
+- Downloads pre-built LLVM 18 for Linux x86_64 to `target/llvm/`
+- Creates library symlinks for libzstd and libxml2
+- Runs once - subsequent builds don't need it
 
-Run the download script once to fetch LLVM and set up library symlinks:
-
-```bash
-./download-llvm.sh
-```
-
-This script:
-- Downloads pre-built LLVM 18 for Linux x86_64
-- Extracts it to `target/llvm/target/`
-- Creates symlinks for libzstd and libxml2 in `target/llvm/target/lib/`
-
-**Note:** You only need to run this once. The `rv-llvm-backend/build.rs` will automatically handle linking for all subsequent builds.
-
-### 2. Build (Automatic from here!)
-
-```bash
-cargo build
-```
-
-The build system automatically:
-- Links LLVM libraries using the `no-llvm-linking` feature
-- Finds LLVM in `target/llvm/target/` (configured in `.cargo/config.toml`)
-- Links system libraries (zstd, xml2) via symlinks
-- No manual intervention needed!
-
-### Configuration (Pre-configured)
-
-The `.cargo/config.toml` uses a relative path for LLVM:
-
+The `.cargo/config.toml` tells llvm-sys where to find LLVM:
 ```toml
-[env]
 LLVM_SYS_180_PREFIX = { value = "target/llvm/target", relative = true }
 ```
 
-This works regardless of where you clone the repository. No manual configuration needed!
+After the initial download, `cargo build` works automatically. The `llvm-sys` crate handles all linking.
 
 ## Troubleshooting
 

@@ -1,27 +1,16 @@
-extern crate anyhow;
-extern crate cc;
-
-use anyhow::Context as _;
-use std::ffi::OsStr;
 use std::fs::File;
-use std::path::Path;
 use std::path::PathBuf;
-use std::process::{Command, Output};
 use std::time::Duration;
 use std::{env, fs, io};
 
 use reqwest::blocking::Client;
 use zip::ZipArchive;
 
-static CFLAGS: &str = "CFLAGS";
-static OUT_DIR: &str = "OUT_DIR";
-static ZSTD_LIB_DIR: &str = "ZSTD_LIB_DIR";
-
-/// To automatically keep up to date with LLVM, this will download and link a binary from a separate repo.
-/// Linking code is taken from llvm-sys.
+/// Automatically downloads LLVM from a separate repo and sets up library symlinks.
+/// llvm-sys handles the actual linking once LLVM is found at LLVM_SYS_180_PREFIX.
 fn main() {
     // Get the target directory (4 levels up from OUT_DIR)
-    let target = PathBuf::from(env::var(OUT_DIR).unwrap())
+    let target = PathBuf::from(env::var("OUT_DIR").unwrap())
         .parent()
         .unwrap()
         .parent()
@@ -68,16 +57,8 @@ fn main() {
             ),
         }
 
-    let llvm_path = target.join("llvm").join("target");
-
-    // Tell cargo to rerun if LLVM changes
-    println!("cargo:rerun-if-changed={}", llvm_path.display());
-
-    // Set LLVM_SYS_180_PREFIX to point to the downloaded LLVM
-    // This tells llvm-sys where to find LLVM
-    println!("cargo:rustc-env=LLVM_SYS_180_PREFIX={}", llvm_path.display());
-
-    build(llvm_path);
+    // llvm-sys will automatically handle linking once it finds LLVM at LLVM_SYS_180_PREFIX
+    // The environment variable is already set in .cargo/config.toml
 }
 
 fn setup_llvm(mut target: PathBuf, url: &'static str) {
@@ -107,372 +88,21 @@ fn setup_llvm(mut target: PathBuf, url: &'static str) {
         fs::remove_file(temp.clone()).unwrap();
         eprintln!("LLVM downloaded successfully!");
     }
-}
 
-fn target_env_is(name: &str) -> bool {
-    match env::var_os("CARGO_CFG_TARGET_ENV") {
-        Some(s) => s == name,
-        None => false,
-    }
-}
+    // Create library symlinks for LLVM dependencies on Linux
+    // This allows linking libzstd and libxml2 without dev packages installed
+    if env::consts::OS == "linux" {
+        let llvm_lib_dir = llvm_path.join("target").join("lib");
+        fs::create_dir_all(&llvm_lib_dir).ok();
 
-fn target_os_is(name: &str) -> bool {
-    match env::var_os("CARGO_CFG_TARGET_OS") {
-        Some(s) => s == name,
-        None => false,
-    }
-}
-
-/// Try to find a version of llvm-config that is compatible with this crate.
-fn locate_llvm_config(prefix: &PathBuf) -> PathBuf {
-    let binary_name = prefix
-        .join("bin")
-        .join(format!("llvm-config{}", env::consts::EXE_SUFFIX));
-    llvm_config_ex(&*binary_name, ["--version"])
-        .expect("llvm-config not found or downloaded incorrectly!");
-    binary_name
-}
-
-/// Invoke the specified binary as llvm-config.
-fn llvm_config<I, S>(binary: &Path, args: I) -> String
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    llvm_config_ex(binary, args).expect("Surprising failure from llvm-config")
-}
-
-/// Invoke the specified binary as llvm-config.
-fn llvm_config_ex<I, S>(binary: &Path, args: I) -> anyhow::Result<String>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let mut cmd = Command::new(binary);
-    (|| {
-        let Output {
-            status,
-            stdout,
-            stderr,
-        } = cmd.args(args).output()?;
-        let stdout = String::from_utf8(stdout).context("stdout")?;
-        let stderr = String::from_utf8(stderr).context("stderr")?;
-        if status.success() {
-            Ok(stdout)
-        } else {
-            Err(anyhow::anyhow!(
-                "status={status}\nstdout={}\nstderr={}",
-                stdout.trim(),
-                stderr.trim()
-            ))
-        }
-    })()
-    .with_context(|| format!("{cmd:?}"))
-}
-
-/// Get the names of the dylibs required by LLVM, including the C++ standard library.
-fn get_system_libraries(llvm_config_path: &Path, kind: LibraryKind) -> Vec<String> {
-    let link_arg = match kind {
-        LibraryKind::Static => "--link-static",
-        LibraryKind::Dynamic => "--link-shared",
-    };
-
-    llvm_config(llvm_config_path, ["--system-libs", link_arg])
-        .split(&[' ', '\n'] as &[char])
-        .filter(|s| !s.is_empty())
-        .map(handle_flag)
-        .chain(get_system_libcpp())
-        .map(str::to_owned)
-        .collect()
-}
-
-fn handle_flag(flag: &str) -> &str {
-    if target_env_is("msvc") {
-        // Same as --libnames, foo.lib
-        return flag.strip_suffix(".lib").unwrap_or_else(|| {
-            panic!(
-                "system library '{}' does not appear to be a MSVC library file",
-                flag
-            )
-        });
-    }
-
-    if let Some(flag) = flag.strip_prefix("-l") {
-        // Linker flags style, -lfoo
-        if target_os_is("macos") {
-            // .tdb libraries are "text-based stub" files that provide lists of symbols,
-            // which refer to libraries shipped with a given system and aren't shipped
-            // as part of the corresponding SDK. They're named like the underlying
-            // library object, including the 'lib' prefix that we need to strip.
-            if let Some(flag) = flag
-                .strip_prefix("lib")
-                .and_then(|flag| flag.strip_suffix(".tbd"))
-            {
-                return flag;
-            }
-        }
-
-        // On some distributions (OpenBSD, perhaps others), we get sonames
-        // like "-lz.so.7.0". Correct those by pruning the file extension
-        // and library version.
-        return flag.split(".so.").next().unwrap();
-    }
-
-    let maybe_lib = Path::new(flag);
-    if !maybe_lib.is_file() {
-        panic!(
-            "Unable to parse result of llvm-config --system-libs: {}",
-            flag
+        // Create symlinks to system libraries
+        let _ = std::os::unix::fs::symlink(
+            "/usr/lib/x86_64-linux-gnu/libzstd.so.1",
+            llvm_lib_dir.join("libzstd.so")
         );
-    }
-
-    // Library on disk, likely an absolute path to a .so. We'll add its location to
-    // the library search path and specify the file as a link target.
-    println!(
-        "cargo:rustc-link-search={}",
-        maybe_lib.parent().unwrap().display()
-    );
-
-    // Expect a file named something like libfoo.so, or with a version libfoo.so.1.
-    // Trim everything after and including the last .so and remove the leading 'lib'
-    let soname = maybe_lib
-        .file_name()
-        .unwrap()
-        .to_str()
-        .expect("Shared library path must be a valid string");
-    let (stem, _rest) = soname
-        .rsplit_once(target_dylib_extension())
-        .expect("Shared library should be a .so file");
-
-    stem.strip_prefix("lib")
-        .unwrap_or_else(|| panic!("system library '{}' does not have a 'lib' prefix", soname))
-}
-
-/// Return additional linker search paths that should be used but that are not discovered
-/// by other means.
-fn get_system_library_dirs() -> impl IntoIterator<Item = &'static str> {
-    if target_os_is("openbsd") {
-        Some("/usr/local/lib")
-    } else {
-        None
-    }
-}
-
-fn target_dylib_extension() -> &'static str {
-    if target_os_is("macos") {
-        ".dylib"
-    } else {
-        ".so"
-    }
-}
-
-/// Get the library that must be linked for C++, if any.
-fn get_system_libcpp() -> Option<&'static str> {
-    if target_env_is("msvc") {
-        Some("msvcprt")
-    } else if target_os_is("macos") {
-        Some("c++")
-    } else if target_os_is("freebsd") || target_os_is("openbsd") {
-        Some("c++")
-    } else if target_env_is("musl") {
-        Some("c++")
-    } else {
-        Some("stdc++")
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LibraryKind {
-    Static,
-    Dynamic,
-}
-
-impl LibraryKind {
-    /// Stringifies the enum
-    pub fn string(&self) -> &'static str {
-        match self {
-            LibraryKind::Static => "static",
-            LibraryKind::Dynamic => "dylib",
-        }
-    }
-}
-
-/// Get the names of libraries to link against, along with whether it is static or shared library.
-fn get_link_libraries(
-    llvm_config_path: &Path,
-    preferences: &LinkingPreferences,
-) -> (LibraryKind, Vec<String>) {
-    fn get_link_libraries_impl(
-        llvm_config_path: &Path,
-        kind: LibraryKind,
-    ) -> anyhow::Result<String> {
-        // Windows targets don't get dynamic support.
-        if target_env_is("msvc") && kind == LibraryKind::Dynamic {
-            anyhow::bail!("Dynamic linking to LLVM is not supported on Windows");
-        }
-
-        let link_arg = match kind {
-            LibraryKind::Static => "--link-static",
-            LibraryKind::Dynamic => "--link-shared",
-        };
-        llvm_config_ex(llvm_config_path, ["--libnames", link_arg])
-    }
-
-    let LinkingPreferences {
-        prefer_static,
-        force,
-    } = preferences;
-    let one = [*prefer_static];
-    let both = [*prefer_static, !*prefer_static];
-
-    let preferences = if *force { &one[..] } else { &both[..] }
-        .iter()
-        .map(|is_static| {
-            if *is_static {
-                LibraryKind::Static
-            } else {
-                LibraryKind::Dynamic
-            }
-        });
-
-    for kind in preferences {
-        match get_link_libraries_impl(llvm_config_path, kind) {
-            Ok(s) => return (kind, extract_library(&s, kind)),
-            Err(err) => {
-                println!(
-                    "failed to get {} libraries from llvm-config: {err:?}",
-                    kind.string()
-                )
-            }
-        }
-    }
-
-    panic!("failed to get linking libraries from llvm-config");
-}
-
-fn extract_library(s: &str, kind: LibraryKind) -> Vec<String> {
-    s.split(&[' ', '\n'] as &[char])
-        .filter(|s| !s.is_empty())
-        .map(|name| {
-            match kind {
-                LibraryKind::Static => {
-                    if let Some(name) = name
-                        .strip_prefix("lib")
-                        .and_then(|name| name.strip_suffix(".a"))
-                    {
-                        // Unix (Linux/Mac): libLLVMfoo.a
-                        name
-                    } else if let Some(name) = name.strip_suffix(".lib") {
-                        // Windows: LLVMfoo.lib
-                        name
-                    } else {
-                        panic!("'{}' does not look like a static library name", name)
-                    }
-                }
-                LibraryKind::Dynamic => {
-                    if let Some(name) = name
-                        .strip_prefix("lib")
-                        .and_then(|name| name.strip_suffix(".dylib"))
-                    {
-                        // Mac: libLLVMfoo.dylib
-                        name
-                    } else if let Some(name) = name
-                        .strip_prefix("lib")
-                        .and_then(|name| name.strip_suffix(".so"))
-                    {
-                        // Linux: libLLVMfoo.so
-                        name
-                    } else if let Some(name) = IntoIterator::into_iter([".dll", ".lib"])
-                        .find_map(|suffix| name.strip_suffix(suffix))
-                    {
-                        // Windows: LLVMfoo.{dll,lib}
-                        name
-                    } else {
-                        panic!("'{}' does not look like a shared library name", name)
-                    }
-                }
-            }
-            .to_string()
-        })
-        .collect::<Vec<String>>()
-}
-
-#[derive(Clone, Copy)]
-struct LinkingPreferences {
-    /// Prefer static linking over dynamic linking.
-    prefer_static: bool,
-    /// Force the use of the preferred kind of linking.
-    force: bool,
-}
-
-impl LinkingPreferences {
-    fn init() -> LinkingPreferences {
-        LinkingPreferences {
-            prefer_static: true,
-            force: false,
-        }
-    }
-}
-
-fn get_llvm_cflags(llvm_config_path: &Path) -> String {
-    let output = llvm_config(llvm_config_path, ["--cflags"]);
-
-    if target_env_is("msvc") {
-        return output;
-    }
-
-    output
-        .split(&[' ', '\n'][..])
-        .filter(|word| !word.starts_with("-W"))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Builds and links against LLVM
-fn build(llvm_path: PathBuf) {
-    if env::consts::OS == "windows" {
-        println!("cargo:rustc-link-arg=/ignore:4099");
-    }
-
-    let llvm_config_path = locate_llvm_config(&llvm_path);
-
-    unsafe {
-        env::set_var(CFLAGS, get_llvm_cflags(&llvm_config_path));
-    }
-
-    // Build C wrapper if it exists
-    if Path::new("wrappers/target.c").exists() {
-        cc::Build::new()
-            .file("wrappers/target.c")
-            .compile("targetwrappers");
-    }
-
-    let libdir = llvm_config(&llvm_config_path, ["--libdir"]);
-
-    // Export information to other crates
-    println!("cargo:config_path={}", llvm_config_path.display());
-    println!("cargo:libdir={}", libdir);
-
-    let preferences = LinkingPreferences::init();
-
-    if let Ok(found) = env::var(ZSTD_LIB_DIR) {
-        println!("cargo:rustc-link-search=native={}", found);
-    }
-
-    // Link LLVM libraries
-    println!("cargo:rustc-link-search=native={}", libdir);
-    for link_search_dir in get_system_library_dirs() {
-        println!("cargo:rustc-link-search=native={}", link_search_dir);
-    }
-
-    let (kind, libs) = get_link_libraries(&llvm_config_path, &preferences);
-    for name in libs {
-        println!("cargo:rustc-link-lib={}={}", kind.string(), name);
-    }
-
-    // Link system libraries
-    let sys_lib_kind = LibraryKind::Dynamic;
-    for name in get_system_libraries(&llvm_config_path, kind) {
-        println!("cargo:rustc-link-lib={}={}", sys_lib_kind.string(), name);
+        let _ = std::os::unix::fs::symlink(
+            "/usr/lib/x86_64-linux-gnu/libxml2.so.2",
+            llvm_lib_dir.join("libxml2.so")
+        );
     }
 }
