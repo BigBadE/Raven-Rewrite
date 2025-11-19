@@ -67,11 +67,17 @@ impl CraneliftBackend {
                 type_inference.infer_function(func);
             }
 
-            // Lower ALL functions to MIR (including called functions)
+            // Lower ONLY non-generic functions to MIR
+            // Generic functions will be monomorphized and lowered separately
             let mut mir_functions = Vec::new();
             let mut target_mir_func_id = None;
 
             for (_func_id, hir_func) in &hir_ctx.functions {
+                // Skip generic functions - they'll be monomorphized later
+                if !hir_func.generics.is_empty() {
+                    continue;
+                }
+
                 let mir_func = LoweringContext::lower_function(
                     hir_func,
                     type_inference.context_mut(),
@@ -91,6 +97,25 @@ impl CraneliftBackend {
 
                 mir_functions.push(mir_func);
             }
+
+            // Monomorphization: collect generic function instantiations needed from MIR
+            use rv_mono::MonoCollector;
+            let mut collector = MonoCollector::new();
+            for mir_func in &mir_functions {
+                collector.collect_from_mir(mir_func);
+            }
+
+            // Generate specialized versions of generic functions with proper type substitution
+            let next_func_id = hir_ctx.functions.len() as u32;
+            let (mono_functions, _instance_map) = rv_mono::monomorphize_functions(
+                &hir_ctx,
+                type_inference.context(),
+                collector.needed_instances(),
+                next_func_id,
+            );
+
+            // Add monomorphized functions to the compilation set
+            mir_functions.extend(mono_functions);
 
             // Compile all functions with Cranelift (supports function calls)
             if mir_functions.len() > 1 {

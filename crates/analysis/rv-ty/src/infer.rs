@@ -173,6 +173,14 @@ impl<'a> TypeInference<'a> {
         &mut self.ctx
     }
 
+    /// Bind a variable name to a concrete type in the global scope
+    /// This is used for monomorphization to bind generic type parameters to concrete types
+    pub fn bind_type_in_global_scope(&mut self, name: rv_intern::Symbol, ty: TyId) {
+        if let Some(global_scope) = self.scope_stack.first_mut() {
+            global_scope.insert(name, ty);
+        }
+    }
+
     /// Push a new scope onto the scope stack
     fn push_scope(&mut self) {
         self.scope_stack.push(rustc_hash::FxHashMap::default());

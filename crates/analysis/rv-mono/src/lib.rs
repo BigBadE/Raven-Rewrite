@@ -180,7 +180,6 @@ pub fn monomorphize_functions(
 ) -> (Vec<MirFunction>, HashMap<(FunctionId, Vec<MirType>), FunctionId>) {
     use std::collections::{HashMap, HashSet};
     use rv_intern::Symbol;
-    use rv_ty::TypeInference;
 
     let mut generated = Vec::new();
     let mut seen = HashSet::new();
@@ -215,26 +214,15 @@ pub fn monomorphize_functions(
                 }
             }
 
-            // Create a new type context for this monomorphized instance
-            // Run type inference on this specific function with concrete types
-            let mut type_inference = TypeInference::with_hir_context(
-                &hir_ctx.impl_blocks,
-                &hir_ctx.functions,
-                &hir_ctx.types,
-                &hir_ctx.structs,
-                &hir_ctx.enums,
-                &hir_ctx.traits,
-                &hir_ctx.interner,
-            );
-
-            // TODO: Pre-populate type_inference with concrete types for generic parameters
-            // For now, run type inference normally on the function
-            type_inference.infer_function(hir_func);
+            // Use the global type context for MIR lowering
+            // The lower_function_with_subst handles type substitution directly without needing type inference
+            let mut ty_ctx_clone = _ty_ctx.clone();
 
             // Lower to MIR with type substitution and unique instance ID
+            // The type_subst map handles generic parameter substitution (T -> Int, etc.)
             let mir_func = rv_mir::lower::LoweringContext::lower_function_with_subst(
                 hir_func,
-                type_inference.context_mut(),
+                &mut ty_ctx_clone,
                 &hir_ctx.structs,
                 &hir_ctx.enums,
                 &hir_ctx.impl_blocks,
