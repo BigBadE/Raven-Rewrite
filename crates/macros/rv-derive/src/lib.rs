@@ -71,31 +71,33 @@ pub fn derive_visitor(input: TokenStream) -> TokenStream {
                     .map(|f| &f.ty)
                     .collect();
 
-                // Build recursion calls for recursive fields
+                // Build recursion calls for recursive fields (only matching ID type)
                 let mut recurse_stmts = Vec::new();
                 for field in &fields.named {
                     let field_name = field.ident.as_ref().unwrap();
                     let field_ty = &field.ty;
 
-                    if let Some(inner_id) = extract_id_type(field_ty) {
-                        // This is an ID type - recurse
-                        if is_vec_of(field_ty, &inner_id) {
-                            recurse_stmts.push(quote! {
-                                for item_id in #field_name {
-                                    self.visit_id(*item_id, ctx);
-                                }
-                            });
-                        } else if is_option_of(field_ty, &inner_id) {
-                            recurse_stmts.push(quote! {
-                                if let Some(inner_id) = #field_name {
-                                    self.visit_id(*inner_id, ctx);
-                                }
-                            });
-                        } else {
-                            recurse_stmts.push(quote! {
-                                self.visit_id(*#field_name, ctx);
-                            });
-                        }
+                    // Only recurse if this field is exactly our ID type
+                    if is_exact_type(field_ty, &id_type_ident.to_string()) {
+                        recurse_stmts.push(quote! {
+                            self.visit_id(*#field_name, ctx);
+                        });
+                    } else if is_box_of(field_ty, &id_type_ident.to_string()) {
+                        recurse_stmts.push(quote! {
+                            self.visit_id(**#field_name, ctx);
+                        });
+                    } else if is_vec_of(field_ty, &id_type_ident.to_string()) {
+                        recurse_stmts.push(quote! {
+                            for item_id in #field_name {
+                                self.visit_id(*item_id, ctx);
+                            }
+                        });
+                    } else if is_option_of(field_ty, &id_type_ident.to_string()) {
+                        recurse_stmts.push(quote! {
+                            if let Some(inner_id) = #field_name {
+                                self.visit_id(*inner_id, ctx);
+                            }
+                        });
                     }
                 }
 
@@ -108,21 +110,22 @@ pub fn derive_visitor(input: TokenStream) -> TokenStream {
                     fn #method_name(
                         &mut self,
                         #(#param_decls),*,
-                        _id: #id_type_ident,
+                        __node_id: #id_type_ident,
                         ctx: &#context_type_ident,
                     ) -> Self::Output
                 });
 
                 visit_method_impls.push(quote! {
+                    /// Visit method for this variant
                     #[allow(unused_variables, reason = "Default implementation may not use all fields")]
                     fn #method_name(
                         &mut self,
                         #(#param_decls),*,
-                        id: #id_type_ident,
+                        __node_id: #id_type_ident,
                         ctx: &#context_type_ident,
                     ) -> Self::Output {
                         #(#recurse_stmts)*
-                        self.default_output(id, ctx)
+                        self.default_output(__node_id, ctx)
                     }
                 });
 
@@ -133,25 +136,26 @@ pub fn derive_visitor(input: TokenStream) -> TokenStream {
 
                 visit_dispatch_arms.push(quote! {
                     #enum_name::#variant_name { #(#field_names),*, .. } => {
-                        self.#method_name(#(#field_bindings),*, id, ctx)
+                        self.#method_name(#(#field_bindings),*, __node_id, ctx)
                     }
                 });
             }
             Fields::Unnamed(_) | Fields::Unit => {
                 // Simple case: no recursion
                 visit_method_sigs.push(quote! {
-                    fn #method_name(&mut self, _id: #id_type_ident, ctx: &#context_type_ident) -> Self::Output
+                    fn #method_name(&mut self, __node_id: #id_type_ident, ctx: &#context_type_ident) -> Self::Output
                 });
 
                 visit_method_impls.push(quote! {
-                    fn #method_name(&mut self, id: #id_type_ident, ctx: &#context_type_ident) -> Self::Output {
-                        self.default_output(id, ctx)
+                    /// Visit method for this variant
+                    fn #method_name(&mut self, __node_id: #id_type_ident, ctx: &#context_type_ident) -> Self::Output {
+                        self.default_output(__node_id, ctx)
                     }
                 });
 
                 visit_dispatch_arms.push(quote! {
                     #enum_name::#variant_name { .. } => {
-                        self.#method_name(id, ctx)
+                        self.#method_name(__node_id, ctx)
                     }
                 });
             }
@@ -166,29 +170,29 @@ pub fn derive_visitor(input: TokenStream) -> TokenStream {
     let fold_fn_name = format_ident!("{}_fold", enum_name.to_string().to_lowercase());
 
     // Build child collection for iterator
-    let collect_children = build_child_collector(&data_enum.variants, enum_name);
+    let collect_children = build_child_collector(&data_enum.variants, enum_name, &id_type_ident.to_string());
 
     let output = quote! {
         /// Auto-generated visitor trait for immutable traversal
-        pub trait #visitor_name {
+        pub trait #visitor_name where Self: Sized {
             /// Output type produced by visiting a node
             type Output;
 
             /// Visit a node by ID
-            fn visit_id(&mut self, id: #id_type_ident, ctx: &#context_type_ident) -> Self::Output {
-                let node = Self::get_node(id, ctx);
+            fn visit_id(&mut self, __node_id: #id_type_ident, ctx: &#context_type_ident) -> Self::Output {
+                let node = Self::get_node(__node_id, ctx);
                 match node {
                     #(#visit_dispatch_arms)*
                 }
             }
 
             /// Get the node from context (must be implemented)
-            fn get_node(id: #id_type_ident, ctx: &#context_type_ident) -> &#enum_name;
+            fn get_node(__node_id: #id_type_ident, ctx: &#context_type_ident) -> &#enum_name;
 
             #(#visit_method_impls)*
 
             /// Default output for a node (must be implemented)
-            fn default_output(&mut self, id: #id_type_ident, ctx: &#context_type_ident) -> Self::Output;
+            fn default_output(&mut self, __node_id: #id_type_ident, ctx: &#context_type_ident) -> Self::Output;
         }
 
         /// Auto-generated mutable visitor trait for transformations
@@ -225,38 +229,49 @@ pub fn derive_visitor(input: TokenStream) -> TokenStream {
         }
 
         /// Auto-generated walker for iterating over all nodes
-        pub struct #walker_name<'ctx> {
+        pub struct #walker_name<'ctx, F>
+        where
+            F: Fn(#id_type_ident, &#context_type_ident) -> &#enum_name,
+        {
             stack: Vec<#id_type_ident>,
             ctx: &'ctx #context_type_ident,
+            get_node: F,
         }
 
-        impl<'ctx> #walker_name<'ctx> {
+        impl<'ctx, F> #walker_name<'ctx, F>
+        where
+            F: Fn(#id_type_ident, &#context_type_ident) -> &#enum_name,
+        {
             /// Create a new walker starting from the given node
-            pub fn new(start: #id_type_ident, ctx: &'ctx #context_type_ident) -> Self {
+            pub fn new(start: #id_type_ident, ctx: &'ctx #context_type_ident, get_node: F) -> Self {
                 Self {
                     stack: vec![start],
                     ctx,
+                    get_node,
                 }
             }
 
             /// Collect all children of a node
-            fn collect_children(id: #id_type_ident, ctx: &#context_type_ident) -> Vec<#id_type_ident> {
-                let node = <dyn #visitor_name<Output = ()>>::get_node(id, ctx);
+            fn collect_children(&self, id: #id_type_ident) -> Vec<#id_type_ident> {
+                let node = (self.get_node)(id, self.ctx);
                 let mut children = Vec::new();
                 #collect_children
                 children
             }
         }
 
-        impl<'ctx> Iterator for #walker_name<'ctx> {
+        impl<'ctx, F> Iterator for #walker_name<'ctx, F>
+        where
+            F: Fn(#id_type_ident, &#context_type_ident) -> &#enum_name,
+        {
             type Item = (#id_type_ident, &'ctx #enum_name);
 
             fn next(&mut self) -> Option<Self::Item> {
                 let id = self.stack.pop()?;
-                let node = <dyn #visitor_name<Output = ()>>::get_node(id, self.ctx);
+                let node = (self.get_node)(id, self.ctx);
 
                 // Push children onto stack
-                let children = Self::collect_children(id, self.ctx);
+                let children = self.collect_children(id);
                 self.stack.extend(children);
 
                 Some((id, node))
@@ -264,30 +279,34 @@ pub fn derive_visitor(input: TokenStream) -> TokenStream {
         }
 
         /// Helper: Map over all nodes in tree
-        pub fn #map_fn_name<F, T>(
+        pub fn #map_fn_name<F, G, T>(
             start: #id_type_ident,
             ctx: &#context_type_ident,
+            get_node: G,
             mut func: F,
         ) -> Vec<T>
         where
             F: FnMut(#id_type_ident, &#enum_name) -> T,
+            G: Fn(#id_type_ident, &#context_type_ident) -> &#enum_name,
         {
-            #walker_name::new(start, ctx)
+            #walker_name::new(start, ctx, get_node)
                 .map(|(id, node)| func(id, node))
                 .collect()
         }
 
         /// Helper: Fold over all nodes in tree
-        pub fn #fold_fn_name<F, T>(
+        pub fn #fold_fn_name<F, G, T>(
             start: #id_type_ident,
             ctx: &#context_type_ident,
+            get_node: G,
             init: T,
             mut func: F,
         ) -> T
         where
             F: FnMut(T, #id_type_ident, &#enum_name) -> T,
+            G: Fn(#id_type_ident, &#context_type_ident) -> &#enum_name,
         {
-            #walker_name::new(start, ctx)
+            #walker_name::new(start, ctx, get_node)
                 .fold(init, |acc, (id, node)| func(acc, id, node))
         }
     };
@@ -318,41 +337,59 @@ fn parse_visitor_attributes(attrs: &[syn::Attribute]) -> (String, Option<String>
     (context, id_type)
 }
 
-/// Extract ID type from a Type (e.g., ExprId, StmtId, etc.)
-fn extract_id_type(ty: &Type) -> Option<String> {
+/// Check if type is exactly the given type name
+fn is_exact_type(ty: &Type, type_name: &str) -> bool {
     if let Type::Path(type_path) = ty {
         if let Some(segment) = type_path.path.segments.last() {
-            let type_name = segment.ident.to_string();
-            if type_name.ends_with("Id") && type_name.len() < 20 {
-                return Some(type_name);
-            }
-
-            // Check inside Vec/Option/Box
-            if let PathArguments::AngleBracketed(args) = &segment.arguments {
-                if let Some(GenericArgument::Type(inner_ty)) = args.args.first() {
-                    return extract_id_type(inner_ty);
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Check if type is Vec<T> where T contains the ID type
-fn is_vec_of(ty: &Type, _id: &str) -> bool {
-    if let Type::Path(type_path) = ty {
-        if let Some(segment) = type_path.path.segments.last() {
-            return segment.ident == "Vec";
+            return segment.ident == type_name;
         }
     }
     false
 }
 
-/// Check if type is Option<T> where T contains the ID type
-fn is_option_of(ty: &Type, _id: &str) -> bool {
+/// Check if type is Box<T> where T is the given type
+fn is_box_of(ty: &Type, inner_type: &str) -> bool {
     if let Type::Path(type_path) = ty {
         if let Some(segment) = type_path.path.segments.last() {
-            return segment.ident == "Option";
+            if segment.ident == "Box" {
+                if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                    if let Some(GenericArgument::Type(inner_ty)) = args.args.first() {
+                        return is_exact_type(inner_ty, inner_type);
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Check if type is Vec<T> where T is the given type
+fn is_vec_of(ty: &Type, inner_type: &str) -> bool {
+    if let Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            if segment.ident == "Vec" {
+                if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                    if let Some(GenericArgument::Type(inner_ty)) = args.args.first() {
+                        return is_exact_type(inner_ty, inner_type);
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Check if type is Option<T> where T is the given type
+fn is_option_of(ty: &Type, inner_type: &str) -> bool {
+    if let Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            if segment.ident == "Option" {
+                if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                    if let Some(GenericArgument::Type(inner_ty)) = args.args.first() {
+                        return is_exact_type(inner_ty, inner_type);
+                    }
+                }
+            }
         }
     }
     false
@@ -378,31 +415,38 @@ fn to_snake_case(s: &str) -> String {
 }
 
 /// Build code to collect children from a node for iteration
-fn build_child_collector(variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>, enum_name: &syn::Ident) -> proc_macro2::TokenStream {
+fn build_child_collector(
+    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
+    enum_name: &syn::Ident,
+    id_type: &str,
+) -> proc_macro2::TokenStream {
     let mut match_arms = Vec::new();
 
     for variant in variants {
         let variant_name = &variant.ident;
 
         if let Fields::Named(fields) = &variant.fields {
-            // Find all ID fields
+            // Find all fields matching exactly our ID type
             let field_collectors: Vec<_> = fields.named.iter()
                 .filter_map(|field| {
                     let field_name = field.ident.as_ref()?;
                     let field_ty = &field.ty;
 
-                    extract_id_type(field_ty)?;
-
-                    if is_vec_of(field_ty, "") {
+                    // Only collect fields of our exact ID type
+                    if is_exact_type(field_ty, id_type) {
+                        Some(quote::quote! { children.push(*#field_name); })
+                    } else if is_box_of(field_ty, id_type) {
+                        Some(quote::quote! { children.push(**#field_name); })
+                    } else if is_vec_of(field_ty, id_type) {
                         Some(quote::quote! { children.extend(#field_name.iter().copied()); })
-                    } else if is_option_of(field_ty, "") {
+                    } else if is_option_of(field_ty, id_type) {
                         Some(quote::quote! {
                             if let Some(child) = #field_name {
                                 children.push(*child);
                             }
                         })
                     } else {
-                        Some(quote::quote! { children.push(*#field_name); })
+                        None
                     }
                 })
                 .collect();

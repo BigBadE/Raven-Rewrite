@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 rv-arena.workspace = true
+rv-derive.workspace = true
 rv-hir.workspace = true
 rv-intern.workspace = true
 rv-span.workspace = true

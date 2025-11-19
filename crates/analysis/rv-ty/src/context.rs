@@ -26,11 +26,12 @@ impl NormalizedTy {
         self.0
     }
 
-    /// UNSAFE: Create a NormalizedTy without checking normalization.
+    /// Create a NormalizedTy without checking normalization.
     /// Only use when you can guarantee the type is already normalized.
     ///
     /// # Safety
     /// Caller must ensure the TyId contains no unresolved type variables.
+    #[allow(unsafe_code, reason = "Intentionally unsafe for performance")]
     pub(crate) unsafe fn new_unchecked(ty_id: TyId) -> Self {
         Self(ty_id)
     }
@@ -44,8 +45,10 @@ impl NormalizedTy {
     /// # Safety
     /// Only use this for TyIds that are directly contained within the structure
     /// of this normalized type (e.g., struct fields, function parameters).
+    #[allow(unsafe_code, reason = "Safety documented in comment")]
     pub fn wrap_child(ty_id: TyId) -> Self {
         // If the parent is normalized, all children are too
+        // SAFETY: Child types of normalized types are also normalized
         unsafe { Self::new_unchecked(ty_id) }
     }
 }
@@ -54,7 +57,12 @@ impl NormalizedTy {
 #[derive(Debug, Clone)]
 pub enum NormalizeError {
     /// Encountered an unresolved type variable
-    UnresolvedVariable { var_id: TyVarId, ty_id: TyId },
+    UnresolvedVariable {
+        /// The type variable ID that wasn't resolved
+        var_id: TyVarId,
+        /// The type ID containing the unresolved variable
+        ty_id: TyId
+    },
 }
 
 /// Type checking context
@@ -127,6 +135,7 @@ impl TyContext {
     ///
     /// # Errors
     /// Returns `NormalizeError::UnresolvedVariable` if a type variable has no substitution.
+    #[allow(unused_variables, unused_assignments, unsafe_code, reason = "Pattern matching extracts only used fields, unsafe blocks create normalized types")]
     pub fn normalize(&mut self, ty_id: TyId) -> Result<NormalizedTy, NormalizeError> {
         let ty = self.types.get(ty_id);
 
@@ -158,9 +167,10 @@ impl TyContext {
                     .collect();
 
                 let new_ty_id = self.types.alloc(TyKind::Struct {
-                    def_id,
+                    def_id: *def_id,
                     fields: normalized_fields?,
                 });
+                // SAFETY: All fields were normalized, so the struct is normalized
                 Ok(unsafe { NormalizedTy::new_unchecked(new_ty_id) })
             }
 
@@ -168,12 +178,13 @@ impl TyContext {
                 let normalized_params: Result<Vec<_>, _> = params.iter()
                     .map(|p| self.normalize(*p).map(|n| n.ty_id()))
                     .collect();
-                let normalized_ret = self.normalize(*ret)?;
+                let normalized_ret = self.normalize(**ret)?;
 
                 let new_ty_id = self.types.alloc(TyKind::Function {
                     params: normalized_params?,
                     ret: Box::new(normalized_ret.ty_id()),
                 });
+                // SAFETY: All params and ret were normalized, so function is normalized
                 Ok(unsafe { NormalizedTy::new_unchecked(new_ty_id) })
             }
 
@@ -185,35 +196,39 @@ impl TyContext {
                 let new_ty_id = self.types.alloc(TyKind::Tuple {
                     elements: normalized_elements?,
                 });
+                // SAFETY: All elements were normalized, so tuple is normalized
                 Ok(unsafe { NormalizedTy::new_unchecked(new_ty_id) })
             }
 
             TyKind::Ref { mutable, inner } => {
-                let normalized_inner = self.normalize(*inner)?;
+                let normalized_inner = self.normalize(**inner)?;
 
                 let new_ty_id = self.types.alloc(TyKind::Ref {
-                    mutable,
+                    mutable: *mutable,
                     inner: Box::new(normalized_inner.ty_id()),
                 });
+                // SAFETY: Inner type was normalized, so reference is normalized
                 Ok(unsafe { NormalizedTy::new_unchecked(new_ty_id) })
             }
 
             TyKind::Array { element, size } => {
-                let normalized_element = self.normalize(*element)?;
+                let normalized_element = self.normalize(**element)?;
 
                 let new_ty_id = self.types.alloc(TyKind::Array {
                     element: Box::new(normalized_element.ty_id()),
-                    size,
+                    size: *size,
                 });
+                // SAFETY: Element type was normalized, so array is normalized
                 Ok(unsafe { NormalizedTy::new_unchecked(new_ty_id) })
             }
 
             TyKind::Slice { element } => {
-                let normalized_element = self.normalize(*element)?;
+                let normalized_element = self.normalize(**element)?;
 
                 let new_ty_id = self.types.alloc(TyKind::Slice {
                     element: Box::new(normalized_element.ty_id()),
                 });
+                // SAFETY: Element type was normalized, so slice is normalized
                 Ok(unsafe { NormalizedTy::new_unchecked(new_ty_id) })
             }
 
@@ -245,9 +260,10 @@ impl TyContext {
                     .collect();
 
                 let new_ty_id = self.types.alloc(TyKind::Enum {
-                    def_id,
+                    def_id: *def_id,
                     variants: normalized_variants?,
                 });
+                // SAFETY: All variant types were normalized, so enum is normalized
                 Ok(unsafe { NormalizedTy::new_unchecked(new_ty_id) })
             }
 
@@ -256,6 +272,7 @@ impl TyContext {
             TyKind::Unit | TyKind::Never | TyKind::Error |
             TyKind::Named { .. } | TyKind::Param { .. } => {
                 // These types don't contain nested TyIds, so they're already normalized
+                // SAFETY: Leaf types and parameters have no nested types to normalize
                 Ok(unsafe { NormalizedTy::new_unchecked(ty_id) })
             }
         }

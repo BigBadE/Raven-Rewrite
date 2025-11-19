@@ -4,7 +4,6 @@
 //! It's the first step after parsing and before type checking.
 
 pub mod exhaustiveness;
-pub mod visitor;
 
 use rv_arena::{Arena, Idx};
 use rv_intern::Symbol;
@@ -440,7 +439,8 @@ impl Default for Body {
 }
 
 /// HIR expressions
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, rv_derive::Visitor)]
+#[visitor(context = "Body", id_type = "ExprId")]
 pub enum Expr {
     /// Literal value
     Literal {
@@ -587,7 +587,8 @@ pub struct MatchArm {
 }
 
 /// HIR statements
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, rv_derive::Visitor)]
+#[visitor(context = "Body", id_type = "StmtId")]
 pub enum Stmt {
     /// Let binding
     Let {
@@ -619,7 +620,8 @@ pub enum Stmt {
 }
 
 /// Patterns
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, rv_derive::Visitor)]
+#[visitor(context = "Body", id_type = "PatternId")]
 pub enum Pattern {
     /// Wildcard pattern (_)
     Wildcard {

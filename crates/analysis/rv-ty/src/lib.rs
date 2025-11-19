@@ -19,7 +19,6 @@ pub mod module_context;
 pub mod solver;
 pub mod ty;
 pub mod unify;
-pub mod visitor;
 
 pub use bounds::{BoundChecker, BoundError};
 pub use constraint::{Constraint, ConstraintSource, Constraints};

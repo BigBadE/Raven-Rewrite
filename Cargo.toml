@@ -56,6 +56,9 @@ rv-duplicates = { path = "crates/analyzer/rv-duplicates" }
 # Internal crates - language support
 lang-raven = { path = "crates/language-support/lang-raven" }
 
+# Internal crates - macros
+rv-derive = { path = "crates/macros/rv-derive" }
+
 # Internal crates - testing
 integration-tests = { path = "crates/testing/integration-tests" }
 
