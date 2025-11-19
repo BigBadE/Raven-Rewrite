@@ -8,7 +8,7 @@ use lasso::Key;
 use rustc_hash::FxHashMap;
 use rv_arena::Arena;
 use rv_hir::{Body, DefId, EnumDef, Expr, ExprId, Function, FunctionId, ImplBlock, ImplId, LiteralKind, Pattern, SelfParam, Stmt, StmtId, StructDef, TraitDef, TraitId, Type, TypeDefId};
-use rv_intern::Symbol;
+use rv_intern::{Interner, Symbol};
 use rv_span::{FileId, FileSpan, Span};
 use rv_ty::{TyContext, TyId, TyKind};
 use std::collections::HashMap;
@@ -51,6 +51,8 @@ pub struct LoweringContext<'ctx> {
     traits: &'ctx HashMap<TraitId, TraitDef>,
     /// Map from variable names to their locals (for let bindings)
     var_locals: FxHashMap<Symbol, LocalId>,
+    /// String interner (for resolving primitive type names)
+    interner: &'ctx Interner,
 }
 
 impl<'ctx> LoweringContext<'ctx> {
@@ -64,6 +66,7 @@ impl<'ctx> LoweringContext<'ctx> {
         functions: &'ctx HashMap<FunctionId, Function>,
         hir_types: &'ctx Arena<Type>,
         traits: &'ctx HashMap<TraitId, TraitDef>,
+        interner: &'ctx Interner,
     ) -> Self {
         Self {
             builder,
@@ -77,6 +80,7 @@ impl<'ctx> LoweringContext<'ctx> {
             hir_types,
             traits,
             var_locals: FxHashMap::default(),
+            interner,
         }
     }
 
@@ -90,10 +94,11 @@ impl<'ctx> LoweringContext<'ctx> {
         functions: &'ctx HashMap<FunctionId, Function>,
         hir_types: &'ctx Arena<Type>,
         traits: &'ctx HashMap<TraitId, TraitDef>,
+        interner: &'ctx Interner,
     ) -> MirFunction {
         let mut builder = MirBuilder::new(function.id);
         builder.set_param_count(function.parameters.len());
-        let mut ctx = Self::new(builder, ty_ctx, structs, enums, impl_blocks, functions, hir_types, traits);
+        let mut ctx = Self::new(builder, ty_ctx, structs, enums, impl_blocks, functions, hir_types, traits, interner);
 
         // Register function parameters FIRST so they get LocalId(0), LocalId(1), etc.
         // This matches the interpreter's expectation for parameter locals
@@ -144,10 +149,11 @@ impl<'ctx> LoweringContext<'ctx> {
         traits: &'ctx HashMap<TraitId, TraitDef>,
         type_subst: &HashMap<Symbol, MirType>,
         instance_id: FunctionId,
+        interner: &'ctx Interner,
     ) -> MirFunction {
         let mut builder = MirBuilder::new(instance_id);
         builder.set_param_count(function.parameters.len());
-        let mut ctx = Self::new(builder, ty_ctx, structs, enums, impl_blocks, functions, hir_types, traits);
+        let mut ctx = Self::new(builder, ty_ctx, structs, enums, impl_blocks, functions, hir_types, traits, interner);
 
         // Register function parameters with concrete types from substitution map
         for param in &function.parameters {
@@ -1048,7 +1054,17 @@ impl<'ctx> LoweringContext<'ctx> {
                     MirType::Named(*name)
                 }
             }
-            Type::Named { name, .. } => MirType::Named(*name),
+            Type::Named { name, .. } => {
+                // Check if this is a primitive type by resolving the symbol
+                let name_str = self.interner.resolve(name);
+                match name_str.as_str() {
+                    "i64" | "i32" | "isize" => MirType::Int,
+                    "f64" | "f32" => MirType::Float,
+                    "bool" => MirType::Bool,
+                    "String" | "str" => MirType::String,
+                    _ => MirType::Named(*name),
+                }
+            }
             Type::Generic { name, .. } => MirType::Named(*name),
             Type::Function { params, ret, .. } => {
                 let param_types: Vec<MirType> = params
