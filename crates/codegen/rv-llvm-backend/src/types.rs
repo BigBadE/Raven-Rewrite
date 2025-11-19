@@ -27,18 +27,28 @@ impl<'ctx> TypeLowering<'ctx> {
                 // Unit type as i32(0) for simplicity
                 self.context.i32_type().into()
             }
-            MirType::Named(_) => {
-                // Generic type parameters and unknown named types default to i32
-                // In a full implementation, we'd need monomorphization to know the actual type
-                self.context.i32_type().into()
+            MirType::Named(name) => {
+                // Named types should have been resolved during MIR lowering
+                // If we hit this, it's a bug in type resolution
+                panic!(
+                    "Unresolved named type in LLVM codegen: {:?}. \
+                    This indicates a bug in MIR lowering - primitive types should be resolved to \
+                    MirType::Int/Float/Bool/String, and user-defined types should be resolved to \
+                    MirType::Struct/Enum.",
+                    name
+                )
             }
             MirType::Function { .. } => {
                 // Function types become function pointers
                 self.context.ptr_type(inkwell::AddressSpace::default()).into()
             }
             MirType::Unknown => {
-                // Unknown types default to i32
-                self.context.i32_type().into()
+                // Unknown types indicate a bug in type inference or lowering
+                panic!(
+                    "Unknown type encountered in LLVM codegen. \
+                    This indicates a bug in type inference - all types should be fully resolved \
+                    before reaching codegen."
+                )
             }
             MirType::Struct { fields, .. } => {
                 // Create proper LLVM struct type with field layout

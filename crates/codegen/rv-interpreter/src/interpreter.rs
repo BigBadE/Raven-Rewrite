@@ -455,6 +455,7 @@ impl<'ctx> Interpreter<'ctx> {
                 &hir_ctx.functions,
                 &hir_ctx.types,
                 &hir_ctx.traits,
+                &hir_ctx.interner,
             );
 
             self.mono_cache.insert(cache_key.clone(), mir_func);

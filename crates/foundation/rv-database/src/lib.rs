@@ -183,6 +183,7 @@ pub fn lower_function_to_mir(
         &hir_data.functions,
         &hir_data.types,
         &hir_data.traits,
+        &hir_data.interner,
     );
 
     Arc::new(mir)

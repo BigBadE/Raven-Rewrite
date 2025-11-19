@@ -1011,7 +1011,30 @@ impl<'ctx> LoweringContext<'ctx> {
                     MirType::Named(*name)
                 }
             }
-            _ => MirType::Unknown,
+            TyKind::Never => {
+                // Never type - map to unit for now
+                MirType::Unit
+            }
+            TyKind::Param { name, .. } => {
+                // Generic type parameter - keep as named type
+                // During monomorphization, this will be substituted with concrete types
+                MirType::Named(*name)
+            }
+            TyKind::Var { .. } => {
+                // Type variable - for monomorphized functions, these should be resolved to concrete types
+                // For now, treat as named type that will be resolved during monomorphization
+                // In the future, we should apply type substitutions here
+                MirType::Int // Default to Int for unresolved type variables
+            }
+            TyKind::Error => {
+                // Error type from type inference failures
+                // This indicates a type error was detected but not properly reported
+                panic!(
+                    "Error type encountered in MIR lowering. \
+                    This indicates a type error occurred during type inference that should have been \
+                    reported to the user."
+                )
+            }
         }
     }
 

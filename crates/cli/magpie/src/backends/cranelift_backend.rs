@@ -77,6 +77,7 @@ impl CraneliftBackend {
                     &hir_ctx.functions,
                     &hir_ctx.types,
                     &hir_ctx.traits,
+                    &hir_ctx.interner,
                 );
 
                 // Track which MIR function is our target

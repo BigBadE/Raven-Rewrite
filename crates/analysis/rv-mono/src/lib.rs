@@ -238,6 +238,7 @@ pub fn monomorphize_functions(
                 &hir_ctx.traits,
                 &type_subst,
                 instance_id,
+                &hir_ctx.interner,
             );
             generated.push(mir_func);
         }
