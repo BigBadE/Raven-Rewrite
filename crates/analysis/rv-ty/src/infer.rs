@@ -251,11 +251,6 @@ impl<'a> TypeInference<'a> {
         }
     }
 
-    /// Clear expression types (used between functions to avoid ExprId conflicts)
-    pub fn clear_expr_types(&mut self) {
-        self.ctx.expr_types.clear();
-    }
-
     /// Infer types for a function
     pub fn infer_function(&mut self, function: &Function) {
         // Set expected return type
@@ -472,16 +467,63 @@ impl<'a> TypeInference<'a> {
             Expr::Variable { name, def, .. } => {
                 // Prefer using resolved DefId from name resolution
                 let result_ty = if let Some(def_id) = def {
-                    // Look up definition type by DefId
-                    if let Some(def_ty) = self.ctx.get_def_type(*def_id) {
-                        def_ty
-                    } else {
-                        // DefId not yet typed, try name-based lookup (for parameters)
-                        if let Some(var_ty) = self.lookup_var(*name) {
-                            var_ty
-                        } else {
-                            // Unknown definition, create fresh variable
-                            self.ctx.fresh_ty_var()
+                    match def_id {
+                        // Special handling for function references
+                        rv_hir::DefId::Function(func_id) => {
+                            // Look up function signature from HIR (no inference needed!)
+                            if let Some(functions) = self.functions {
+                                if let Some(func) = functions.get(func_id) {
+                                    // Extract signature and convert to Function type
+                                    let param_tys: Vec<TyId> = func.parameters
+                                        .iter()
+                                        .map(|p| {
+                                            if let (Some(hir_types), Some(structs), Some(interner)) =
+                                                (self.hir_types, self.structs, self.interner)
+                                            {
+                                                self.hir_type_to_ty_id(p.ty, hir_types, structs, interner)
+                                            } else {
+                                                self.ctx.fresh_ty_var()
+                                            }
+                                        })
+                                        .collect();
+
+                                    let ret_ty = if let Some(ret_hir_ty) = func.return_type {
+                                        if let (Some(hir_types), Some(structs), Some(interner)) =
+                                            (self.hir_types, self.structs, self.interner)
+                                        {
+                                            self.hir_type_to_ty_id(ret_hir_ty, hir_types, structs, interner)
+                                        } else {
+                                            self.ctx.types.unit()
+                                        }
+                                    } else {
+                                        self.ctx.types.unit()
+                                    };
+
+                                    // Create Function type
+                                    self.ctx.types.alloc(TyKind::Function {
+                                        params: param_tys,
+                                        ret: Box::new(ret_ty),
+                                    })
+                                } else {
+                                    self.ctx.fresh_ty_var()
+                                }
+                            } else {
+                                self.ctx.fresh_ty_var()
+                            }
+                        }
+                        // Other DefIds: look up from context or name-based lookup
+                        _ => {
+                            if let Some(def_ty) = self.ctx.get_def_type(*def_id) {
+                                def_ty
+                            } else {
+                                // DefId not yet typed, try name-based lookup (for parameters)
+                                if let Some(var_ty) = self.lookup_var(*name) {
+                                    var_ty
+                                } else {
+                                    // Unknown definition, create fresh variable
+                                    self.ctx.fresh_ty_var()
+                                }
+                            }
                         }
                     }
                 } else if let Some(var_ty) = self.lookup_var(*name) {
@@ -735,59 +777,100 @@ impl<'a> TypeInference<'a> {
                 let receiver_is_mutable = self.is_expr_mutable(body, *receiver);
                 self.receiver_mutability.insert(expr_id, receiver_is_mutable);
 
-                // Infer argument types (no expected types for now - could be improved)
-                for arg in args {
-                    self.infer_expr(body, *arg, None);
-                }
-
-                // Look up the method return type from impl blocks
+                // Extract receiver TypeDefId for method lookup
                 let receiver_ty_kind = &self.ctx.types.get(receiver_ty).kind;
                 let type_def_id = match receiver_ty_kind {
                     TyKind::Struct { def_id, .. } => Some(*def_id),
                     _ => None,
                 };
 
-                // Try to find the method and get its return type
-                let method_return_ty = if let (Some(impl_blocks), Some(functions), Some(def_id)) =
-                    (self.impl_blocks, self.functions, type_def_id)
+                // Try to find the method from impl blocks
+                let method_func = if let (Some(impl_blocks), Some(functions), Some(hir_types), Some(def_id)) =
+                    (self.impl_blocks, self.functions, self.hir_types, type_def_id)
                 {
-                    let mut found_ty = None;
+                    let mut found_func = None;
                     // Find impl blocks for this type
                     'outer: for impl_block in impl_blocks.values() {
-                        if impl_block.self_ty == rv_hir::TypeId::from_raw(la_arena::RawIdx::from(def_id.0)) {
-                            // Check methods in this impl block
-                            for &func_id in &impl_block.methods {
-                                if let Some(func) = functions.get(&func_id) {
-                                    if func.name == *method {
-                                        // Found the method! Use its return type
-                                        if let Some(return_type_id) = func.return_type {
-                                            // Convert HIR TypeId to inference TyId
-                                            if let (Some(hir_types), Some(structs), Some(interner)) =
-                                                (self.hir_types, self.structs, self.interner)
-                                            {
-                                                found_ty = Some(self.hir_type_to_ty_id(
-                                                    return_type_id,
-                                                    hir_types,
-                                                    structs,
-                                                    interner,
-                                                ));
-                                            }
-                                        } else {
-                                            found_ty = Some(self.ctx.fresh_ty_var());
+                        // Check if this impl block is for the receiver type
+                        let impl_self_ty = &hir_types[impl_block.self_ty];
+                        if let rv_hir::Type::Named { def: Some(impl_def_id), .. } = impl_self_ty {
+                            if *impl_def_id == def_id {
+                                // Search methods in this impl block
+                                for &func_id in &impl_block.methods {
+                                    if let Some(func) = functions.get(&func_id) {
+                                        if func.name == *method {
+                                            found_func = Some(func);
+                                            break 'outer;
                                         }
-                                        break 'outer;
                                     }
                                 }
                             }
                         }
                     }
-                    found_ty
+                    found_func
                 } else {
                     None
                 };
 
-                // Return the method type or a fresh type variable if not found
-                method_return_ty.unwrap_or_else(|| self.ctx.fresh_ty_var())
+                // If we found the method, type-check arguments and get return type
+                if let Some(method_func) = method_func {
+                    // Type-check arguments against method parameters (skip first param which is self)
+                    let method_params: Vec<TyId> = method_func.parameters
+                        .iter()
+                        .skip(1) // Skip self parameter
+                        .map(|p| {
+                            if let (Some(hir_types), Some(structs), Some(interner)) =
+                                (self.hir_types, self.structs, self.interner)
+                            {
+                                self.hir_type_to_ty_id(p.ty, hir_types, structs, interner)
+                            } else {
+                                self.ctx.fresh_ty_var()
+                            }
+                        })
+                        .collect();
+
+                    // Infer argument types with expected types from method signature
+                    for (idx, arg) in args.iter().enumerate() {
+                        let expected_arg_ty = method_params.get(idx).copied();
+                        let arg_ty = self.infer_expr(body, *arg, expected_arg_ty);
+
+                        // Unify with expected type if available
+                        if let Some(expected_ty) = expected_arg_ty {
+                            if self.generate_mode {
+                                let source = ConstraintSource::new(
+                                    rv_span::FileId(0),
+                                    rv_span::Span::new(0, 0),
+                                    format!("method argument {}", idx),
+                                );
+                                self.constraints.add_equality(arg_ty, expected_ty, source);
+                            } else if let Err(error) = Unifier::new(&mut self.ctx).unify(arg_ty, expected_ty) {
+                                self.errors.push(TypeError::Unification {
+                                    error,
+                                    expr: Some(*arg),
+                                });
+                            }
+                        }
+                    }
+
+                    // Get return type
+                    if let Some(return_type_id) = method_func.return_type {
+                        if let (Some(hir_types), Some(structs), Some(interner)) =
+                            (self.hir_types, self.structs, self.interner)
+                        {
+                            self.hir_type_to_ty_id(return_type_id, hir_types, structs, interner)
+                        } else {
+                            self.ctx.types.unit()
+                        }
+                    } else {
+                        self.ctx.types.unit()
+                    }
+                } else {
+                    // Method not found - infer arguments anyway and return type variable
+                    for arg in args {
+                        self.infer_expr(body, *arg, None);
+                    }
+                    self.ctx.fresh_ty_var()
+                }
             }
 
             Expr::StructConstruct { def, fields, .. } => {

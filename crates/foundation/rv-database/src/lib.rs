@@ -167,6 +167,38 @@ pub fn function_signature(
     })
 }
 
+/// Resolve a method call on a given type
+#[salsa::tracked]
+pub fn resolve_method(
+    db: &dyn RavenDb,
+    file: SourceFile,
+    receiver_type: TypeDefId,
+    method_name: rv_intern::Symbol,
+) -> Option<FunctionId> {
+    let hir_data = lower_to_hir(db, file);
+
+    // Search impl blocks for this type
+    for (_impl_id, impl_block) in &hir_data.impl_blocks {
+        // Check if this impl block is for the receiver type
+        let impl_self_ty = &hir_data.types[impl_block.self_ty];
+
+        if let rv_hir::Type::Named { def: Some(def_id), .. } = impl_self_ty {
+            if *def_id == receiver_type {
+                // Search methods in this impl block
+                for method_id in &impl_block.methods {
+                    if let Some(method_func) = hir_data.functions.get(method_id) {
+                        if method_func.name == method_name {
+                            return Some(*method_id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 #[salsa::tracked]
 pub fn lower_function_to_mir(
     db: &dyn RavenDb,

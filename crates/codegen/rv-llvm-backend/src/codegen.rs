@@ -976,20 +976,14 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
 
             let mut current_type = &local_info.ty;
 
-            eprintln!("DEBUG LLVM lower_place: place.local = {:?}, projections = {:?}", place.local, place.projection);
-            eprintln!("DEBUG LLVM lower_place: initial current_type = {:?}", current_type);
-
             // Handle projections (field access, array indexing, etc.)
             for projection in &place.projection {
                 match projection {
                     PlaceElem::Field { field_idx } => {
-                        eprintln!("DEBUG LLVM lower_place: Field projection with field_idx = {}", field_idx);
                         // Use GEP (GetElementPtr) to access struct field
                         if let BasicValueEnum::PointerValue(ptr_val) = local_val {
-                            eprintln!("DEBUG LLVM lower_place: ptr_val is PointerValue, lowering current_type = {:?}", current_type);
                             // Get the LLVM type from the MIR type
                             let basic_type = self.type_lowering().lower_type(current_type);
-                            eprintln!("DEBUG LLVM lower_place: lowered to basic_type = {:?}", basic_type);
 
                             // Extract the actual struct type from BasicTypeEnum
                             if let BasicTypeEnum::StructType(struct_type) = basic_type {

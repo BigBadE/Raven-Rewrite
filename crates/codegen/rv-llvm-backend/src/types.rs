@@ -15,8 +15,7 @@ impl<'ctx> TypeLowering<'ctx> {
 
     /// Lower a MIR type to an LLVM type
     pub fn lower_type(&self, ty: &MirType) -> BasicTypeEnum<'ctx> {
-        eprintln!("DEBUG LLVM lower_type: lowering {:?}", ty);
-        let result = match ty {
+        match ty {
             MirType::Int => self.context.i32_type().into(),
             MirType::Float => self.context.f64_type().into(),
             MirType::Bool => self.context.i32_type().into(), // Use i32 for booleans
@@ -81,8 +80,6 @@ impl<'ctx> TypeLowering<'ctx> {
                 // Reference types become pointers
                 self.context.ptr_type(inkwell::AddressSpace::default()).into()
             }
-        };
-        eprintln!("DEBUG LLVM lower_type: result = {:?}", result);
-        result
+        }
     }
 }
