@@ -1383,7 +1383,8 @@ fn parse_field(ctx: &mut LoweringContext, node: &SyntaxNode) -> Option<FieldDef>
             && field_name.is_none() {
             field_name = Some(ctx.intern(&child.text));
         } else if child.kind == SyntaxKind::Type {
-            field_ty = Some(TypeId::from_raw(0.into())); // Placeholder
+            // Actually parse the type instead of using a placeholder
+            field_ty = Some(lower_type_node(ctx, child));
         }
     }
 

@@ -311,18 +311,6 @@ impl<'ctx> LoweringContext<'ctx> {
         // Create a temporary for the result
         let result_local = self.builder.new_local(None, mir_ty.clone(), false);
 
-        // Debug: log when creating locals for field access contexts
-        if matches!(expr, Expr::Variable { .. } | Expr::Field { .. }) {
-            eprintln!("DEBUG lower_expr: Created local {:?} with type {:?} for expr: {:?}",
-                result_local, mir_ty,
-                match expr {
-                    Expr::Variable { name, .. } => format!("Variable({})", self.interner.resolve(name)),
-                    Expr::Field { field, .. } => format!("Field({})", self.interner.resolve(field)),
-                    _ => "other".to_string()
-                }
-            );
-        }
-
         match expr {
             Expr::Literal { kind, span } => {
                 let constant = Constant {

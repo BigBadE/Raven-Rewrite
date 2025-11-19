@@ -465,12 +465,6 @@ impl<'a> TypeInference<'a> {
             Expr::Literal { kind, .. } => self.infer_literal(kind),
 
             Expr::Variable { name, def, .. } => {
-                let var_name_str = if let Some(interner) = self.interner {
-                    interner.resolve(name).to_string()
-                } else {
-                    format!("{:?}", name)
-                };
-
                 // Prefer using resolved DefId from name resolution
                 let result_ty = if let Some(def_id) = def {
                     // Look up definition type by DefId
@@ -493,14 +487,6 @@ impl<'a> TypeInference<'a> {
                     self.errors.push(TypeError::UndefinedVariable { expr: expr_id });
                     self.ctx.types.error()
                 };
-
-                if var_name_str == "self" {
-                    eprintln!("DEBUG infer Variable '{}': result_ty = {:?}, expected = {:?}",
-                        var_name_str,
-                        self.ctx.types.get(result_ty).kind,
-                        expected.map(|ty| self.ctx.types.get(ty).kind.clone())
-                    );
-                }
 
                 result_ty
             }
@@ -987,20 +973,6 @@ impl<'a> TypeInference<'a> {
         self.ctx.set_expr_type(expr_id, inferred_ty);
 
         // Debug: log when storing types for Variable expressions
-        if let Expr::Variable { name, .. } = expr {
-            let var_name_str = if let Some(interner) = self.interner {
-                interner.resolve(name).to_string()
-            } else {
-                format!("{:?}", name)
-            };
-            if var_name_str == "self" {
-                eprintln!("DEBUG set_expr_type: Storing type for Variable '{}': {:?}",
-                    var_name_str,
-                    self.ctx.types.get(inferred_ty).kind
-                );
-            }
-        }
-
         inferred_ty
     }
 
