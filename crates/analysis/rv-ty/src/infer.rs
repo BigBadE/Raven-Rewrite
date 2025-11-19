@@ -251,6 +251,11 @@ impl<'a> TypeInference<'a> {
         }
     }
 
+    /// Clear expression types (used between functions to avoid ExprId conflicts)
+    pub fn clear_expr_types(&mut self) {
+        self.ctx.expr_types.clear();
+    }
+
     /// Infer types for a function
     pub fn infer_function(&mut self, function: &Function) {
         // Set expected return type

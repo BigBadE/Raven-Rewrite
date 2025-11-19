@@ -136,13 +136,11 @@ pub fn infer_function_types(
         &hir_data.interner,
     );
 
-    // Run type inference on ALL non-generic functions in the file
+    // Run type inference on the REQUESTED function only
+    // Each function gets its own TypeInference instance (via Salsa caching) to avoid ExprId conflicts
     // Generic functions will be type-inferred during monomorphization with concrete types
-    // This ensures that all function signatures and types are available for cross-function calls
-    for (_func_id, func) in &hir_data.functions {
-        if func.generics.is_empty() {
-            type_inference.infer_function(func);
-        }
+    if func_hir.generics.is_empty() {
+        type_inference.infer_function(&func_hir);
     }
 
     // Extract results from type inference
