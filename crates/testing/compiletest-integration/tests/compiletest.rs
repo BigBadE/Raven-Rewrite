@@ -16,13 +16,30 @@ use std::path::PathBuf;
 /// 2. `target/debug/magpie` (default debug build location)
 /// 3. `magpie` (assume it's in PATH)
 fn get_compiler_path() -> PathBuf {
-    if let Ok(path) = env::var("CARGO_BIN_EXE_magpie") {
-        return PathBuf::from(path);
+    // Try workspace root (../../.. from test directory)
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf())
+        .expect("Failed to find workspace root");
+
+    // Use the rustc-compat wrapper script that adds "compile" subcommand
+    let wrapper_path = workspace_root.join("target/debug/magpie-rustc-compat");
+    if wrapper_path.exists() {
+        return wrapper_path;
     }
 
-    let debug_path = PathBuf::from("target/debug/magpie");
+    // Fallback to direct magpie binary
+    let debug_path = workspace_root.join("target/debug/magpie");
     if debug_path.exists() {
         return debug_path;
+    }
+
+    // Fallback to relative path
+    let relative_path = PathBuf::from("target/debug/magpie-rustc-compat");
+    if relative_path.exists() {
+        return relative_path;
     }
 
     PathBuf::from("magpie")
@@ -73,7 +90,13 @@ fn run_run_pass_tests() {
 
     config.mode = compiletest_rs::common::Mode::RunPass;
     config.src_base = PathBuf::from("tests/run-pass");
-    config.build_base = PathBuf::from("target/compiletest");
+
+    // Use absolute path for build_base to avoid path resolution issues
+    let build_base = std::env::current_dir()
+        .expect("Failed to get current directory")
+        .join("target/compiletest");
+    config.build_base = build_base;
+
     config.rustc_path = get_compiler_path();
 
     compiletest_rs::run_tests(&config);

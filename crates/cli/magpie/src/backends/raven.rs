@@ -75,6 +75,22 @@ impl RavenBackend {
 
         Ok(format!("{result}"))
     }
+
+    /// Compile and run a single source file (for compiletest)
+    pub fn compile_and_run(&self, file: &Path, _args: &[String]) -> Result<()> {
+        let mut backend = Self::new();
+        let source_file = backend.load_file(file)?;
+
+        // Execute the main function
+        let result = backend.execute_function(source_file, "main")?;
+
+        // Print the result if it's not unit
+        if result != "()" {
+            println!("{result}");
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for RavenBackend {
