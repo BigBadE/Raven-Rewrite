@@ -839,9 +839,10 @@ impl<'a> TypeInference<'a> {
                                     });
                                 }
 
-                                // Use expr_ty which is the inferred type from the actual expression
-                                // This is more likely to be concrete than declared_ty which might be a type variable
-                                field_tys.push((*field_name, expr_ty));
+                                // After unification, follow the substitution chain to get the most resolved type
+                                // Prefer expr_ty since it comes from actual expression inference
+                                let field_ty = self.ctx.follow_var(expr_ty);
+                                field_tys.push((*field_name, field_ty));
                             }
 
                             return self.ctx.types.alloc(TyKind::Struct {

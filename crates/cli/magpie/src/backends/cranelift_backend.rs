@@ -62,9 +62,12 @@ impl CraneliftBackend {
                 &hir_ctx.interner,
             );
 
-            // Run type inference on ALL functions before lowering any of them
+            // Run type inference on non-generic functions only
+            // Generic functions will be type-inferred during monomorphization with concrete types
             for (_func_id, func) in &hir_ctx.functions {
-                type_inference.infer_function(func);
+                if func.generics.is_empty() {
+                    type_inference.infer_function(func);
+                }
             }
 
             // Lower ONLY non-generic functions to MIR
