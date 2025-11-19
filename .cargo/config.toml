@@ -29,8 +29,9 @@ rustflags = [
     # Library search path for LLVM dependencies (zstd, xml2)
     "-Clink-arg=-L/home/user/Raven-Rewrite/target/lib",
 
-    # Dynamic linking for faster builds
-    "-Cprefer-dynamic",
+    # Dynamic linking for faster builds (disabled for LTO compatibility in release builds)
+    # Uncomment for faster dev builds if not using release profile:
+    # "-Cprefer-dynamic",
 
     # Nightly
     #"-Zshare-generics=y",
