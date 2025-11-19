@@ -107,10 +107,21 @@ impl<'ctx> LoweringContext<'ctx> {
             // Apply substitutions to resolve type variables
             let param_ty = if let Some(&ty_id) = ty_ctx.var_types.get(&param.name) {
                 let resolved_ty_id = ty_ctx.apply_subst(ty_id);
-                ctx.lower_type(resolved_ty_id)
+
+                // Check if the type is still a type variable after substitution
+                // If so, fall back to the HIR type annotation
+                if matches!(ty_ctx.types.get(resolved_ty_id).kind, rv_ty::TyKind::Var { .. }) {
+                    // Type inference didn't resolve this - use HIR type annotation
+                    let hir_ty = &hir_types[param.ty];
+                    ctx.lower_hir_type_recursive(hir_ty)
+                } else {
+                    // Type was successfully inferred
+                    ctx.lower_type(resolved_ty_id)
+                }
             } else {
-                // Fallback to Unit if type inference didn't track this parameter
-                MirType::Unit
+                // No type inference info - use HIR type annotation
+                let hir_ty = &hir_types[param.ty];
+                ctx.lower_hir_type_recursive(hir_ty)
             };
 
             let param_local = ctx.builder.new_local(Some(param.name), param_ty, false);
@@ -1082,7 +1093,51 @@ impl<'ctx> LoweringContext<'ctx> {
                 }
             }
             Type::Named { name, .. } => {
-                // Check if this is a primitive type by resolving the symbol
+                // def is None - try to look up by name
+                // First check if it's a struct or enum by name
+                let name_lookup = self.structs.iter()
+                    .find(|(_, s)| s.name == *name)
+                    .map(|(id, _)| *id)
+                    .or_else(|| {
+                        self.enums.iter()
+                            .find(|(_, e)| e.name == *name)
+                            .map(|(id, _)| *id)
+                    });
+
+                if let Some(def_id) = name_lookup {
+                    // Found a struct or enum - recursively convert it
+                    if let Some(struct_def) = self.structs.get(&def_id) {
+                        let field_types: Vec<MirType> = struct_def.fields
+                            .iter()
+                            .map(|field| {
+                                let field_hir_ty = &self.hir_types[field.ty];
+                                self.lower_hir_type_recursive(field_hir_ty)
+                            })
+                            .collect();
+
+                        return MirType::Struct {
+                            name: *name,
+                            fields: field_types,
+                        };
+                    } else if let Some(enum_def) = self.enums.get(&def_id) {
+                        let mir_variants: Vec<MirVariant> = enum_def.variants
+                            .iter()
+                            .map(|variant| {
+                                MirVariant {
+                                    name: variant.name,
+                                    fields: vec![],
+                                }
+                            })
+                            .collect();
+
+                        return MirType::Enum {
+                            name: *name,
+                            variants: mir_variants,
+                        };
+                    }
+                }
+
+                // Not found as struct/enum - check if it's a primitive type
                 let name_str = self.interner.resolve(name);
                 match name_str.as_str() {
                     "i64" | "i32" | "isize" => MirType::Int,
