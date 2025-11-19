@@ -650,25 +650,11 @@ impl<'ctx> LoweringContext<'ctx> {
             }
 
             Expr::Field { base, field, span } => {
-                eprintln!("DEBUG Field: Lowering field access for field '{}'", self.interner.resolve(field));
-
                 // Lower base expression
                 let base_local = self.lower_expr(body, *base);
-                eprintln!("DEBUG Field: base_local = {:?}", base_local);
 
                 // Get the type of the base expression from type inference
                 let base_ty_id = self.ty_ctx.get_expr_type(*base);
-                eprintln!("DEBUG Field: base TyId from type inference = {:?}", base_ty_id);
-                if let Some(ty_id) = base_ty_id {
-                    let ty_kind = &self.ty_ctx.types.get(ty_id).kind;
-                    eprintln!("DEBUG Field: base TyKind = {:?}", ty_kind);
-                    if let Ok(normalized_ty) = self.ty_ctx.normalize(ty_id) {
-                        let mir_ty = self.lower_type(normalized_ty);
-                        eprintln!("DEBUG Field: base MirType after lowering = {:?}", mir_ty);
-                    } else {
-                        eprintln!("DEBUG Field: Failed to normalize base type");
-                    }
-                }
 
                 // Resolve field name to index
                 let field_idx = if let Some(ty_id) = base_ty_id {
@@ -676,7 +662,6 @@ impl<'ctx> LoweringContext<'ctx> {
                 } else {
                     0 // Fallback
                 };
-                eprintln!("DEBUG Field: field_idx = {}", field_idx);
 
                 let field_place = Place {
                     local: base_local,
