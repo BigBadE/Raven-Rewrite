@@ -228,20 +228,29 @@ impl<'ctx> Unifier<'ctx> {
 
     /// Check if a type variable occurs in a type (for occurs check)
     fn occurs_in(&self, var: TyVarId, ty: TyId) -> bool {
-        let ty = self.ctx.apply_subst(ty);
-        let ty_kind = &self.ctx.types.get(ty).kind;
+        use crate::visitor::TypeVisitor;
 
-        match ty_kind {
-            TyKind::Var { id } => *id == var,
-            TyKind::Function { params, ret } => {
-                params.iter().any(|param| self.occurs_in(var, *param))
-                    || self.occurs_in(var, **ret)
-            }
-            TyKind::Tuple { elements } => elements.iter().any(|elem| self.occurs_in(var, *elem)),
-            TyKind::Ref { inner, .. } => self.occurs_in(var, **inner),
-            TyKind::Named { args, .. } => args.iter().any(|arg| self.occurs_in(var, *arg)),
-            _ => false,
+        struct OccursChecker {
+            var: TyVarId,
+            found: bool,
         }
+
+        impl TypeVisitor for OccursChecker {
+            type Output = ();
+
+            fn visit_var(&mut self, id: TyVarId, _ty_id: TyId, _ctx: &TyContext) {
+                if id == self.var {
+                    self.found = true;
+                }
+            }
+
+            fn default_output(&mut self, _ty_id: TyId, _ctx: &TyContext) {}
+        }
+
+        let ty = self.ctx.apply_subst(ty);
+        let mut checker = OccursChecker { var, found: false };
+        checker.visit_ty(ty, self.ctx);
+        checker.found
     }
 }
 

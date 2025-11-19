@@ -2,7 +2,8 @@
 //!
 //! Provides code quality metrics for HIR functions
 
-use rv_hir::{Body, Expr, ExprId, Function, Stmt, StmtId};
+use rv_hir::visitor::ExprVisitor;
+use rv_hir::{Body, BinaryOp, Expr, ExprId, Function, Stmt, StmtId};
 use serde::{Deserialize, Serialize};
 
 /// Metrics for a single function
@@ -24,92 +25,61 @@ pub struct FunctionMetrics {
     pub max_nesting_depth: usize,
 }
 
+/// Cyclomatic complexity visitor
+struct CyclomaticComplexityVisitor {
+    complexity: usize,
+}
+
+impl ExprVisitor for CyclomaticComplexityVisitor {
+    type Output = ();
+
+    fn visit_if(
+        &mut self,
+        condition: ExprId,
+        then_branch: ExprId,
+        else_branch: Option<ExprId>,
+        _expr_id: ExprId,
+        body: &Body,
+    ) {
+        self.complexity += 1;
+        self.visit_expr(condition, body);
+        self.visit_expr(then_branch, body);
+        if let Some(else_id) = else_branch {
+            self.visit_expr(else_id, body);
+        }
+    }
+
+    fn visit_match(&mut self, scrutinee: ExprId, arms: &[rv_hir::MatchArm], _expr_id: ExprId, body: &Body) {
+        self.complexity += arms.len().saturating_sub(1);
+        self.visit_expr(scrutinee, body);
+        for arm in arms {
+            self.visit_expr(arm.body, body);
+        }
+    }
+
+    fn visit_binary_op(
+        &mut self,
+        op: BinaryOp,
+        left: ExprId,
+        right: ExprId,
+        _expr_id: ExprId,
+        body: &Body,
+    ) {
+        if matches!(op, BinaryOp::And | BinaryOp::Or) {
+            self.complexity += 1;
+        }
+        self.visit_expr(left, body);
+        self.visit_expr(right, body);
+    }
+
+    fn default_output(&mut self, _expr_id: ExprId, _body: &Body) {}
+}
+
 /// Calculates cyclomatic complexity
 pub fn cyclomatic_complexity(body: &Body) -> usize {
-    cyclomatic_complexity_expr(body, body.root_expr)
-}
-
-fn cyclomatic_complexity_expr(body: &Body, expr_id: ExprId) -> usize {
-    let expr = &body.exprs[expr_id];
-    let mut complexity = 1;
-
-    match expr {
-        Expr::If { condition, then_branch, else_branch, .. } => {
-            complexity += 1;
-            complexity += cyclomatic_complexity_expr(body, *condition);
-            complexity += cyclomatic_complexity_expr(body, *then_branch);
-            if let Some(else_id) = else_branch {
-                complexity += cyclomatic_complexity_expr(body, *else_id);
-            }
-        }
-        Expr::Match { scrutinee, arms, .. } => {
-            complexity += arms.len().saturating_sub(1);
-            complexity += cyclomatic_complexity_expr(body, *scrutinee);
-            for arm in arms {
-                complexity += cyclomatic_complexity_expr(body, arm.body);
-            }
-        }
-        Expr::BinaryOp { op, left, right, .. } => {
-            if matches!(op, rv_hir::BinaryOp::And | rv_hir::BinaryOp::Or) {
-                complexity += 1;
-            }
-            complexity += cyclomatic_complexity_expr(body, *left);
-            complexity += cyclomatic_complexity_expr(body, *right);
-        }
-        Expr::UnaryOp { operand, .. } => {
-            complexity += cyclomatic_complexity_expr(body, *operand);
-        }
-        Expr::Block { statements, expr, .. } => {
-            for stmt_id in statements {
-                complexity += cyclomatic_complexity_stmt(body, *stmt_id);
-            }
-            if let Some(expr_id) = expr {
-                complexity += cyclomatic_complexity_expr(body, *expr_id);
-            }
-        }
-        Expr::Call { callee, args, .. } => {
-            complexity += cyclomatic_complexity_expr(body, *callee);
-            for arg_id in args {
-                complexity += cyclomatic_complexity_expr(body, *arg_id);
-            }
-        }
-        Expr::Field { base, .. } => {
-            complexity += cyclomatic_complexity_expr(body, *base);
-        }
-        Expr::MethodCall { receiver, args, .. } => {
-            complexity += cyclomatic_complexity_expr(body, *receiver);
-            for arg_id in args {
-                complexity += cyclomatic_complexity_expr(body, *arg_id);
-            }
-        }
-        Expr::StructConstruct { fields, .. } => {
-            for (_, field_expr) in fields {
-                complexity += cyclomatic_complexity_expr(body, *field_expr);
-            }
-        }
-        Expr::EnumVariant { fields, .. } => {
-            for field_expr in fields {
-                complexity += cyclomatic_complexity_expr(body, *field_expr);
-            }
-        }
-        Expr::Closure { body: closure_body, .. } => {
-            complexity += cyclomatic_complexity_expr(body, *closure_body);
-        }
-        Expr::Literal { .. } | Expr::Variable { .. } => {}
-    }
-
-    complexity
-}
-
-fn cyclomatic_complexity_stmt(body: &Body, stmt_id: StmtId) -> usize {
-    let stmt = &body.stmts[stmt_id];
-    match stmt {
-        Stmt::Let { initializer, .. } => {
-            initializer.map_or(0, |expr_id| cyclomatic_complexity_expr(body, expr_id))
-        }
-        Stmt::Expr { expr, .. } => cyclomatic_complexity_expr(body, *expr),
-        Stmt::Return { value, .. } => value.map_or(0, |expr_id| cyclomatic_complexity_expr(body, expr_id)),
-    }
+    let mut visitor = CyclomaticComplexityVisitor { complexity: 1 };
+    visitor.visit_expr(body.root_expr, body);
+    visitor.complexity
 }
 
 /// Calculates cognitive complexity

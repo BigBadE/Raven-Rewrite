@@ -4,6 +4,7 @@
 //! It's the first step after parsing and before type checking.
 
 pub mod exhaustiveness;
+pub mod visitor;
 
 use rv_arena::{Arena, Idx};
 use rv_intern::Symbol;
