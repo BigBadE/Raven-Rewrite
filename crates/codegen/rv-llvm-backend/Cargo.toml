@@ -17,7 +17,7 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 
 [build-dependencies]
-reqwest = { version = "0.12", features = ["blocking"] }
-zip = "2.1"
+# LLVM download happens BEFORE any dependencies compile
+rv-llvm-download = { path = "../rv-llvm-download" }
 
 [dev-dependencies]

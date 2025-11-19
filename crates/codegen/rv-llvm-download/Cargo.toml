@@ -1,0 +1,11 @@
+[package]
+name = "rv-llvm-download"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# No dependencies - this crate just downloads LLVM
+
+[build-dependencies]
+reqwest = { version = "0.12", features = ["blocking"] }
+zip = "2.1"

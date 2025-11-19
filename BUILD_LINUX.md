@@ -3,14 +3,10 @@
 ## Quick Start
 
 ```bash
-# One-time setup
-./download-llvm.sh
-
-# Build (works forever after this)
 cargo build
 ```
 
-That's it! The download script runs once, then all future builds just work with `cargo build`.
+That's it! LLVM downloads automatically on the first build.
 
 ## Prerequisites
 
@@ -25,17 +21,17 @@ sudo apt-get install clang lld
 
 ## How It Works
 
-The `download-llvm.sh` script:
+On the first build, `rv-llvm-backend/build.rs` automatically:
 - Downloads pre-built LLVM 18 for Linux x86_64 to `target/llvm/`
-- Creates library symlinks for libzstd and libxml2
-- Runs once - subsequent builds don't need it
+- Creates library symlinks for libzstd and libxml2 in `target/llvm/target/lib/`
+- Sets up everything for `llvm-sys` to find and link LLVM
 
 The `.cargo/config.toml` tells llvm-sys where to find LLVM:
 ```toml
 LLVM_SYS_180_PREFIX = { value = "target/llvm/target", relative = true }
 ```
 
-After the initial download, `cargo build` works automatically. The `llvm-sys` crate handles all linking.
+After the first build, LLVM is cached and subsequent builds are fast.
 
 ## Troubleshooting
 
@@ -48,9 +44,10 @@ If you see linker errors about missing `-lzstd` or `-lxml2`:
    ls -la target/llvm/target/lib/
    ```
 
-2. If not, run the download script again:
+2. If not, clean and rebuild (build.rs will recreate them):
    ```bash
-   ./download-llvm.sh
+   cargo clean
+   cargo build
    ```
 
 3. Or create them manually:
@@ -62,27 +59,26 @@ If you see linker errors about missing `-lzstd` or `-lxml2`:
 
 ### LLVM Not Found
 
-If llvm-sys can't find LLVM headers during build:
+If llvm-sys can't find LLVM:
 
-1. Ensure `target/llvm/target/` exists and contains LLVM files
-2. Run the download script if missing:
+1. Ensure you have internet access (for the first build)
+2. Try cleaning and rebuilding:
    ```bash
-   ./download-llvm.sh
+   cargo clean
+   cargo build
    ```
 
 ### How It Works (Technical Details)
 
-The build uses the `no-llvm-linking` feature:
+The build.rs automatically downloads LLVM:
 
-1. **inkwell** uses feature `llvm18-0-no-llvm-linking`
-2. This disables automatic LLVM linking by `llvm-sys`
-3. **rv-llvm-backend/build.rs** handles all linking instead:
-   - Downloads LLVM if not present
-   - Queries `llvm-config` for library information
-   - Emits correct `cargo:rustc-link-lib` directives
-   - Links system libraries (zstd, xml2, stdc++, etc.)
+1. **rv-llvm-backend/build.rs** runs before compilation
+2. Downloads LLVM 18 from GitHub releases if not already present
+3. Extracts to `target/llvm/`
+4. Creates library symlinks for libzstd and libxml2
+5. **llvm-sys** finds LLVM via `LLVM_SYS_180_PREFIX` and handles all linking
 
-This approach gives us full control over the linking process and works without dev packages.
+This approach works without dev packages and requires zero manual setup.
 
 ## Differences from Windows Build
 
