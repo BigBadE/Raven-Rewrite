@@ -120,6 +120,31 @@ impl<'a> TypeInference<'a> {
         traits: &'a std::collections::HashMap<TraitId, TraitDef>,
         interner: &'a rv_intern::Interner,
     ) -> Self {
+        Self::with_hir_context_and_tyctx(
+            impl_blocks,
+            functions,
+            hir_types,
+            structs,
+            enums,
+            traits,
+            interner,
+            TyContext::new(),
+        )
+    }
+
+    /// Create a type inference context with HIR context and a custom TyContext
+    /// This is useful for monomorphization where we need to pre-populate the TyContext
+    /// with concrete types for generic parameters
+    pub fn with_hir_context_and_tyctx(
+        impl_blocks: &'a std::collections::HashMap<rv_hir::ImplId, rv_hir::ImplBlock>,
+        functions: &'a std::collections::HashMap<rv_hir::FunctionId, rv_hir::Function>,
+        hir_types: &'a la_arena::Arena<rv_hir::Type>,
+        structs: &'a std::collections::HashMap<rv_hir::TypeDefId, rv_hir::StructDef>,
+        enums: &'a std::collections::HashMap<rv_hir::TypeDefId, rv_hir::EnumDef>,
+        traits: &'a std::collections::HashMap<TraitId, TraitDef>,
+        interner: &'a rv_intern::Interner,
+        ctx: TyContext,
+    ) -> Self {
         // Create bound checker with trait and impl information
         let bound_checker = BoundChecker::new(
             traits.clone(),
@@ -128,7 +153,7 @@ impl<'a> TypeInference<'a> {
         );
 
         Self {
-            ctx: TyContext::new(),
+            ctx,
             errors: vec![],
             scope_stack: vec![rustc_hash::FxHashMap::default()], // Start with one global scope
             impl_blocks: Some(impl_blocks),
@@ -366,6 +391,12 @@ impl<'a> TypeInference<'a> {
                         self.ctx.fresh_ty_var()
                     }
                 } else {
+                    // Check if it's a generic parameter with a substituted type (for monomorphization)
+                    if let Some(&ty_id) = self.ctx.var_types.get(name) {
+                        // This is a generic parameter (like T) with a concrete substitution
+                        return ty_id;
+                    }
+
                     // Check if it's a primitive type
                     let type_name = interner.resolve(name);
                     match type_name.as_str() {

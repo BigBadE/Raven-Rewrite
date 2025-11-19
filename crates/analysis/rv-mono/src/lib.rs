@@ -214,15 +214,46 @@ pub fn monomorphize_functions(
                 }
             }
 
-            // Use the global type context for MIR lowering
-            // The lower_function_with_subst handles type substitution directly without needing type inference
-            let mut ty_ctx_clone = _ty_ctx.clone();
+            // CRITICAL: Run type inference on the generic function with concrete types substituted
+            // Create a fresh type context for this monomorphized instance
+            let mut ty_ctx_clone = TyContext::new();
+
+            // Convert MirType to TyId and register in the new context for generic parameter substitution
+            for (param_name, mir_ty) in &type_subst {
+                let ty_id = match mir_ty {
+                    MirType::Int => ty_ctx_clone.types.int(),
+                    MirType::Float => ty_ctx_clone.types.float(),
+                    MirType::Bool => ty_ctx_clone.types.bool(),
+                    MirType::Unit => ty_ctx_clone.types.unit(),
+                    MirType::String => ty_ctx_clone.types.string(),
+                    _ => ty_ctx_clone.fresh_ty_var(), // For complex types, use type variable for now
+                };
+                ty_ctx_clone.var_types.insert(*param_name, ty_id);
+            }
+
+            // Run type inference on the generic function
+            // This populates expr_types in ty_ctx_clone, which lower_function_with_subst needs
+            use rv_ty::TypeInference;
+            let mut type_inference = TypeInference::with_hir_context_and_tyctx(
+                &hir_ctx.impl_blocks,
+                &hir_ctx.functions,
+                &hir_ctx.types,
+                &hir_ctx.structs,
+                &hir_ctx.enums,
+                &hir_ctx.traits,
+                &hir_ctx.interner,
+                ty_ctx_clone,
+            );
+            type_inference.infer_function(hir_func);
+            let inference_result = type_inference.finish();
+            let mut ty_ctx_with_inference = inference_result.ctx;
 
             // Lower to MIR with type substitution and unique instance ID
             // The type_subst map handles generic parameter substitution (T -> Int, etc.)
+            // The ty_ctx_with_inference has expression types from inference above
             let mir_func = rv_mir::lower::LoweringContext::lower_function_with_subst(
                 hir_func,
-                &mut ty_ctx_clone,
+                &mut ty_ctx_with_inference,
                 &hir_ctx.structs,
                 &hir_ctx.enums,
                 &hir_ctx.impl_blocks,
