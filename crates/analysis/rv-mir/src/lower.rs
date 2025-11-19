@@ -259,11 +259,14 @@ impl<'ctx> LoweringContext<'ctx> {
         }
 
         let expr = &body.exprs[expr_id];
-        let ty_id = self.ty_ctx.get_expr_type(expr_id).expect(
-            "Type inference failed to produce a type for expression. \
-            This indicates a bug in type inference - all expressions must have resolved types \
-            before MIR lowering."
-        );
+        let ty_id = self.ty_ctx.get_expr_type(expr_id).unwrap_or_else(|| {
+            panic!(
+                "Type inference failed to produce a type for expression: {:?} at {:?}. \
+                This indicates a bug in type inference - all expressions must have resolved types \
+                before MIR lowering.",
+                expr, expr_id
+            )
+        });
         let mir_ty = self.lower_type(ty_id);
 
         // Create a temporary for the result

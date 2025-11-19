@@ -195,6 +195,11 @@ pub fn monomorphize_functions(
 
         // Look up the HIR function
         if let Some(hir_func) = hir_ctx.functions.get(func_id) {
+            // Skip non-generic functions - they're already lowered and don't need monomorphization
+            if hir_func.generics.is_empty() {
+                continue;
+            }
+
             // Generate a unique FunctionId for this monomorphized instance
             let instance_id = FunctionId(next_func_id);
             next_func_id += 1;

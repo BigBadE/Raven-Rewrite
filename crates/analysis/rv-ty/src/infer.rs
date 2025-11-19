@@ -726,11 +726,12 @@ impl<'a> TypeInference<'a> {
                 };
 
                 // Try to find the method and get its return type
-                if let (Some(impl_blocks), Some(functions), Some(def_id)) =
+                let method_return_ty = if let (Some(impl_blocks), Some(functions), Some(def_id)) =
                     (self.impl_blocks, self.functions, type_def_id)
                 {
+                    let mut found_ty = None;
                     // Find impl blocks for this type
-                    for impl_block in impl_blocks.values() {
+                    'outer: for impl_block in impl_blocks.values() {
                         if impl_block.self_ty == rv_hir::TypeId::from_raw(la_arena::RawIdx::from(def_id.0)) {
                             // Check methods in this impl block
                             for &func_id in &impl_block.methods {
@@ -742,24 +743,29 @@ impl<'a> TypeInference<'a> {
                                             if let (Some(hir_types), Some(structs), Some(interner)) =
                                                 (self.hir_types, self.structs, self.interner)
                                             {
-                                                return self.hir_type_to_ty_id(
+                                                found_ty = Some(self.hir_type_to_ty_id(
                                                     return_type_id,
                                                     hir_types,
                                                     structs,
                                                     interner,
-                                                );
+                                                ));
                                             }
+                                        } else {
+                                            found_ty = Some(self.ctx.fresh_ty_var());
                                         }
-                                        return self.ctx.fresh_ty_var();
+                                        break 'outer;
                                     }
                                 }
                             }
                         }
                     }
-                }
+                    found_ty
+                } else {
+                    None
+                };
 
-                // Method not found or no context available
-                self.ctx.fresh_ty_var()
+                // Return the method type or a fresh type variable if not found
+                method_return_ty.unwrap_or_else(|| self.ctx.fresh_ty_var())
             }
 
             Expr::StructConstruct { def, fields, .. } => {

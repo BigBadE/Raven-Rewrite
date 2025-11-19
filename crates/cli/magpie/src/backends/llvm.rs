@@ -315,6 +315,17 @@ impl Backend for LLVMBackend {
             }
         }
 
+        // If there are no test functions, skip compilation
+        if test_functions.is_empty() {
+            messages.push("No test functions found".to_string());
+            return Ok(TestResult {
+                passed: 0,
+                failed: 0,
+                success: true,
+                messages,
+            });
+        }
+
         // Monomorphization: collect and generate generic instances
         use rv_mono::MonoCollector;
         let mut collector = MonoCollector::new();

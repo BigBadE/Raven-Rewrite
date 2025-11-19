@@ -136,8 +136,14 @@ pub fn infer_function_types(
         &hir_data.interner,
     );
 
-    // Run type inference on the function
-    type_inference.infer_function(&func_hir);
+    // Run type inference on ALL non-generic functions in the file
+    // Generic functions will be type-inferred during monomorphization with concrete types
+    // This ensures that all function signatures and types are available for cross-function calls
+    for (_func_id, func) in &hir_data.functions {
+        if func.generics.is_empty() {
+            type_inference.infer_function(func);
+        }
+    }
 
     // Extract results from type inference
     let result = type_inference.finish();

@@ -61,7 +61,11 @@ impl CraneliftBackend {
                 &hir_ctx.traits,
                 &hir_ctx.interner,
             );
-            type_inference.infer_function(function);
+
+            // Run type inference on ALL functions before lowering any of them
+            for (_func_id, func) in &hir_ctx.functions {
+                type_inference.infer_function(func);
+            }
 
             // Lower ALL functions to MIR (including called functions)
             let mut mir_functions = Vec::new();
