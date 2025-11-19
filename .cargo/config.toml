@@ -1,10 +1,9 @@
 # To switch to this for faster build times, copy it and rename it config.toml.
 
 [env]
-# Auto-download LLVM location
-# The build.rs in rv-llvm-backend will download LLVM to this location
-# Use absolute path for compatibility
-LLVM_SYS_180_PREFIX = "C:/current_projects/Raven-Rewrite/target/llvm/target"
+# LLVM location - downloaded by download-llvm.sh script
+# This must be set before building to avoid llvm-sys build issues
+LLVM_SYS_180_PREFIX = "/home/user/Raven-Rewrite/target/llvm/target"
 
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
@@ -16,7 +15,7 @@ rustflags = [
     # - Ubuntu: `sudo apt-get install lld clang`
     # - Fedora: `sudo dnf install lld clang`
     # - Arch: `sudo pacman -S lld clang`
-    #"-Clink-arg=-fuse-ld=lld",
+    "-Clink-arg=-fuse-ld=lld",
 
     # Mold linker
     #
@@ -25,7 +24,10 @@ rustflags = [
     # - Ubuntu: `sudo apt-get install mold clang`
     # - Fedora: `sudo dnf install mold clang`
     # - Arch: `sudo pacman -S mold clang`
-    "-Clink-arg=-fuse-ld=mold",
+    #"-Clink-arg=-fuse-ld=mold",
+
+    # Library search path for LLVM dependencies (zstd, xml2)
+    "-Clink-arg=-L/home/user/Raven-Rewrite/target/lib",
 
     # Dynamic linking for faster builds
     "-Cprefer-dynamic",
@@ -114,19 +116,14 @@ rustflags = ["-Z", "threads=8"]
 codegen-backend = true
 
 # Use cranelift for dev builds on non-Windows platforms only
-[target.x86_64-unknown-linux-gnu.profile.dev]
+[target.x86_64-unknown-linux-gnu.dev]
 codegen-backend = "cranelift"
 
-[target.x86_64-apple-darwin.profile.dev]
+[target.x86_64-apple-darwin.dev]
 codegen-backend = "cranelift"
 
-[target.aarch64-apple-darwin.profile.dev]
+[target.aarch64-apple-darwin.dev]
 codegen-backend = "cranelift"
 
-# Release builds use LLVM (default) and static linking
-[profile.release]
-# Remove prefer-dynamic for release builds - static linking
-# LLVM is the default codegen backend
-
-[llvm-cov]
-merge = true
+# Note: Release builds use LLVM (default) and static linking
+# Profile configuration is in workspace Cargo.toml
