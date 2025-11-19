@@ -875,7 +875,7 @@ impl<'a> TypeInference<'a> {
 
             Expr::StructConstruct { def, fields, .. } => {
                 // Create struct type if we have a type definition
-                if let Some(type_def_id) = def {
+                let result_ty = if let Some(type_def_id) = def {
                     // Look up the struct definition to get declared field types
                     if let Some(structs) = self.structs {
                         if let Some(struct_def) = structs.get(type_def_id) {
@@ -919,30 +919,45 @@ impl<'a> TypeInference<'a> {
                                 field_tys.push((*field_name, field_ty));
                             }
 
-                            return self.ctx.types.alloc(TyKind::Struct {
+                            self.ctx.types.alloc(TyKind::Struct {
                                 def_id: *type_def_id,
                                 fields: field_tys,
-                            });
+                            })
+                        } else {
+                            // Fallback: infer field types from expressions if struct def not available
+                            let field_tys: Vec<(rv_intern::Symbol, TyId)> = fields
+                                .iter()
+                                .map(|(name, field_expr)| {
+                                    let ty = self.infer_expr(body, *field_expr, None);
+                                    (*name, ty)
+                                })
+                                .collect();
+
+                            self.ctx.types.alloc(TyKind::Struct {
+                                def_id: *type_def_id,
+                                fields: field_tys,
+                            })
                         }
-                    }
+                    } else {
+                        // Fallback: infer field types from expressions if structs not available
+                        let field_tys: Vec<(rv_intern::Symbol, TyId)> = fields
+                            .iter()
+                            .map(|(name, field_expr)| {
+                                let ty = self.infer_expr(body, *field_expr, None);
+                                (*name, ty)
+                            })
+                            .collect();
 
-                    // Fallback: infer field types from expressions if struct def not available
-                    let field_tys: Vec<(rv_intern::Symbol, TyId)> = fields
-                        .iter()
-                        .map(|(name, field_expr)| {
-                            let ty = self.infer_expr(body, *field_expr, None);
-                            (*name, ty)
+                        self.ctx.types.alloc(TyKind::Struct {
+                            def_id: *type_def_id,
+                            fields: field_tys,
                         })
-                        .collect();
-
-                    self.ctx.types.alloc(TyKind::Struct {
-                        def_id: *type_def_id,
-                        fields: field_tys,
-                    })
+                    }
                 } else {
                     // No type definition resolved, create type variable
                     self.ctx.fresh_ty_var()
-                }
+                };
+                result_ty
             }
 
             Expr::EnumVariant { def, fields, .. } => {
@@ -957,17 +972,23 @@ impl<'a> TypeInference<'a> {
                     // Look up the enum name
                     if let Some(enums) = self.enums {
                         if let Some(enum_def) = enums.get(type_def_id) {
-                            return self.ctx.types.alloc(TyKind::Named {
+                            self.ctx.types.alloc(TyKind::Named {
                                 name: enum_def.name,
                                 def: *type_def_id,
                                 args: vec![],
-                            });
+                            })
+                        } else {
+                            // Fallback to type variable if enum def not found
+                            self.ctx.fresh_ty_var()
                         }
+                    } else {
+                        // Fallback to type variable if enums not available
+                        self.ctx.fresh_ty_var()
                     }
+                } else {
+                    // Fallback to type variable if enum def not resolved
+                    self.ctx.fresh_ty_var()
                 }
-
-                // Fallback to type variable if enum def not resolved
-                self.ctx.fresh_ty_var()
             }
 
             Expr::Closure { params, return_type, body: closure_body, captures, .. } => {
@@ -1060,7 +1081,6 @@ impl<'a> TypeInference<'a> {
         // Record expression type
         self.ctx.set_expr_type(expr_id, inferred_ty);
 
-        // Debug: log when storing types for Variable expressions
         inferred_ty
     }
 
