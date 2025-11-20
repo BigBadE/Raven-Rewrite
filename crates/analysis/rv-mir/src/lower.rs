@@ -102,16 +102,24 @@ impl<'ctx> LoweringContext<'ctx> {
 
         // Register function parameters FIRST so they get LocalId(0), LocalId(1), etc.
         // This matches the interpreter's expectation for parameter locals
-        for param in &function.parameters {
-            // ARCHITECTURE: Type inference is MANDATORY - no fallbacks
-            let ty_id = ctx.ty_ctx.var_types.get(&param.name)
-                .copied()
+        for (param_idx, param) in function.parameters.iter().enumerate() {
+            // ARCHITECTURE: Use DefId for type lookup (not Symbol name)
+            // This eliminates HashMap<Symbol, TyId> dependency
+            let local_id = rv_hir::LocalId(param_idx as u32);
+            let def_id = rv_hir::DefId::Local(local_id);
+
+            let ty_id = ctx.ty_ctx.get_def_type(def_id)
+                .or_else(|| {
+                    // Fallback: try name-based lookup for backward compatibility
+                    ctx.ty_ctx.var_types.get(&param.name).copied()
+                })
                 .unwrap_or_else(|| {
                     panic!(
-                        "COMPILER BUG: Parameter '{}' (function '{}') has no inferred type. \
+                        "COMPILER BUG: Parameter '{}' (function '{}', DefId={:?}) has no inferred type. \
                          Type inference must complete before MIR lowering.",
                         ctx.interner.resolve(&param.name),
-                        ctx.interner.resolve(&function.name)
+                        ctx.interner.resolve(&function.name),
+                        def_id
                     )
                 });
 
