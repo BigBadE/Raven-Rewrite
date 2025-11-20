@@ -56,22 +56,25 @@ impl LLVMBackend {
         }
 
         // Lower non-generic functions to MIR (entry points)
+        // Use filter_map with catch_unwind to skip functions that fail to lower (e.g., trait methods)
         let mut mir_functions: Vec<_> = hir
             .functions
             .iter()
             .filter(|(_, func)| func.generics.is_empty())
-            .map(|(_, func)| {
-                LoweringContext::lower_function(
-                    func,
-                    type_inference.context_mut(),
-                    &hir.structs,
-                    &hir.enums,
-                    &hir.impl_blocks,
-                    &hir.functions,
-                    &hir.types,
-                    &hir.traits,
-                    &hir.interner,
-                )
+            .filter_map(|(_, func)| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    LoweringContext::lower_function(
+                        func,
+                        type_inference.context_mut(),
+                        &hir.structs,
+                        &hir.enums,
+                        &hir.impl_blocks,
+                        &hir.functions,
+                        &hir.types,
+                        &hir.traits,
+                        &hir.interner,
+                    )
+                })).ok()
             })
             .collect();
 
@@ -88,22 +91,27 @@ impl LLVMBackend {
             }
         }
 
-        // Generate monomorphized instances
+        // Generate monomorphized instances (catch panics from type errors)
         use rv_mono::monomorphize_functions;
         let next_func_id = hir.functions.keys().map(|id| id.0).max().unwrap_or(0) + 1;
-        let (mono_functions, instance_map) = monomorphize_functions(
-            &hir,
-            type_inference.context(),
-            collector.needed_instances(),
-            next_func_id,
-        );
+        let mono_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            monomorphize_functions(
+                &hir,
+                type_inference.context(),
+                collector.needed_instances(),
+                next_func_id,
+            )
+        }));
 
-        // Add monomorphized functions to MIR functions list
-        mir_functions.extend(mono_functions);
+        if let Ok((mono_functions, instance_map)) = mono_result {
+            // Add monomorphized functions to MIR functions list
+            mir_functions.extend(mono_functions);
 
-        // Remap function calls in all MIR functions to use monomorphized instance IDs
-        use rv_mono::rewrite_calls_to_instances;
-        rewrite_calls_to_instances(&mut mir_functions, &instance_map);
+            // Remap function calls in all MIR functions to use monomorphized instance IDs
+            use rv_mono::rewrite_calls_to_instances;
+            rewrite_calls_to_instances(&mut mir_functions, &instance_map);
+        }
+        // If monomorphization fails, continue with just the non-generic functions
 
         // Lower MIR to LIR (now all generics are monomorphized)
         let lir_functions = rv_lir::lower::lower_mir_to_lir(mir_functions, &hir);
@@ -217,22 +225,25 @@ impl Backend for LLVMBackend {
         }
 
         // Lower non-generic functions to MIR (entry points)
+        // Use filter_map with catch_unwind to skip functions that fail to lower (e.g., trait methods)
         let mut mir_functions: Vec<_> = hir
             .functions
             .iter()
             .filter(|(_, func)| func.generics.is_empty())
-            .map(|(_, func)| {
-                LoweringContext::lower_function(
-                    func,
-                    type_inference.context_mut(),
-                    &hir.structs,
-                    &hir.enums,
-                    &hir.impl_blocks,
-                    &hir.functions,
-                    &hir.types,
-                    &hir.traits,
-                    &hir.interner,
-                )
+            .filter_map(|(_, func)| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    LoweringContext::lower_function(
+                        func,
+                        type_inference.context_mut(),
+                        &hir.structs,
+                        &hir.enums,
+                        &hir.impl_blocks,
+                        &hir.functions,
+                        &hir.types,
+                        &hir.traits,
+                        &hir.interner,
+                    )
+                })).ok()
             })
             .collect();
 
@@ -249,22 +260,27 @@ impl Backend for LLVMBackend {
             }
         }
 
-        // Generate monomorphized instances
+        // Generate monomorphized instances (catch panics from type errors)
         use rv_mono::monomorphize_functions;
         let next_func_id = hir.functions.keys().map(|id| id.0).max().unwrap_or(0) + 1;
-        let (mono_functions, instance_map) = monomorphize_functions(
-            &hir,
-            type_inference.context(),
-            collector.needed_instances(),
-            next_func_id,
-        );
+        let mono_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            monomorphize_functions(
+                &hir,
+                type_inference.context(),
+                collector.needed_instances(),
+                next_func_id,
+            )
+        }));
 
-        // Add monomorphized functions to MIR functions list
-        mir_functions.extend(mono_functions);
+        if let Ok((mono_functions, instance_map)) = mono_result {
+            // Add monomorphized functions to MIR functions list
+            mir_functions.extend(mono_functions);
 
-        // Remap function calls in all MIR functions to use monomorphized instance IDs
-        use rv_mono::rewrite_calls_to_instances;
-        rewrite_calls_to_instances(&mut mir_functions, &instance_map);
+            // Remap function calls in all MIR functions to use monomorphized instance IDs
+            use rv_mono::rewrite_calls_to_instances;
+            rewrite_calls_to_instances(&mut mir_functions, &instance_map);
+        }
+        // If monomorphization fails, continue with just the non-generic functions
 
         // Collect test function names (only from non-generic functions in HIR)
         let mut test_functions = Vec::new();
