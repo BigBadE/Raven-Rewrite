@@ -2,7 +2,7 @@
 
 use inkwell::context::Context;
 use inkwell::types::BasicTypeEnum;
-use rv_mir::MirType;
+use rv_lir::LirType;
 
 pub struct TypeLowering<'ctx> {
     context: &'ctx Context,
@@ -14,35 +14,24 @@ impl<'ctx> TypeLowering<'ctx> {
     }
 
     /// Lower a MIR type to an LLVM type
-    pub fn lower_type(&self, ty: &MirType) -> BasicTypeEnum<'ctx> {
+    pub fn lower_type(&self, ty: &LirType) -> BasicTypeEnum<'ctx> {
         match ty {
-            MirType::Int => self.context.i32_type().into(),
-            MirType::Float => self.context.f64_type().into(),
-            MirType::Bool => self.context.i32_type().into(), // Use i32 for booleans
-            MirType::String => {
+            LirType::Int => self.context.i32_type().into(),
+            LirType::Float => self.context.f64_type().into(),
+            LirType::Bool => self.context.i32_type().into(), // Use i32 for booleans
+            LirType::String => {
                 // String as pointer to i8 array
                 self.context.ptr_type(inkwell::AddressSpace::default()).into()
             }
-            MirType::Unit => {
+            LirType::Unit => {
                 // Unit type as i32(0) for simplicity
                 self.context.i32_type().into()
             }
-            MirType::Named(name) => {
-                // Named types should have been resolved during MIR lowering
-                // If we hit this, it's a bug in type resolution
-                panic!(
-                    "Unresolved named type in LLVM codegen: {:?}. \
-                    This indicates a bug in MIR lowering - primitive types should be resolved to \
-                    MirType::Int/Float/Bool/String, and user-defined types should be resolved to \
-                    MirType::Struct/Enum.",
-                    name
-                )
-            }
-            MirType::Function { .. } => {
+            LirType::Function { .. } => {
                 // Function types become function pointers
                 self.context.ptr_type(inkwell::AddressSpace::default()).into()
             }
-            MirType::Struct { fields, .. } => {
+            LirType::Struct { fields, .. } => {
                 // Create proper LLVM struct type with field layout
                 let field_types: Vec<BasicTypeEnum<'ctx>> = fields
                     .iter()
@@ -51,19 +40,19 @@ impl<'ctx> TypeLowering<'ctx> {
 
                 self.context.struct_type(&field_types, false).into()
             }
-            MirType::Enum { .. } => {
+            LirType::Enum { .. } => {
                 // Enum types as i32 (discriminant) for now
                 self.context.i32_type().into()
             }
-            MirType::Array { .. } => {
+            LirType::Array { .. } => {
                 // Array types as pointers for now
                 self.context.ptr_type(inkwell::AddressSpace::default()).into()
             }
-            MirType::Slice { .. } => {
+            LirType::Slice { .. } => {
                 // Slice types as pointers for now
                 self.context.ptr_type(inkwell::AddressSpace::default()).into()
             }
-            MirType::Tuple(elements) => {
+            LirType::Tuple(elements) => {
                 // Create proper LLVM struct type for tuples
                 if elements.is_empty() {
                     // Empty tuple = unit type
@@ -76,7 +65,7 @@ impl<'ctx> TypeLowering<'ctx> {
                     self.context.struct_type(&element_types, false).into()
                 }
             }
-            MirType::Ref { .. } => {
+            LirType::Ref { .. } => {
                 // Reference types become pointers
                 self.context.ptr_type(inkwell::AddressSpace::default()).into()
             }

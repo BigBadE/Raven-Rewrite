@@ -46,6 +46,7 @@ rv-borrow-check = { path = "crates/analysis/rv-borrow-check" }
 rv-interpreter = { path = "crates/codegen/rv-interpreter" }
 rv-cranelift = { path = "crates/codegen/rv-cranelift" }
 rv-llvm-backend = { path = "crates/codegen/rv-llvm-backend" }
+rv-lir = { path = "crates/codegen/rv-lir" }
 rv-mono = { path = "crates/analysis/rv-mono" }
 
 # Internal crates - analyzer

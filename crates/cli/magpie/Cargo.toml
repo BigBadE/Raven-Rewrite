@@ -26,6 +26,7 @@ rv-parser = { path = "../../parser/rv-parser" }
 rv-hir-lower = { path = "../../analysis/rv-hir-lower" }
 rv-ty = { path = "../../analysis/rv-ty" }
 rv-mir = { path = "../../analysis/rv-mir" }
+rv-lir = { path = "../../codegen/rv-lir" }
 rv-interpreter = { path = "../../codegen/rv-interpreter" }
 rv-cranelift = { path = "../../codegen/rv-cranelift" }
 rv-llvm-backend = { path = "../../codegen/rv-llvm-backend" }

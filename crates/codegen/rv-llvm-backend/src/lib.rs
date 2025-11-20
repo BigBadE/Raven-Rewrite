@@ -1,7 +1,9 @@
 //! LLVM backend for Raven
 //!
 //! This crate provides code generation using LLVM through the inkwell library.
-//! It translates MIR (Mid-level IR) into LLVM IR and performs optimization.
+//! It translates LIR (Low-level IR) into LLVM IR and performs optimization.
+//!
+//! LIR is fully monomorphized - the type system guarantees no generic functions reach this backend.
 //!
 //! LLVM is automatically downloaded during build.
 
@@ -12,22 +14,25 @@ pub use codegen::LLVMBackend;
 
 use anyhow::Result;
 use rv_hir::{ExternalFunction, FunctionId};
-use rv_mir::MirFunction;
+use rv_lir::LirFunction;
 use std::collections::HashMap;
 use std::path::Path;
 
-/// Compile MIR to native code using LLVM
+/// Compile LIR to native code using LLVM
+///
+/// Type system guarantee: LirFunction cannot contain generic functions.
+/// All monomorphization has already been performed.
 pub fn compile_to_native(
-    functions: &[MirFunction],
+    functions: &[LirFunction],
     output_path: &Path,
     opt_level: OptLevel,
 ) -> Result<()> {
     compile_to_native_with_externals(functions, &HashMap::new(), output_path, opt_level)
 }
 
-/// Compile MIR to native code with external function support
+/// Compile LIR to native code with external function support
 pub fn compile_to_native_with_externals(
-    functions: &[MirFunction],
+    functions: &[LirFunction],
     external_functions: &HashMap<FunctionId, ExternalFunction>,
     output_path: &Path,
     opt_level: OptLevel,
@@ -147,8 +152,8 @@ fn link_object_to_executable(obj_path: &Path, output_path: &Path, entry_point: &
     }
 }
 
-/// Compile MIR to LLVM IR (text representation)
-pub fn compile_to_llvm_ir(functions: &[MirFunction], opt_level: OptLevel) -> Result<String> {
+/// Compile LIR to LLVM IR (text representation)
+pub fn compile_to_llvm_ir(functions: &[LirFunction], opt_level: OptLevel) -> Result<String> {
     let backend = LLVMBackend::new("raven_module", opt_level)?;
 
     backend.compile_functions(functions)?;

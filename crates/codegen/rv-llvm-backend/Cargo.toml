@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 rv-hir = { workspace = true }
-rv-mir = { workspace = true }
+rv-lir = { workspace = true }
 rv-intern = { workspace = true }
 rv-span = { workspace = true }
 
