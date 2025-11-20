@@ -43,6 +43,10 @@ fn lower_mir_function(mir: &rv_mir::MirFunction) -> LirFunction {
 
 fn lower_local(local: &rv_mir::Local) -> Local {
     let lir_ty = lower_type(&local.ty);
+    if local.id.0 == 0 {  // First local (likely a parameter)
+        eprintln!("[LIR LOCAL] local_id={:?}, mir_ty={:?}, lir_ty={:?}",
+            local.id, local.ty, lir_ty);
+    }
     Local {
         id: LocalId(local.id.0),
         name: local.name,

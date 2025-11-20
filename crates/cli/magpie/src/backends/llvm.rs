@@ -49,6 +49,7 @@ impl LLVMBackend {
 
         // Infer types for non-generic functions (entry points)
         // Generic functions will have types inferred during monomorphization
+        eprintln!("[LLVM BACKEND] Running type inference");
         for (_, func) in &hir.functions {
             if func.generics.is_empty() {
                 type_inference.infer_function(func);
@@ -58,6 +59,7 @@ impl LLVMBackend {
 
         // Lower non-generic functions to MIR (entry points)
         // Use filter_map with catch_unwind to skip functions that fail to lower (e.g., trait methods)
+        eprintln!("[LLVM BACKEND] Lowering to MIR");
         let mut mir_functions: Vec<_> = hir
             .functions
             .iter()
@@ -219,6 +221,7 @@ impl Backend for LLVMBackend {
 
         // Infer types for non-generic functions (entry points)
         // Generic functions will have types inferred during monomorphization
+        eprintln!("[LLVM BACKEND] Running type inference");
         for (_, func) in &hir.functions {
             if func.generics.is_empty() {
                 type_inference.infer_function(func);
@@ -228,6 +231,7 @@ impl Backend for LLVMBackend {
 
         // Lower non-generic functions to MIR (entry points)
         // Use filter_map with catch_unwind to skip functions that fail to lower (e.g., trait methods)
+        eprintln!("[LLVM BACKEND] Lowering to MIR");
         let mut mir_functions: Vec<_> = hir
             .functions
             .iter()

@@ -377,6 +377,12 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
     }
 
     fn build(&mut self) -> Result<()> {
+        eprintln!("[LLVM BUILD] Building function {:?} with {} locals", self.mir_func.id, self.mir_func.locals.len());
+        for (i, local) in self.mir_func.locals.iter().enumerate() {
+            if i < 5 {  // Only print first 5 locals
+                eprintln!("[LLVM BUILD]   local[{}]: id={:?}, ty={:?}", i, local.id, local.ty);
+            }
+        }
         let context = self.compiler.context;
 
         // Create all basic blocks
@@ -931,6 +937,7 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
     fn get_place(&self, place: &Place) -> Result<BasicValueEnum<'ctx>> {
         use rv_lir::PlaceElem;
 
+        eprintln!("[LLVM PLACE DETAILS] place={:?}", place);
         // Get the base local
         if let Some(mut local_val) = self.locals.get(&place.local).copied() {
             // Get the type of the base local for tracking through projections
@@ -939,6 +946,7 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
                 .find(|l| l.id == place.local)
                 .ok_or_else(|| anyhow::anyhow!("Unknown local: {:?}", place.local))?;
 
+            eprintln!("[LLVM PLACE] Getting place for local={:?}, type={:?}", place.local, local_info.ty);
             let mut current_type = &local_info.ty;
 
             // Handle projections (field access, array indexing, etc.)
@@ -947,8 +955,10 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
                     PlaceElem::Field { field_idx } => {
                         // Use GEP (GetElementPtr) to access struct field
                         if let BasicValueEnum::PointerValue(ptr_val) = local_val {
+                            eprintln!("[LLVM FIELD] Accessing field {} on type: {:?}", field_idx, current_type);
                             // Get the LLVM type from the MIR type
                             let basic_type = self.type_lowering().lower_type(current_type);
+                            eprintln!("[LLVM FIELD] Lowered to LLVM type: {:?}", basic_type);
 
                             // Extract the actual struct type from BasicTypeEnum
                             if let BasicTypeEnum::StructType(struct_type) = basic_type {

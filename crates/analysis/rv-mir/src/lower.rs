@@ -106,23 +106,33 @@ impl<'ctx> LoweringContext<'ctx> {
             // Look up the parameter type from type inference var_types
             // Normalize to resolve type variables through substitution chains
             let param_ty = if let Some(&ty_id) = ctx.ty_ctx.var_types.get(&param.name) {
+                eprintln!("[MIR TYPE] Param '{}' found in var_types, ty_id={:?}",
+                    ctx.interner.resolve(&param.name), ty_id);
                 // Use normalize() to follow the full substitution chain
                 match ctx.ty_ctx.normalize(ty_id) {
                     Ok(normalized_ty) => {
                         // Type was successfully normalized
                         let mir_ty = ctx.lower_type(normalized_ty);
+                        eprintln!("[MIR TYPE]   Normalized to MirType::{:?}", mir_ty);
                         mir_ty
                     }
                     Err(_) => {
+                        eprintln!("[MIR TYPE]   Normalization failed, using HIR type");
                         // Normalization failed (unresolved variable) - use HIR type annotation
                         let hir_ty = &hir_types[param.ty];
-                        ctx.lower_hir_type_recursive(hir_ty)
+                        let mir_ty = ctx.lower_hir_type_recursive(hir_ty);
+                        eprintln!("[MIR TYPE]   HIR type lowered to MirType::{:?}", mir_ty);
+                        mir_ty
                     }
                 }
             } else {
+                eprintln!("[MIR TYPE] Param '{}' NOT in var_types, using HIR type annotation",
+                    ctx.interner.resolve(&param.name));
                 // No type inference info - use HIR type annotation
                 let hir_ty = &hir_types[param.ty];
-                ctx.lower_hir_type_recursive(hir_ty)
+                let mir_ty = ctx.lower_hir_type_recursive(hir_ty);
+                eprintln!("[MIR TYPE]   HIR type lowered to MirType::{:?}", mir_ty);
+                mir_ty
             };
 
             let param_local = ctx.builder.new_local(Some(param.name), param_ty, false);
