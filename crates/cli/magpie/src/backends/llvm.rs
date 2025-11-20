@@ -49,19 +49,14 @@ impl LLVMBackend {
 
         // ARCHITECTURE: Type inference is MANDATORY before MIR lowering
         // ALL non-generic functions must have types inferred here
-        eprintln!("[LLVM BACKEND] Running type inference on {} functions", hir.functions.len());
-
-        for (func_id, func) in &hir.functions {
+        for (_, func) in &hir.functions {
             if func.generics.is_empty() {
-                eprintln!("[LLVM BACKEND] Inferring '{}' (FunctionId({:?}))",
-                    hir.interner.resolve(&func.name), func_id);
                 type_inference.infer_function(func);
             }
         }
 
         // Lower non-generic functions to MIR (entry points)
         // Use filter_map with catch_unwind to skip functions that fail to lower (e.g., trait methods)
-        eprintln!("[LLVM BACKEND] Lowering to MIR");
         let mut mir_functions: Vec<_> = hir
             .functions
             .iter()
@@ -223,19 +218,14 @@ impl Backend for LLVMBackend {
 
         // ARCHITECTURE: Type inference is MANDATORY before MIR lowering
         // ALL non-generic functions must have types inferred here
-        eprintln!("[LLVM BACKEND] Running type inference on {} functions", hir.functions.len());
-
-        for (func_id, func) in &hir.functions {
+        for (_, func) in &hir.functions {
             if func.generics.is_empty() {
-                eprintln!("[LLVM BACKEND] Inferring '{}' (FunctionId({:?}))",
-                    hir.interner.resolve(&func.name), func_id);
                 type_inference.infer_function(func);
             }
         }
 
         // Lower non-generic functions to MIR (entry points)
         // Use filter_map with catch_unwind to skip functions that fail to lower (e.g., trait methods)
-        eprintln!("[LLVM BACKEND] Lowering to MIR");
         let mut mir_functions: Vec<_> = hir
             .functions
             .iter()

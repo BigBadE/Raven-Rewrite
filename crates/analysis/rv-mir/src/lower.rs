@@ -103,47 +103,29 @@ impl<'ctx> LoweringContext<'ctx> {
         // Register function parameters FIRST so they get LocalId(0), LocalId(1), etc.
         // This matches the interpreter's expectation for parameter locals
         for param in &function.parameters {
-            // ARCHITECTURE CHANGE: Type inference is now MANDATORY - no fallbacks
-            // This ensures type correctness and surfaces bugs immediately
+            // ARCHITECTURE: Type inference is MANDATORY - no fallbacks
             let ty_id = ctx.ty_ctx.var_types.get(&param.name)
                 .copied()
                 .unwrap_or_else(|| {
                     panic!(
-                        "COMPILER BUG: Parameter '{}' (function '{}') has no inferred type.\n\
-                         Type inference must complete before MIR lowering.\n\
-                         This indicates:\n\
-                         1. Type inference didn't run, OR\n\
-                         2. Type inference failed to populate var_types, OR\n\
-                         3. Pipeline ordering violation (MIR before type check)\n\
-                         \n\
-                         All parameters: {:?}",
+                        "COMPILER BUG: Parameter '{}' (function '{}') has no inferred type. \
+                         Type inference must complete before MIR lowering.",
                         ctx.interner.resolve(&param.name),
-                        ctx.interner.resolve(&function.name),
-                        function.parameters.iter()
-                            .map(|p| ctx.interner.resolve(&p.name))
-                            .collect::<Vec<_>>()
+                        ctx.interner.resolve(&function.name)
                     )
                 });
-
-            eprintln!("[MIR TYPE] Param '{}' has ty_id={:?}",
-                ctx.interner.resolve(&param.name), ty_id);
 
             // Normalize to resolve type variables (must succeed after inference)
             let normalized_ty = ctx.ty_ctx.normalize(ty_id)
                 .unwrap_or_else(|_| {
                     panic!(
-                        "COMPILER BUG: Failed to normalize parameter '{}' type.\n\
-                         Type contains unresolved variables after inference.\n\
-                         ty_id={:?}\n\
-                         This indicates incomplete type inference.",
+                        "COMPILER BUG: Failed to normalize parameter '{}' type (ty_id={:?})",
                         ctx.interner.resolve(&param.name),
                         ty_id
                     )
                 });
 
             let mir_ty = ctx.lower_type(normalized_ty);
-            eprintln!("[MIR TYPE]   Normalized to MirType::{:?}", mir_ty);
-
             let param_local = ctx.builder.new_local(Some(param.name), mir_ty, false);
             ctx.var_locals.insert(param.name, param_local);
         }

@@ -262,8 +262,11 @@ pub struct ExternalFunction {
 pub struct Parameter {
     /// Parameter name
     pub name: Symbol,
-    /// Parameter type
+    /// Parameter type (HIR type annotation)
     pub ty: TypeId,
+    /// Inferred type (populated by type inference)
+    /// ARCHITECTURE: This is the single source of truth after type inference completes
+    pub inferred_ty: Option<rv_ty_id::TyId>,
     /// Source location
     pub span: FileSpan,
 }

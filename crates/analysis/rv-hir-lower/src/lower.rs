@@ -1511,6 +1511,7 @@ fn parse_parameters(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Paramet
         if let Some(self_ty) = ctx.current_impl_self_ty {
             let name_sym = ctx.intern("self");
             params.push(Parameter {
+                inferred_ty: None,
                 name: name_sym,
                 ty: self_ty,
                 span: ctx.file_span(node),
@@ -1540,6 +1541,7 @@ fn parse_parameters(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Paramet
 
                 if let Some(type_id) = param_type_id {
                     params.push(Parameter {
+                inferred_ty: None,
                         name: name_sym,
                         ty: type_id,
                         span: ctx.file_span(child),
@@ -1578,6 +1580,7 @@ fn parse_parameters(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Paramet
                     params.push(Parameter {
                         name,
                         ty: type_id,
+                        inferred_ty: None,
                         span: ctx.file_span(child),
                     });
                 }
@@ -2014,6 +2017,7 @@ fn lower_trait_method(
                         params.push(Parameter {
                             name: param_name,
                             ty: param_ty,
+                            inferred_ty: None,
                             span: ctx.file_span(param_child),
                         });
                     }
@@ -2152,6 +2156,7 @@ fn lower_closure(
                         params.push(Parameter {
                             name: param_name,
                             ty: param_ty,
+                            inferred_ty: None,
                             span: ctx.file_span(param_child),
                         });
                     }

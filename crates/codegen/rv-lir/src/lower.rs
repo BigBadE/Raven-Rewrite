@@ -26,22 +26,11 @@ pub fn lower_mir_to_lir(
 
 /// Lower a single MIR function to LIR
 fn lower_mir_function(mir: &rv_mir::MirFunction) -> LirFunction {
-    eprintln!("[LIR FUNCTION] Lowering function FunctionId({}) with {} locals",
-        mir.id.0, mir.locals.len());
-
-    let lir_locals: Vec<Local> = mir.locals.iter().map(lower_local).collect();
-
-    // Debug: print all locals
-    for (idx, (mir_local, lir_local)) in mir.locals.iter().zip(&lir_locals).enumerate() {
-        eprintln!("[LIR LOCAL {}] name={:?}, mir_ty={:?}, lir_ty={:?}",
-            idx, mir_local.name, mir_local.ty, lir_local.ty);
-    }
-
     LirFunction {
         id: mir.id,
         entry_block: mir.entry_block,
         param_count: mir.param_count,
-        locals: lir_locals,
+        locals: mir.locals.iter().map(lower_local).collect(),
         basic_blocks: mir.basic_blocks.iter().enumerate().map(|(id, bb)| {
             BasicBlock {
                 id,
@@ -53,16 +42,10 @@ fn lower_mir_function(mir: &rv_mir::MirFunction) -> LirFunction {
 }
 
 fn lower_local(local: &rv_mir::Local) -> Local {
-    let lir_ty = lower_type(&local.ty);
-    // Debug: Print all locals for get_value function
-    if local.name.map(|n| format!("{:?}", n).contains("self")).unwrap_or(false) {
-        eprintln!("[LIR LOCAL DEBUG] local_id={:?}, name={:?}, mir_ty={:?}, lir_ty={:?}",
-            local.id, local.name, local.ty, lir_ty);
-    }
     Local {
         id: LocalId(local.id.0),
         name: local.name,
-        ty: lir_ty,
+        ty: lower_type(&local.ty),
         mutable: local.mutable,
     }
 }
