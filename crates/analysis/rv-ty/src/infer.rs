@@ -289,43 +289,23 @@ impl<'a> TypeInference<'a> {
             }
         });
 
-        // Initialize parameter types from HIR type annotations using resolution results
-        if function.body.resolution.is_some() {
-            // Use resolved LocalIds from name resolution
-            for (param_idx, param) in function.parameters.iter().enumerate() {
-                // Convert HIR TypeId to inference TyId
-                let param_ty = if let (Some(hir_types), Some(structs), Some(interner)) =
-                    (self.hir_types, self.structs, self.interner)
-                {
-                    self.hir_type_to_ty_id(param.ty, hir_types, structs, interner)
-                } else {
-                    // Fallback to fresh type variable if no HIR context
-                    self.ctx.fresh_ty_var()
-                };
+        // ARCHITECTURE: Initialize parameter types from HIR type annotations
+        // NO fallbacks - HIR context is REQUIRED for type inference
+        let hir_types = self.hir_types.expect("HIR types required for type inference");
+        let structs = self.structs.expect("Structs required for type inference");
+        let interner = self.interner.expect("Interner required for type inference");
 
-                // Store type by LocalId (from resolution) instead of by name
-                let local_id = rv_hir::LocalId(param_idx as u32);
-                let def_id = rv_hir::DefId::Local(local_id);
-                self.ctx.set_def_type(def_id, param_ty);
+        for (param_idx, param) in function.parameters.iter().enumerate() {
+            // Convert HIR TypeId to inference TyId
+            let param_ty = self.hir_type_to_ty_id(param.ty, hir_types, structs, interner);
 
-                // Keep name-based lookup for backward compatibility
-                self.insert_var(param.name, param_ty);
-                self.ctx.var_types.insert(param.name, param_ty);
-            }
-        } else {
-            // Fallback: old behavior if no resolution available
-            for param in &function.parameters {
-                let param_ty = if let (Some(hir_types), Some(structs), Some(interner)) =
-                    (self.hir_types, self.structs, self.interner)
-                {
-                    self.hir_type_to_ty_id(param.ty, hir_types, structs, interner)
-                } else {
-                    self.ctx.fresh_ty_var()
-                };
+            // ARCHITECTURE: Store type by DefId (structured ID, not Symbol name)
+            let local_id = rv_hir::LocalId(param_idx as u32);
+            let def_id = rv_hir::DefId::Local(local_id);
+            self.ctx.set_def_type(def_id, param_ty);
 
-                self.insert_var(param.name, param_ty);
-                self.ctx.var_types.insert(param.name, param_ty);
-            }
+            // Also keep in var map for local variable tracking
+            self.insert_var(param.name, param_ty);
         }
 
         // Infer body
@@ -391,11 +371,8 @@ impl<'a> TypeInference<'a> {
                         self.ctx.fresh_ty_var()
                     }
                 } else {
-                    // Check if it's a generic parameter with a substituted type (for monomorphization)
-                    if let Some(&ty_id) = self.ctx.var_types.get(name) {
-                        // This is a generic parameter (like T) with a concrete substitution
-                        return ty_id;
-                    }
+                    // ARCHITECTURE NOTE: For generic parameters (like T), monomorphization
+                    // should pass substitutions via lower_function_with_subst, not var_types
 
                     // Check if it's a primitive type
                     let type_name = interner.resolve(name);
@@ -1041,7 +1018,6 @@ impl<'a> TypeInference<'a> {
 
                     // Register parameter in current scope
                     self.insert_var(param.name, param_ty);
-                    self.ctx.var_types.insert(param.name, param_ty);
                     param_tys.push(param_ty);
                 }
 
@@ -1151,8 +1127,6 @@ impl<'a> TypeInference<'a> {
                     let pat = &body.patterns[*pattern];
                     if let rv_hir::Pattern::Binding { name, mutable: pat_mutable, .. } = pat {
                         self.insert_var(*name, init_ty);
-                        // Also store in context for MIR lowering
-                        self.ctx.var_types.insert(*name, init_ty);
                         // Track variable mutability (from either let mut or pattern)
                         let is_mutable = *mutable || *pat_mutable;
                         self.insert_var_mutability(*name, is_mutable);

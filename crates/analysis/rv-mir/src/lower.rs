@@ -108,15 +108,12 @@ impl<'ctx> LoweringContext<'ctx> {
             let local_id = rv_hir::LocalId(param_idx as u32);
             let def_id = rv_hir::DefId::Local(local_id);
 
+            // ARCHITECTURE: STRICT - No fallbacks, DefId lookup only
             let ty_id = ctx.ty_ctx.get_def_type(def_id)
-                .or_else(|| {
-                    // Fallback: try name-based lookup for backward compatibility
-                    ctx.ty_ctx.var_types.get(&param.name).copied()
-                })
                 .unwrap_or_else(|| {
                     panic!(
                         "COMPILER BUG: Parameter '{}' (function '{}', DefId={:?}) has no inferred type. \
-                         Type inference must complete before MIR lowering.",
+                         Type inference MUST populate def_types before MIR lowering.",
                         ctx.interner.resolve(&param.name),
                         ctx.interner.resolve(&function.name),
                         def_id
@@ -179,38 +176,36 @@ impl<'ctx> LoweringContext<'ctx> {
         builder.set_param_count(function.parameters.len());
         let mut ctx = Self::new(builder, ty_ctx, structs, enums, impl_blocks, functions, hir_types, traits, interner);
 
-        // Register function parameters with concrete types from substitution map
-        for param in &function.parameters {
+        // ARCHITECTURE: Register parameters with types from DefId lookup + substitution
+        for (param_idx, param) in function.parameters.iter().enumerate() {
             // Get the HIR type to check if it's a generic parameter
             let hir_ty = &hir_types[param.ty];
 
             // Determine the MIR type for this parameter
             let param_ty = if let Type::Named { name, .. } = hir_ty {
                 // Check if this named type is a generic parameter with a substitution
-                if let Some(concrete_ty) = type_subst.get(&name) {
+                if let Some(concrete_ty) = type_subst.get(name) {
                     // Use the concrete type from substitution (e.g., T -> Int)
                     concrete_ty.clone()
                 } else {
-                    // Not a generic parameter, look up from type context
-                    if let Some(&ty_id) = ctx.ty_ctx.var_types.get(&param.name) {
-                        match ctx.ty_ctx.normalize(ty_id) {
-                            Ok(normalized_ty) => ctx.lower_type(normalized_ty),
-                            Err(_) => MirType::Unit,
-                        }
-                    } else {
-                        MirType::Unit
-                    }
+                    // ARCHITECTURE: Use DefId lookup (no Symbol-based fallbacks)
+                    let local_id = rv_hir::LocalId(param_idx as u32);
+                    let def_id = rv_hir::DefId::Local(local_id);
+
+                    ctx.ty_ctx.get_def_type(def_id)
+                        .and_then(|ty_id| ctx.ty_ctx.normalize(ty_id).ok())
+                        .map(|normalized_ty| ctx.lower_type(normalized_ty))
+                        .unwrap_or(MirType::Unit)
                 }
             } else {
-                // Not a named type, look up from type context normally
-                if let Some(&ty_id) = ctx.ty_ctx.var_types.get(&param.name) {
-                    match ctx.ty_ctx.normalize(ty_id) {
-                        Ok(normalized_ty) => ctx.lower_type(normalized_ty),
-                        Err(_) => MirType::Unit,
-                    }
-                } else {
-                    MirType::Unit
-                }
+                // ARCHITECTURE: Use DefId lookup (no Symbol-based fallbacks)
+                let local_id = rv_hir::LocalId(param_idx as u32);
+                let def_id = rv_hir::DefId::Local(local_id);
+
+                ctx.ty_ctx.get_def_type(def_id)
+                    .and_then(|ty_id| ctx.ty_ctx.normalize(ty_id).ok())
+                    .map(|normalized_ty| ctx.lower_type(normalized_ty))
+                    .unwrap_or(MirType::Unit)
             };
 
             let param_local = ctx.builder.new_local(Some(param.name), param_ty, false);

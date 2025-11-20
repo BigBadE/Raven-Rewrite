@@ -82,6 +82,14 @@ pub enum NormalizeError {
 }
 
 /// Type checking context
+/// Type context for type inference and checking
+///
+/// ARCHITECTURE: This is the single source of truth for all types in the compiler.
+/// - `def_types`: Maps DefId (Function, Local, Type) to their inferred types
+/// - `expr_types`: Maps expression IDs to their inferred types
+/// - `subst`: Type variable solutions from unification
+///
+/// NO Symbol-based lookups - everything uses structured IDs (DefId, ExprId)
 #[derive(Debug, Clone, PartialEq)]
 pub struct TyContext {
     /// Type arena
@@ -92,10 +100,8 @@ pub struct TyContext {
     pub subst: FxHashMap<TyVarId, TyId>,
     /// Expression types
     pub expr_types: FxHashMap<ExprId, TyId>,
-    /// Definition types
+    /// Definition types (DefId::Local for parameters, DefId::Function, etc.)
     pub def_types: FxHashMap<DefId, TyId>,
-    /// Variable types (for parameters and let bindings)
-    pub var_types: FxHashMap<rv_intern::Symbol, TyId>,
     /// Receiver mutability for method calls (ExprId → is_mutable)
     pub receiver_mutability: FxHashMap<ExprId, bool>,
 }
@@ -109,7 +115,6 @@ impl TyContext {
             subst: FxHashMap::default(),
             expr_types: FxHashMap::default(),
             def_types: FxHashMap::default(),
-            var_types: FxHashMap::default(),
             receiver_mutability: FxHashMap::default(),
         }
     }

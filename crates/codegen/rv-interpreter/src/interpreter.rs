@@ -449,25 +449,27 @@ impl<'ctx> Interpreter<'ctx> {
             // Clone context for MIR lowering
             let mut ty_ctx_clone = ty_ctx.clone();
 
-            // ARCHITECTURE FIX: Populate var_types with concrete type substitutions
-            // for generic parameters BEFORE running type inference
-            // This matches the pattern in rv-mono/src/lib.rs lines 230-232
+            // ARCHITECTURE: Populate def_types with concrete type substitutions
+            // for generic function parameters BEFORE running type inference
             if !hir_func.generics.is_empty() {
-                // Convert MirTypes to TyIds in the type context
-                for (idx, mir_ty) in type_args.iter().enumerate() {
-                    if let Some(generic_param) = hir_func.generics.get(idx) {
-                        // Create TyId for this concrete type
-                        let concrete_ty_id = match mir_ty {
-                            MirType::Int => ty_ctx_clone.types.alloc(rv_ty::TyKind::Int),
-                            MirType::Float => ty_ctx_clone.types.alloc(rv_ty::TyKind::Float),
-                            MirType::Bool => ty_ctx_clone.types.alloc(rv_ty::TyKind::Bool),
-                            MirType::Unit => ty_ctx_clone.types.alloc(rv_ty::TyKind::Unit),
-                            _ => ty_ctx_clone.types.alloc(rv_ty::TyKind::Int), // Default to Int
-                        };
+                // For each parameter, create TyId and store by DefId::Local
+                for (param_idx, _param) in hir_func.parameters.iter().enumerate() {
+                    // Get the corresponding type argument
+                    let mir_ty = type_args.get(param_idx).unwrap_or(&MirType::Unit);
 
-                        // Map generic parameter name to concrete type
-                        ty_ctx_clone.var_types.insert(generic_param.name, concrete_ty_id);
-                    }
+                    // Create TyId for this concrete type
+                    let concrete_ty_id = match mir_ty {
+                        MirType::Int => ty_ctx_clone.types.alloc(rv_ty::TyKind::Int),
+                        MirType::Float => ty_ctx_clone.types.alloc(rv_ty::TyKind::Float),
+                        MirType::Bool => ty_ctx_clone.types.alloc(rv_ty::TyKind::Bool),
+                        MirType::Unit => ty_ctx_clone.types.alloc(rv_ty::TyKind::Unit),
+                        _ => ty_ctx_clone.types.alloc(rv_ty::TyKind::Int), // Default to Int
+                    };
+
+                    // ARCHITECTURE: Store by DefId (not Symbol name)
+                    let local_id = rv_hir::LocalId(param_idx as u32);
+                    let def_id = rv_hir::DefId::Local(local_id);
+                    ty_ctx_clone.set_def_type(def_id, concrete_ty_id);
                 }
             }
 

@@ -214,21 +214,39 @@ pub fn monomorphize_functions(
                 }
             }
 
-            // CRITICAL: Run type inference on the generic function with concrete types substituted
+            // ARCHITECTURE: Run type inference with concrete type substitutions
             // Create a fresh type context for this monomorphized instance
             let mut ty_ctx_clone = TyContext::new();
 
-            // Convert MirType to TyId and register in the new context for generic parameter substitution
-            for (param_name, mir_ty) in &type_subst {
-                let ty_id = match mir_ty {
-                    MirType::Int => ty_ctx_clone.types.int(),
-                    MirType::Float => ty_ctx_clone.types.float(),
-                    MirType::Bool => ty_ctx_clone.types.bool(),
-                    MirType::Unit => ty_ctx_clone.types.unit(),
-                    MirType::String => ty_ctx_clone.types.string(),
-                    _ => ty_ctx_clone.fresh_ty_var(), // For complex types, use type variable for now
+            // ARCHITECTURE: Store parameter types by DefId (not Symbol name)
+            // For each function parameter, look up its type from type_subst
+            for (param_idx, param) in hir_func.parameters.iter().enumerate() {
+                // Check if this parameter's HIR type is a generic parameter
+                let hir_ty = &hir_ctx.types[param.ty];
+                let ty_id = if let rv_hir::Type::Named { name, .. } = hir_ty {
+                    // Check if this is a generic parameter with a substitution
+                    if let Some(mir_ty) = type_subst.get(name) {
+                        // Convert MirType to TyId
+                        match mir_ty {
+                            MirType::Int => ty_ctx_clone.types.int(),
+                            MirType::Float => ty_ctx_clone.types.float(),
+                            MirType::Bool => ty_ctx_clone.types.bool(),
+                            MirType::Unit => ty_ctx_clone.types.unit(),
+                            MirType::String => ty_ctx_clone.types.string(),
+                            _ => ty_ctx_clone.fresh_ty_var(),
+                        }
+                    } else {
+                        // Not a generic parameter - will be inferred normally
+                        ty_ctx_clone.fresh_ty_var()
+                    }
+                } else {
+                    ty_ctx_clone.fresh_ty_var()
                 };
-                ty_ctx_clone.var_types.insert(*param_name, ty_id);
+
+                // Store by DefId
+                let local_id = rv_hir::LocalId(param_idx as u32);
+                let def_id = rv_hir::DefId::Local(local_id);
+                ty_ctx_clone.set_def_type(def_id, ty_id);
             }
 
             // Run type inference on the generic function
