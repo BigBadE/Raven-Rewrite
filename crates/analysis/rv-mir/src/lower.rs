@@ -110,7 +110,8 @@ impl<'ctx> LoweringContext<'ctx> {
                 match ctx.ty_ctx.normalize(ty_id) {
                     Ok(normalized_ty) => {
                         // Type was successfully normalized
-                        ctx.lower_type(normalized_ty)
+                        let mir_ty = ctx.lower_type(normalized_ty);
+                        mir_ty
                     }
                     Err(_) => {
                         // Normalization failed (unresolved variable) - use HIR type annotation

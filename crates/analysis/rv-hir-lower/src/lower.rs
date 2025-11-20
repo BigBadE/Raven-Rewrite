@@ -347,6 +347,9 @@ fn lower_function(ctx: &mut LoweringContext, current_scope: ScopeId, node: &Synt
         is_external: false,
     };
 
+    if ctx.interner.resolve(&name_interned) == "get_value" || ctx.interner.resolve(&name_interned) == "increment" {
+    }
+
     ctx.functions.insert(function_id, function);
 }
 
@@ -1498,6 +1501,23 @@ fn parse_generic_params(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Gen
 /// Parse function parameters from a Parameters node
 fn parse_parameters(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Parameter> {
     let mut params = vec![];
+
+
+    // WORKAROUND: Tree-sitter doesn't always create child nodes for simple "self" parameters
+    // Check if the node text contains "self" directly
+    if node.text.contains("self") && !node.text.contains(":") {
+        // Simple self parameter without type annotation (e.g., "(self)")
+        // Use the impl block's self type
+        if let Some(self_ty) = ctx.current_impl_self_ty {
+            let name_sym = ctx.intern("self");
+            params.push(Parameter {
+                name: name_sym,
+                ty: self_ty,
+                span: ctx.file_span(node),
+            });
+            return params; // Early return - we found the self parameter
+        }
+    }
 
     for child in &node.children {
         if let SyntaxKind::Unknown(ref kind) = child.kind {

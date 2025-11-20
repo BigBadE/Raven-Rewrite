@@ -42,10 +42,11 @@ fn lower_mir_function(mir: &rv_mir::MirFunction) -> LirFunction {
 }
 
 fn lower_local(local: &rv_mir::Local) -> Local {
+    let lir_ty = lower_type(&local.ty);
     Local {
         id: LocalId(local.id.0),
         name: local.name,
-        ty: lower_type(&local.ty),
+        ty: lir_ty,
         mutable: local.mutable,
     }
 }

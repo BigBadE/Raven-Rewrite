@@ -52,6 +52,7 @@ impl LLVMBackend {
         for (_, func) in &hir.functions {
             if func.generics.is_empty() {
                 type_inference.infer_function(func);
+            } else {
             }
         }
 
@@ -221,6 +222,7 @@ impl Backend for LLVMBackend {
         for (_, func) in &hir.functions {
             if func.generics.is_empty() {
                 type_inference.infer_function(func);
+            } else {
             }
         }
 
