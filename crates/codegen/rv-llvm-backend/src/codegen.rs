@@ -941,6 +941,15 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
         // Get the base local
         if let Some(mut local_val) = self.locals.get(&place.local).copied() {
             // Get the type of the base local for tracking through projections
+            // DEBUG: Print all locals to see what find() will search through
+            if place.local.0 == 4 {  // Only for LocalId(4)
+                eprintln!("[LLVM PLACE DEBUG] FunctionId({}) looking for LocalId(4) in {} locals:",
+                    self.mir_func.id.0, self.mir_func.locals.len());
+                for (idx, loc) in self.mir_func.locals.iter().enumerate() {
+                    eprintln!("[LLVM PLACE DEBUG]   locals[{}]: id={:?}, ty={:?}", idx, loc.id, loc.ty);
+                }
+            }
+
             let local_info = self.mir_func.locals
                 .iter()
                 .find(|l| l.id == place.local)

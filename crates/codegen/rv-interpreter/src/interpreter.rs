@@ -446,12 +446,52 @@ impl<'ctx> Interpreter<'ctx> {
                 InterpreterError::InvalidOperation("No type context available".to_string())
             })?;
 
-            // Clone context for MIR lowering (needs mutable for normalize())
+            // Clone context for MIR lowering
             let mut ty_ctx_clone = ty_ctx.clone();
 
+            // ARCHITECTURE FIX: Populate var_types with concrete type substitutions
+            // for generic parameters BEFORE running type inference
+            // This matches the pattern in rv-mono/src/lib.rs lines 230-232
+            if !hir_func.generics.is_empty() {
+                // Convert MirTypes to TyIds in the type context
+                for (idx, mir_ty) in type_args.iter().enumerate() {
+                    if let Some(generic_param) = hir_func.generics.get(idx) {
+                        // Create TyId for this concrete type
+                        let concrete_ty_id = match mir_ty {
+                            MirType::Int => ty_ctx_clone.types.alloc(rv_ty::TyKind::Int),
+                            MirType::Float => ty_ctx_clone.types.alloc(rv_ty::TyKind::Float),
+                            MirType::Bool => ty_ctx_clone.types.alloc(rv_ty::TyKind::Bool),
+                            MirType::Unit => ty_ctx_clone.types.alloc(rv_ty::TyKind::Unit),
+                            _ => ty_ctx_clone.types.alloc(rv_ty::TyKind::Int), // Default to Int
+                        };
+
+                        // Map generic parameter name to concrete type
+                        ty_ctx_clone.var_types.insert(generic_param.name, concrete_ty_id);
+                    }
+                }
+            }
+
+            // ARCHITECTURE FIX: Must run type inference before MIR lowering
+            // This matches the pattern used in rv-mono/src/lib.rs
+            use rv_ty::TypeInference;
+            let mut type_inference = TypeInference::with_hir_context_and_tyctx(
+                &hir_ctx.impl_blocks,
+                &hir_ctx.functions,
+                &hir_ctx.types,
+                &hir_ctx.structs,
+                &hir_ctx.enums,
+                &hir_ctx.traits,
+                &hir_ctx.interner,
+                ty_ctx_clone,
+            );
+            type_inference.infer_function(hir_func);
+            let inference_result = type_inference.finish();
+            let mut ty_ctx_with_inference = inference_result.ctx;
+
+            // Now lower with inferred types
             let mir_func = rv_mir::lower::LoweringContext::lower_function(
                 hir_func,
-                &mut ty_ctx_clone,
+                &mut ty_ctx_with_inference,
                 &hir_ctx.structs,
                 &hir_ctx.enums,
                 &hir_ctx.impl_blocks,

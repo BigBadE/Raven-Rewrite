@@ -47,13 +47,15 @@ impl LLVMBackend {
             &hir.interner,
         );
 
-        // Infer types for non-generic functions (entry points)
-        // Generic functions will have types inferred during monomorphization
-        eprintln!("[LLVM BACKEND] Running type inference");
-        for (_, func) in &hir.functions {
+        // ARCHITECTURE: Type inference is MANDATORY before MIR lowering
+        // ALL non-generic functions must have types inferred here
+        eprintln!("[LLVM BACKEND] Running type inference on {} functions", hir.functions.len());
+
+        for (func_id, func) in &hir.functions {
             if func.generics.is_empty() {
+                eprintln!("[LLVM BACKEND] Inferring '{}' (FunctionId({:?}))",
+                    hir.interner.resolve(&func.name), func_id);
                 type_inference.infer_function(func);
-            } else {
             }
         }
 
@@ -219,13 +221,15 @@ impl Backend for LLVMBackend {
             &hir.interner,
         );
 
-        // Infer types for non-generic functions (entry points)
-        // Generic functions will have types inferred during monomorphization
-        eprintln!("[LLVM BACKEND] Running type inference");
-        for (_, func) in &hir.functions {
+        // ARCHITECTURE: Type inference is MANDATORY before MIR lowering
+        // ALL non-generic functions must have types inferred here
+        eprintln!("[LLVM BACKEND] Running type inference on {} functions", hir.functions.len());
+
+        for (func_id, func) in &hir.functions {
             if func.generics.is_empty() {
+                eprintln!("[LLVM BACKEND] Inferring '{}' (FunctionId({:?}))",
+                    hir.interner.resolve(&func.name), func_id);
                 type_inference.infer_function(func);
-            } else {
             }
         }
 

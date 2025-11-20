@@ -26,6 +26,7 @@ rv-database = { path = "crates/foundation/rv-database" }
 rv-intern = { path = "crates/foundation/rv-intern" }
 rv-span = { path = "crates/foundation/rv-span" }
 rv-syntax = { path = "crates/foundation/rv-syntax" }
+rv-ty-id = { path = "crates/foundation/rv-ty-id" }
 rv-vfs = { path = "crates/foundation/rv-vfs" }
 
 # Internal crates - parser
