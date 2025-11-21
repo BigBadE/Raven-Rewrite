@@ -941,6 +941,10 @@ fn lower_match_arm(
             // First element should be the pattern
             if let Some(pat) = lower_pattern(ctx, current_scope, child, body) {
                 pattern = Some(pat);
+
+                // ARCHITECTURE: Register all pattern bindings in the scope
+                // before lowering the arm body so they can be resolved
+                register_pattern_bindings(ctx, current_scope, pat, body, child.span);
             }
         } else if is_expression(&child.kind) {
             // Expression after pattern is the body
@@ -956,6 +960,65 @@ fn lower_match_arm(
         })
     } else {
         None
+    }
+}
+
+/// Register all bindings in a pattern into the symbol table
+fn register_pattern_bindings(
+    ctx: &mut LoweringContext,
+    scope: ScopeId,
+    pattern_id: PatternId,
+    body: &Body,
+    span: rv_span::Span,
+) {
+    let pattern = &body.patterns[pattern_id];
+
+    match pattern {
+        Pattern::Binding { name, .. } => {
+            // Register this binding
+            let name_str = ctx.interner.resolve(name).to_string();
+            let symbol_id = ctx.symbols.add(
+                *name,
+                SymbolKind::Local,
+                span,
+                scope,
+            );
+            ctx.scope_tree.add_symbol(scope, name_str, symbol_id);
+
+            // Create a LocalId and DefId for this binding
+            let local_id = LocalId(ctx.next_local_id);
+            ctx.next_local_id += 1;
+            let def_id = DefId::Local(local_id);
+            ctx.symbols.set_def_id(symbol_id, def_id);
+            ctx.symbol_defs.insert(symbol_id, def_id);
+        }
+        Pattern::Tuple { patterns, .. } => {
+            // Recursively register bindings in tuple elements
+            for &elem_id in patterns {
+                register_pattern_bindings(ctx, scope, elem_id, body, span);
+            }
+        }
+        Pattern::Struct { fields, .. } => {
+            // Recursively register bindings in struct fields
+            for (_, field_pat_id) in fields {
+                register_pattern_bindings(ctx, scope, *field_pat_id, body, span);
+            }
+        }
+        Pattern::Enum { sub_patterns, .. } => {
+            // Recursively register bindings in enum sub-patterns
+            for &sub_pat_id in sub_patterns {
+                register_pattern_bindings(ctx, scope, sub_pat_id, body, span);
+            }
+        }
+        Pattern::Or { patterns, .. } => {
+            // Register bindings from all alternatives (must be consistent)
+            for &pat_id in patterns {
+                register_pattern_bindings(ctx, scope, pat_id, body, span);
+            }
+        }
+        Pattern::Range { .. } | Pattern::Wildcard { .. } | Pattern::Literal { .. } => {
+            // These patterns don't introduce bindings
+        }
     }
 }
 
