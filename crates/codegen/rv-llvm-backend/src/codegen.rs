@@ -14,8 +14,8 @@ use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::IntPredicate;
 use rv_hir::{ExternalFunction, FunctionId, LiteralKind};
-use rv_mir::{
-    AggregateKind, BasicBlock, BinaryOp, Constant, LocalId, MirFunction, Operand, Place, RValue,
+use rv_lir::{
+    AggregateKind, BasicBlock, BinaryOp, Constant, LocalId, LirFunction, Operand, Place, RValue,
     Statement, Terminator, UnaryOp,
 };
 use std::collections::HashMap;
@@ -59,7 +59,7 @@ impl LLVMBackend {
 
     pub fn compile_and_write_object(
         &self,
-        functions: &[MirFunction],
+        functions: &[LirFunction],
         external_functions: &HashMap<FunctionId, ExternalFunction>,
         output_path: &Path,
     ) -> Result<()> {
@@ -78,7 +78,7 @@ impl LLVMBackend {
 
     pub fn compile_functions_with_externals(
         &self,
-        functions: &[MirFunction],
+        functions: &[LirFunction],
         external_functions: &HashMap<FunctionId, ExternalFunction>,
     ) -> Result<()> {
         let compiler = Compiler::new(&self.context, &self.module_name, self.opt_level);
@@ -94,7 +94,7 @@ impl LLVMBackend {
 
     pub fn compile_functions(
         &self,
-        functions: &[MirFunction],
+        functions: &[LirFunction],
     ) -> Result<()> {
         self.compile_functions_with_externals(functions, &HashMap::new())
     }
@@ -223,14 +223,14 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     /// Compile multiple MIR functions to LLVM IR (supports function calls)
-    pub fn compile_functions(&self, mir_funcs: &[MirFunction]) -> Result<()> {
+    pub fn compile_functions(&self, mir_funcs: &[LirFunction]) -> Result<()> {
         self.compile_functions_with_externals(mir_funcs, &HashMap::new())
     }
 
     /// Compile multiple MIR functions with external function support
     pub fn compile_functions_with_externals(
         &self,
-        mir_funcs: &[MirFunction],
+        mir_funcs: &[LirFunction],
         external_funcs: &HashMap<FunctionId, ExternalFunction>,
     ) -> Result<()> {
         use std::collections::HashMap;
@@ -241,13 +241,13 @@ impl<'ctx> Compiler<'ctx> {
         // Phase 1: Declare all regular functions (external functions already declared)
 
         for mir_func in mir_funcs {
-            // Use the param_count field from MirFunction directly
+            // Use the param_count field from LirFunction directly
             let param_count = mir_func.param_count;
 
             // Create function signature using actual parameter types from MIR locals
             // Parameters are the first N locals in MIR (LocalId(0), LocalId(1), ...)
             use inkwell::types::BasicMetadataTypeEnum;
-            use rv_mir::LocalId;
+            use rv_lir::LocalId;
             let param_types: Vec<BasicMetadataTypeEnum> = (0..param_count)
                 .map(|i| {
                     // Find the local with this LocalId
@@ -285,7 +285,7 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     /// Compile a single MIR function to LLVM IR (legacy API)
-    pub fn compile_function(&self, mir_func: &MirFunction) -> Result<FunctionValue<'ctx>> {
+    pub fn compile_function(&self, mir_func: &LirFunction) -> Result<FunctionValue<'ctx>> {
         use std::collections::HashMap;
 
         // For single-function compilation, assume no parameters
@@ -340,7 +340,7 @@ impl<'ctx> Compiler<'ctx> {
 struct FunctionCodegen<'a, 'ctx> {
     compiler: &'a Compiler<'ctx>,
     function: FunctionValue<'ctx>,
-    mir_func: &'a MirFunction,
+    mir_func: &'a LirFunction,
     locals: HashMap<LocalId, BasicValueEnum<'ctx>>,
     blocks: HashMap<usize, inkwell::basic_block::BasicBlock<'ctx>>,
     llvm_functions: &'a HashMap<rv_hir::FunctionId, FunctionValue<'ctx>>,
@@ -350,7 +350,7 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
     fn new(
         compiler: &'a Compiler<'ctx>,
         function: FunctionValue<'ctx>,
-        mir_func: &'a MirFunction,
+        mir_func: &'a LirFunction,
         llvm_functions: &'a HashMap<rv_hir::FunctionId, FunctionValue<'ctx>>,
     ) -> Self {
         Self {
@@ -486,8 +486,8 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
                         .map_err(|e| anyhow::anyhow!("Failed to build store: {}", e))?;
                 }
             }
-            Statement::StorageLive(_) | Statement::StorageDead(_) | Statement::Nop => {
-                // These are hints, no code generation needed
+            Statement::Nop => {
+                // No code generation needed for Nop
             }
         }
         Ok(())
@@ -620,41 +620,6 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
 
                         Ok(array_value.into())
                     }
-                    AggregateKind::Enum { variant_idx } => {
-                        // Enum: create struct with tag (discriminant) and data fields
-                        // Layout: { i32 tag, ...variant_fields }
-                        let tag_value = self.context().i32_type().const_int(*variant_idx as u64, false);
-
-                        // Compile variant field values
-                        let field_values: Result<Vec<BasicValueEnum>> = operands
-                            .iter()
-                            .map(|op| self.compile_operand(op))
-                            .collect();
-                        let mut field_values = field_values?;
-
-                        // Build field types: tag + variant fields
-                        let mut field_types = vec![self.context().i32_type().into()];
-                        field_types.extend(field_values.iter().map(|val| val.get_type()));
-
-                        let enum_struct_type = self.context().struct_type(&field_types, false);
-                        let mut enum_value = enum_struct_type.get_undef();
-
-                        // Insert tag as first field
-                        enum_value = self.builder()
-                            .build_insert_value(enum_value, tag_value, 0, "tag")
-                            .map_err(|e| anyhow::anyhow!("Failed to insert enum tag: {}", e))?
-                            .into_struct_value();
-
-                        // Insert variant fields
-                        for (i, field_val) in field_values.drain(..).enumerate() {
-                            enum_value = self.builder()
-                                .build_insert_value(enum_value, field_val, (i + 1) as u32, &format!("variant_field_{}", i))
-                                .map_err(|e| anyhow::anyhow!("Failed to insert enum field {}: {}", i, e))?
-                                .into_struct_value();
-                        }
-
-                        Ok(enum_value.into())
-                    }
                 }
             }
         }
@@ -684,8 +649,8 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
     }
 
     /// Get the type of a place after applying all projections
-    fn get_place_type(&self, place: &Place) -> Result<rv_mir::MirType> {
-        use rv_mir::PlaceElem;
+    fn get_place_type(&self, place: &Place) -> Result<rv_lir::LirType> {
+        use rv_lir::PlaceElem;
 
         // Start with the base local's type
         let local_info = self.mir_func.locals
@@ -699,7 +664,7 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
         for projection in &place.projection {
             match projection {
                 PlaceElem::Field { field_idx } => {
-                    if let rv_mir::MirType::Struct { fields, .. } = &current_type {
+                    if let rv_lir::LirType::Struct { fields, .. } = &current_type {
                         if let Some(field_type) = fields.get(*field_idx) {
                             current_type = field_type.clone();
                         } else {
@@ -711,7 +676,7 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
                 }
                 PlaceElem::Deref => {
                     // Dereference unwraps the reference type to get the inner type
-                    if let rv_mir::MirType::Ref { inner, .. } = &current_type {
+                    if let rv_lir::LirType::Ref { inner, .. } = &current_type {
                         current_type = (**inner).clone();
                     } else {
                         anyhow::bail!("Cannot dereference non-reference type: {:?}", current_type);
@@ -878,8 +843,8 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
                 }
             }
 
-            Terminator::Goto(target) => {
-                if let Some(target_bb) = self.blocks.get(target) {
+            Terminator::Goto { target } => {
+                if let Some(target_bb) = self.blocks.get(&target) {
                     self.builder().build_unconditional_branch(*target_bb)
                         .map_err(|e| anyhow::anyhow!("Failed to build branch: {}", e))?;
                 }
@@ -964,7 +929,7 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
     }
 
     fn get_place(&self, place: &Place) -> Result<BasicValueEnum<'ctx>> {
-        use rv_mir::PlaceElem;
+        use rv_lir::PlaceElem;
 
         // Get the base local
         if let Some(mut local_val) = self.locals.get(&place.local).copied() {
@@ -998,7 +963,7 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
                                 local_val = field_ptr.into();
 
                                 // Update current_type to the field's type
-                                if let rv_mir::MirType::Struct { fields, .. } = current_type {
+                                if let rv_lir::LirType::Struct { fields, .. } = current_type {
                                     if let Some(field_type) = fields.get(*field_idx) {
                                         current_type = field_type;
                                     }
@@ -1017,7 +982,7 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
                         // Dereference: load the pointer value, then use it as the new pointer
                         if let BasicValueEnum::PointerValue(ptr_val) = local_val {
                             // Get the type we're dereferencing from
-                            if let rv_mir::MirType::Ref { inner, .. } = current_type {
+                            if let rv_lir::LirType::Ref { inner, .. } = current_type {
                                 // Load the pointer stored at ptr_val (double indirection)
                                 let llvm_ptr_type = self.type_lowering().lower_type(current_type);
                                 let loaded_ptr = self.builder().build_load(llvm_ptr_type, ptr_val, "deref_load")

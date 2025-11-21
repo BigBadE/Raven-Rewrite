@@ -9,6 +9,10 @@ members = [
     "crates/analyzer/*",
     "crates/cli/*",
     "crates/testing/*",
+    "crates/macros/*",
+]
+exclude = [
+    "crates/testing/integration-tests/test-projects/*",
 ]
 
 [workspace.package]
@@ -25,6 +29,7 @@ rv-database = { path = "crates/foundation/rv-database" }
 rv-intern = { path = "crates/foundation/rv-intern" }
 rv-span = { path = "crates/foundation/rv-span" }
 rv-syntax = { path = "crates/foundation/rv-syntax" }
+rv-ty-id = { path = "crates/foundation/rv-ty-id" }
 rv-vfs = { path = "crates/foundation/rv-vfs" }
 
 # Internal crates - parser
@@ -45,6 +50,7 @@ rv-borrow-check = { path = "crates/analysis/rv-borrow-check" }
 rv-interpreter = { path = "crates/codegen/rv-interpreter" }
 rv-cranelift = { path = "crates/codegen/rv-cranelift" }
 rv-llvm-backend = { path = "crates/codegen/rv-llvm-backend" }
+rv-lir = { path = "crates/codegen/rv-lir" }
 rv-mono = { path = "crates/analysis/rv-mono" }
 
 # Internal crates - analyzer
@@ -54,6 +60,9 @@ rv-duplicates = { path = "crates/analyzer/rv-duplicates" }
 
 # Internal crates - language support
 lang-raven = { path = "crates/language-support/lang-raven" }
+
+# Internal crates - macros
+rv-derive = { path = "crates/macros/rv-derive" }
 
 # Internal crates - testing
 integration-tests = { path = "crates/testing/integration-tests" }
@@ -106,6 +115,12 @@ thiserror = "2.0"
 
 # Common types
 derive_more = { version = "2.0", features = ["full"] }
+derive-visitor = "0.4"
+
+# Proc macros
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+quote = "1.0"
+proc-macro2 = "1.0"
 
 # Build dependencies (for LLVM auto-download)
 cc = "1.0"

@@ -127,8 +127,8 @@ impl<'a> ConstraintSolver<'a> {
                 ..
             } = constraint
             {
-                // Apply substitutions to get the concrete type
-                let concrete_ty = self.ctx.apply_subst(*ty);
+                // Normalize to get the concrete type
+                let concrete_ty = self.ctx.normalize(*ty).map(|n| n.ty_id()).unwrap_or(*ty);
 
                 // Record the instantiation
                 self.generic_instantiations
@@ -160,8 +160,8 @@ impl<'a> ConstraintSolver<'a> {
 
         // Check each trait bound
         for (ty, trait_id) in trait_bounds {
-            // Apply substitutions to get concrete type
-            let concrete_ty = self.ctx.apply_subst(ty);
+            // Normalize to get concrete type
+            let concrete_ty = self.ctx.normalize(ty).map(|n| n.ty_id()).unwrap_or(ty);
 
             // Check if this is a struct/enum type that can implement traits
             if let Some(type_def_id) = self.extract_type_def_id(concrete_ty) {

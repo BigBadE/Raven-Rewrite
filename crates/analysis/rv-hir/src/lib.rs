@@ -262,8 +262,11 @@ pub struct ExternalFunction {
 pub struct Parameter {
     /// Parameter name
     pub name: Symbol,
-    /// Parameter type
+    /// Parameter type (HIR type annotation)
     pub ty: TypeId,
+    /// Inferred type (populated by type inference)
+    /// ARCHITECTURE: This is the single source of truth after type inference completes
+    pub inferred_ty: Option<rv_ty_id::TyId>,
     /// Source location
     pub span: FileSpan,
 }
@@ -439,7 +442,8 @@ impl Default for Body {
 }
 
 /// HIR expressions
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, rv_derive::Visitor)]
+#[visitor(context = "Body", id_type = "ExprId")]
 pub enum Expr {
     /// Literal value
     Literal {
@@ -586,7 +590,8 @@ pub struct MatchArm {
 }
 
 /// HIR statements
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, rv_derive::Visitor)]
+#[visitor(context = "Body", id_type = "StmtId")]
 pub enum Stmt {
     /// Let binding
     Let {
@@ -618,7 +623,8 @@ pub enum Stmt {
 }
 
 /// Patterns
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, rv_derive::Visitor)]
+#[visitor(context = "Body", id_type = "PatternId")]
 pub enum Pattern {
     /// Wildcard pattern (_)
     Wildcard {

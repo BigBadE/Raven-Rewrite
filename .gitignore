@@ -1,4 +1,5 @@
 /target
+**/target/
 /coverage
 .idea/
 Cargo.lock

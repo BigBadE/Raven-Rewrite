@@ -120,6 +120,31 @@ impl<'a> TypeInference<'a> {
         traits: &'a std::collections::HashMap<TraitId, TraitDef>,
         interner: &'a rv_intern::Interner,
     ) -> Self {
+        Self::with_hir_context_and_tyctx(
+            impl_blocks,
+            functions,
+            hir_types,
+            structs,
+            enums,
+            traits,
+            interner,
+            TyContext::new(),
+        )
+    }
+
+    /// Create a type inference context with HIR context and a custom TyContext
+    /// This is useful for monomorphization where we need to pre-populate the TyContext
+    /// with concrete types for generic parameters
+    pub fn with_hir_context_and_tyctx(
+        impl_blocks: &'a std::collections::HashMap<rv_hir::ImplId, rv_hir::ImplBlock>,
+        functions: &'a std::collections::HashMap<rv_hir::FunctionId, rv_hir::Function>,
+        hir_types: &'a la_arena::Arena<rv_hir::Type>,
+        structs: &'a std::collections::HashMap<rv_hir::TypeDefId, rv_hir::StructDef>,
+        enums: &'a std::collections::HashMap<rv_hir::TypeDefId, rv_hir::EnumDef>,
+        traits: &'a std::collections::HashMap<TraitId, TraitDef>,
+        interner: &'a rv_intern::Interner,
+        ctx: TyContext,
+    ) -> Self {
         // Create bound checker with trait and impl information
         let bound_checker = BoundChecker::new(
             traits.clone(),
@@ -128,7 +153,7 @@ impl<'a> TypeInference<'a> {
         );
 
         Self {
-            ctx: TyContext::new(),
+            ctx,
             errors: vec![],
             scope_stack: vec![rustc_hash::FxHashMap::default()], // Start with one global scope
             impl_blocks: Some(impl_blocks),
@@ -165,6 +190,20 @@ impl<'a> TypeInference<'a> {
     #[must_use]
     pub fn context(&self) -> &TyContext {
         &self.ctx
+    }
+
+    /// Get a mutable reference to the type context
+    #[must_use]
+    pub fn context_mut(&mut self) -> &mut TyContext {
+        &mut self.ctx
+    }
+
+    /// Bind a variable name to a concrete type in the global scope
+    /// This is used for monomorphization to bind generic type parameters to concrete types
+    pub fn bind_type_in_global_scope(&mut self, name: rv_intern::Symbol, ty: TyId) {
+        if let Some(global_scope) = self.scope_stack.first_mut() {
+            global_scope.insert(name, ty);
+        }
     }
 
     /// Push a new scope onto the scope stack
@@ -250,43 +289,41 @@ impl<'a> TypeInference<'a> {
             }
         });
 
-        // Initialize parameter types from HIR type annotations using resolution results
-        if function.body.resolution.is_some() {
-            // Use resolved LocalIds from name resolution
-            for (param_idx, param) in function.parameters.iter().enumerate() {
-                // Convert HIR TypeId to inference TyId
-                let param_ty = if let (Some(hir_types), Some(structs), Some(interner)) =
-                    (self.hir_types, self.structs, self.interner)
-                {
-                    self.hir_type_to_ty_id(param.ty, hir_types, structs, interner)
-                } else {
-                    // Fallback to fresh type variable if no HIR context
-                    self.ctx.fresh_ty_var()
-                };
+        // ARCHITECTURE: Initialize parameter types from HIR type annotations
+        // NO fallbacks - HIR context is REQUIRED for type inference
+        let hir_types = self.hir_types.expect("HIR types required for type inference");
+        let structs = self.structs.expect("Structs required for type inference");
+        let interner = self.interner.expect("Interner required for type inference");
 
-                // Store type by LocalId (from resolution) instead of by name
-                let local_id = rv_hir::LocalId(param_idx as u32);
-                let def_id = rv_hir::DefId::Local(local_id);
-                self.ctx.set_def_type(def_id, param_ty);
+        for (param_idx, param) in function.parameters.iter().enumerate() {
+            let local_id = rv_hir::LocalId(param_idx as u32);
+            let def_id = rv_hir::DefId::Local(local_id);
 
-                // Keep name-based lookup for backward compatibility
-                self.insert_var(param.name, param_ty);
-                self.ctx.var_types.insert(param.name, param_ty);
-            }
-        } else {
-            // Fallback: old behavior if no resolution available
-            for param in &function.parameters {
-                let param_ty = if let (Some(hir_types), Some(structs), Some(interner)) =
-                    (self.hir_types, self.structs, self.interner)
-                {
-                    self.hir_type_to_ty_id(param.ty, hir_types, structs, interner)
-                } else {
-                    self.ctx.fresh_ty_var()
-                };
+            // ARCHITECTURE: Check if monomorphization already set a concrete type
+            // If def_types already contains a concrete type (not a type variable),
+            // use that instead of converting from HIR (which creates type variables for generics)
+            let param_ty = if let Some(existing_ty) = self.ctx.get_def_type(def_id) {
+                // Check if it's a concrete type (not a type variable)
+                match &self.ctx.types.get(existing_ty).kind {
+                    TyKind::Var { .. } => {
+                        // It's a type variable, convert from HIR
+                        self.hir_type_to_ty_id(param.ty, hir_types, structs, interner)
+                    }
+                    _ => {
+                        // It's a concrete type from monomorphization - use it
+                        existing_ty
+                    }
+                }
+            } else {
+                // No existing type, convert from HIR
+                self.hir_type_to_ty_id(param.ty, hir_types, structs, interner)
+            };
 
-                self.insert_var(param.name, param_ty);
-                self.ctx.var_types.insert(param.name, param_ty);
-            }
+            // ARCHITECTURE: Store type by DefId (structured ID, not Symbol name)
+            self.ctx.set_def_type(def_id, param_ty);
+
+            // Also keep in var map for local variable tracking
+            self.insert_var(param.name, param_ty);
         }
 
         // Infer body
@@ -315,15 +352,16 @@ impl<'a> TypeInference<'a> {
         interner: &rv_intern::Interner,
         depth: usize,
     ) -> TyId {
-        // Check cache first to prevent infinite recursion from cyclic types
+        // Prevent infinite recursion with depth limit
+        if depth > 50 {
+            // Too deep - likely a cycle, return a type variable
+            return self.ctx.fresh_ty_var();
+        }
+
+        // Check cache first to prevent redundant conversions
         if let Some(&cached_ty) = self.type_conversion_cache.get(&hir_ty_id) {
             return cached_ty;
         }
-
-        // For recursive types, insert a type variable first to break the cycle
-        // We'll update it later if needed
-        let placeholder = self.ctx.fresh_ty_var();
-        self.type_conversion_cache.insert(hir_ty_id, placeholder);
 
         let hir_type = &hir_types[hir_ty_id];
 
@@ -351,6 +389,9 @@ impl<'a> TypeInference<'a> {
                         self.ctx.fresh_ty_var()
                     }
                 } else {
+                    // ARCHITECTURE NOTE: For generic parameters (like T), monomorphization
+                    // should pass substitutions via lower_function_with_subst, not var_types
+
                     // Check if it's a primitive type
                     let type_name = interner.resolve(name);
                     match type_name.as_str() {
@@ -451,17 +492,64 @@ impl<'a> TypeInference<'a> {
 
             Expr::Variable { name, def, .. } => {
                 // Prefer using resolved DefId from name resolution
-                if let Some(def_id) = def {
-                    // Look up definition type by DefId
-                    if let Some(def_ty) = self.ctx.get_def_type(*def_id) {
-                        def_ty
-                    } else {
-                        // DefId not yet typed, try name-based lookup (for parameters)
-                        if let Some(var_ty) = self.lookup_var(*name) {
-                            var_ty
-                        } else {
-                            // Unknown definition, create fresh variable
-                            self.ctx.fresh_ty_var()
+                let result_ty = if let Some(def_id) = def {
+                    match def_id {
+                        // Special handling for function references
+                        rv_hir::DefId::Function(func_id) => {
+                            // Look up function signature from HIR (no inference needed!)
+                            if let Some(functions) = self.functions {
+                                if let Some(func) = functions.get(func_id) {
+                                    // Extract signature and convert to Function type
+                                    let param_tys: Vec<TyId> = func.parameters
+                                        .iter()
+                                        .map(|p| {
+                                            if let (Some(hir_types), Some(structs), Some(interner)) =
+                                                (self.hir_types, self.structs, self.interner)
+                                            {
+                                                self.hir_type_to_ty_id(p.ty, hir_types, structs, interner)
+                                            } else {
+                                                self.ctx.fresh_ty_var()
+                                            }
+                                        })
+                                        .collect();
+
+                                    let ret_ty = if let Some(ret_hir_ty) = func.return_type {
+                                        if let (Some(hir_types), Some(structs), Some(interner)) =
+                                            (self.hir_types, self.structs, self.interner)
+                                        {
+                                            self.hir_type_to_ty_id(ret_hir_ty, hir_types, structs, interner)
+                                        } else {
+                                            self.ctx.types.unit()
+                                        }
+                                    } else {
+                                        self.ctx.types.unit()
+                                    };
+
+                                    // Create Function type
+                                    self.ctx.types.alloc(TyKind::Function {
+                                        params: param_tys,
+                                        ret: Box::new(ret_ty),
+                                    })
+                                } else {
+                                    self.ctx.fresh_ty_var()
+                                }
+                            } else {
+                                self.ctx.fresh_ty_var()
+                            }
+                        }
+                        // Other DefIds: look up from context or name-based lookup
+                        _ => {
+                            if let Some(def_ty) = self.ctx.get_def_type(*def_id) {
+                                def_ty
+                            } else {
+                                // DefId not yet typed, try name-based lookup (for parameters)
+                                if let Some(var_ty) = self.lookup_var(*name) {
+                                    var_ty
+                                } else {
+                                    // Unknown definition, create fresh variable
+                                    self.ctx.fresh_ty_var()
+                                }
+                            }
                         }
                     }
                 } else if let Some(var_ty) = self.lookup_var(*name) {
@@ -471,7 +559,9 @@ impl<'a> TypeInference<'a> {
                     // Unresolved variable - name resolution should have caught this
                     self.errors.push(TypeError::UndefinedVariable { expr: expr_id });
                     self.ctx.types.error()
-                }
+                };
+
+                result_ty
             }
 
             Expr::Call { callee, args, .. } => {
@@ -713,58 +803,105 @@ impl<'a> TypeInference<'a> {
                 let receiver_is_mutable = self.is_expr_mutable(body, *receiver);
                 self.receiver_mutability.insert(expr_id, receiver_is_mutable);
 
-                // Infer argument types (no expected types for now - could be improved)
-                for arg in args {
-                    self.infer_expr(body, *arg, None);
-                }
-
-                // Look up the method return type from impl blocks
+                // Extract receiver TypeDefId for method lookup
                 let receiver_ty_kind = &self.ctx.types.get(receiver_ty).kind;
                 let type_def_id = match receiver_ty_kind {
                     TyKind::Struct { def_id, .. } => Some(*def_id),
                     _ => None,
                 };
 
-                // Try to find the method and get its return type
-                if let (Some(impl_blocks), Some(functions), Some(def_id)) =
-                    (self.impl_blocks, self.functions, type_def_id)
+                // Try to find the method from impl blocks
+                let method_func = if let (Some(impl_blocks), Some(functions), Some(hir_types), Some(def_id)) =
+                    (self.impl_blocks, self.functions, self.hir_types, type_def_id)
                 {
+                    let mut found_func = None;
                     // Find impl blocks for this type
-                    for impl_block in impl_blocks.values() {
-                        if impl_block.self_ty == rv_hir::TypeId::from_raw(la_arena::RawIdx::from(def_id.0)) {
-                            // Check methods in this impl block
-                            for &func_id in &impl_block.methods {
-                                if let Some(func) = functions.get(&func_id) {
-                                    if func.name == *method {
-                                        // Found the method! Use its return type
-                                        if let Some(return_type_id) = func.return_type {
-                                            // Convert HIR TypeId to inference TyId
-                                            if let (Some(hir_types), Some(structs), Some(interner)) =
-                                                (self.hir_types, self.structs, self.interner)
-                                            {
-                                                return self.hir_type_to_ty_id(
-                                                    return_type_id,
-                                                    hir_types,
-                                                    structs,
-                                                    interner,
-                                                );
-                                            }
+                    'outer: for impl_block in impl_blocks.values() {
+                        // Check if this impl block is for the receiver type
+                        let impl_self_ty = &hir_types[impl_block.self_ty];
+                        if let rv_hir::Type::Named { def: Some(impl_def_id), .. } = impl_self_ty {
+                            if *impl_def_id == def_id {
+                                // Search methods in this impl block
+                                for &func_id in &impl_block.methods {
+                                    if let Some(func) = functions.get(&func_id) {
+                                        if func.name == *method {
+                                            found_func = Some(func);
+                                            break 'outer;
                                         }
-                                        return self.ctx.fresh_ty_var();
                                     }
                                 }
                             }
                         }
                     }
-                }
+                    found_func
+                } else {
+                    None
+                };
 
-                // Method not found or no context available
-                self.ctx.fresh_ty_var()
+                // If we found the method, type-check arguments and get return type
+                if let Some(method_func) = method_func {
+                    // Type-check arguments against method parameters (skip first param which is self)
+                    let method_params: Vec<TyId> = method_func.parameters
+                        .iter()
+                        .skip(1) // Skip self parameter
+                        .map(|p| {
+                            if let (Some(hir_types), Some(structs), Some(interner)) =
+                                (self.hir_types, self.structs, self.interner)
+                            {
+                                self.hir_type_to_ty_id(p.ty, hir_types, structs, interner)
+                            } else {
+                                self.ctx.fresh_ty_var()
+                            }
+                        })
+                        .collect();
+
+                    // Infer argument types with expected types from method signature
+                    for (idx, arg) in args.iter().enumerate() {
+                        let expected_arg_ty = method_params.get(idx).copied();
+                        let arg_ty = self.infer_expr(body, *arg, expected_arg_ty);
+
+                        // Unify with expected type if available
+                        if let Some(expected_ty) = expected_arg_ty {
+                            if self.generate_mode {
+                                let source = ConstraintSource::new(
+                                    rv_span::FileId(0),
+                                    rv_span::Span::new(0, 0),
+                                    format!("method argument {}", idx),
+                                );
+                                self.constraints.add_equality(arg_ty, expected_ty, source);
+                            } else if let Err(error) = Unifier::new(&mut self.ctx).unify(arg_ty, expected_ty) {
+                                self.errors.push(TypeError::Unification {
+                                    error,
+                                    expr: Some(*arg),
+                                });
+                            }
+                        }
+                    }
+
+                    // Get return type
+                    if let Some(return_type_id) = method_func.return_type {
+                        if let (Some(hir_types), Some(structs), Some(interner)) =
+                            (self.hir_types, self.structs, self.interner)
+                        {
+                            self.hir_type_to_ty_id(return_type_id, hir_types, structs, interner)
+                        } else {
+                            self.ctx.types.unit()
+                        }
+                    } else {
+                        self.ctx.types.unit()
+                    }
+                } else {
+                    // Method not found - infer arguments anyway and return type variable
+                    for arg in args {
+                        self.infer_expr(body, *arg, None);
+                    }
+                    self.ctx.fresh_ty_var()
+                }
             }
 
             Expr::StructConstruct { def, fields, .. } => {
                 // Create struct type if we have a type definition
-                if let Some(type_def_id) = def {
+                let result_ty = if let Some(type_def_id) = def {
                     // Look up the struct definition to get declared field types
                     if let Some(structs) = self.structs {
                         if let Some(struct_def) = structs.get(type_def_id) {
@@ -802,33 +939,51 @@ impl<'a> TypeInference<'a> {
                                     });
                                 }
 
-                                field_tys.push((*field_name, declared_ty));
+                                // After unification, follow the substitution chain to get the most resolved type
+                                // Prefer expr_ty since it comes from actual expression inference
+                                let field_ty = self.ctx.follow_var(expr_ty);
+                                field_tys.push((*field_name, field_ty));
                             }
 
-                            return self.ctx.types.alloc(TyKind::Struct {
+                            self.ctx.types.alloc(TyKind::Struct {
                                 def_id: *type_def_id,
                                 fields: field_tys,
-                            });
+                            })
+                        } else {
+                            // Fallback: infer field types from expressions if struct def not available
+                            let field_tys: Vec<(rv_intern::Symbol, TyId)> = fields
+                                .iter()
+                                .map(|(name, field_expr)| {
+                                    let ty = self.infer_expr(body, *field_expr, None);
+                                    (*name, ty)
+                                })
+                                .collect();
+
+                            self.ctx.types.alloc(TyKind::Struct {
+                                def_id: *type_def_id,
+                                fields: field_tys,
+                            })
                         }
-                    }
+                    } else {
+                        // Fallback: infer field types from expressions if structs not available
+                        let field_tys: Vec<(rv_intern::Symbol, TyId)> = fields
+                            .iter()
+                            .map(|(name, field_expr)| {
+                                let ty = self.infer_expr(body, *field_expr, None);
+                                (*name, ty)
+                            })
+                            .collect();
 
-                    // Fallback: infer field types from expressions if struct def not available
-                    let field_tys: Vec<(rv_intern::Symbol, TyId)> = fields
-                        .iter()
-                        .map(|(name, field_expr)| {
-                            let ty = self.infer_expr(body, *field_expr, None);
-                            (*name, ty)
+                        self.ctx.types.alloc(TyKind::Struct {
+                            def_id: *type_def_id,
+                            fields: field_tys,
                         })
-                        .collect();
-
-                    self.ctx.types.alloc(TyKind::Struct {
-                        def_id: *type_def_id,
-                        fields: field_tys,
-                    })
+                    }
                 } else {
                     // No type definition resolved, create type variable
                     self.ctx.fresh_ty_var()
-                }
+                };
+                result_ty
             }
 
             Expr::EnumVariant { def, fields, .. } => {
@@ -843,17 +998,23 @@ impl<'a> TypeInference<'a> {
                     // Look up the enum name
                     if let Some(enums) = self.enums {
                         if let Some(enum_def) = enums.get(type_def_id) {
-                            return self.ctx.types.alloc(TyKind::Named {
+                            self.ctx.types.alloc(TyKind::Named {
                                 name: enum_def.name,
                                 def: *type_def_id,
                                 args: vec![],
-                            });
+                            })
+                        } else {
+                            // Fallback to type variable if enum def not found
+                            self.ctx.fresh_ty_var()
                         }
+                    } else {
+                        // Fallback to type variable if enums not available
+                        self.ctx.fresh_ty_var()
                     }
+                } else {
+                    // Fallback to type variable if enum def not resolved
+                    self.ctx.fresh_ty_var()
                 }
-
-                // Fallback to type variable if enum def not resolved
-                self.ctx.fresh_ty_var()
             }
 
             Expr::Closure { params, return_type, body: closure_body, captures, .. } => {
@@ -875,7 +1036,6 @@ impl<'a> TypeInference<'a> {
 
                     // Register parameter in current scope
                     self.insert_var(param.name, param_ty);
-                    self.ctx.var_types.insert(param.name, param_ty);
                     param_tys.push(param_ty);
                 }
 
@@ -945,6 +1105,7 @@ impl<'a> TypeInference<'a> {
 
         // Record expression type
         self.ctx.set_expr_type(expr_id, inferred_ty);
+
         inferred_ty
     }
 
@@ -984,8 +1145,6 @@ impl<'a> TypeInference<'a> {
                     let pat = &body.patterns[*pattern];
                     if let rv_hir::Pattern::Binding { name, mutable: pat_mutable, .. } = pat {
                         self.insert_var(*name, init_ty);
-                        // Also store in context for MIR lowering
-                        self.ctx.var_types.insert(*name, init_ty);
                         // Track variable mutability (from either let mut or pattern)
                         let is_mutable = *mutable || *pat_mutable;
                         self.insert_var_mutability(*name, is_mutable);

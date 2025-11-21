@@ -97,8 +97,6 @@ pub enum MirType {
         /// Return type
         ret: Box<MirType>,
     },
-    /// Unknown/inference type
-    Unknown,
 }
 
 /// MIR representation of enum variant

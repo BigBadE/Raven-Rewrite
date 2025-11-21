@@ -210,10 +210,12 @@ impl ModuleTypeContext {
         self.generic_instantiations.contains_key(&function)
     }
 
-    /// Apply all substitutions from the context to a type
+    /// Normalize a type by following all substitution chains
     #[must_use]
-    pub fn apply_subst(&self, ty: TyId) -> TyId {
-        self.ctx.apply_subst(ty)
+    pub fn normalize_type(&mut self, ty: TyId) -> TyId {
+        // Normalize follows the full substitution chain
+        // If unresolved, return original (shouldn't happen after inference completes)
+        self.ctx.normalize(ty).map(|n| n.ty_id()).unwrap_or(ty)
     }
 
     /// Merge constraints from another module context

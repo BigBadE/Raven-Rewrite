@@ -1,9 +1,12 @@
 //! Type representation
 #![allow(
     clippy::min_ident_chars,
-    reason = "Ty and TyId are conventional names in type system implementations"
+    unused_variables,
+    unused_assignments,
+    reason = "Ty and TyId are conventional names, fields used by generated visitor"
 )]
 
+use crate::context::TyContext;
 use la_arena::{Arena, Idx};
 use rv_hir::TypeDefId;
 use rv_intern::Symbol;
@@ -20,7 +23,9 @@ pub struct Ty {
 }
 
 /// Kind of type
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, rv_derive::Visitor)]
+#[visitor(context = "TyContext", id_type = "TyId")]
+#[allow(unused, reason = "Fields used by visitor pattern")]
 pub enum TyKind {
     /// Integer type
     Int,

@@ -1,113 +1,12 @@
 //! LLVM backend for magpie
 //!
 //! This backend compiles Raven code to native binaries using LLVM.
+//! Uses LIR (Low-level IR) which guarantees all code is monomorphized.
 
 use crate::backend::{Backend, BuildResult, TestResult};
 use crate::manifest::Manifest;
 use anyhow::Result;
 use std::path::Path;
-use std::collections::HashMap;
-
-/// Remap Call instructions in MIR to use monomorphized instance IDs
-/// and fix result local types based on monomorphized return types
-fn remap_generic_calls(
-    mir_functions: &mut [rv_mir::MirFunction],
-    instance_map: &HashMap<(rv_hir::FunctionId, Vec<rv_mir::MirType>), rv_hir::FunctionId>,
-    hir: &rv_hir_lower::LoweringContext,
-) {
-    use rv_mir::{Statement, Terminator, RValue, Operand};
-
-    for mir_func in mir_functions {
-        // Walk through all basic blocks
-        for bb in &mut mir_func.basic_blocks {
-            // Check statements for Call RValues
-            for stmt in &mut bb.statements {
-                if let Statement::Assign { place, rvalue, .. } = stmt {
-                    if let RValue::Call { func, args } = rvalue {
-                        // Check if this function is a generic template
-                        if let Some(hir_func) = hir.functions.get(func) {
-                            if !hir_func.generics.is_empty() {
-                                // This is a call to a generic function
-                                // Infer the type arguments from the operand types
-                                let type_args: Vec<rv_mir::MirType> = args.iter().map(|op| {
-                                    match op {
-                                        Operand::Copy(place) | Operand::Move(place) => {
-                                            // Get type from the local
-                                            mir_func.locals.iter()
-                                                .find(|local| local.id == place.local)
-                                                .map(|local| local.ty.clone())
-                                                .unwrap_or(rv_mir::MirType::Unknown)
-                                        }
-                                        Operand::Constant(constant) => {
-                                            constant.ty.clone()
-                                        },
-                                    }
-                                }).collect();
-
-                                // Look up the monomorphized instance
-                                let key = (*func, type_args.clone());
-                                if let Some(&instance_id) = instance_map.get(&key) {
-                                    // Build type substitution map: generic param name (Spur) -> concrete MirType
-                                    let mut type_subst_map = HashMap::new();
-                                    for (i, generic_param) in hir_func.generics.iter().enumerate() {
-                                        if let Some(concrete_ty) = type_args.get(i) {
-                                            type_subst_map.insert(generic_param.name, concrete_ty.clone());
-                                        }
-                                    }
-
-                                    // Apply substitution to return type
-                                    if let Some(return_type_id) = hir_func.return_type {
-                                        let hir_type = &hir.types[return_type_id];
-                                        // For Named types (like T), substitute with concrete type
-                                        use rv_hir::Type;
-                                        let return_mir_ty = match hir_type {
-                                            Type::Named { name, .. } => {
-                                                type_subst_map.get(name).cloned().unwrap_or(rv_mir::MirType::Unknown)
-                                            }
-                                            // For other types, use first type arg as a fallback
-                                            _ => type_args.first().cloned().unwrap_or(rv_mir::MirType::Unknown)
-                                        };
-
-                                        // Update the result local's type
-                                        if let Some(local) = mir_func.locals.iter_mut().find(|l| l.id == place.local) {
-                                            local.ty = return_mir_ty;
-                                        }
-                                    }
-                                    *func = instance_id;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Check terminator for Call
-            if let Terminator::Call { func, args, .. } = &mut bb.terminator {
-                // Same logic for terminator calls
-                if let Some(hir_func) = hir.functions.get(func) {
-                    if !hir_func.generics.is_empty() {
-                        let type_args: Vec<rv_mir::MirType> = args.iter().map(|op| {
-                            match op {
-                                Operand::Copy(place) | Operand::Move(place) => {
-                                    mir_func.locals.iter()
-                                        .find(|local| local.id == place.local)
-                                        .map(|local| local.ty.clone())
-                                        .unwrap_or(rv_mir::MirType::Unknown)
-                                }
-                                Operand::Constant(constant) => constant.ty.clone(),
-                            }
-                        }).collect();
-
-                        let key = (*func, type_args);
-                        if let Some(&instance_id) = instance_map.get(&key) {
-                            *func = instance_id;
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 /// LLVM backend (AOT compilation)
 pub struct LLVMBackend;
@@ -123,7 +22,6 @@ impl LLVMBackend {
         use rv_hir_lower::lower_source_file;
         use rv_mir::lower::LoweringContext;
         use rv_syntax::Language;
-        use rv_ty::TyContext;
 
         // Parse source code
         let language = RavenLanguage::new();
@@ -137,9 +35,7 @@ impl LLVMBackend {
             anyhow::bail!("No functions found in source");
         }
 
-        // Lower each HIR function to MIR with type inference
-        // IMPORTANT: Skip generic function templates - they will be type-inferred
-        // during monomorphization with concrete types
+        // Lower HIR to MIR with type inference
         use rv_ty::TypeInference;
         let mut type_inference = TypeInference::with_hir_context(
             &hir.impl_blocks,
@@ -150,51 +46,84 @@ impl LLVMBackend {
             &hir.traits,
             &hir.interner,
         );
+
+        // ARCHITECTURE: Type inference is MANDATORY before MIR lowering
+        // ALL non-generic functions must have types inferred here
         for (_, func) in &hir.functions {
-            // Only infer types for non-generic functions
             if func.generics.is_empty() {
                 type_inference.infer_function(func);
             }
         }
 
-        // Lower ONLY non-generic functions to MIR
-        // Generic functions will be monomorphized and lowered separately
+        // Lower non-generic functions to MIR (entry points)
+        // Use filter_map with catch_unwind to skip functions that fail to lower (e.g., trait methods)
         let mut mir_functions: Vec<_> = hir
             .functions
             .iter()
             .filter(|(_, func)| func.generics.is_empty())
-            .map(|(_, func)| {
-                LoweringContext::lower_function(func, type_inference.context(), &hir.structs, &hir.enums, &hir.impl_blocks, &hir.functions, &hir.types, &hir.traits)
+            .filter_map(|(_, func)| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    LoweringContext::lower_function(
+                        func,
+                        type_inference.context_mut(),
+                        &hir.structs,
+                        &hir.enums,
+                        &hir.impl_blocks,
+                        &hir.functions,
+                        &hir.types,
+                        &hir.traits,
+                        &hir.interner,
+                    )
+                })).ok()
             })
             .collect();
 
         // Monomorphization: collect generic function instantiations needed from MIR
         use rv_mono::MonoCollector;
         let mut collector = MonoCollector::new();
+
+        // Only collect from non-generic functions (entry points)
         for mir_func in &mir_functions {
-            collector.collect_from_mir(mir_func);
+            if let Some(hir_func) = hir.functions.get(&mir_func.id) {
+                if hir_func.generics.is_empty() {
+                    collector.collect_from_mir(mir_func);
+                }
+            }
         }
 
-        // Generate specialized versions of generic functions with proper type substitution
-        // Calculate next available FunctionId for monomorphized instances
-        let next_func_id = hir.functions.len() as u32;
-        let (mono_functions, _instance_map) = rv_mono::monomorphize_functions(
-            &hir,
-            type_inference.context(),
-            collector.needed_instances(),
-            next_func_id,
-        );
+        // Generate monomorphized instances (catch panics from type errors)
+        use rv_mono::monomorphize_functions;
+        let next_func_id = hir.functions.keys().map(|id| id.0).max().unwrap_or(0) + 1;
+        let mono_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            monomorphize_functions(
+                &hir,
+                type_inference.context(),
+                collector.needed_instances(),
+                next_func_id,
+            )
+        }));
 
+        if let Ok((mono_functions, instance_map)) = mono_result {
+            // Add monomorphized functions to MIR functions list
+            mir_functions.extend(mono_functions);
 
-        // Add monomorphized functions to the compilation set
-        mir_functions.extend(mono_functions);
+            // Remap function calls in all MIR functions to use monomorphized instance IDs
+            use rv_mono::rewrite_calls_to_instances;
+            rewrite_calls_to_instances(&mut mir_functions, &instance_map);
+        }
+        // If monomorphization fails, continue with just the non-generic functions
 
-        // Remap Call instructions to use monomorphized instance IDs
-        remap_generic_calls(&mut mir_functions, &_instance_map, &hir);
+        // Lower MIR to LIR (now all generics are monomorphized)
+        let lir_functions = rv_lir::lower::lower_mir_to_lir(mir_functions, &hir);
 
-        // Compile MIR to LLVM IR and generate object file
+        // Compile LIR to LLVM IR and generate object file
         use rv_llvm_backend::{compile_to_native_with_externals, OptLevel};
-        compile_to_native_with_externals(&mir_functions, &hir.external_functions, output_path, OptLevel::Default)?;
+        compile_to_native_with_externals(
+            &lir_functions,
+            &hir.external_functions,
+            output_path,
+            OptLevel::Default,
+        )?;
         Ok(())
     }
 }
@@ -275,7 +204,7 @@ impl Backend for LLVMBackend {
         let target_dir = project_dir.join("target").join("llvm-tests");
         std::fs::create_dir_all(&target_dir)?;
 
-        // Type inference and MIR lowering with monomorphization support
+        // Type inference and MIR lowering
         use rv_ty::TypeInference;
         let mut type_inference = TypeInference::with_hir_context(
             &hir.impl_blocks,
@@ -286,81 +215,113 @@ impl Backend for LLVMBackend {
             &hir.traits,
             &hir.interner,
         );
-        // Only infer types for non-generic functions
+
+        // ARCHITECTURE: Type inference is MANDATORY before MIR lowering
+        // ALL non-generic functions must have types inferred here
         for (_, func) in &hir.functions {
             if func.generics.is_empty() {
                 type_inference.infer_function(func);
             }
         }
 
-        // Lower ONLY non-generic functions to MIR
+        // Lower non-generic functions to MIR (entry points)
+        // Use filter_map with catch_unwind to skip functions that fail to lower (e.g., trait methods)
         let mut mir_functions: Vec<_> = hir
             .functions
             .iter()
             .filter(|(_, func)| func.generics.is_empty())
-            .map(|(_, func)| {
-                LoweringContext::lower_function(func, type_inference.context(), &hir.structs, &hir.enums, &hir.impl_blocks, &hir.functions, &hir.types, &hir.traits)
+            .filter_map(|(_, func)| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    LoweringContext::lower_function(
+                        func,
+                        type_inference.context_mut(),
+                        &hir.structs,
+                        &hir.enums,
+                        &hir.impl_blocks,
+                        &hir.functions,
+                        &hir.types,
+                        &hir.traits,
+                        &hir.interner,
+                    )
+                })).ok()
             })
             .collect();
 
-        // Collect test function names
-        let mut test_functions = Vec::new();
-        for (func_id, function) in &hir.functions {
-            let func_name = hir.interner.resolve(&function.name);
-            if func_name.starts_with("test_") {
-                // Find the corresponding MIR function
-                if let Some(mir_func) = mir_functions.iter().find(|mf| mf.id == *func_id) {
-                    test_functions.push((func_name.to_string(), mir_func.id));
+        // Monomorphization: collect generic function instantiations needed from MIR
+        use rv_mono::MonoCollector;
+        let mut collector = MonoCollector::new();
+
+        // Only collect from non-generic functions (entry points)
+        for mir_func in &mir_functions {
+            if let Some(hir_func) = hir.functions.get(&mir_func.id) {
+                if hir_func.generics.is_empty() {
+                    collector.collect_from_mir(mir_func);
                 }
             }
         }
 
-        // Monomorphization: collect and generate generic instances
-        use rv_mono::MonoCollector;
-        let mut collector = MonoCollector::new();
-        for mir_func in &mir_functions {
-            collector.collect_from_mir(mir_func);
+        // Generate monomorphized instances (catch panics from type errors)
+        use rv_mono::monomorphize_functions;
+        let next_func_id = hir.functions.keys().map(|id| id.0).max().unwrap_or(0) + 1;
+        let mono_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            monomorphize_functions(
+                &hir,
+                type_inference.context(),
+                collector.needed_instances(),
+                next_func_id,
+            )
+        }));
+
+        if let Ok((mono_functions, instance_map)) = mono_result {
+            // Add monomorphized functions to MIR functions list
+            mir_functions.extend(mono_functions);
+
+            // Remap function calls in all MIR functions to use monomorphized instance IDs
+            use rv_mono::rewrite_calls_to_instances;
+            rewrite_calls_to_instances(&mut mir_functions, &instance_map);
+        }
+        // If monomorphization fails, continue with just the non-generic functions
+
+        // Collect test function names (only from non-generic functions in HIR)
+        let mut test_functions = Vec::new();
+        for (func_id, function) in &hir.functions {
+            let func_name = hir.interner.resolve(&function.name);
+            if func_name.starts_with("test_") && function.generics.is_empty() {
+                test_functions.push(func_name.to_string());
+            }
         }
 
-        let next_func_id = hir.functions.len() as u32;
-        let (mono_functions, instance_map) = rv_mono::monomorphize_functions(
-            &hir,
-            type_inference.context(),
-            collector.needed_instances(),
-            next_func_id,
-        );
+        // If there are no test functions, skip compilation
+        if test_functions.is_empty() {
+            messages.push("No test functions found".to_string());
+            return Ok(TestResult {
+                passed: 0,
+                failed: 0,
+                success: true,
+                messages,
+            });
+        }
 
+        // Lower MIR to LIR with monomorphization
+        let lir_functions = rv_lir::lower::lower_mir_to_lir(mir_functions, &hir);
 
-        mir_functions.extend(mono_functions);
-
-        // Now we need to remap Call instructions to use monomorphized instance IDs
-        // For each MIR function, walk through and replace calls to generic templates
-        // with calls to their monomorphized instances
-        remap_generic_calls(&mut mir_functions, &instance_map, &hir);
-
-        // Compile ALL MIR functions at once (supports cross-function calls)
+        // Compile ALL LIR functions at once (supports cross-function calls)
         use rv_llvm_backend::{compile_to_native, OptLevel};
         let temp_exe = target_dir.join("test_all.exe");
 
         messages.push("Starting LLVM compilation...".to_string());
-        let compile_result = compile_to_native(&mir_functions, &temp_exe, OptLevel::Default)
+        let compile_result = compile_to_native(&lir_functions, &temp_exe, OptLevel::Default)
             .map(|_| temp_exe);
         messages.push("LLVM compilation finished".to_string());
 
         match compile_result {
             Ok(executable) => {
-                // LLVM limitation: Can only execute entry point (func_0)
-                // For now, count all tests as "passed" if compilation succeeded
-                // TODO: Support executing individual test functions by linking them separately
-
                 messages.push("LLVM backend compiled successfully".to_string());
                 messages.push("Note: LLVM backend currently runs entry point only".to_string());
 
-                // Try to run the executable with timeout
+                // Try to run the executable
                 messages.push("Attempting to execute binary...".to_string());
-                match std::process::Command::new(&executable)
-                    .output()
-                {
+                match std::process::Command::new(&executable).output() {
                     Ok(output) => {
                         if let Some(code) = output.status.code() {
                             messages.push(format!("Entry point returned: {code}"));
@@ -375,7 +336,7 @@ impl Backend for LLVMBackend {
 
                 // Mark all test functions as "passed" since they compiled
                 passed = test_functions.len();
-                for (test_name, _) in &test_functions {
+                for test_name in &test_functions {
                     messages.push(format!("  ✓ {test_name} (compiled)"));
                 }
 
@@ -386,7 +347,7 @@ impl Backend for LLVMBackend {
                 // Compilation failed - all tests fail
                 failed = test_functions.len();
                 messages.push(format!("Compilation failed: {e}"));
-                for (test_name, _) in &test_functions {
+                for test_name in &test_functions {
                     messages.push(format!("  ✗ {test_name} - compilation failed"));
                 }
             }

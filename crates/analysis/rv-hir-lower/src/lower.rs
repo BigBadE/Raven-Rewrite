@@ -58,6 +58,8 @@ pub struct LoweringContext {
     next_local_id: u32,
     /// Current impl block's self type (for resolving `self` parameters)
     current_impl_self_ty: Option<TypeId>,
+    /// Current function's generic parameter names (for resolving T -> Type::Generic)
+    current_generic_params: Vec<InternedString>,
     /// Macro expansion context
     pub macro_context: MacroExpansionContext,
 }
@@ -92,6 +94,7 @@ impl LoweringContext {
             types: rv_arena::Arena::new(),
             next_local_id: 0,
             current_impl_self_ty: None,
+            current_generic_params: Vec::new(),
             macro_context,
         }
     }
@@ -244,6 +247,9 @@ fn lower_function(ctx: &mut LoweringContext, current_scope: ScopeId, node: &Synt
         }
     }
 
+    // ARCHITECTURE: Set current generic params for lower_type_node to recognize generic references
+    ctx.current_generic_params = generics.iter().map(|g| g.name).collect();
+
     // Parse parameters
     let mut parameters = vec![];
     for child in &node.children {
@@ -268,6 +274,9 @@ fn lower_function(ctx: &mut LoweringContext, current_scope: ScopeId, node: &Synt
             break;
         }
     }
+
+    // Clear current generic params after parsing parameters and return type
+    ctx.current_generic_params.clear();
 
     // Create function scope for body
     let fn_scope = ctx.scope_tree.create_child(current_scope, node.span);
@@ -346,6 +355,9 @@ fn lower_function(ctx: &mut LoweringContext, current_scope: ScopeId, node: &Synt
         body: body_with_resolution,
         is_external: false,
     };
+
+    if ctx.interner.resolve(&name_interned) == "get_value" || ctx.interner.resolve(&name_interned) == "increment" {
+    }
 
     ctx.functions.insert(function_id, function);
 }
@@ -1383,7 +1395,8 @@ fn parse_field(ctx: &mut LoweringContext, node: &SyntaxNode) -> Option<FieldDef>
             && field_name.is_none() {
             field_name = Some(ctx.intern(&child.text));
         } else if child.kind == SyntaxKind::Type {
-            field_ty = Some(TypeId::from_raw(0.into())); // Placeholder
+            // Actually parse the type instead of using a placeholder
+            field_ty = Some(lower_type_node(ctx, child));
         }
     }
 
@@ -1498,6 +1511,24 @@ fn parse_generic_params(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Gen
 fn parse_parameters(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Parameter> {
     let mut params = vec![];
 
+
+    // WORKAROUND: Tree-sitter doesn't always create child nodes for simple "self" parameters
+    // Check if the node text contains "self" directly
+    if node.text.contains("self") && !node.text.contains(":") {
+        // Simple self parameter without type annotation (e.g., "(self)")
+        // Use the impl block's self type
+        if let Some(self_ty) = ctx.current_impl_self_ty {
+            let name_sym = ctx.intern("self");
+            params.push(Parameter {
+                inferred_ty: None,
+                name: name_sym,
+                ty: self_ty,
+                span: ctx.file_span(node),
+            });
+            return params; // Early return - we found the self parameter
+        }
+    }
+
     for child in &node.children {
         if let SyntaxKind::Unknown(ref kind) = child.kind {
             if kind == "self_parameter" {
@@ -1519,6 +1550,7 @@ fn parse_parameters(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Paramet
 
                 if let Some(type_id) = param_type_id {
                     params.push(Parameter {
+                inferred_ty: None,
                         name: name_sym,
                         ty: type_id,
                         span: ctx.file_span(child),
@@ -1557,6 +1589,7 @@ fn parse_parameters(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Paramet
                     params.push(Parameter {
                         name,
                         ty: type_id,
+                        inferred_ty: None,
                         span: ctx.file_span(child),
                     });
                 }
@@ -1571,6 +1604,16 @@ fn parse_parameters(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Paramet
 fn lower_type_node(ctx: &mut LoweringContext, node: &SyntaxNode) -> TypeId {
     let name = ctx.intern(&node.text);
     let span = ctx.file_span(node);
+
+    // ARCHITECTURE: Check if this is a generic parameter reference (e.g., T in fn foo<T>(x: T))
+    if ctx.current_generic_params.contains(&name) {
+        // This is a reference to a generic parameter - create Type::Generic
+        let type_node = Type::Generic {
+            name,
+            span,
+        };
+        return ctx.types.alloc(type_node);
+    }
 
     // Try to resolve the type name to a TypeDefId
     let def = ctx.structs.iter()
@@ -1993,6 +2036,7 @@ fn lower_trait_method(
                         params.push(Parameter {
                             name: param_name,
                             ty: param_ty,
+                            inferred_ty: None,
                             span: ctx.file_span(param_child),
                         });
                     }
@@ -2131,6 +2175,7 @@ fn lower_closure(
                         params.push(Parameter {
                             name: param_name,
                             ty: param_ty,
+                            inferred_ty: None,
                             span: ctx.file_span(param_child),
                         });
                     }

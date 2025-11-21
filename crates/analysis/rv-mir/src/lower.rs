@@ -1,14 +1,14 @@
 //! HIR → MIR lowering
 
 use crate::{
-    AggregateKind, BinaryOp, Constant, LocalId, MirBuilder, MirFunction, MirType, Operand, Place,
-    PlaceElem, RValue, Statement, Terminator, UnaryOp,
+    AggregateKind, BinaryOp, Constant, LocalId, MirBuilder, MirFunction, MirType, MirVariant,
+    Operand, Place, PlaceElem, RValue, Statement, Terminator, UnaryOp,
 };
 use lasso::Key;
 use rustc_hash::FxHashMap;
 use rv_arena::Arena;
 use rv_hir::{Body, DefId, EnumDef, Expr, ExprId, Function, FunctionId, ImplBlock, ImplId, LiteralKind, Pattern, SelfParam, Stmt, StmtId, StructDef, TraitDef, TraitId, Type, TypeDefId};
-use rv_intern::Symbol;
+use rv_intern::{Interner, Symbol};
 use rv_span::{FileId, FileSpan, Span};
 use rv_ty::{TyContext, TyId, TyKind};
 use std::collections::HashMap;
@@ -31,8 +31,8 @@ pub enum MethodResolutionError {
 pub struct LoweringContext<'ctx> {
     /// MIR builder
     builder: MirBuilder,
-    /// Type context
-    ty_ctx: &'ctx TyContext,
+    /// Type context (mutable for normalize())
+    ty_ctx: &'ctx mut TyContext,
     /// Map from HIR ExprId to MIR LocalId
     expr_locals: FxHashMap<ExprId, LocalId>,
     /// Return local (for storing return value)
@@ -51,19 +51,22 @@ pub struct LoweringContext<'ctx> {
     traits: &'ctx HashMap<TraitId, TraitDef>,
     /// Map from variable names to their locals (for let bindings)
     var_locals: FxHashMap<Symbol, LocalId>,
+    /// String interner (for resolving primitive type names)
+    interner: &'ctx Interner,
 }
 
 impl<'ctx> LoweringContext<'ctx> {
     /// Create a new lowering context
     pub fn new(
         builder: MirBuilder,
-        ty_ctx: &'ctx TyContext,
+        ty_ctx: &'ctx mut TyContext,
         structs: &'ctx HashMap<TypeDefId, StructDef>,
         enums: &'ctx HashMap<TypeDefId, EnumDef>,
         impl_blocks: &'ctx HashMap<ImplId, ImplBlock>,
         functions: &'ctx HashMap<FunctionId, Function>,
         hir_types: &'ctx Arena<Type>,
         traits: &'ctx HashMap<TraitId, TraitDef>,
+        interner: &'ctx Interner,
     ) -> Self {
         Self {
             builder,
@@ -77,44 +80,67 @@ impl<'ctx> LoweringContext<'ctx> {
             hir_types,
             traits,
             var_locals: FxHashMap::default(),
+            interner,
         }
     }
 
     /// Lower a HIR function to MIR
     pub fn lower_function(
         function: &Function,
-        ty_ctx: &'ctx TyContext,
+        ty_ctx: &'ctx mut TyContext,
         structs: &'ctx HashMap<TypeDefId, StructDef>,
         enums: &'ctx HashMap<TypeDefId, EnumDef>,
         impl_blocks: &'ctx HashMap<ImplId, ImplBlock>,
         functions: &'ctx HashMap<FunctionId, Function>,
         hir_types: &'ctx Arena<Type>,
         traits: &'ctx HashMap<TraitId, TraitDef>,
+        interner: &'ctx Interner,
     ) -> MirFunction {
         let mut builder = MirBuilder::new(function.id);
         builder.set_param_count(function.parameters.len());
-        let mut ctx = Self::new(builder, ty_ctx, structs, enums, impl_blocks, functions, hir_types, traits);
+        let mut ctx = Self::new(builder, ty_ctx, structs, enums, impl_blocks, functions, hir_types, traits, interner);
 
         // Register function parameters FIRST so they get LocalId(0), LocalId(1), etc.
         // This matches the interpreter's expectation for parameter locals
-        for param in &function.parameters {
-            // Look up the parameter type from type inference var_types
-            // Apply substitutions to resolve type variables
-            let param_ty = if let Some(&ty_id) = ty_ctx.var_types.get(&param.name) {
-                let resolved_ty_id = ty_ctx.apply_subst(ty_id);
-                ctx.lower_type(resolved_ty_id)
-            } else {
-                // Fallback to Unit if type inference didn't track this parameter
-                MirType::Unit
-            };
+        for (param_idx, param) in function.parameters.iter().enumerate() {
+            // ARCHITECTURE: Use DefId for type lookup (not Symbol name)
+            // This eliminates HashMap<Symbol, TyId> dependency
+            let local_id = rv_hir::LocalId(param_idx as u32);
+            let def_id = rv_hir::DefId::Local(local_id);
 
-            let param_local = ctx.builder.new_local(Some(param.name), param_ty, false);
+            // ARCHITECTURE: STRICT - No fallbacks, DefId lookup only
+            let ty_id = ctx.ty_ctx.get_def_type(def_id)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "COMPILER BUG: Parameter '{}' (function '{}', DefId={:?}) has no inferred type. \
+                         Type inference MUST populate def_types before MIR lowering.",
+                        ctx.interner.resolve(&param.name),
+                        ctx.interner.resolve(&function.name),
+                        def_id
+                    )
+                });
+
+            // Normalize to resolve type variables (must succeed after inference)
+            let normalized_ty = ctx.ty_ctx.normalize(ty_id)
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "COMPILER BUG: Failed to normalize parameter '{}' type (ty_id={:?})",
+                        ctx.interner.resolve(&param.name),
+                        ty_id
+                    )
+                });
+
+            let mir_ty = ctx.lower_type(normalized_ty);
+            let param_local = ctx.builder.new_local(Some(param.name), mir_ty, false);
             ctx.var_locals.insert(param.name, param_local);
         }
 
         // Create return local AFTER parameters
-        let return_ty = if let Some(ty_id) = ty_ctx.get_expr_type(function.body.root_expr) {
-            ctx.lower_type(ty_id)
+        let return_ty = if let Some(ty_id) = ctx.ty_ctx.get_expr_type(function.body.root_expr) {
+            match ctx.ty_ctx.normalize(ty_id) {
+                Ok(normalized_ty) => ctx.lower_type(normalized_ty),
+                Err(_) => MirType::Unit, // Normalization failed - default to Unit
+            }
         } else {
             MirType::Unit
         };
@@ -135,7 +161,7 @@ impl<'ctx> LoweringContext<'ctx> {
     /// Lower a HIR function to MIR with type substitution for generic parameters
     pub fn lower_function_with_subst(
         function: &Function,
-        ty_ctx: &'ctx TyContext,
+        ty_ctx: &'ctx mut TyContext,
         structs: &'ctx HashMap<TypeDefId, StructDef>,
         enums: &'ctx HashMap<TypeDefId, EnumDef>,
         impl_blocks: &'ctx HashMap<ImplId, ImplBlock>,
@@ -144,38 +170,38 @@ impl<'ctx> LoweringContext<'ctx> {
         traits: &'ctx HashMap<TraitId, TraitDef>,
         type_subst: &HashMap<Symbol, MirType>,
         instance_id: FunctionId,
+        interner: &'ctx Interner,
     ) -> MirFunction {
         let mut builder = MirBuilder::new(instance_id);
         builder.set_param_count(function.parameters.len());
-        let mut ctx = Self::new(builder, ty_ctx, structs, enums, impl_blocks, functions, hir_types, traits);
+        let mut ctx = Self::new(builder, ty_ctx, structs, enums, impl_blocks, functions, hir_types, traits, interner);
 
-        // Register function parameters with concrete types from substitution map
-        for param in &function.parameters {
+        // ARCHITECTURE: Register parameters with types from DefId lookup + substitution
+        for (param_idx, param) in function.parameters.iter().enumerate() {
             // Get the HIR type to check if it's a generic parameter
             let hir_ty = &hir_types[param.ty];
 
             // Determine the MIR type for this parameter
-            let param_ty = if let Type::Named { name, .. } = hir_ty {
-                // Check if this named type is a generic parameter with a substitution
-                if let Some(concrete_ty) = type_subst.get(&name) {
-                    // Use the concrete type from substitution (e.g., T -> Int)
-                    concrete_ty.clone()
-                } else {
-                    // Not a generic parameter, look up from type context
-                    if let Some(&ty_id) = ty_ctx.var_types.get(&param.name) {
-                        let resolved_ty_id = ty_ctx.apply_subst(ty_id);
-                        ctx.lower_type(resolved_ty_id)
+            let param_ty = match hir_ty {
+                // Generic parameter (e.g., T in fn foo<T>(x: T)) - use substitution
+                Type::Generic { name, .. } => {
+                    if let Some(concrete_ty) = type_subst.get(name) {
+                        // Use the concrete type from substitution (e.g., T -> Int)
+                        concrete_ty.clone()
                     } else {
-                        MirType::Unit
+                        panic!("Generic parameter '{}' missing from type_subst map",
+                            ctx.interner.resolve(name));
                     }
                 }
-            } else {
-                // Not a named type, look up from type context normally
-                if let Some(&ty_id) = ty_ctx.var_types.get(&param.name) {
-                    let resolved_ty_id = ty_ctx.apply_subst(ty_id);
-                    ctx.lower_type(resolved_ty_id)
-                } else {
-                    MirType::Unit
+                // Non-generic type - use DefId lookup
+                _ => {
+                    let local_id = rv_hir::LocalId(param_idx as u32);
+                    let def_id = rv_hir::DefId::Local(local_id);
+
+                    ctx.ty_ctx.get_def_type(def_id)
+                        .and_then(|ty_id| ctx.ty_ctx.normalize(ty_id).ok())
+                        .map(|normalized_ty| ctx.lower_type(normalized_ty))
+                        .unwrap_or(MirType::Unit)
                 }
             };
 
@@ -193,24 +219,33 @@ impl<'ctx> LoweringContext<'ctx> {
                     concrete_ty.clone()
                 } else {
                     // Not a generic parameter, use type inference
-                    if let Some(ty_id) = ty_ctx.get_expr_type(function.body.root_expr) {
-                        ctx.lower_type(ty_id)
+                    if let Some(ty_id) = ctx.ty_ctx.get_expr_type(function.body.root_expr) {
+                        match ctx.ty_ctx.normalize(ty_id) {
+                            Ok(normalized_ty) => ctx.lower_type(normalized_ty),
+                            Err(_) => MirType::Unit,
+                        }
                     } else {
                         MirType::Unit
                     }
                 }
             } else {
                 // Not a named type, use type inference
-                if let Some(ty_id) = ty_ctx.get_expr_type(function.body.root_expr) {
-                    ctx.lower_type(ty_id)
+                if let Some(ty_id) = ctx.ty_ctx.get_expr_type(function.body.root_expr) {
+                    match ctx.ty_ctx.normalize(ty_id) {
+                        Ok(normalized_ty) => ctx.lower_type(normalized_ty),
+                        Err(_) => MirType::Unit,
+                    }
                 } else {
                     MirType::Unit
                 }
             }
         } else {
             // No return type annotation, use type inference
-            if let Some(ty_id) = ty_ctx.get_expr_type(function.body.root_expr) {
-                ctx.lower_type(ty_id)
+            if let Some(ty_id) = ctx.ty_ctx.get_expr_type(function.body.root_expr) {
+                match ctx.ty_ctx.normalize(ty_id) {
+                    Ok(normalized_ty) => ctx.lower_type(normalized_ty),
+                    Err(_) => MirType::Unit,
+                }
             } else {
                 MirType::Unit
             }
@@ -253,10 +288,26 @@ impl<'ctx> LoweringContext<'ctx> {
         }
 
         let expr = &body.exprs[expr_id];
-        let mir_ty = if let Some(ty_id) = self.ty_ctx.get_expr_type(expr_id) {
-            self.lower_type(ty_id)
-        } else {
-            MirType::Unknown
+        let ty_id = self.ty_ctx.get_expr_type(expr_id).unwrap_or_else(|| {
+            panic!(
+                "Type inference failed to produce a type for expression: {:?} at {:?}. \
+                This indicates a bug in type inference - all expressions must have resolved types \
+                before MIR lowering.",
+                expr, expr_id
+            )
+        });
+
+        // Normalize the type to resolve type variables
+        let mir_ty = match self.ty_ctx.normalize(ty_id) {
+            Ok(normalized_ty) => self.lower_type(normalized_ty),
+            Err(_) => {
+                // Normalization failed - this is a bug, but provide better error message
+                panic!(
+                    "Failed to normalize type for expression {:?} at {:?}. \
+                    Type contains unresolved variables. This indicates incomplete type inference.",
+                    expr, expr_id
+                )
+            }
         };
 
         // Create a temporary for the result
@@ -604,11 +655,11 @@ impl<'ctx> LoweringContext<'ctx> {
                 // Lower base expression
                 let base_local = self.lower_expr(body, *base);
 
-                // Get the type of the base expression
-                let base_ty = self.ty_ctx.get_expr_type(*base);
+                // Get the type of the base expression from type inference
+                let base_ty_id = self.ty_ctx.get_expr_type(*base);
 
                 // Resolve field name to index
-                let field_idx = if let Some(ty_id) = base_ty {
+                let field_idx = if let Some(ty_id) = base_ty_id {
                     self.resolve_field_index(ty_id, *field).unwrap_or(0)
                 } else {
                     0 // Fallback
@@ -850,7 +901,7 @@ impl<'ctx> LoweringContext<'ctx> {
                             let init_ty = self.builder.function.locals.iter()
                                 .find(|l| l.id == init_local)
                                 .map(|l| l.ty.clone())
-                                .unwrap_or(MirType::Unknown);
+                                .expect("Failed to find type for initializer local. This indicates a bug in MIR lowering.");
                             let binding_local = self.builder.new_local(Some(*name), init_ty, false);
 
                             // Assign the initializer value to the binding
@@ -892,30 +943,33 @@ impl<'ctx> LoweringContext<'ctx> {
     }
 
     /// Lower a type from type system to MIR type
-    fn lower_type(&self, ty_id: TyId) -> MirType {
+    ///
+    /// Takes a NormalizedTy which guarantees all type variables are resolved.
+    /// This prevents the silent `TyKind::Var → MirType::Int` bug.
+    fn lower_type(&self, ty: rv_ty::NormalizedTy) -> MirType {
         use crate::MirVariant;
-        use rv_ty::VariantTy;
+        use rv_ty::{NormalizedTy, VariantTy};
 
-        // Apply substitutions first to resolve type variables
-        let resolved_ty_id = self.ty_ctx.apply_subst(ty_id);
-        let ty = self.ty_ctx.types.get(resolved_ty_id);
+        // No need for apply_subst - NormalizedTy guarantees no unresolved variables!
+        let ty_kind = &self.ty_ctx.types.get(ty.ty_id()).kind;
 
-        match &ty.kind {
+        match ty_kind {
             TyKind::Int => MirType::Int,
             TyKind::Float => MirType::Float,
             TyKind::Bool => MirType::Bool,
             TyKind::String => MirType::String,
             TyKind::Unit => MirType::Unit,
             TyKind::Function { params, ret } => MirType::Function {
-                params: params.iter().map(|p| self.lower_type(*p)).collect(),
-                ret: Box::new(self.lower_type(**ret)),
+                // Nested TyIds are also normalized, so we can wrap them
+                params: params.iter().map(|p| self.lower_type(NormalizedTy::wrap_child(*p))).collect(),
+                ret: Box::new(self.lower_type(NormalizedTy::wrap_child(**ret))),
             },
             TyKind::Tuple { elements } => {
-                MirType::Tuple(elements.iter().map(|e| self.lower_type(*e)).collect())
+                MirType::Tuple(elements.iter().map(|e| self.lower_type(NormalizedTy::wrap_child(*e))).collect())
             }
             TyKind::Ref { mutable, inner } => MirType::Ref {
                 mutable: *mutable,
-                inner: Box::new(self.lower_type(**inner)),
+                inner: Box::new(self.lower_type(NormalizedTy::wrap_child(**inner))),
             },
             TyKind::Struct { def_id, fields } => {
                 // Look up the struct name from the definition
@@ -926,7 +980,7 @@ impl<'ctx> LoweringContext<'ctx> {
 
                 MirType::Struct {
                     name,
-                    fields: fields.iter().map(|(_, ty)| self.lower_type(*ty)).collect(),
+                    fields: fields.iter().map(|(_, ty_id)| self.lower_type(NormalizedTy::wrap_child(*ty_id))).collect(),
                 }
             },
             TyKind::Enum { def_id, variants } => {
@@ -936,10 +990,10 @@ impl<'ctx> LoweringContext<'ctx> {
                         let fields = match variant_ty {
                             VariantTy::Unit => vec![],
                             VariantTy::Tuple(types) => {
-                                types.iter().map(|t| self.lower_type(*t)).collect()
+                                types.iter().map(|t| self.lower_type(NormalizedTy::wrap_child(*t))).collect()
                             }
                             VariantTy::Struct(fields) => {
-                                fields.iter().map(|(_, ty)| self.lower_type(*ty)).collect()
+                                fields.iter().map(|(_, ty)| self.lower_type(NormalizedTy::wrap_child(*ty))).collect()
                             }
                         };
                         MirVariant {
@@ -961,14 +1015,214 @@ impl<'ctx> LoweringContext<'ctx> {
                 }
             }
             TyKind::Array { element, size } => MirType::Array {
-                element: Box::new(self.lower_type(**element)),
+                element: Box::new(self.lower_type(NormalizedTy::wrap_child(**element))),
                 size: *size,
             },
             TyKind::Slice { element } => MirType::Slice {
-                element: Box::new(self.lower_type(**element)),
+                element: Box::new(self.lower_type(NormalizedTy::wrap_child(**element))),
             },
-            TyKind::Named { name, .. } => MirType::Named(*name),
-            _ => MirType::Unknown,
+            TyKind::Named { name, def, .. } => {
+                // Try to resolve the named type to its actual definition
+                // Check if it's a struct
+                if let Some(struct_def) = self.structs.get(def) {
+                    // Create full struct type with fields by converting HIR types to MIR types
+                    let field_types: Vec<MirType> = struct_def.fields
+                        .iter()
+                        .map(|field| {
+                            let hir_ty = &self.hir_types[field.ty];
+                            self.lower_hir_type_recursive(hir_ty)
+                        })
+                        .collect();
+
+                    MirType::Struct {
+                        name: *name,
+                        fields: field_types,
+                    }
+                } else if let Some(enum_def) = self.enums.get(def) {
+                    // Create full enum type with variants
+                    let mir_variants: Vec<MirVariant> = enum_def.variants
+                        .iter()
+                        .map(|variant| {
+                            MirVariant {
+                                name: variant.name,
+                                fields: vec![], // Simplified for now
+                            }
+                        })
+                        .collect();
+
+                    MirType::Enum {
+                        name: *name,
+                        variants: mir_variants,
+                    }
+                } else {
+                    // Unknown named type, keep as Named
+                    MirType::Named(*name)
+                }
+            }
+            TyKind::Never => {
+                // Never type - map to unit for now
+                MirType::Unit
+            }
+            TyKind::Param { name, .. } => {
+                // Generic type parameter - keep as named type
+                // During monomorphization, this will be substituted with concrete types
+                MirType::Named(*name)
+            }
+            TyKind::Var { id } => {
+                // ⚠️ COMPILE ERROR: If you hit this, it means a non-normalized type was passed!
+                // NormalizedTy should make this unreachable.
+                panic!(
+                    "BUG: Unresolved type variable ?{} in supposedly normalized type {:?}. \
+                     This indicates normalize() didn't work correctly or a non-normalized TyId \
+                     was unsafely wrapped in NormalizedTy.",
+                    id.0, ty.ty_id()
+                )
+            }
+            TyKind::Error => {
+                // Error type from type inference failures
+                // This indicates a type error was detected but not properly reported
+                panic!(
+                    "Error type encountered in MIR lowering. \
+                    This indicates a type error occurred during type inference that should have been \
+                    reported to the user."
+                )
+            }
+        }
+    }
+
+    /// Helper function to recursively convert HIR Type to MirType
+    /// This is used when we need to convert struct field types from HIR to MIR
+    fn lower_hir_type_recursive(&self, hir_ty: &Type) -> MirType {
+        match hir_ty {
+            Type::Named { name, def: Some(def_id), .. } => {
+                // User-defined type - look up the struct/enum definition
+                if let Some(struct_def) = self.structs.get(def_id) {
+                    let field_types: Vec<MirType> = struct_def.fields
+                        .iter()
+                        .map(|field| {
+                            let field_hir_ty = &self.hir_types[field.ty];
+                            self.lower_hir_type_recursive(field_hir_ty)
+                        })
+                        .collect();
+
+                    MirType::Struct {
+                        name: *name,
+                        fields: field_types,
+                    }
+                } else if let Some(enum_def) = self.enums.get(def_id) {
+                    let mir_variants: Vec<MirVariant> = enum_def.variants
+                        .iter()
+                        .map(|variant| {
+                            MirVariant {
+                                name: variant.name,
+                                fields: vec![],
+                            }
+                        })
+                        .collect();
+
+                    MirType::Enum {
+                        name: *name,
+                        variants: mir_variants,
+                    }
+                } else {
+                    // Not a struct or enum, probably a built-in type
+                    MirType::Named(*name)
+                }
+            }
+            Type::Named { name, .. } => {
+                // def is None - try to look up by name
+                // First check if it's a struct or enum by name
+                let name_lookup = self.structs.iter()
+                    .find(|(_, s)| s.name == *name)
+                    .map(|(id, _)| *id)
+                    .or_else(|| {
+                        self.enums.iter()
+                            .find(|(_, e)| e.name == *name)
+                            .map(|(id, _)| *id)
+                    });
+
+                if let Some(def_id) = name_lookup {
+                    // Found a struct or enum - recursively convert it
+                    if let Some(struct_def) = self.structs.get(&def_id) {
+                        let field_types: Vec<MirType> = struct_def.fields
+                            .iter()
+                            .map(|field| {
+                                let field_hir_ty = &self.hir_types[field.ty];
+                                self.lower_hir_type_recursive(field_hir_ty)
+                            })
+                            .collect();
+
+                        return MirType::Struct {
+                            name: *name,
+                            fields: field_types,
+                        };
+                    } else if let Some(enum_def) = self.enums.get(&def_id) {
+                        let mir_variants: Vec<MirVariant> = enum_def.variants
+                            .iter()
+                            .map(|variant| {
+                                MirVariant {
+                                    name: variant.name,
+                                    fields: vec![],
+                                }
+                            })
+                            .collect();
+
+                        return MirType::Enum {
+                            name: *name,
+                            variants: mir_variants,
+                        };
+                    }
+                }
+
+                // Not found as struct/enum - check if it's a primitive type
+                let name_str = self.interner.resolve(name);
+                match name_str.as_str() {
+                    "i64" | "i32" | "isize" => MirType::Int,
+                    "f64" | "f32" => MirType::Float,
+                    "bool" => MirType::Bool,
+                    "String" | "str" => MirType::String,
+                    _ => MirType::Named(*name),
+                }
+            }
+            Type::Generic { name, .. } => MirType::Named(*name),
+            Type::Function { params, ret, .. } => {
+                let param_types: Vec<MirType> = params
+                    .iter()
+                    .map(|p| {
+                        let param_ty = &self.hir_types[*p];
+                        self.lower_hir_type_recursive(param_ty)
+                    })
+                    .collect();
+                let ret_ty = &self.hir_types[**ret];
+                MirType::Function {
+                    params: param_types,
+                    ret: Box::new(self.lower_hir_type_recursive(ret_ty)),
+                }
+            }
+            Type::Tuple { elements, .. } => {
+                let element_types: Vec<MirType> = elements
+                    .iter()
+                    .map(|e| {
+                        let elem_ty = &self.hir_types[*e];
+                        self.lower_hir_type_recursive(elem_ty)
+                    })
+                    .collect();
+                MirType::Tuple(element_types)
+            }
+            Type::Reference { inner, mutable, .. } => {
+                let inner_ty = &self.hir_types[**inner];
+                MirType::Ref {
+                    mutable: *mutable,
+                    inner: Box::new(self.lower_hir_type_recursive(inner_ty)),
+                }
+            }
+            Type::Unknown { .. } => {
+                panic!(
+                    "HIR contains Unknown type. \
+                    This indicates the HIR was not properly constructed - all types should be \
+                    concrete type references (Named, Generic, Function, etc.), not Unknown."
+                )
+            }
         }
     }
 

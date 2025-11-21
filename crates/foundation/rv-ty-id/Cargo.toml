@@ -1,0 +1,12 @@
+[package]
+name = "rv-ty-id"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+la-arena.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

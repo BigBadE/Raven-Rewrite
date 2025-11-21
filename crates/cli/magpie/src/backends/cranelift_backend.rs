@@ -61,22 +61,36 @@ impl CraneliftBackend {
                 &hir_ctx.traits,
                 &hir_ctx.interner,
             );
-            type_inference.infer_function(function);
 
-            // Lower ALL functions to MIR (including called functions)
+            // Run type inference on non-generic functions only
+            // Generic functions will be type-inferred during monomorphization with concrete types
+            for (_func_id, func) in &hir_ctx.functions {
+                if func.generics.is_empty() {
+                    type_inference.infer_function(func);
+                }
+            }
+
+            // Lower ONLY non-generic functions to MIR
+            // Generic functions will be monomorphized and lowered separately
             let mut mir_functions = Vec::new();
             let mut target_mir_func_id = None;
 
             for (_func_id, hir_func) in &hir_ctx.functions {
+                // Skip generic functions - they'll be monomorphized later
+                if !hir_func.generics.is_empty() {
+                    continue;
+                }
+
                 let mir_func = LoweringContext::lower_function(
                     hir_func,
-                    type_inference.context(),
+                    type_inference.context_mut(),
                     &hir_ctx.structs,
                     &hir_ctx.enums,
                     &hir_ctx.impl_blocks,
                     &hir_ctx.functions,
                     &hir_ctx.types,
                     &hir_ctx.traits,
+                    &hir_ctx.interner,
                 );
 
                 // Track which MIR function is our target
@@ -86,6 +100,28 @@ impl CraneliftBackend {
 
                 mir_functions.push(mir_func);
             }
+
+            // Monomorphization: collect generic function instantiations needed from MIR
+            use rv_mono::MonoCollector;
+            let mut collector = MonoCollector::new();
+            for mir_func in &mir_functions {
+                collector.collect_from_mir(mir_func);
+            }
+
+            // Generate specialized versions of generic functions with proper type substitution
+            let next_func_id = hir_ctx.functions.len() as u32;
+            let (mono_functions, instance_map) = rv_mono::monomorphize_functions(
+                &hir_ctx,
+                type_inference.context(),
+                collector.needed_instances(),
+                next_func_id,
+            );
+
+            // Add monomorphized functions to the compilation set
+            mir_functions.extend(mono_functions);
+
+            // Rewrite calls in existing MIR to use monomorphized instance IDs
+            rv_mono::rewrite_calls_to_instances(&mut mir_functions, &instance_map);
 
             // Compile all functions with Cranelift (supports function calls)
             if mir_functions.len() > 1 {
@@ -110,6 +146,22 @@ impl CraneliftBackend {
         } else {
             anyhow::bail!("Failed to parse file");
         }
+    }
+
+    /// Compile and run a single source file (for compiletest)
+    pub fn compile_and_run(&self, file: &Path, _args: &[String]) -> Result<()> {
+        let mut backend = Self::new()?;
+        let source_file = backend.load_file(file)?;
+
+        // Execute the main function
+        let result = backend.execute_function(source_file, "main")?;
+
+        // Print the result if it's not 0 (representing unit)
+        if result != 0 {
+            println!("{result}");
+        }
+
+        Ok(())
     }
 }
 

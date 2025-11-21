@@ -27,7 +27,7 @@ struct Cli {
     command: Command,
 
     /// Path to the project directory
-    #[clap(long, short = 'C', global = true)]
+    #[clap(long, global = true)]
     project_dir: Option<PathBuf>,
 
     /// Backend to use (interpreter or jit)
@@ -44,6 +44,37 @@ enum Command {
     Run {
         /// Arguments to pass to the program
         #[clap(trailing_var_arg = true)]
+        args: Vec<String>,
+    },
+
+    /// Compile and run a single file (for testing)
+    #[clap(hide = true)]
+    Compile {
+        /// Source file to compile
+        file: PathBuf,
+
+        /// Library search path (rustc compat, ignored)
+        #[clap(short = 'L', action = clap::ArgAction::Append)]
+        lib_paths: Vec<String>,
+
+        /// Target triple (rustc compat, ignored)
+        #[clap(long)]
+        target: Option<String>,
+
+        /// Error format (rustc compat, ignored)
+        #[clap(long)]
+        error_format: Option<String>,
+
+        /// Codegen options (rustc compat, ignored)
+        #[clap(short = 'C', action = clap::ArgAction::Append)]
+        codegen: Vec<String>,
+
+        /// Output file (rustc compat, ignored)
+        #[clap(short = 'o', long)]
+        output: Option<PathBuf>,
+
+        /// Arguments to pass to the program
+        #[clap(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
 
@@ -73,6 +104,7 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Build => cmd_build(&cli)?,
         Command::Run { ref args } => cmd_run(&cli, args)?,
+        Command::Compile { ref file, ref output, ref args, .. } => cmd_compile(&cli, file, output.as_ref(), args)?,
         Command::Test => cmd_test(&cli)?,
         Command::Check => cmd_check(&cli)?,
         Command::Clean => cmd_clean(&cli)?,
@@ -190,6 +222,67 @@ fn cmd_clean(cli: &Cli) -> Result<()> {
     backend.clean(&project_dir)?;
 
     println!("Clean completed");
+
+    Ok(())
+}
+
+fn cmd_compile(cli: &Cli, file: &PathBuf, output_file: Option<&PathBuf>, args: &[String]) -> Result<()> {
+    if !file.exists() {
+        anyhow::bail!("File '{}' not found", file.display());
+    }
+
+    // If -o is specified, create a wrapper script instead of running directly
+    if let Some(output) = output_file {
+        // Get absolute path to magpie and source file
+        let magpie_path = std::env::current_exe()
+            .context("Failed to get magpie executable path")?;
+        let source_path = file.canonicalize()
+            .with_context(|| format!("Failed to canonicalize source path: {}", file.display()))?;
+
+        // Create a wrapper script that calls magpie
+        let wrapper_content = format!(
+            "#!/bin/bash\nexec '{}' compile '{}' \"$@\"\n",
+            magpie_path.display(),
+            source_path.display()
+        );
+
+        std::fs::write(&output, wrapper_content)
+            .with_context(|| format!("Failed to write output file: {}", output.display()))?;
+
+        // Make it executable
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&output)?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&output, perms)?;
+        }
+
+        // Success - wrapper created
+        return Ok(());
+    }
+
+    // No output file specified - run directly
+    let runtime_args: Vec<String> = args
+        .iter()
+        .filter(|arg| {
+            // Skip rustc-style flags
+            !arg.starts_with('-')
+        })
+        .cloned()
+        .collect();
+
+    match cli.backend.as_str() {
+        "interpreter" => {
+            let backend = RavenBackend::new();
+            backend.compile_and_run(file, &runtime_args)?;
+        }
+        "jit" => {
+            let backend = CraneliftBackend::new()?;
+            backend.compile_and_run(file, &runtime_args)?;
+        }
+        _ => return Err(anyhow!("Unknown backend: {}", cli.backend)),
+    }
 
     Ok(())
 }

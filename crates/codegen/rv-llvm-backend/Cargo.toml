@@ -5,18 +5,19 @@ edition = "2021"
 
 [dependencies]
 rv-hir = { workspace = true }
-rv-mir = { workspace = true }
+rv-lir = { workspace = true }
 rv-intern = { workspace = true }
 rv-span = { workspace = true }
 
-# LLVM bindings
-inkwell = { version = "0.5", features = ["llvm18-0"] }
+# LLVM bindings - using no-llvm-linking so build.rs handles all linking
+inkwell = { version = "0.5", features = ["llvm18-0-no-llvm-linking"] }
 
 # Error handling
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 
 [build-dependencies]
+# Dependencies for downloading LLVM and manual linking
 anyhow = { workspace = true }
 cc = "1.0"
 reqwest = { version = "0.12", features = ["blocking"] }

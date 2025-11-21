@@ -107,6 +107,23 @@ fn setup_llvm(mut target: PathBuf, url: &'static str) {
         fs::remove_file(temp.clone()).unwrap();
         eprintln!("LLVM downloaded successfully!");
     }
+
+    // Create library symlinks for LLVM dependencies on Linux
+    // This allows linking libzstd and libxml2 without dev packages installed
+    if env::consts::OS == "linux" {
+        let llvm_lib_dir = llvm_path.join("target").join("lib");
+        fs::create_dir_all(&llvm_lib_dir).ok();
+
+        // Create symlinks to system libraries
+        let _ = std::os::unix::fs::symlink(
+            "/usr/lib/x86_64-linux-gnu/libzstd.so.1",
+            llvm_lib_dir.join("libzstd.so")
+        );
+        let _ = std::os::unix::fs::symlink(
+            "/usr/lib/x86_64-linux-gnu/libxml2.so.2",
+            llvm_lib_dir.join("libxml2.so")
+        );
+    }
 }
 
 fn target_env_is(name: &str) -> bool {

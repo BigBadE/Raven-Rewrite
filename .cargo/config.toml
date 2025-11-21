@@ -1,10 +1,9 @@
 # To switch to this for faster build times, copy it and rename it config.toml.
 
 [env]
-# Auto-download LLVM location
-# The build.rs in rv-llvm-backend will download LLVM to this location
-# Use absolute path for compatibility
-LLVM_SYS_180_PREFIX = "C:/current_projects/Raven-Rewrite/target/llvm/target"
+# LLVM location - rv-llvm-backend/build.rs automatically downloads LLVM here if not present
+# This path must be set so llvm-sys can find headers during build
+LLVM_SYS_180_PREFIX = { value = "target/llvm/target", relative = true }
 
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
@@ -16,7 +15,7 @@ rustflags = [
     # - Ubuntu: `sudo apt-get install lld clang`
     # - Fedora: `sudo dnf install lld clang`
     # - Arch: `sudo pacman -S lld clang`
-    #"-Clink-arg=-fuse-ld=lld",
+    "-Clink-arg=-fuse-ld=lld",
 
     # Mold linker
     #
@@ -25,10 +24,11 @@ rustflags = [
     # - Ubuntu: `sudo apt-get install mold clang`
     # - Fedora: `sudo dnf install mold clang`
     # - Arch: `sudo pacman -S mold clang`
-    "-Clink-arg=-fuse-ld=mold",
+    #"-Clink-arg=-fuse-ld=mold",
 
-    # Dynamic linking for faster builds
-    "-Cprefer-dynamic",
+    # Dynamic linking for faster builds (disabled for LTO compatibility in release builds)
+    # Uncomment for faster dev builds if not using release profile:
+    # "-Cprefer-dynamic",
 
     # Nightly
     #"-Zshare-generics=y",
@@ -114,19 +114,14 @@ rustflags = ["-Z", "threads=8"]
 codegen-backend = true
 
 # Use cranelift for dev builds on non-Windows platforms only
-[target.x86_64-unknown-linux-gnu.profile.dev]
+[target.x86_64-unknown-linux-gnu.dev]
 codegen-backend = "cranelift"
 
-[target.x86_64-apple-darwin.profile.dev]
+[target.x86_64-apple-darwin.dev]
 codegen-backend = "cranelift"
 
-[target.aarch64-apple-darwin.profile.dev]
+[target.aarch64-apple-darwin.dev]
 codegen-backend = "cranelift"
 
-# Release builds use LLVM (default) and static linking
-[profile.release]
-# Remove prefer-dynamic for release builds - static linking
-# LLVM is the default codegen backend
-
-[llvm-cov]
-merge = true
+# Note: Release builds use LLVM (default) and static linking
+# Profile configuration is in workspace Cargo.toml

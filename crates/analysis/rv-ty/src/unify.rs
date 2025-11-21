@@ -47,9 +47,10 @@ impl<'ctx> Unifier<'ctx> {
     ///
     /// Returns `UnificationError` if types cannot be unified
     pub fn unify(&mut self, left: TyId, right: TyId) -> Result<(), UnificationError> {
-        // Apply current substitutions
-        let left = self.ctx.apply_subst(left);
-        let right = self.ctx.apply_subst(right);
+        // Follow type variable chains (but don't normalize structural types yet)
+        // During unification, we're still building the substitution map
+        let left = self.ctx.follow_var(left);
+        let right = self.ctx.follow_var(right);
 
         // If same type, already unified
         if left == right {
@@ -228,20 +229,34 @@ impl<'ctx> Unifier<'ctx> {
 
     /// Check if a type variable occurs in a type (for occurs check)
     fn occurs_in(&self, var: TyVarId, ty: TyId) -> bool {
-        let ty = self.ctx.apply_subst(ty);
-        let ty_kind = &self.ctx.types.get(ty).kind;
+        use crate::ty::TyKindVisitor;
 
-        match ty_kind {
-            TyKind::Var { id } => *id == var,
-            TyKind::Function { params, ret } => {
-                params.iter().any(|param| self.occurs_in(var, *param))
-                    || self.occurs_in(var, **ret)
-            }
-            TyKind::Tuple { elements } => elements.iter().any(|elem| self.occurs_in(var, *elem)),
-            TyKind::Ref { inner, .. } => self.occurs_in(var, **inner),
-            TyKind::Named { args, .. } => args.iter().any(|arg| self.occurs_in(var, *arg)),
-            _ => false,
+        struct OccursChecker {
+            var: TyVarId,
+            found: bool,
         }
+
+        impl TyKindVisitor for OccursChecker {
+            type Output = ();
+
+            fn visit_var(&mut self, id: &crate::ty::TyVarId, _node_id: crate::ty::TyId, _ctx: &TyContext) {
+                if *id == self.var {
+                    self.found = true;
+                }
+            }
+
+            fn get_node(__node_id: crate::ty::TyId, ctx: &TyContext) -> &crate::ty::TyKind {
+                &ctx.types.get(__node_id).kind
+            }
+
+            fn default_output(&mut self, _node_id: crate::ty::TyId, _ctx: &TyContext) {}
+        }
+
+        // Don't normalize during occurs check - we need to detect cycles
+        // before they cause infinite recursion
+        let mut checker = OccursChecker { var, found: false };
+        checker.visit_id(ty, self.ctx);
+        checker.found
     }
 }
 

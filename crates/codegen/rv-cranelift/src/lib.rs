@@ -15,9 +15,6 @@ pub struct JitCompiler {
     /// Cranelift JIT module
     module: JITModule,
 
-    /// Function builder context
-    builder_context: FunctionBuilderContext,
-
     /// Cranelift context
     ctx: codegen::Context,
 
@@ -37,7 +34,6 @@ impl JitCompiler {
         Ok(Self {
             ctx: module.make_context(),
             module,
-            builder_context: FunctionBuilderContext::new(),
             function_map: FxHashMap::default(),
             compiled_functions: FxHashMap::default(),
         })
@@ -143,8 +139,10 @@ impl JitCompiler {
         let param_count = self.ctx.func.signature.params.len();
 
         // Build function body
+        // Create a fresh builder context for each function to avoid Cranelift assertion failures
+        let mut builder_context = FunctionBuilderContext::new();
         {
-            let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
+            let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut builder_context);
 
             // Import all declared functions so we can call them
             for (&mir_func_id, &cranelift_func_id) in &self.function_map {
@@ -255,8 +253,10 @@ impl JitCompiler {
         self.function_map.insert(mir_func.id, func_id);
 
         // Build function body
+        // Create a fresh builder context to avoid Cranelift assertion failures
+        let mut builder_context = FunctionBuilderContext::new();
         {
-            let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
+            let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut builder_context);
 
             // Map from MIR basic blocks to Cranelift blocks
             let mut block_map = FxHashMap::default();
@@ -560,7 +560,15 @@ impl JitCompiler {
             MirType::Float => types::F64,
             MirType::Unit => types::I64, // Represent unit as i64 for simplicity
             MirType::String => types::I64, // String as pointer (i64)
-            MirType::Named(_) => types::I64, // Named types as pointer (i64)
+            MirType::Named(name) => {
+                panic!(
+                    "Unresolved named type in Cranelift codegen: {:?}. \
+                    This indicates a bug in MIR lowering - primitive types should be resolved to \
+                    MirType::Int/Float/Bool/String, and user-defined types should be resolved to \
+                    MirType::Struct/Enum.",
+                    name
+                )
+            }
             MirType::Function { .. } => types::I64, // Function pointer
             MirType::Struct { .. } => types::I64, // Struct as pointer
             MirType::Enum { .. } => types::I64, // Enum as pointer
@@ -568,7 +576,6 @@ impl JitCompiler {
             MirType::Slice { .. } => types::I64, // Slice as pointer
             MirType::Tuple(_) => types::I64, // Tuple as pointer
             MirType::Ref { .. } => types::I64, // Reference as pointer
-            MirType::Unknown => types::I64,
         }
     }
 }
