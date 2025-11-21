@@ -299,24 +299,14 @@ impl<'ctx> Compiler<'ctx> {
         let entry_block = self.context.append_basic_block(main_function, "entry");
         self.builder.position_at_end(entry_block);
 
-        // Call the entry function (func_0)
+        // Call the entry function (func_0) - discard its return value
         if let Some(&entry_fn_value) = llvm_functions.get(&entry_func.id) {
-            let call_result = self.builder.build_call(entry_fn_value, &[], "call_entry")?;
-
-            // Get the return value (should be i32)
-            let return_value = if let Some(ret_val) = call_result.try_as_basic_value().left() {
-                ret_val.into_int_value()
-            } else {
-                // If entry function returns void, return 0
-                self.context.i32_type().const_int(0, false)
-            };
-
-            // Return the result
-            self.builder.build_return(Some(&return_value))?;
-        } else {
-            // No entry function found, return 0
-            self.builder.build_return(Some(&self.context.i32_type().const_int(0, false)))?;
+            self.builder.build_call(entry_fn_value, &[], "call_entry")?;
         }
+
+        // Always return 0 (success) regardless of entry function's return value
+        // The entry function's return value is computational, not a program exit status
+        self.builder.build_return(Some(&self.context.i32_type().const_int(0, false)))?;
 
         Ok(())
     }
