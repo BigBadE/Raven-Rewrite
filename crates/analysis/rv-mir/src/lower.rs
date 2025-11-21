@@ -213,12 +213,64 @@ impl<'ctx> LoweringContext<'ctx> {
         // Check if return type is a generic parameter that needs substitution
         let return_ty = if let Some(return_type_id) = function.return_type {
             let hir_ret_ty = &hir_types[return_type_id];
-            if let Type::Named { name, .. } = hir_ret_ty {
-                // Check if this is a generic parameter with a substitution
-                if let Some(concrete_ty) = type_subst.get(&name) {
-                    concrete_ty.clone()
-                } else {
-                    // Not a generic parameter, use type inference
+            match hir_ret_ty {
+                // Generic type parameter (e.g., T in fn foo<T>() -> T)
+                Type::Generic { name, .. } => {
+                    if let Some(concrete_ty) = type_subst.get(name) {
+                        concrete_ty.clone()
+                    } else {
+                        panic!("Generic return type '{}' missing from type_subst map",
+                            ctx.interner.resolve(name));
+                    }
+                }
+                // Named type that might be a generic parameter
+                Type::Named { name, .. } => {
+                    // Check if this is a generic parameter with a substitution
+                    if let Some(concrete_ty) = type_subst.get(&name) {
+                        concrete_ty.clone()
+                    } else {
+                        // Not a generic parameter, use type inference
+                        if let Some(ty_id) = ctx.ty_ctx.get_expr_type(function.body.root_expr) {
+                            match ctx.ty_ctx.normalize(ty_id) {
+                                Ok(normalized_ty) => ctx.lower_type(normalized_ty),
+                                Err(_) => MirType::Unit,
+                            }
+                        } else {
+                            MirType::Unit
+                        }
+                    }
+                }
+                // Reference to generic (e.g., &T in fn foo<T>() -> &T)
+                Type::Reference { inner, mutable, .. } => {
+                    let inner_hir_ty = &hir_types[**inner];
+                    let inner_mir_ty = match inner_hir_ty {
+                        Type::Generic { name, .. } => {
+                            if let Some(concrete_ty) = type_subst.get(name) {
+                                concrete_ty.clone()
+                            } else {
+                                panic!("Generic return type '{}' missing from type_subst map",
+                                    ctx.interner.resolve(name));
+                            }
+                        }
+                        _ => {
+                            // Non-generic inner type, use type inference
+                            if let Some(ty_id) = ctx.ty_ctx.get_expr_type(function.body.root_expr) {
+                                match ctx.ty_ctx.normalize(ty_id) {
+                                    Ok(normalized_ty) => ctx.lower_type(normalized_ty),
+                                    Err(_) => MirType::Unit,
+                                }
+                            } else {
+                                MirType::Unit
+                            }
+                        }
+                    };
+                    MirType::Ref {
+                        mutable: *mutable,
+                        inner: Box::new(inner_mir_ty),
+                    }
+                }
+                // Other types, use type inference
+                _ => {
                     if let Some(ty_id) = ctx.ty_ctx.get_expr_type(function.body.root_expr) {
                         match ctx.ty_ctx.normalize(ty_id) {
                             Ok(normalized_ty) => ctx.lower_type(normalized_ty),
@@ -227,16 +279,6 @@ impl<'ctx> LoweringContext<'ctx> {
                     } else {
                         MirType::Unit
                     }
-                }
-            } else {
-                // Not a named type, use type inference
-                if let Some(ty_id) = ctx.ty_ctx.get_expr_type(function.body.root_expr) {
-                    match ctx.ty_ctx.normalize(ty_id) {
-                        Ok(normalized_ty) => ctx.lower_type(normalized_ty),
-                        Err(_) => MirType::Unit,
-                    }
-                } else {
-                    MirType::Unit
                 }
             }
         } else {

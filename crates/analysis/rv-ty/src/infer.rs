@@ -83,6 +83,9 @@ pub struct TypeInference<'a> {
     constraints: Constraints,
     /// Reference to module context for constraint generation
     module_ctx: Option<&'a mut ModuleTypeContext>,
+    /// Map from generic parameter names to type variables (for current function being inferred)
+    /// This ensures all occurrences of the same generic parameter T map to the same type variable
+    generic_param_map: rustc_hash::FxHashMap<rv_intern::Symbol, TyId>,
 }
 
 impl<'a> TypeInference<'a> {
@@ -105,6 +108,7 @@ impl<'a> TypeInference<'a> {
             var_mutability: vec![rustc_hash::FxHashMap::default()],
             receiver_mutability: rustc_hash::FxHashMap::default(),
             generate_mode: false,
+            generic_param_map: rustc_hash::FxHashMap::default(),
             constraints: Constraints::new(),
             module_ctx: None,
         }
@@ -169,6 +173,7 @@ impl<'a> TypeInference<'a> {
             var_mutability: vec![rustc_hash::FxHashMap::default()],
             receiver_mutability: rustc_hash::FxHashMap::default(),
             generate_mode: false,
+            generic_param_map: rustc_hash::FxHashMap::default(),
             constraints: Constraints::new(),
             module_ctx: None,
         }
@@ -278,6 +283,14 @@ impl<'a> TypeInference<'a> {
 
     /// Infer types for a function
     pub fn infer_function(&mut self, function: &Function) {
+        // Clear and populate generic parameter map for this function
+        // Each generic parameter T, U, etc. maps to a single type variable
+        self.generic_param_map.clear();
+        for generic_param in &function.generics {
+            let ty_var = self.ctx.fresh_ty_var();
+            self.generic_param_map.insert(generic_param.name, ty_var);
+        }
+
         // Set expected return type
         self.current_function_return_ty = function.return_type.and_then(|return_ty_id| {
             if let (Some(hir_types), Some(structs), Some(interner)) =
@@ -408,9 +421,16 @@ impl<'a> TypeInference<'a> {
                 }
             }
 
-            rv_hir::Type::Generic { .. } => {
+            rv_hir::Type::Generic { name, .. } => {
                 // Generic type parameters become type variables
-                self.ctx.fresh_ty_var()
+                // Check if we have a mapping for this generic parameter (from current function)
+                if let Some(&ty_var) = self.generic_param_map.get(name) {
+                    // Use the mapped type variable (ensures all occurrences of T use the same variable)
+                    ty_var
+                } else {
+                    // Not a known generic parameter, create a fresh type variable
+                    self.ctx.fresh_ty_var()
+                }
             }
 
             rv_hir::Type::Function { params, ret, .. } => {
@@ -491,6 +511,15 @@ impl<'a> TypeInference<'a> {
                      The trait implementation should have provided this type.",
                     assoc_name
                 );
+            }
+
+            rv_hir::Type::Reference { inner, mutable, .. } => {
+                // Reference type - convert inner type and wrap in Ref
+                let inner_ty = self.hir_type_to_ty_id_impl(**inner, hir_types, structs, interner, depth + 1);
+                self.ctx.types.alloc(TyKind::Ref {
+                    inner: Box::new(inner_ty),
+                    mutable: *mutable,
+                })
             }
 
             // Fallback for other type kinds
