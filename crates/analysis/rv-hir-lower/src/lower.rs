@@ -1630,6 +1630,41 @@ fn parse_parameters(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Paramet
 fn lower_type_node(ctx: &mut LoweringContext, node: &SyntaxNode) -> TypeId {
     let span = ctx.file_span(node);
 
+    // Check if this is a reference type node (e.g., &i64, &mut Counter)
+    if let SyntaxKind::Unknown(ref s) = node.kind {
+        if s == "reference_type" {
+            // Parse reference type: & or &mut followed by inner type
+            let mut mutable = false;
+            let mut inner_type_node = None;
+
+            for child in &node.children {
+                if let SyntaxKind::Unknown(ref child_kind) = child.kind {
+                    if child_kind == "mut" || child_kind == "mutable_specifier" {
+                        mutable = true;
+                    }
+                }
+                // The inner type is the Type node
+                if child.kind == SyntaxKind::Type {
+                    inner_type_node = Some(child);
+                } else if let SyntaxKind::Unknown(ref child_kind) = child.kind {
+                    // Sometimes the inner type is also a reference_type or other unknown node
+                    if child_kind != "&" && child_kind != "mut" && child_kind != "mutable_specifier" {
+                        inner_type_node = Some(child);
+                    }
+                }
+            }
+
+            if let Some(inner_node) = inner_type_node {
+                let inner_ty = lower_type_node(ctx, inner_node);
+                return ctx.types.alloc(Type::Reference {
+                    inner: Box::new(inner_ty),
+                    mutable,
+                    span,
+                });
+            }
+        }
+    }
+
     // Check if this is a scoped type identifier (e.g., Self::Item)
     // Tree-sitter represents this as nodes with "::" in the text
     let text = &node.text;
