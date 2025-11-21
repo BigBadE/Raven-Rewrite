@@ -223,24 +223,28 @@ pub fn monomorphize_functions(
             for (param_idx, param) in hir_func.parameters.iter().enumerate() {
                 // Check if this parameter's HIR type is a generic parameter
                 let hir_ty = &hir_ctx.types[param.ty];
-                let ty_id = if let rv_hir::Type::Named { name, .. } = hir_ty {
-                    // Check if this is a generic parameter with a substitution
-                    if let Some(mir_ty) = type_subst.get(name) {
-                        // Convert MirType to TyId
-                        match mir_ty {
-                            MirType::Int => ty_ctx_clone.types.int(),
-                            MirType::Float => ty_ctx_clone.types.float(),
-                            MirType::Bool => ty_ctx_clone.types.bool(),
-                            MirType::Unit => ty_ctx_clone.types.unit(),
-                            MirType::String => ty_ctx_clone.types.string(),
-                            _ => ty_ctx_clone.fresh_ty_var(),
+                let ty_id = match hir_ty {
+                    // Generic parameter (e.g., T in fn foo<T>(x: T))
+                    rv_hir::Type::Generic { name, .. } => {
+                        if let Some(mir_ty) = type_subst.get(name) {
+                            // Convert MirType to TyId for concrete substitution
+                            match mir_ty {
+                                MirType::Int => ty_ctx_clone.types.int(),
+                                MirType::Float => ty_ctx_clone.types.float(),
+                                MirType::Bool => ty_ctx_clone.types.bool(),
+                                MirType::Unit => ty_ctx_clone.types.unit(),
+                                MirType::String => ty_ctx_clone.types.string(),
+                                _ => {
+                                    panic!("Unsupported MirType for generic substitution: {:?}", mir_ty);
+                                }
+                            }
+                        } else {
+                            panic!("Generic parameter '{}' has no substitution in type_subst",
+                                hir_ctx.interner.resolve(name));
                         }
-                    } else {
-                        // Not a generic parameter - will be inferred normally
-                        ty_ctx_clone.fresh_ty_var()
                     }
-                } else {
-                    ty_ctx_clone.fresh_ty_var()
+                    // Named type (e.g., struct name) - will be inferred
+                    _ => ty_ctx_clone.fresh_ty_var(),
                 };
 
                 // Store by DefId

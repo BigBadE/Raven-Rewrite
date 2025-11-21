@@ -296,12 +296,30 @@ impl<'a> TypeInference<'a> {
         let interner = self.interner.expect("Interner required for type inference");
 
         for (param_idx, param) in function.parameters.iter().enumerate() {
-            // Convert HIR TypeId to inference TyId
-            let param_ty = self.hir_type_to_ty_id(param.ty, hir_types, structs, interner);
-
-            // ARCHITECTURE: Store type by DefId (structured ID, not Symbol name)
             let local_id = rv_hir::LocalId(param_idx as u32);
             let def_id = rv_hir::DefId::Local(local_id);
+
+            // ARCHITECTURE: Check if monomorphization already set a concrete type
+            // If def_types already contains a concrete type (not a type variable),
+            // use that instead of converting from HIR (which creates type variables for generics)
+            let param_ty = if let Some(existing_ty) = self.ctx.get_def_type(def_id) {
+                // Check if it's a concrete type (not a type variable)
+                match &self.ctx.types.get(existing_ty).kind {
+                    TyKind::Var { .. } => {
+                        // It's a type variable, convert from HIR
+                        self.hir_type_to_ty_id(param.ty, hir_types, structs, interner)
+                    }
+                    _ => {
+                        // It's a concrete type from monomorphization - use it
+                        existing_ty
+                    }
+                }
+            } else {
+                // No existing type, convert from HIR
+                self.hir_type_to_ty_id(param.ty, hir_types, structs, interner)
+            };
+
+            // ARCHITECTURE: Store type by DefId (structured ID, not Symbol name)
             self.ctx.set_def_type(def_id, param_ty);
 
             // Also keep in var map for local variable tracking

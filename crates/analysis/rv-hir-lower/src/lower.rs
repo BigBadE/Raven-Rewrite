@@ -58,6 +58,8 @@ pub struct LoweringContext {
     next_local_id: u32,
     /// Current impl block's self type (for resolving `self` parameters)
     current_impl_self_ty: Option<TypeId>,
+    /// Current function's generic parameter names (for resolving T -> Type::Generic)
+    current_generic_params: Vec<InternedString>,
     /// Macro expansion context
     pub macro_context: MacroExpansionContext,
 }
@@ -92,6 +94,7 @@ impl LoweringContext {
             types: rv_arena::Arena::new(),
             next_local_id: 0,
             current_impl_self_ty: None,
+            current_generic_params: Vec::new(),
             macro_context,
         }
     }
@@ -244,6 +247,9 @@ fn lower_function(ctx: &mut LoweringContext, current_scope: ScopeId, node: &Synt
         }
     }
 
+    // ARCHITECTURE: Set current generic params for lower_type_node to recognize generic references
+    ctx.current_generic_params = generics.iter().map(|g| g.name).collect();
+
     // Parse parameters
     let mut parameters = vec![];
     for child in &node.children {
@@ -268,6 +274,9 @@ fn lower_function(ctx: &mut LoweringContext, current_scope: ScopeId, node: &Synt
             break;
         }
     }
+
+    // Clear current generic params after parsing parameters and return type
+    ctx.current_generic_params.clear();
 
     // Create function scope for body
     let fn_scope = ctx.scope_tree.create_child(current_scope, node.span);
@@ -1595,6 +1604,16 @@ fn parse_parameters(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Paramet
 fn lower_type_node(ctx: &mut LoweringContext, node: &SyntaxNode) -> TypeId {
     let name = ctx.intern(&node.text);
     let span = ctx.file_span(node);
+
+    // ARCHITECTURE: Check if this is a generic parameter reference (e.g., T in fn foo<T>(x: T))
+    if ctx.current_generic_params.contains(&name) {
+        // This is a reference to a generic parameter - create Type::Generic
+        let type_node = Type::Generic {
+            name,
+            span,
+        };
+        return ctx.types.alloc(type_node);
+    }
 
     // Try to resolve the type name to a TypeDefId
     let def = ctx.structs.iter()

@@ -182,13 +182,19 @@ impl<'ctx> LoweringContext<'ctx> {
             let hir_ty = &hir_types[param.ty];
 
             // Determine the MIR type for this parameter
-            let param_ty = if let Type::Named { name, .. } = hir_ty {
-                // Check if this named type is a generic parameter with a substitution
-                if let Some(concrete_ty) = type_subst.get(name) {
-                    // Use the concrete type from substitution (e.g., T -> Int)
-                    concrete_ty.clone()
-                } else {
-                    // ARCHITECTURE: Use DefId lookup (no Symbol-based fallbacks)
+            let param_ty = match hir_ty {
+                // Generic parameter (e.g., T in fn foo<T>(x: T)) - use substitution
+                Type::Generic { name, .. } => {
+                    if let Some(concrete_ty) = type_subst.get(name) {
+                        // Use the concrete type from substitution (e.g., T -> Int)
+                        concrete_ty.clone()
+                    } else {
+                        panic!("Generic parameter '{}' missing from type_subst map",
+                            ctx.interner.resolve(name));
+                    }
+                }
+                // Non-generic type - use DefId lookup
+                _ => {
                     let local_id = rv_hir::LocalId(param_idx as u32);
                     let def_id = rv_hir::DefId::Local(local_id);
 
@@ -197,15 +203,6 @@ impl<'ctx> LoweringContext<'ctx> {
                         .map(|normalized_ty| ctx.lower_type(normalized_ty))
                         .unwrap_or(MirType::Unit)
                 }
-            } else {
-                // ARCHITECTURE: Use DefId lookup (no Symbol-based fallbacks)
-                let local_id = rv_hir::LocalId(param_idx as u32);
-                let def_id = rv_hir::DefId::Local(local_id);
-
-                ctx.ty_ctx.get_def_type(def_id)
-                    .and_then(|ty_id| ctx.ty_ctx.normalize(ty_id).ok())
-                    .map(|normalized_ty| ctx.lower_type(normalized_ty))
-                    .unwrap_or(MirType::Unit)
             };
 
             let param_local = ctx.builder.new_local(Some(param.name), param_ty, false);
