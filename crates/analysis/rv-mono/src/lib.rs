@@ -243,6 +243,44 @@ pub fn monomorphize_functions(
                                 hir_ctx.interner.resolve(name));
                         }
                     }
+                    // Reference to generic (e.g., &T in fn foo<T>(x: &T))
+                    rv_hir::Type::Reference { inner, mutable, .. } => {
+                        // Check if the inner type is a generic
+                        let inner_ty = &hir_ctx.types[**inner];
+                        let inner_ty_id = match inner_ty {
+                            rv_hir::Type::Generic { name, .. } => {
+                                if let Some(mir_ty) = type_subst.get(name) {
+                                    // Convert MirType to TyId for concrete substitution
+                                    match mir_ty {
+                                        MirType::Int => ty_ctx_clone.types.int(),
+                                        MirType::Float => ty_ctx_clone.types.float(),
+                                        MirType::Bool => ty_ctx_clone.types.bool(),
+                                        MirType::Unit => ty_ctx_clone.types.unit(),
+                                        MirType::String => ty_ctx_clone.types.string(),
+                                        MirType::Named(_sym) => {
+                                            // For named types, we need the TypeDefId which we don't have here
+                                            // Let type inference resolve this from the HIR type
+                                            ty_ctx_clone.fresh_ty_var()
+                                        }
+                                        _ => {
+                                            panic!("Unsupported MirType for generic substitution: {:?}", mir_ty);
+                                        }
+                                    }
+                                } else {
+                                    panic!("Generic parameter '{}' has no substitution in type_subst",
+                                        hir_ctx.interner.resolve(name));
+                                }
+                            }
+                            // Non-generic inner type - will be inferred
+                            _ => ty_ctx_clone.fresh_ty_var(),
+                        };
+
+                        // Create reference type
+                        ty_ctx_clone.types.alloc(rv_ty::TyKind::Ref {
+                            inner: Box::new(inner_ty_id),
+                            mutable: *mutable,
+                        })
+                    }
                     // Named type (e.g., struct name) - will be inferred
                     _ => ty_ctx_clone.fresh_ty_var(),
                 };
