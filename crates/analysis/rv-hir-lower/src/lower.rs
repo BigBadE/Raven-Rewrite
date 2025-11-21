@@ -611,8 +611,6 @@ fn lower_field_access(
     let mut base = None;
     let mut field_name = None;
 
-    eprintln!("DEBUG HIR lower_field_access: node.text = {:?}", node.text);
-
     for child in &node.children {
         if is_expr_node(child) && base.is_none() {
             base = Some(lower_expr(ctx, current_scope, child, body));
@@ -621,16 +619,12 @@ fn lower_field_access(
         }
     }
 
-    eprintln!("DEBUG HIR lower_field_access: base = {:?}, field_name = {:?}", base, field_name);
-
     if let (Some(base_expr), Some(field)) = (base, field_name) {
-        let expr_id = body.exprs.alloc(Expr::Field {
+        body.exprs.alloc(Expr::Field {
             base: base_expr,
             field,
             span: file_span,
-        });
-        eprintln!("DEBUG HIR lower_field_access: Created Field expr {:?}", expr_id);
-        expr_id
+        })
     } else {
         body.exprs.alloc(Expr::Literal {
             kind: LiteralKind::Unit,
@@ -764,12 +758,12 @@ fn lower_binary_op(
     let mut right_expr = None;
 
     for child in &node.children {
-        if is_expression(&child.kind) && left_expr.is_none() {
+        if is_expr_node(child) && left_expr.is_none() {
             left_expr = Some(lower_expr(ctx, current_scope, child, body));
         } else if child.text.len() <= 2 && operator.is_none() {
             // Operators are typically 1-2 characters
             operator = Some(parse_binary_operator(&child.text));
-        } else if is_expression(&child.kind) && left_expr.is_some() {
+        } else if is_expr_node(child) && left_expr.is_some() {
             right_expr = Some(lower_expr(ctx, current_scope, child, body));
         }
     }

@@ -379,13 +379,6 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
     fn build(&mut self) -> Result<()> {
         let context = self.compiler.context;
 
-        // DEBUG: Print function and all locals
-        eprintln!("DEBUG build: Compiling function {:?}", self.mir_func.id);
-        eprintln!("DEBUG build: Locals:");
-        for local in &self.mir_func.locals {
-            eprintln!("  LocalId({}) = {:?}", local.id.0, local.ty);
-        }
-
         // Create all basic blocks
         for (idx, _) in self.mir_func.basic_blocks.iter().enumerate() {
             let bb_name = format!("bb{}", idx);
@@ -639,10 +632,6 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
                 if let BasicValueEnum::PointerValue(ptr_val) = ptr {
                     // Get the type after applying all projections
                     let place_ty = self.get_place_type(place)?;
-
-                    // DEBUG: Print place and type information
-                    eprintln!("DEBUG compile_operand: place = {:?}, projections = {:?}", place.local, place.projection);
-                    eprintln!("DEBUG compile_operand: place_ty = {:?}", place_ty);
 
                     // Get the LLVM type for this place
                     let llvm_type = self.type_lowering().lower_type(&place_ty);
@@ -956,20 +945,10 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
             for projection in &place.projection {
                 match projection {
                     PlaceElem::Field { field_idx } => {
-                        // DEBUG: Print state before field access
-                        eprintln!("DEBUG get_place: Before field access on local {:?}", place.local);
-                        eprintln!("DEBUG get_place: current_type BEFORE = {:?}", current_type);
-                        eprintln!("DEBUG get_place: field_idx = {}", field_idx);
-
                         // Use GEP (GetElementPtr) to access struct field
                         if let BasicValueEnum::PointerValue(ptr_val) = local_val {
                             // Get the LLVM type from the MIR type
                             let basic_type = self.type_lowering().lower_type(current_type);
-
-                            // DEBUG: Print the MIR type and resulting LLVM type
-                            eprintln!("DEBUG get_place: Field access on local {:?}", place.local);
-                            eprintln!("DEBUG get_place: MIR type: {:?}", current_type);
-                            eprintln!("DEBUG get_place: LLVM type: {:?}", basic_type);
 
                             // Extract the actual struct type from BasicTypeEnum
                             if let BasicTypeEnum::StructType(struct_type) = basic_type {
