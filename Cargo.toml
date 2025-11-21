@@ -11,6 +11,9 @@ members = [
     "crates/testing/*",
     "crates/macros/*",
 ]
+exclude = [
+    "crates/testing/integration-tests/test-projects/*",
+]
 
 [workspace.package]
 version = "0.1.0"
