@@ -1,9 +1,10 @@
 // Comprehensive trait system test
-// Tests: traits, supertraits, where clauses
+// Tests: traits, associated types, supertraits, where clauses
 
-// Base trait
+// Base trait with associated type
 trait Container {
-    fn get(&self) -> i64;
+    type Item;
+    fn get(&self) -> &Self::Item;
 }
 
 // Supertrait constraint: Display requires Container
@@ -16,17 +17,20 @@ struct Box {
     value: i64,
 }
 
-// Implement Container for Box
+// Implement Container for Box with associated type
 impl Container for Box {
-    fn get(&self) -> i64 {
-        self.value
+    type Item = i64;
+
+    fn get(&self) -> &Self::Item {
+        &self.value
     }
 }
 
 // Implement Display for Box (requires Container to be implemented)
 impl Display for Box {
     fn show(&self) -> i64 {
-        self.get()
+        // Dereference the result from get()
+        *self.get()
     }
 }
 

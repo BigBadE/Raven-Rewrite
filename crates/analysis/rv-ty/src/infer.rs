@@ -437,6 +437,62 @@ impl<'a> TypeInference<'a> {
                 })
             }
 
+            rv_hir::Type::QualifiedPath { base, assoc_type, .. } => {
+                // ARCHITECTURE: Resolve associated types by looking up trait impl blocks
+                // Example: Self::Item where Self is a type implementing Container trait
+
+                // Step 1: Extract TypeDefId from base type
+                let base_hir_ty = &hir_types[**base];
+                let base_type_def_id = match base_hir_ty {
+                    rv_hir::Type::Named { def: Some(def_id), .. } => Some(*def_id),
+                    _ => None,
+                };
+
+                // Step 3: Look up associated type in impl blocks
+                if let (Some(def_id), Some(impl_blocks)) = (base_type_def_id, self.impl_blocks) {
+                    // Search all impl blocks for one that:
+                    // 1. Implements a trait (has trait_ref)
+                    // 2. For this type (self_ty matches)
+                    // 3. Provides this associated type
+                    for impl_block in impl_blocks.values() {
+                        // Check if this impl is for our type
+                        let impl_self_ty = &hir_types[impl_block.self_ty];
+                        let matches_type = match impl_self_ty {
+                            rv_hir::Type::Named { def: Some(impl_def_id), .. } => {
+                                *impl_def_id == def_id
+                            }
+                            _ => false,
+                        };
+
+                        if matches_type && impl_block.trait_ref.is_some() {
+                            // This is a trait impl for our type
+                            // Look for the associated type implementation
+                            for assoc_impl in &impl_block.associated_type_impls {
+                                if assoc_impl.name == *assoc_type {
+                                    // Found it! Convert the concrete type to TyId
+                                    return self.hir_type_to_ty_id_impl(
+                                        assoc_impl.ty,
+                                        hir_types,
+                                        structs,
+                                        interner,
+                                        depth + 1,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Fallback: If we can't resolve the associated type, panic
+                // (per user directive: we should panic on type inference errors)
+                let assoc_name = interner.resolve(assoc_type);
+                panic!(
+                    "COMPILER BUG: Could not resolve associated type '{}'. \
+                     The trait implementation should have provided this type.",
+                    assoc_name
+                );
+            }
+
             // Fallback for other type kinds
             _ => self.ctx.fresh_ty_var(),
         };

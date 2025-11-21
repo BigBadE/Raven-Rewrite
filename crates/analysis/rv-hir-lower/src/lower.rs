@@ -1602,8 +1602,58 @@ fn parse_parameters(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Paramet
 
 /// Lower a Type syntax node to HIR `TypeId`
 fn lower_type_node(ctx: &mut LoweringContext, node: &SyntaxNode) -> TypeId {
-    let name = ctx.intern(&node.text);
     let span = ctx.file_span(node);
+
+    // Check if this is a scoped type identifier (e.g., Self::Item)
+    // Tree-sitter represents this as nodes with "::" in the text
+    let text = &node.text;
+    if text.contains("::") {
+        // This is a qualified path like Self::Item or Foo::Bar
+        let parts: Vec<&str> = text.split("::").collect();
+        if parts.len() == 2 {
+            let base_name = ctx.intern(parts[0]);
+            let assoc_name = ctx.intern(parts[1]);
+
+            // Create a base type for Self or the type name
+            let base_ty = if parts[0] == "Self" {
+                // Self refers to the impl block's self type
+                // For now, create a Named type with "Self"
+                ctx.types.alloc(Type::Named {
+                    name: base_name,
+                    def: None,
+                    args: vec![],
+                    span,
+                })
+            } else {
+                // Regular type name - try to resolve it
+                let def = ctx.structs.iter()
+                    .find(|(_, s)| s.name == base_name)
+                    .map(|(id, _)| *id)
+                    .or_else(|| {
+                        ctx.enums.iter()
+                            .find(|(_, e)| e.name == base_name)
+                            .map(|(id, _)| *id)
+                    });
+
+                ctx.types.alloc(Type::Named {
+                    name: base_name,
+                    def,
+                    args: vec![],
+                    span,
+                })
+            };
+
+            // Create a QualifiedPath type
+            return ctx.types.alloc(Type::QualifiedPath {
+                base: Box::new(base_ty),
+                assoc_type: assoc_name,
+                trait_ref: None, // Will be resolved during type inference
+                span,
+            });
+        }
+    }
+
+    let name = ctx.intern(text);
 
     // ARCHITECTURE: Check if this is a generic parameter reference (e.g., T in fn foo<T>(x: T))
     if ctx.current_generic_params.contains(&name) {
