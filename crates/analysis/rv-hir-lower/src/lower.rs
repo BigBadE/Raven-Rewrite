@@ -611,6 +611,8 @@ fn lower_field_access(
     let mut base = None;
     let mut field_name = None;
 
+    eprintln!("DEBUG HIR lower_field_access: node.text = {:?}", node.text);
+
     for child in &node.children {
         if is_expr_node(child) && base.is_none() {
             base = Some(lower_expr(ctx, current_scope, child, body));
@@ -619,12 +621,16 @@ fn lower_field_access(
         }
     }
 
+    eprintln!("DEBUG HIR lower_field_access: base = {:?}, field_name = {:?}", base, field_name);
+
     if let (Some(base_expr), Some(field)) = (base, field_name) {
-        body.exprs.alloc(Expr::Field {
+        let expr_id = body.exprs.alloc(Expr::Field {
             base: base_expr,
             field,
             span: file_span,
-        })
+        });
+        eprintln!("DEBUG HIR lower_field_access: Created Field expr {:?}", expr_id);
+        expr_id
     } else {
         body.exprs.alloc(Expr::Literal {
             kind: LiteralKind::Unit,

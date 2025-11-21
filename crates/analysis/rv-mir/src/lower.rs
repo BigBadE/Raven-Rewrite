@@ -341,7 +341,12 @@ impl<'ctx> LoweringContext<'ctx> {
 
         // Normalize the type to resolve type variables
         let mir_ty = match self.ty_ctx.normalize(ty_id) {
-            Ok(normalized_ty) => self.lower_type(normalized_ty),
+            Ok(normalized_ty) => {
+                let mir_ty = self.lower_type(normalized_ty);
+                eprintln!("DEBUG lower_expr: expr_id={:?}, ty_id={:?}, mir_ty={:?}",
+                    expr_id, ty_id, mir_ty);
+                mir_ty
+            }
             Err(_) => {
                 // Normalization failed - this is a bug, but provide better error message
                 panic!(
@@ -354,6 +359,7 @@ impl<'ctx> LoweringContext<'ctx> {
 
         // Create a temporary for the result
         let result_local = self.builder.new_local(None, mir_ty.clone(), false);
+        eprintln!("DEBUG lower_expr: Created result_local={:?} with type={:?}", result_local, mir_ty);
 
         match expr {
             Expr::Literal { kind, span } => {
@@ -371,6 +377,9 @@ impl<'ctx> LoweringContext<'ctx> {
             Expr::Variable { name, def: _, span } => {
                 // Look up variable in var_locals (set by let bindings and parameters)
                 let var_local = self.var_locals.get(name).copied();
+
+                eprintln!("DEBUG MIR Variable: name = {:?}, var_local = {:?}, result_local = {:?}",
+                    name, var_local, result_local);
 
                 if let Some(var_local) = var_local {
                     // Copy the value from the variable's local to the result local
@@ -694,8 +703,16 @@ impl<'ctx> LoweringContext<'ctx> {
             }
 
             Expr::Field { base, field, span } => {
+                // DEBUG: Print what the base expression is
+                let base_expr = &body.exprs[*base];
+                eprintln!("DEBUG MIR lower_expr Field: base expr = {:?}", base_expr);
+
                 // Lower base expression
                 let base_local = self.lower_expr(body, *base);
+
+                // DEBUG: Print field expression lowering
+                eprintln!("DEBUG MIR lower_expr Field: base_local = {:?}", base_local);
+                eprintln!("DEBUG MIR lower_expr Field: field = {:?}", field);
 
                 // Get the type of the base expression from type inference
                 let base_ty_id = self.ty_ctx.get_expr_type(*base);
@@ -707,10 +724,15 @@ impl<'ctx> LoweringContext<'ctx> {
                     0 // Fallback
                 };
 
+                eprintln!("DEBUG MIR lower_expr Field: field_idx = {}", field_idx);
+                eprintln!("DEBUG MIR lower_expr Field: result_local = {:?}", result_local);
+
                 let field_place = Place {
                     local: base_local,
                     projection: vec![PlaceElem::Field { field_idx }],
                 };
+
+                eprintln!("DEBUG MIR lower_expr Field: field_place = {:?}", field_place);
 
                 self.builder.add_statement(Statement::Assign {
                     place: Place::from_local(result_local),
