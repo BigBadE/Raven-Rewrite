@@ -281,6 +281,43 @@ impl<'ctx> Compiler<'ctx> {
             self.fpm.run_on(&function);
         }
 
+        // Phase 4: Create main() wrapper that calls first function and exits
+        if !mir_funcs.is_empty() {
+            self.create_main_wrapper(&llvm_functions, &mir_funcs[0])?;
+        }
+
+        Ok(())
+    }
+
+    /// Create a main() wrapper function that calls the entry point and exits
+    fn create_main_wrapper(&self, llvm_functions: &HashMap<FunctionId, FunctionValue>, entry_func: &LirFunction) -> Result<()> {
+        // Create main() function with signature: int main()
+        let main_fn_type = self.context.i32_type().fn_type(&[], false);
+        let main_function = self.module.add_function("main", main_fn_type, None);
+
+        // Create entry basic block
+        let entry_block = self.context.append_basic_block(main_function, "entry");
+        self.builder.position_at_end(entry_block);
+
+        // Call the entry function (func_0)
+        if let Some(&entry_fn_value) = llvm_functions.get(&entry_func.id) {
+            let call_result = self.builder.build_call(entry_fn_value, &[], "call_entry")?;
+
+            // Get the return value (should be i32)
+            let return_value = if let Some(ret_val) = call_result.try_as_basic_value().left() {
+                ret_val.into_int_value()
+            } else {
+                // If entry function returns void, return 0
+                self.context.i32_type().const_int(0, false)
+            };
+
+            // Return the result
+            self.builder.build_return(Some(&return_value))?;
+        } else {
+            // No entry function found, return 0
+            self.builder.build_return(Some(&self.context.i32_type().const_int(0, false)))?;
+        }
+
         Ok(())
     }
 
