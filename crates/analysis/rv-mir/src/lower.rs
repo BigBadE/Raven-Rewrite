@@ -1078,19 +1078,6 @@ impl<'ctx> LoweringContext<'ctx> {
                     id.0, ty.ty_id()
                 )
             }
-            TyKind::Error => {
-                // Error type from type inference failures
-                // This indicates a type error was detected but not properly reported
-                eprintln!("ERROR: TyKind::Error encountered during MIR lowering");
-                eprintln!("  TyId: {:?}", ty.ty_id());
-                eprintln!("  Full type: {:?}", ty);
-                panic!(
-                    "Error type encountered in MIR lowering (TyId: {:?}). \
-                    This indicates a type error occurred during type inference that should have been \
-                    reported to the user.",
-                    ty.ty_id()
-                )
-            }
         }
     }
 
@@ -1219,6 +1206,12 @@ impl<'ctx> LoweringContext<'ctx> {
                     mutable: *mutable,
                     inner: Box::new(self.lower_hir_type_recursive(inner_ty)),
                 }
+            }
+            Type::QualifiedPath { assoc_type, .. } => {
+                // Associated types not fully implemented yet
+                // For now, treat as a named type with the associated type name
+                // TODO: Resolve associated types by looking up the impl block
+                MirType::Named(*assoc_type)
             }
             Type::Unknown { .. } => {
                 panic!(

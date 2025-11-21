@@ -557,8 +557,14 @@ impl<'a> TypeInference<'a> {
                     var_ty
                 } else {
                     // Unresolved variable - name resolution should have caught this
-                    self.errors.push(TypeError::UndefinedVariable { expr: expr_id });
-                    self.ctx.types.error()
+                    let var_name = self.interner
+                        .map(|i| i.resolve(name))
+                        .unwrap_or_else(|| format!("{:?}", name));
+                    panic!(
+                        "COMPILER BUG: Undefined variable '{}' at {:?}. Name resolution should have caught this.",
+                        var_name,
+                        expr_id
+                    )
                 };
 
                 result_ty

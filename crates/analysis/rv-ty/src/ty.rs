@@ -115,9 +115,6 @@ pub enum TyKind {
         /// Element type
         element: Box<TyId>,
     },
-
-    /// Error type (for error recovery)
-    Error,
 }
 
 /// Enum variant type
@@ -191,11 +188,6 @@ impl TyArena {
     /// Allocate never type
     pub fn never(&mut self) -> TyId {
         self.alloc(TyKind::Never)
-    }
-
-    /// Allocate error type
-    pub fn error(&mut self) -> TyId {
-        self.alloc(TyKind::Error)
     }
 
     /// Allocate type variable

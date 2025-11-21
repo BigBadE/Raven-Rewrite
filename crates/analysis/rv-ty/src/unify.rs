@@ -200,9 +200,6 @@ impl<'ctx> Unifier<'ctx> {
                 }
             }
 
-            // Error type unifies with anything
-            (TyKind::Error, _) | (_, TyKind::Error) => Ok(()),
-
             // Otherwise, mismatch
             _ => Err(UnificationError::Mismatch {
                 expected: left,

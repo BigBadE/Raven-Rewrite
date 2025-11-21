@@ -744,6 +744,17 @@ pub enum Type {
         /// Source location
         span: FileSpan,
     },
+    /// Qualified path type (e.g., `Self::Item`, `<T as Trait>::Item`)
+    QualifiedPath {
+        /// Base type (e.g., `Self` or a concrete type)
+        base: Box<TypeId>,
+        /// Associated type name (e.g., `Item`)
+        assoc_type: Symbol,
+        /// Trait this associated type comes from (if known)
+        trait_ref: Option<TraitId>,
+        /// Source location
+        span: FileSpan,
+    },
     /// Unknown/error type
     Unknown {
         /// Source location

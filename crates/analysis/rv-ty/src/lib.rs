@@ -101,7 +101,7 @@ pub fn solve_module_constraints(
                 // Ensure the vector is large enough
                 let instantiations = module_ctx.generic_instantiations.get_mut(&func_id).unwrap();
                 if instantiations.len() <= param_idx {
-                    instantiations.resize(param_idx + 1, module_ctx.ctx.types.error());
+                    instantiations.resize(param_idx + 1, module_ctx.ctx.types.unit());
                 }
                 instantiations[param_idx] = ty;
             }

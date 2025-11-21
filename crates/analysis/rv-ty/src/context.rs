@@ -292,7 +292,7 @@ impl TyContext {
 
             // Leaf types that contain no nested type variables
             TyKind::Int | TyKind::Float | TyKind::Bool | TyKind::String |
-            TyKind::Unit | TyKind::Never | TyKind::Error |
+            TyKind::Unit | TyKind::Never |
             TyKind::Named { .. } | TyKind::Param { .. } => {
                 // These types don't contain nested TyIds, so they're already normalized
                 // SAFETY: Leaf types and parameters have no nested types to normalize
