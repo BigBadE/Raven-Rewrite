@@ -33,6 +33,8 @@ pub struct NameResolver<'a> {
     function: &'a Function,
     /// String interner for name lookups
     interner: &'a Interner,
+    /// Global function definitions (name -> DefId::Function) for resolving function calls
+    global_functions: FxHashMap<rv_intern::Symbol, DefId>,
     /// Variable expression -> DefId mapping
     resolutions: FxHashMap<ExprId, DefId>,
     /// Pattern binding -> LocalId mapping
@@ -45,13 +47,19 @@ pub struct NameResolver<'a> {
 
 impl<'a> NameResolver<'a> {
     /// Create a new name resolver
-    fn new(body: &'a Body, function: &'a Function, interner: &'a Interner) -> Self {
+    fn new(
+        body: &'a Body,
+        function: &'a Function,
+        interner: &'a Interner,
+        global_functions: FxHashMap<rv_intern::Symbol, DefId>,
+    ) -> Self {
         Self {
             scopes: ScopeTree::new(),
             current_scope: ScopeTree::new().module_scope,
             body,
             function,
             interner,
+            global_functions,
             resolutions: FxHashMap::default(),
             pattern_locals: FxHashMap::default(),
             next_local_id: 0,
@@ -64,12 +72,16 @@ impl<'a> NameResolver<'a> {
     /// Performs a two-pass resolution:
     /// 1. Define all function parameters
     /// 2. Resolve all expressions and statements
+    ///
+    /// # Parameters
+    /// - `global_functions`: Map of function names to their DefIds for resolving function calls
     pub fn resolve(
         body: &'a Body,
         function: &'a Function,
         interner: &'a Interner,
+        global_functions: FxHashMap<rv_intern::Symbol, DefId>,
     ) -> ResolutionResult {
-        let mut resolver = Self::new(body, function, interner);
+        let mut resolver = Self::new(body, function, interner, global_functions);
 
         // Create function scope
         let function_scope =
@@ -125,6 +137,7 @@ impl<'a> NameResolver<'a> {
         match expr {
             Expr::Variable { name, span, .. } => {
                 // Resolve variable to definition
+                // First try local scope (parameters, let bindings)
                 match self
                     .scopes
                     .resolve(self.current_scope, name, span, self.interner)
@@ -132,8 +145,19 @@ impl<'a> NameResolver<'a> {
                     Ok(resolution) => {
                         self.resolutions.insert(expr_id, resolution.def);
                     }
-                    Err(error) => {
-                        self.errors.push(error);
+                    Err(_) => {
+                        // Local resolution failed, check if it's a global function
+                        if let Some(&func_def_id) = self.global_functions.get(&name) {
+                            self.resolutions.insert(expr_id, func_def_id);
+                        } else {
+                            // Not found in local scope or global functions
+                            // Report the original error from local scope resolution
+                            let error = self
+                                .scopes
+                                .resolve(self.current_scope, name, span, self.interner)
+                                .unwrap_err();
+                            self.errors.push(error);
+                        }
                     }
                 }
             }

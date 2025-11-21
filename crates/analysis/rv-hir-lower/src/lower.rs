@@ -323,12 +323,36 @@ fn lower_function(ctx: &mut LoweringContext, current_scope: ScopeId, node: &Synt
         is_external: false,
     };
 
+    // ARCHITECTURE: Build global functions map for name resolution
+    // This allows function calls to resolve to DefId::Function
+    let mut global_functions = std::collections::HashMap::default();
+    for (&func_id, func) in &ctx.functions {
+        global_functions.insert(func.name, rv_hir::DefId::Function(func_id));
+    }
+    // Also include the current function being lowered
+    global_functions.insert(name_interned, rv_hir::DefId::Function(function_id));
+
     // Run name resolution on the body
     let resolution_result = rv_resolve::NameResolver::resolve(
         &function_temp.body,
         &function_temp,
         &ctx.interner,
+        global_functions,
     );
+
+    // ARCHITECTURE: Name resolution must succeed - we panic on errors (per user directive)
+    if !resolution_result.errors.is_empty() {
+        let func_name = ctx.interner.resolve(&name_interned);
+        eprintln!("Name resolution errors in function '{}':", func_name);
+        for error in &resolution_result.errors {
+            eprintln!("  {:?}", error);
+        }
+        panic!(
+            "COMPILER BUG: Name resolution failed for function '{}'. {} errors found.",
+            func_name,
+            resolution_result.errors.len()
+        );
+    }
 
     // Fill in def field for Variable expressions using resolution results
     let mut body_with_resolution = function_temp.body;
@@ -1511,7 +1535,6 @@ fn parse_generic_params(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Gen
 fn parse_parameters(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Parameter> {
     let mut params = vec![];
 
-
     // WORKAROUND: Tree-sitter doesn't always create child nodes for simple "self" parameters
     // Check if the node text contains "self" directly
     if node.text.contains("self") && !node.text.contains(":") {
@@ -1558,7 +1581,7 @@ fn parse_parameters(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Paramet
                 }
             } else if kind == "parameter" {
                 // Extract parameter name and type
-                // Structure: Identifier, ":", Type
+                // Structure: Identifier, ":", Type (or reference_type)
                 let mut param_name = None;
                 let mut param_type_id = None;
 
@@ -1571,6 +1594,9 @@ fn parse_parameters(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Paramet
                             param_name = Some(ctx.intern("self"));
                         }
                         SyntaxKind::Type => {
+                            param_type_id = Some(lower_type_node(ctx, param_child));
+                        }
+                        SyntaxKind::Unknown(ref s) if s == "reference_type" => {
                             param_type_id = Some(lower_type_node(ctx, param_child));
                         }
                         _ => {}
