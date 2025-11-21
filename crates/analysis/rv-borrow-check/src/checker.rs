@@ -60,11 +60,11 @@ impl<'mir> BorrowChecker<'mir> {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use rv_borrow_check::BorrowChecker;
     /// use rv_mir::MirFunction;
     ///
-    /// let function = MirFunction { /* ... */ };
+    /// # let function = unimplemented!();
     /// let result = BorrowChecker::check(&function);
     /// ```
     pub fn check(function: &'mir MirFunction) -> BorrowResult<()> {

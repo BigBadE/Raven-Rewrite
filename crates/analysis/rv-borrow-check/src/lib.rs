@@ -27,12 +27,12 @@
 //!
 //! # Examples
 //!
-//! ```rust
+//! ```rust,no_run
 //! use rv_borrow_check::BorrowChecker;
 //! use rv_mir::MirFunction;
 //!
 //! // Check a MIR function for borrow errors
-//! let mir = MirFunction { /* ... */ };
+//! # let mir = unimplemented!();
 //! let result = BorrowChecker::check(&mir);
 //! ```
 
