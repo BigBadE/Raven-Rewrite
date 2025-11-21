@@ -344,6 +344,7 @@ mod tests {
             parameters: vec![Parameter {
                 name: param_symbol,
                 ty: rv_hir::TypeId::from_raw(0.into()),
+                inferred_ty: None,
                 span: make_span(),
             }; param_count],
             return_type: None,

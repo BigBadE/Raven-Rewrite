@@ -1081,10 +1081,14 @@ impl<'ctx> LoweringContext<'ctx> {
             TyKind::Error => {
                 // Error type from type inference failures
                 // This indicates a type error was detected but not properly reported
+                eprintln!("ERROR: TyKind::Error encountered during MIR lowering");
+                eprintln!("  TyId: {:?}", ty.ty_id());
+                eprintln!("  Full type: {:?}", ty);
                 panic!(
-                    "Error type encountered in MIR lowering. \
+                    "Error type encountered in MIR lowering (TyId: {:?}). \
                     This indicates a type error occurred during type inference that should have been \
-                    reported to the user."
+                    reported to the user.",
+                    ty.ty_id()
                 )
             }
         }
