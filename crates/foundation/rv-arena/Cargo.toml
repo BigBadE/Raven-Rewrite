@@ -1,8 +1,0 @@
-[package]
-name = "rv-arena"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-la-arena.workspace = true

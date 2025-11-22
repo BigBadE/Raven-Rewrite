@@ -4,7 +4,7 @@
 //! from different programming languages in a uniform way.
 
 use anyhow::Result;
-use rv_arena::{Arena, Idx};
+use la_arena::{Arena, Idx};
 use rv_intern::Symbol;
 use rv_span::{FileSpan, Span};
 use std::fmt;

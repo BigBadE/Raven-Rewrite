@@ -5,7 +5,7 @@
 
 pub mod exhaustiveness;
 
-use rv_arena::{Arena, Idx};
+use la_arena::{Arena, Idx};
 use rv_intern::Symbol;
 use rv_span::{FileId, FileSpan, Span};
 use serde::{Deserialize, Serialize};

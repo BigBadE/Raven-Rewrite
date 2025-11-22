@@ -26,7 +26,6 @@ repository = "https://github.com/yourusername/raven"
 
 [workspace.dependencies]
 # Internal crates - foundation
-rv-arena = { path = "crates/foundation/rv-arena" }
 rv-database = { path = "crates/foundation/rv-database" }
 rv-intern = { path = "crates/foundation/rv-intern" }
 rv-span = { path = "crates/foundation/rv-span" }

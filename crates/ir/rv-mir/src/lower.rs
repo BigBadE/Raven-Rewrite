@@ -6,7 +6,7 @@ use crate::{
 };
 use lasso::Key;
 use rustc_hash::FxHashMap;
-use rv_arena::Arena;
+use la_arena::Arena;
 use rv_hir::{Body, DefId, EnumDef, Expr, ExprId, Function, FunctionId, ImplBlock, ImplId, LiteralKind, Pattern, SelfParam, Stmt, StmtId, StructDef, TraitDef, TraitId, Type, TypeDefId};
 use rv_intern::{Interner, Symbol};
 use rv_span::{FileId, FileSpan, Span};

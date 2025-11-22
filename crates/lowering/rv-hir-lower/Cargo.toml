@@ -4,14 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rv-arena.workspace = true
+la-arena.workspace = true
 rv-hir.workspace = true
 rv-resolve.workspace = true
 rv-intern.workspace = true
 rv-span.workspace = true
 rv-syntax.workspace = true
 rv-macro.workspace = true
-la-arena.workspace = true
 
 [lints]
 workspace = true

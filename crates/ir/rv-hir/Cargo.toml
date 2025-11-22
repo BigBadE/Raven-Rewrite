@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 rv-span = { path = "../../foundation/rv-span" }
 rv-intern = { path = "../../foundation/rv-intern" }
-rv-arena = { path = "../../foundation/rv-arena" }
+la-arena.workspace = true
 rv-ty-id = { path = "../../foundation/rv-ty-id" }
 rv-derive.workspace = true
 rustc-hash.workspace = true

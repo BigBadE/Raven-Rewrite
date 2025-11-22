@@ -2,7 +2,7 @@
 //!
 //! This module handles verification that types satisfy trait bounds.
 
-use rv_arena::Arena;
+use la_arena::Arena;
 use rv_hir::{GenericParam, ImplBlock, TraitBound, TraitDef, TraitId, Type, TypeDefId, TypeId, WhereClause};
 use std::collections::{HashMap, HashSet};
 

@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-rv-arena.workspace = true
+la-arena.workspace = true
 rv-hir.workspace = true
 rv-intern.workspace = true
 rv-span.workspace = true

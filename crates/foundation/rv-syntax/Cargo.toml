@@ -7,6 +7,6 @@ license.workspace = true
 [dependencies]
 rv-span = { path = "../rv-span" }
 rv-intern = { path = "../rv-intern" }
-rv-arena = { path = "../rv-arena" }
+la-arena.workspace = true
 tree-sitter.workspace = true
 anyhow.workspace = true

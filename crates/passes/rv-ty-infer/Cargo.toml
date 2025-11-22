@@ -4,12 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rv-arena.workspace = true
+la-arena.workspace = true
 rv-derive.workspace = true
 rv-hir.workspace = true
 rv-intern.workspace = true
 rv-span.workspace = true
-la-arena.workspace = true
 rustc-hash.workspace = true
 thiserror.workspace = true
 
