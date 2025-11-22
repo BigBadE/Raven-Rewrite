@@ -455,7 +455,13 @@ impl<'ctx> Interpreter<'ctx> {
                 // For each parameter, create TyId and store by DefId::Local
                 for (param_idx, _param) in hir_func.parameters.iter().enumerate() {
                     // Get the corresponding type argument
-                    let mir_ty = type_args.get(param_idx).unwrap_or(&MirType::Unit);
+                    let mir_ty = type_args.get(param_idx).unwrap_or_else(|| {
+                        panic!(
+                            "COMPILER BUG: Generic function called with insufficient type arguments. \
+                             Expected at least {} type arguments for parameter {}, got {}.",
+                            param_idx + 1, param_idx, type_args.len()
+                        )
+                    });
 
                     // Create TyId for this concrete type
                     let concrete_ty_id = match mir_ty {
@@ -463,7 +469,13 @@ impl<'ctx> Interpreter<'ctx> {
                         MirType::Float => ty_ctx_clone.types.alloc(rv_ty::TyKind::Float),
                         MirType::Bool => ty_ctx_clone.types.alloc(rv_ty::TyKind::Bool),
                         MirType::Unit => ty_ctx_clone.types.alloc(rv_ty::TyKind::Unit),
-                        _ => ty_ctx_clone.types.alloc(rv_ty::TyKind::Int), // Default to Int
+                        other => {
+                            panic!(
+                                "COMPILER BUG: Unsupported MIR type {:?} in generic instantiation. \
+                                 All MIR types should have corresponding TyKind mappings.",
+                                other
+                            )
+                        }
                     };
 
                     // ARCHITECTURE: Store by DefId (not Symbol name)

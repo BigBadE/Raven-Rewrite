@@ -522,8 +522,13 @@ impl<'a> TypeInference<'a> {
                 })
             }
 
-            // Fallback for other type kinds
-            _ => self.ctx.fresh_ty_var(),
+            rv_hir::Type::Unknown { span } => {
+                panic!(
+                    "COMPILER BUG: Encountered Unknown type during type inference at {:?}. \
+                     Parser should not produce Unknown types in well-formed code.",
+                    span
+                )
+            }
         };
 
         // Update cache with the computed type
@@ -637,16 +642,14 @@ impl<'a> TypeInference<'a> {
                             }
                         }
                     }
-                } else if let Some(var_ty) = self.lookup_var(*name) {
-                    // Fallback to name-based lookup if no DefId (old behavior)
-                    var_ty
                 } else {
                     // Unresolved variable - name resolution should have caught this
                     let var_name = self.interner
                         .map(|i| i.resolve(name))
                         .unwrap_or_else(|| format!("{:?}", name));
                     panic!(
-                        "COMPILER BUG: Undefined variable '{}' at {:?}. Name resolution should have caught this.",
+                        "COMPILER BUG: Variable '{}' at expr {:?} has no DefId. \
+                         Name resolution should have assigned DefIds to all variables.",
                         var_name,
                         expr_id
                     )
@@ -843,7 +846,13 @@ impl<'a> TypeInference<'a> {
                     };
                 }
 
-                result_ty.unwrap_or_else(|| self.ctx.types.never())
+                result_ty.unwrap_or_else(|| {
+                    panic!(
+                        "COMPILER BUG: Match expression has no arms and no expected type. \
+                         Parser should ensure match expressions have at least one arm, \
+                         or type checker should handle uninhabited types explicitly."
+                    )
+                })
             }
 
             Expr::Field { base, field, .. } => {
@@ -1041,34 +1050,18 @@ impl<'a> TypeInference<'a> {
                                 fields: field_tys,
                             })
                         } else {
-                            // Fallback: infer field types from expressions if struct def not available
-                            let field_tys: Vec<(rv_intern::Symbol, TyId)> = fields
-                                .iter()
-                                .map(|(name, field_expr)| {
-                                    let ty = self.infer_expr(body, *field_expr, None);
-                                    (*name, ty)
-                                })
-                                .collect();
-
-                            self.ctx.types.alloc(TyKind::Struct {
-                                def_id: *type_def_id,
-                                fields: field_tys,
-                            })
+                            panic!(
+                                "COMPILER BUG: Struct type {:?} has no definition in structs map. \
+                                 Name resolution should have linked all struct types to their definitions.",
+                                type_def_id
+                            )
                         }
                     } else {
-                        // Fallback: infer field types from expressions if structs not available
-                        let field_tys: Vec<(rv_intern::Symbol, TyId)> = fields
-                            .iter()
-                            .map(|(name, field_expr)| {
-                                let ty = self.infer_expr(body, *field_expr, None);
-                                (*name, ty)
-                            })
-                            .collect();
-
-                        self.ctx.types.alloc(TyKind::Struct {
-                            def_id: *type_def_id,
-                            fields: field_tys,
-                        })
+                        panic!(
+                            "COMPILER BUG: Struct construct has type_def_id {:?} but structs context is None. \
+                             Type inference should be provided with struct definitions.",
+                            type_def_id
+                        )
                     }
                 } else {
                     // No type definition resolved, create type variable
@@ -1077,7 +1070,7 @@ impl<'a> TypeInference<'a> {
                 result_ty
             }
 
-            Expr::EnumVariant { def, fields, .. } => {
+            Expr::EnumVariant { variant, def, fields, .. } => {
                 // Infer variant field types (no expected types for now - could be improved)
                 for field_expr in fields {
                     self.infer_expr(body, *field_expr, None);
@@ -1085,27 +1078,37 @@ impl<'a> TypeInference<'a> {
 
                 // Return a Named type referencing the enum if we have the type definition
                 // Enums are nominal types, so we use Named with the TypeDefId
-                if let Some(type_def_id) = def {
-                    // Look up the enum name
-                    if let Some(enums) = self.enums {
-                        if let Some(enum_def) = enums.get(type_def_id) {
-                            self.ctx.types.alloc(TyKind::Named {
-                                name: enum_def.name,
-                                def: *type_def_id,
-                                args: vec![],
-                            })
-                        } else {
-                            // Fallback to type variable if enum def not found
-                            self.ctx.fresh_ty_var()
-                        }
-                    } else {
-                        // Fallback to type variable if enums not available
-                        self.ctx.fresh_ty_var()
-                    }
-                } else {
-                    // Fallback to type variable if enum def not resolved
-                    self.ctx.fresh_ty_var()
-                }
+                let type_def_id = def.unwrap_or_else(|| {
+                    let variant_name = self.interner
+                        .map(|i| i.resolve(variant))
+                        .unwrap_or_else(|| "?".to_string());
+                    panic!(
+                        "COMPILER BUG: Enum variant construct '{}' has no type definition. \
+                         Name resolution should have linked all enum variants to their type definitions.",
+                        variant_name
+                    )
+                });
+
+                let enums = self.enums.unwrap_or_else(|| {
+                    panic!(
+                        "COMPILER BUG: Type inference called without enums context. \
+                         All compilation contexts should provide enum definitions."
+                    )
+                });
+
+                let enum_def = enums.get(&type_def_id).unwrap_or_else(|| {
+                    panic!(
+                        "COMPILER BUG: Enum type {:?} has no definition in enums map. \
+                         Name resolution should have linked all enum types to their definitions.",
+                        type_def_id
+                    )
+                });
+
+                self.ctx.types.alloc(TyKind::Named {
+                    name: enum_def.name,
+                    def: type_def_id,
+                    args: vec![],
+                })
             }
 
             Expr::Closure { params, return_type, body: closure_body, captures, .. } => {

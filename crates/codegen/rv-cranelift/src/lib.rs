@@ -67,7 +67,14 @@ impl JitCompiler {
                 sig.returns.push(AbiParam::new(types::I64));
 
                 // Add parameters based on call site analysis
-                let param_count = param_counts.get(&mir_func.id).copied().unwrap_or(0);
+                let param_count = param_counts.get(&mir_func.id).copied()
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "COMPILER BUG: Function {:?} not found in param_counts map. \
+                             All functions should have their parameter counts registered during call site analysis.",
+                            mir_func.id
+                        )
+                    });
                 for _ in 0..param_count {
                     sig.params.push(AbiParam::new(types::I64));
                 }

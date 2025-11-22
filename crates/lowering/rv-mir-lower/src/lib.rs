@@ -4,7 +4,6 @@ use rv_mir::{
     AggregateKind, BinaryOp, Constant, LocalId, MirBuilder, MirFunction, MirType, MirVariant,
     Operand, Place, PlaceElem, RValue, Statement, Terminator, UnaryOp,
 };
-use lasso::Key;
 use rustc_hash::FxHashMap;
 use la_arena::Arena;
 use rv_hir::{Body, DefId, EnumDef, Expr, ExprId, Function, FunctionId, ImplBlock, ImplId, LiteralKind, Pattern, SelfParam, Stmt, StmtId, StructDef, TraitDef, TraitId, Type, TypeDefId};
@@ -197,10 +196,25 @@ impl<'ctx> LoweringContext<'ctx> {
                     let local_id = rv_hir::LocalId(param_idx as u32);
                     let def_id = rv_hir::DefId::Local(local_id);
 
-                    ctx.ty_ctx.get_def_type(def_id)
-                        .and_then(|ty_id| ctx.ty_ctx.normalize(ty_id).ok())
-                        .map(|normalized_ty| ctx.lower_type(normalized_ty))
-                        .unwrap_or(MirType::Unit)
+                    let ty_id = ctx.ty_ctx.get_def_type(def_id)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "COMPILER BUG: Parameter '{:?}' (index {}, DefId={:?}) has no inferred type. \
+                                 Type inference should have assigned a type to all parameters.",
+                                param.name, param_idx, def_id
+                            )
+                        });
+
+                    let normalized_ty = ctx.ty_ctx.normalize(ty_id)
+                        .unwrap_or_else(|_| {
+                            panic!(
+                                "COMPILER BUG: Failed to normalize parameter '{:?}' type (ty_id={:?}). \
+                                 Type normalization should succeed after inference.",
+                                param.name, ty_id
+                            )
+                        });
+
+                    ctx.lower_type(normalized_ty)
                 }
             };
 
@@ -697,14 +711,23 @@ impl<'ctx> LoweringContext<'ctx> {
                 let base_local = self.lower_expr(body, *base);
 
                 // Get the type of the base expression from type inference
-                let base_ty_id = self.ty_ctx.get_expr_type(*base);
+                let base_ty_id = self.ty_ctx.get_expr_type(*base)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "COMPILER BUG: Field access base expression has no inferred type. \
+                             Type inference should have assigned a type to all expressions."
+                        )
+                    });
 
                 // Resolve field name to index
-                let field_idx = if let Some(ty_id) = base_ty_id {
-                    self.resolve_field_index(ty_id, *field).unwrap_or(0)
-                } else {
-                    0 // Fallback
-                };
+                let field_idx = self.resolve_field_index(base_ty_id, *field)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "COMPILER BUG: Failed to resolve field '{}' on type {:?}. \
+                             Type checker should have validated field access.",
+                            self.interner.resolve(field), base_ty_id
+                        )
+                    });
 
                 let field_place = Place {
                     local: base_local,
@@ -735,11 +758,22 @@ impl<'ctx> LoweringContext<'ctx> {
                     .collect();
 
                 // Resolve variant name to index
-                let variant_idx = if let Some(type_def_id) = def {
-                    self.resolve_variant_index(*type_def_id, *variant).unwrap_or(0)
-                } else {
-                    0 // Fallback if type definition is not available
-                };
+                let type_def_id = def.unwrap_or_else(|| {
+                    panic!(
+                        "COMPILER BUG: Enum variant construct '{}' has no type definition. \
+                         Name resolution should have linked all enum variants to their type definitions.",
+                        self.interner.resolve(variant)
+                    )
+                });
+
+                let variant_idx = self.resolve_variant_index(type_def_id, *variant)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "COMPILER BUG: Failed to resolve variant '{}' in type def {:?}. \
+                             Type checker should have validated variant access.",
+                            self.interner.resolve(variant), type_def_id
+                        )
+                    });
 
                 self.builder.add_statement(Statement::Assign {
                     place: Place::from_local(result_local),
@@ -977,13 +1011,18 @@ impl<'ctx> LoweringContext<'ctx> {
             },
             TyKind::Struct { def_id, fields } => {
                 // Look up the struct name from the definition
-                let name = self.structs
+                let struct_def = self.structs
                     .get(def_id)
-                    .map(|struct_def| struct_def.name)
-                    .unwrap_or_else(|| Key::try_from_usize(0).unwrap());
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "COMPILER BUG: Struct type references unknown TypeDefId {:?}. \
+                             Name resolution should have linked all struct types to their definitions.",
+                            def_id
+                        )
+                    });
 
                 MirType::Struct {
-                    name,
+                    name: struct_def.name,
                     fields: fields.iter().map(|(_, ty_id)| self.lower_type(NormalizedTy::wrap_child(*ty_id))).collect(),
                 }
             },
@@ -1008,13 +1047,18 @@ impl<'ctx> LoweringContext<'ctx> {
                     .collect();
 
                 // Look up the enum name from the definition
-                let enum_name = self.enums
+                let enum_def = self.enums
                     .get(def_id)
-                    .map(|enum_def| enum_def.name)
-                    .unwrap_or_else(|| Key::try_from_usize(0).unwrap());
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "COMPILER BUG: Enum type references unknown TypeDefId {:?}. \
+                             Name resolution should have linked all enum types to their definitions.",
+                            def_id
+                        )
+                    });
 
                 MirType::Enum {
-                    name: enum_name,
+                    name: enum_def.name,
                     variants: mir_variants,
                 }
             }

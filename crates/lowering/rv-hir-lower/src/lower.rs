@@ -214,10 +214,20 @@ fn lower_function(ctx: &mut LoweringContext, current_scope: ScopeId, node: &Synt
         .iter()
         .find(|child| child.kind == SyntaxKind::Identifier)
         .map(|child| child.text.clone())
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            panic!(
+                "COMPILER BUG: Function declaration at {:?} has no identifier. \
+                 Parser should ensure all function_item nodes contain an identifier.",
+                ctx.file_span(node)
+            )
+        });
 
     if name.is_empty() {
-        return;
+        panic!(
+            "COMPILER BUG: Function declaration at {:?} has empty identifier. \
+             Parser should ensure function identifiers are non-empty.",
+            ctx.file_span(node)
+        )
     }
 
     let name_interned = ctx.intern(&name);
@@ -776,11 +786,12 @@ fn lower_binary_op(
             span: file_span,
         })
     } else {
-        // Fallback to unit if parsing fails
-        body.exprs.alloc(Expr::Literal {
-            kind: LiteralKind::Unit,
-            span: file_span,
-        })
+        panic!(
+            "COMPILER BUG: Failed to parse binary expression at {:?}. \
+             Parser should produce valid binary_expression nodes with left operand, operator, and right operand. \
+             Found: left={:?}, op={:?}, right={:?}",
+            file_span, left_expr.is_some(), operator.is_some(), right_expr.is_some()
+        )
     }
 }
 
@@ -860,11 +871,12 @@ fn lower_if_expr(
             span: file_span,
         })
     } else {
-        // Fallback
-        body.exprs.alloc(Expr::Literal {
-            kind: LiteralKind::Unit,
-            span: file_span,
-        })
+        panic!(
+            "COMPILER BUG: Failed to parse if expression at {:?}. \
+             Parser should produce valid if_expression nodes with condition and then branch. \
+             Found: condition={:?}, then={:?}",
+            file_span, condition.is_some(), then_branch.is_some()
+        )
     }
 }
 
@@ -917,11 +929,12 @@ fn lower_match_expr(
             span: file_span,
         })
     } else {
-        // Fallback to unit
-        body.exprs.alloc(Expr::Literal {
-            kind: LiteralKind::Unit,
-            span: file_span,
-        })
+        panic!(
+            "COMPILER BUG: Failed to parse match expression at {:?}. \
+             Parser should produce valid match_expression nodes with scrutinee. \
+             Found: scrutinee={:?}",
+            file_span, scrutinee.is_some()
+        )
     }
 }
 
@@ -1071,8 +1084,12 @@ fn lower_pattern(
                     }
                 }
             }
-            // Fallback to wildcard if no pattern found
-            Pattern::Wildcard { span: file_span }
+            // No pattern found in or_pattern
+            panic!(
+                "COMPILER BUG: or_pattern node at {:?} contains no valid patterns. \
+                 Parser should ensure or_pattern nodes have at least one alternative.",
+                file_span
+            )
         }
         SyntaxKind::Identifier => {
             let name = node.text.clone();
@@ -1321,13 +1338,19 @@ fn lower_pattern(
                     span: file_span,
                 }
             } else {
-                // Fallback if no binding name found
-                Pattern::Wildcard { span: file_span }
+                panic!(
+                    "COMPILER BUG: identifier_pattern node at {:?} has no identifier. \
+                     Parser should ensure identifier_pattern nodes contain valid identifiers.",
+                    file_span
+                )
             }
         }
         _ => {
-            // Unknown pattern type, treat as wildcard
-            Pattern::Wildcard { span: file_span }
+            panic!(
+                "COMPILER BUG: Unknown pattern type {:?} at {:?}. \
+                 Parser produced an unrecognized pattern node kind.",
+                node.kind, file_span
+            )
         }
     };
 
@@ -2449,12 +2472,13 @@ fn find_closure_body(
         }
     }
 
-    // Fallback to unit if no body found
+    // No body found in closure
     let file_span = ctx.file_span(node);
-    body.exprs.alloc(Expr::Literal {
-        kind: LiteralKind::Unit,
-        span: file_span,
-    })
+    panic!(
+        "COMPILER BUG: Closure at {:?} has no body. \
+         Parser should ensure closures have either a block or expression body.",
+        file_span
+    )
 }
 
 /// Analyze captures for a closure body

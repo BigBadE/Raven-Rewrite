@@ -560,7 +560,13 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
 
                 // Get return value
                 let return_value = call_site.try_as_basic_value().left()
-                    .unwrap_or_else(|| self.context().i32_type().const_int(0, false).into());
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "COMPILER BUG: Function call to {:?} returned void, but MIR expects all \
+                             function calls to produce a value. All functions should return at least Unit type.",
+                            func
+                        )
+                    })?;
 
                 Ok(return_value)
             }
