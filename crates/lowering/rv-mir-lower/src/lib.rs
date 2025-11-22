@@ -1387,11 +1387,20 @@ impl<'ctx> LoweringContext<'ctx> {
 
             match &concrete_ty.kind {
                 TyKind::Struct { def_id, .. } => Some(*def_id),
+                TyKind::Enum { def_id, .. } => Some(*def_id),
                 TyKind::Named { name, .. } => {
+                    // Try to find in structs first
                     self.structs
                         .iter()
                         .find(|(_, s)| s.name == *name)
                         .map(|(def_id, _)| *def_id)
+                        .or_else(|| {
+                            // Also try enums
+                            self.enums
+                                .iter()
+                                .find(|(_, e)| e.name == *name)
+                                .map(|(def_id, _)| *def_id)
+                        })
                 }
                 _ => None,
             }
