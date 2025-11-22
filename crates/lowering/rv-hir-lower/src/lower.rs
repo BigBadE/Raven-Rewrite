@@ -1248,8 +1248,25 @@ fn lower_pattern(
                 }
             }
 
-            let variant_sym = variant_name.map(|v| ctx.intern(&v)).unwrap_or_else(|| ctx.intern("_"));
-            let enum_sym = enum_name.map(|e| ctx.intern(&e)).unwrap_or_else(|| ctx.intern("_"));
+            let variant_sym = variant_name
+                .map(|v| ctx.intern(&v))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "COMPILER BUG: Enum pattern at {:?} has no variant name. \
+                         Parser should produce valid enum pattern nodes with variant identifiers.",
+                        file_span
+                    )
+                });
+
+            let enum_sym = enum_name
+                .map(|e| ctx.intern(&e))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "COMPILER BUG: Enum pattern at {:?} has no enum name. \
+                         Parser should produce valid enum pattern nodes with enum identifiers.",
+                        file_span
+                    )
+                });
 
             // Look up the enum definition
             let def_id = ctx.enums.iter()
@@ -1414,10 +1431,16 @@ fn lower_let_stmt(
         }
     }
 
+    let pattern_id = pattern_id.unwrap_or_else(|| {
+        panic!(
+            "COMPILER BUG: Let statement at {:?} has no pattern. \
+             Parser should produce valid let_declaration nodes with patterns.",
+            file_span
+        )
+    });
+
     body.stmts.alloc(Stmt::Let {
-        pattern: pattern_id.unwrap_or_else(|| {
-            body.patterns.alloc(Pattern::Wildcard { span: file_span })
-        }),
+        pattern: pattern_id,
         ty: None,
         initializer,
         mutable: is_mutable,
@@ -1469,10 +1492,20 @@ fn lower_struct(ctx: &mut LoweringContext, current_scope: ScopeId, node: &Syntax
         .iter()
         .find(|child| child.kind == SyntaxKind::Identifier || child.kind == SyntaxKind::Type)
         .map(|child| child.text.clone())
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            panic!(
+                "COMPILER BUG: Struct declaration at {:?} has no identifier. \
+                 Parser should ensure all struct_item nodes contain an identifier.",
+                ctx.file_span(node)
+            )
+        });
 
     if name.is_empty() {
-        return;
+        panic!(
+            "COMPILER BUG: Struct declaration at {:?} has empty identifier. \
+             Parser should ensure struct identifiers are non-empty.",
+            ctx.file_span(node)
+        )
     }
 
     let name_interned = ctx.intern(&name);
@@ -1556,10 +1589,20 @@ fn lower_enum(ctx: &mut LoweringContext, current_scope: ScopeId, node: &SyntaxNo
         .iter()
         .find(|child| child.kind == SyntaxKind::Identifier)
         .map(|child| child.text.clone())
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            panic!(
+                "COMPILER BUG: Enum declaration at {:?} has no identifier. \
+                 Parser should ensure all enum_item nodes contain an identifier.",
+                ctx.file_span(node)
+            )
+        });
 
     if name.is_empty() {
-        return;
+        panic!(
+            "COMPILER BUG: Enum declaration at {:?} has empty identifier. \
+             Parser should ensure enum identifiers are non-empty.",
+            ctx.file_span(node)
+        )
     }
 
     let name_interned = ctx.intern(&name);
@@ -1895,10 +1938,11 @@ fn lower_impl(ctx: &mut LoweringContext, current_scope: ScopeId, node: &SyntaxNo
     let self_ty = self_ty_node
         .map(|child| lower_type_node(ctx, child))
         .unwrap_or_else(|| {
-            // Create an Unknown type as fallback
-            ctx.types.alloc(Type::Unknown {
-                span: ctx.file_span(node),
-            })
+            panic!(
+                "COMPILER BUG: Impl block at {:?} has no self type. \
+                 Parser should ensure all impl_item nodes specify the type being implemented.",
+                ctx.file_span(node)
+            )
         });
 
     let impl_id = ctx.alloc_impl_id();
@@ -1991,7 +2035,13 @@ fn lower_trait(ctx: &mut LoweringContext, current_scope: ScopeId, node: &SyntaxN
         .iter()
         .find(|child| child.kind == SyntaxKind::Identifier)
         .map(|child| ctx.intern(&child.text))
-        .unwrap_or_else(|| ctx.intern("_"));
+        .unwrap_or_else(|| {
+            panic!(
+                "COMPILER BUG: Trait declaration at {:?} has no identifier. \
+                 Parser should ensure all trait_item nodes contain identifiers.",
+                ctx.file_span(node)
+            )
+        });
 
     let trait_id = ctx.alloc_trait_id();
     let file_span = ctx.file_span(node);
@@ -2244,7 +2294,13 @@ fn lower_trait_method(
                             .iter()
                             .find(|c| c.kind == SyntaxKind::Identifier)
                             .map(|c| ctx.intern(&c.text))
-                            .unwrap_or_else(|| ctx.intern("_"));
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "COMPILER BUG: Parameter at {:?} has no identifier. \
+                                     Parser should ensure all parameter nodes contain identifiers.",
+                                    ctx.file_span(param_child)
+                                )
+                            });
 
                         let param_ty = param_child
                             .children
@@ -2252,9 +2308,11 @@ fn lower_trait_method(
                             .find(|c| c.kind == SyntaxKind::Type)
                             .map(|c| lower_type_node(ctx, c))
                             .unwrap_or_else(|| {
-                                ctx.types.alloc(Type::Unknown {
-                                    span: ctx.file_span(param_child),
-                                })
+                                panic!(
+                                    "COMPILER BUG: Parameter at {:?} has no type annotation. \
+                                     Parser should ensure all parameter nodes contain type annotations.",
+                                    ctx.file_span(param_child)
+                                )
                             });
 
                         params.push(Parameter {
@@ -2329,18 +2387,24 @@ fn lower_external_function(ctx: &mut LoweringContext, node: &SyntaxNode, abi: Op
         .iter()
         .find(|child| child.kind == SyntaxKind::Identifier)
         .map(|child| ctx.intern(&child.text))
-        .unwrap_or_else(|| ctx.intern("_"));
+        .unwrap_or_else(|| {
+            panic!(
+                "COMPILER BUG: External function declaration at {:?} has no identifier. \
+                 Parser should ensure all function_item nodes in extern blocks contain identifiers.",
+                ctx.file_span(node)
+            )
+        });
 
     let func_id = ctx.alloc_function_id();
     let span = ctx.file_span(node);
 
-    // Parse parameters
+    // Parse parameters - external functions might have no parameter list (just a signature)
     let parameters = node
         .children
         .iter()
         .find(|child| child.kind == SyntaxKind::Parameters)
         .map(|params_node| parse_parameters(ctx, params_node))
-        .unwrap_or_default();
+        .unwrap_or_else(Vec::new);
 
     // Parse return type
     let return_type = node
@@ -2625,7 +2689,13 @@ fn lower_module(ctx: &mut LoweringContext, current_scope: ScopeId, node: &Syntax
         .iter()
         .find(|child| child.kind == SyntaxKind::Identifier)
         .map(|child| ctx.intern(&child.text))
-        .unwrap_or_else(|| ctx.intern("_"));
+        .unwrap_or_else(|| {
+            panic!(
+                "COMPILER BUG: Module declaration at {:?} has no identifier. \
+                 Parser should ensure all mod_item nodes contain identifiers.",
+                ctx.file_span(node)
+            )
+        });
 
     let module_id = ctx.alloc_module_id();
     let file_span = ctx.file_span(node);
