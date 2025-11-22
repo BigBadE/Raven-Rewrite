@@ -1062,7 +1062,13 @@ fn lower_pattern(
                         // Wildcard pattern
                         return Some(body.patterns.alloc(Pattern::Wildcard { span: file_span }));
                     }
-                    _ => continue,
+                    _ => {
+                        // Try to recursively parse complex patterns (tuple_struct_pattern, etc.)
+                        if let Some(pat_id) = lower_pattern(ctx, current_scope, child, body) {
+                            return Some(pat_id);
+                        }
+                        continue;
+                    }
                 }
             }
             // Fallback to wildcard if no pattern found
@@ -1169,6 +1175,15 @@ fn lower_pattern(
             for child in &node.children {
                 match &child.kind {
                     SyntaxKind::Identifier => {
+                        // Skip if we already have a variant name (this is a pattern binding inside parens)
+                        if variant_name.is_some() {
+                            // This is a pattern binding, handle it as a sub-pattern
+                            if let Some(pat) = lower_pattern(ctx, current_scope, child, body) {
+                                sub_patterns.push(pat);
+                            }
+                            continue;
+                        }
+
                         // This could be the enum name, variant, or both combined
                         let text = child.text.clone();
                         if text.contains("::") {
@@ -1195,8 +1210,20 @@ fn lower_pattern(
                             }
                         }
                     }
+                    SyntaxKind::Unknown(ref kind) if kind == "tuple_pattern" || kind == "field_pattern_list" => {
+                        // ARCHITECTURE: Enum variant arguments are wrapped in container nodes
+                        // like tuple_pattern. We need to unwrap and parse the actual patterns inside.
+                        for grandchild in &child.children {
+                            // Skip punctuation like '(' and ')'
+                            if !matches!(grandchild.text.as_str(), "(" | ")" | "," | "{" | "}") {
+                                if let Some(pat) = lower_pattern(ctx, current_scope, grandchild, body) {
+                                    sub_patterns.push(pat);
+                                }
+                            }
+                        }
+                    }
                     _ => {
-                        // Try to parse sub-patterns (inside parentheses)
+                        // Try to parse sub-patterns directly
                         if let Some(pat) = lower_pattern(ctx, current_scope, child, body) {
                             sub_patterns.push(pat);
                         }
