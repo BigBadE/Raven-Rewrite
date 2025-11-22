@@ -768,13 +768,17 @@ fn lower_binary_op(
     let mut right_expr = None;
 
     for child in &node.children {
-        if is_expr_node(child) && left_expr.is_none() {
-            left_expr = Some(lower_expr(ctx, current_scope, child, body));
-        } else if child.text.len() <= 2 && operator.is_none() {
-            // Operators are typically 1-2 characters
+        // Check if this looks like an operator (typically 1-2 char operators like +, -, *, /, ==, etc.)
+        if is_binary_operator(&child.text) && operator.is_none() {
             operator = Some(parse_binary_operator(&child.text));
-        } else if is_expr_node(child) && left_expr.is_some() {
-            right_expr = Some(lower_expr(ctx, current_scope, child, body));
+        }
+        // Otherwise, if it's not a delimiter/keyword, treat it as an expression
+        else if !is_keyword_or_delimiter(&child.kind, &child.text) {
+            if left_expr.is_none() {
+                left_expr = Some(lower_expr(ctx, current_scope, child, body));
+            } else if operator.is_some() && right_expr.is_none() {
+                right_expr = Some(lower_expr(ctx, current_scope, child, body));
+            }
         }
     }
 
@@ -1494,6 +1498,17 @@ fn is_keyword_or_delimiter(kind: &SyntaxKind, text: &str) -> bool {
             kind,
             SyntaxKind::Unknown(ref s) if s == "match_block" || s.contains("_list")
         )
+}
+
+/// Check if text is a binary operator
+fn is_binary_operator(text: &str) -> bool {
+    matches!(
+        text,
+        "+" | "-" | "*" | "/" | "%"
+        | "==" | "!=" | "<" | ">" | "<=" | ">="
+        | "&&" | "||"
+        | "&" | "|" | "^" | "<<" | ">>"
+    )
 }
 
 /// Lower a struct definition
