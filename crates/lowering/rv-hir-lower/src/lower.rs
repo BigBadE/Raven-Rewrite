@@ -1120,7 +1120,7 @@ fn lower_pattern(
             let mut patterns = Vec::new();
             for child in &node.children {
                 // Skip punctuation like '(', ')', ','
-                if matches!(child.kind, SyntaxKind::Identifier | SyntaxKind::Literal | SyntaxKind::Unknown(_)) {
+                if !matches!(child.text.as_str(), "(" | ")" | "," | "{" | "}") {
                     if let Some(pat) = lower_pattern(ctx, current_scope, child, body) {
                         patterns.push(pat);
                     }
