@@ -2059,32 +2059,39 @@ fn lower_type_node(ctx: &mut LoweringContext, node: &SyntaxNode) -> TypeId {
 
 /// Lower an impl block
 fn lower_impl(ctx: &mut LoweringContext, current_scope: ScopeId, node: &SyntaxNode) {
+    eprintln!("[DEBUG lower_impl] Impl node has {} children:", node.children.len());
+    for (i, child) in node.children.iter().enumerate() {
+        eprintln!("[DEBUG lower_impl]   Child {}: kind={:?}, text={:?}", i, child.kind, child.text);
+    }
+
     // Check for "impl Trait for Type" pattern by looking for "for" keyword
     let mut trait_ref = None;
     let mut self_ty_node = None;
 
-    // Search for trait name (identifier before "for") and type after "for"
+    // Search for trait name (Type node before "for") and self type after "for"
     let mut found_for = false;
     for child in &node.children {
-        if child.kind == SyntaxKind::Identifier && !found_for {
-            // This might be a trait name
+        if child.kind == SyntaxKind::Type && !found_for {
+            // This is the trait name (before "for")
             let trait_name = ctx.intern(&child.text);
+            eprintln!("[DEBUG lower_impl] Found Type before 'for': {}", child.text);
             // Look up trait by name
             for (trait_id, trait_def) in &ctx.traits {
                 if trait_def.name == trait_name {
                     trait_ref = Some(*trait_id);
+                    eprintln!("[DEBUG lower_impl] Matched trait {:?}", trait_id);
                     break;
                 }
             }
         } else if let SyntaxKind::Unknown(ref s) = child.kind {
             if s == "for" {
                 found_for = true;
+                eprintln!("[DEBUG lower_impl] Found 'for' keyword");
             }
-        } else if child.kind == SyntaxKind::Type {
-            if found_for || trait_ref.is_none() {
-                // This is the self type
-                self_ty_node = Some(child);
-            }
+        } else if child.kind == SyntaxKind::Type && found_for {
+            // This is the self type (after "for")
+            self_ty_node = Some(child);
+            eprintln!("[DEBUG lower_impl] Found self type after 'for': {}", child.text);
         }
     }
 

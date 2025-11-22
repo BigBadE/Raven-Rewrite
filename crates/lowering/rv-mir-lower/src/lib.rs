@@ -1459,9 +1459,13 @@ impl<'ctx> LoweringContext<'ctx> {
             }
         });
 
+        eprintln!("[DEBUG resolve_method] Looking for method '{}' on receiver type {:?}", self.interner.resolve(&method_name), resolved_ty.map(|t| &t.kind));
+        eprintln!("[DEBUG resolve_method] Total impl blocks: {}", self.impl_blocks.len());
+
         // Search all impl blocks for one that matches this type
-        for impl_block in self.impl_blocks.values() {
+        for (impl_id, impl_block) in self.impl_blocks.iter() {
             let hir_ty = &self.hir_types[impl_block.self_ty];
+            eprintln!("[DEBUG resolve_method] Checking impl {:?}, self_ty: {:?}, trait_ref: {:?}", impl_id, hir_ty, impl_block.trait_ref);
 
             let impl_type_matches = if let Some(type_def_id) = type_def_id {
                 match hir_ty {
@@ -1470,18 +1474,22 @@ impl<'ctx> LoweringContext<'ctx> {
                 }
             } else if let Some(resolved) = resolved_ty {
                 // Handle primitive types - match by comparing HIR type names
-                match &resolved.kind {
+                let matches = match &resolved.kind {
                     TyKind::Int => matches!(hir_ty, Type::Named { name, .. } if self.interner.resolve(name) == "i64"),
                     TyKind::Bool => matches!(hir_ty, Type::Named { name, .. } if self.interner.resolve(name) == "bool"),
                     TyKind::String => matches!(hir_ty, Type::Named { name, .. } if self.interner.resolve(name) == "String"),
                     TyKind::Float => matches!(hir_ty, Type::Named { name, .. } if self.interner.resolve(name) == "f64"),
                     _ => false,
-                }
+                };
+                eprintln!("[DEBUG resolve_method]   Type matches: {}", matches);
+                matches
             } else {
                 false
             };
 
             if impl_type_matches {
+                eprintln!("[DEBUG resolve_method] Found matching impl!");
+
                 // If this impl block implements a trait, check trait methods
                 if let Some(trait_id) = impl_block.trait_ref {
                     if let Some(trait_def) = self.traits.get(&trait_id) {
