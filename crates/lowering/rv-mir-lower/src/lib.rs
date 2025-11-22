@@ -1470,7 +1470,6 @@ impl<'ctx> LoweringContext<'ctx> {
             }
         });
 
-
         // Search all impl blocks for one that matches this type
         for (_impl_id, impl_block) in self.impl_blocks.iter() {
             let hir_ty = &self.hir_types[impl_block.self_ty];
