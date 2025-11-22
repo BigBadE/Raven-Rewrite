@@ -738,10 +738,26 @@ impl<'a> TypeInference<'a> {
                 }
             }
 
-            Expr::UnaryOp { operand, .. } => {
-                // Unary op returns same type as operand
-                // Pass expected type down to operand
-                self.infer_expr(body, *operand, expected)
+            Expr::UnaryOp { op, operand, .. } => {
+                use rv_hir::UnaryOp;
+                match op {
+                    UnaryOp::Ref | UnaryOp::RefMut => {
+                        // Reference operations: &x or &mut x
+                        // Infer the operand type first
+                        let operand_ty = self.infer_expr(body, *operand, None);
+                        // Create a reference type wrapping the operand type
+                        let ref_ty = self.ctx.types.alloc(TyKind::Ref {
+                            inner: Box::new(operand_ty),
+                            mutable: matches!(op, UnaryOp::RefMut),
+                        });
+                        self.ctx.set_expr_type(expr_id, ref_ty);
+                        ref_ty
+                    }
+                    _ => {
+                        // Other unary ops (Neg, Not, BitNot, Deref) return same type as operand
+                        self.infer_expr(body, *operand, expected)
+                    }
+                }
             }
 
             Expr::Block { statements, expr, .. } => {

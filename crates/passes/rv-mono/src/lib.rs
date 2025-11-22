@@ -8,7 +8,35 @@ use std::collections::HashMap;
 use rv_hir::FunctionId;
 use rv_hir_lower::LoweringContext;
 use rv_mir::{MirFunction, MirType};
-use rv_ty::TyContext;
+use rv_ty::{TyContext, TyId, TyKind};
+
+/// Helper function to recursively convert MirType to TyId
+fn convert_mir_type_to_ty_id(mir_ty: &MirType, ty_ctx: &mut TyContext) -> TyId {
+    match mir_ty {
+        MirType::Int => ty_ctx.types.int(),
+        MirType::Float => ty_ctx.types.float(),
+        MirType::Bool => ty_ctx.types.bool(),
+        MirType::Unit => ty_ctx.types.unit(),
+        MirType::String => ty_ctx.types.string(),
+        MirType::Ref { inner, mutable } => {
+            // Recursively convert the inner type
+            let inner_ty_id = convert_mir_type_to_ty_id(inner, ty_ctx);
+            // Create a reference type
+            ty_ctx.types.alloc(TyKind::Ref {
+                inner: Box::new(inner_ty_id),
+                mutable: *mutable,
+            })
+        }
+        MirType::Named(_sym) => {
+            // For named types, we need the TypeDefId which we don't have here
+            // Let type inference resolve this from the HIR type
+            ty_ctx.fresh_ty_var()
+        }
+        _ => {
+            panic!("Unsupported MirType for generic substitution: {:?}", mir_ty);
+        }
+    }
+}
 
 /// Monomorphization context
 pub struct MonoContext {
@@ -178,36 +206,53 @@ impl MonoCollector {
         hir_functions: &HashMap<FunctionId, rv_hir::Function>,
         hir_types: &la_arena::Arena<rv_hir::Type>,
     ) -> Vec<MirType> {
+        eprintln!("[DEBUG infer] Inferring type args for {:?}, arg_types: {:?}", func_id, arg_types);
         // Look up the called function
         let Some(hir_func) = hir_functions.get(&func_id) else {
             // Function not found in HIR - return empty type args
+            eprintln!("[DEBUG infer] Function not found in HIR");
             return vec![];
         };
 
         // If not generic, return empty vec
         if hir_func.generics.is_empty() {
+            eprintln!("[DEBUG infer] Function is not generic");
             return vec![];
         }
+
+        eprintln!("[DEBUG infer] Function has {} generics, {} parameters", hir_func.generics.len(), hir_func.parameters.len());
 
         // Initialize substitutions for each generic parameter
         let mut substitutions: HashMap<rv_intern::Symbol, MirType> = HashMap::new();
 
         // Match each argument type against its corresponding parameter type
         for (arg_idx, arg_type) in arg_types.iter().enumerate() {
+            eprintln!("[DEBUG infer] Matching arg {} with type {:?}", arg_idx, arg_type);
             if let Some(param) = hir_func.parameters.get(arg_idx) {
                 let param_hir_type = &hir_types[param.ty];
+                eprintln!("[DEBUG infer]   Against param type: {:?}", param_hir_type);
                 self.match_type(arg_type, param_hir_type, hir_types, &mut substitutions);
+            } else {
+                eprintln!("[DEBUG infer]   No parameter at index {}", arg_idx);
             }
         }
 
+        eprintln!("[DEBUG infer] Collected substitutions: {:?}", substitutions);
+
         // Convert substitutions to ordered Vec based on generic parameter order
-        hir_func.generics.iter()
+        let result: Vec<_> = hir_func.generics.iter()
             .map(|gen_param| {
                 substitutions.get(&gen_param.name)
                     .cloned()
-                    .unwrap_or(MirType::Unit)  // Fallback if not inferred
+                    .unwrap_or_else(|| {
+                        eprintln!("[DEBUG infer] No substitution for generic param, using Unit");
+                        MirType::Unit
+                    })
             })
-            .collect()
+            .collect();
+
+        eprintln!("[DEBUG infer] Final type_args: {:?}", result);
+        result
     }
 
     /// Match an argument type against a parameter type pattern, collecting generic substitutions
@@ -218,29 +263,38 @@ impl MonoCollector {
         hir_types: &la_arena::Arena<rv_hir::Type>,
         substitutions: &mut HashMap<rv_intern::Symbol, MirType>,
     ) {
+        eprintln!("[DEBUG match_type] Matching arg_type {:?} against param_type {:?}", arg_type, param_type);
         match param_type {
             // Generic parameter - record the substitution
             rv_hir::Type::Generic { name, .. } => {
+                eprintln!("[DEBUG match_type]   Recording substitution for generic param");
                 substitutions.insert(*name, arg_type.clone());
             }
 
             // Reference type - match recursively on inner type
             rv_hir::Type::Reference { inner, .. } => {
+                eprintln!("[DEBUG match_type]   Param is Reference");
                 // Extract inner type from argument if it's a reference
                 if let MirType::Ref { inner: arg_inner, .. } = arg_type {
                     let param_inner_type = &hir_types[**inner];
+                    eprintln!("[DEBUG match_type]   Arg is also Ref, recursing on inner types");
                     self.match_type(arg_inner, param_inner_type, hir_types, substitutions);
+                } else {
+                    eprintln!("[DEBUG match_type]   Arg is not Ref, can't match");
                 }
                 // If argument is not a reference, can't match - skip
             }
 
             // Named type - exact match expected (not generic)
             rv_hir::Type::Named { .. } => {
+                eprintln!("[DEBUG match_type]   Param is Named, no generics to extract");
                 // No generic parameters to extract
             }
 
             // Other types - no generic parameters
-            _ => {}
+            _ => {
+                eprintln!("[DEBUG match_type]   Other param type, no generics");
+            }
         }
     }
 
@@ -329,16 +383,7 @@ pub fn monomorphize_functions(
                     rv_hir::Type::Generic { name, .. } => {
                         if let Some(mir_ty) = type_subst.get(name) {
                             // Convert MirType to TyId for concrete substitution
-                            match mir_ty {
-                                MirType::Int => ty_ctx_clone.types.int(),
-                                MirType::Float => ty_ctx_clone.types.float(),
-                                MirType::Bool => ty_ctx_clone.types.bool(),
-                                MirType::Unit => ty_ctx_clone.types.unit(),
-                                MirType::String => ty_ctx_clone.types.string(),
-                                _ => {
-                                    panic!("Unsupported MirType for generic substitution: {:?}", mir_ty);
-                                }
-                            }
+                            convert_mir_type_to_ty_id(&mir_ty, &mut ty_ctx_clone)
                         } else {
                             // Generic parameter has no substitution - let type inference handle it
                             ty_ctx_clone.fresh_ty_var()
@@ -356,21 +401,7 @@ pub fn monomorphize_functions(
                                 if let Some(mir_ty) = type_subst.get(name) {
                                     eprintln!("[DEBUG mono]   Found substitution: {:?}", mir_ty);
                                     // Convert MirType to TyId for concrete substitution
-                                    match mir_ty {
-                                        MirType::Int => ty_ctx_clone.types.int(),
-                                        MirType::Float => ty_ctx_clone.types.float(),
-                                        MirType::Bool => ty_ctx_clone.types.bool(),
-                                        MirType::Unit => ty_ctx_clone.types.unit(),
-                                        MirType::String => ty_ctx_clone.types.string(),
-                                        MirType::Named(_sym) => {
-                                            // For named types, we need the TypeDefId which we don't have here
-                                            // Let type inference resolve this from the HIR type
-                                            ty_ctx_clone.fresh_ty_var()
-                                        }
-                                        _ => {
-                                            panic!("Unsupported MirType for generic substitution: {:?}", mir_ty);
-                                        }
-                                    }
+                                    convert_mir_type_to_ty_id(&mir_ty, &mut ty_ctx_clone)
                                 } else {
                                     // Generic parameter has no substitution - let type inference handle it
                                     ty_ctx_clone.fresh_ty_var()
