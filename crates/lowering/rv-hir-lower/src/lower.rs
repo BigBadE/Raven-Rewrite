@@ -1369,6 +1369,46 @@ fn lower_pattern(
                 )
             }
         }
+        SyntaxKind::Unknown(ref name) if name == "_" => {
+            // Wildcard pattern from tree-sitter
+            Pattern::Wildcard { span: file_span }
+        }
+        SyntaxKind::Unknown(ref name) if name == "scoped_identifier" => {
+            // scoped_identifier is used for enum patterns like Option::Some
+            // This should be handled by the enum_variant_pattern code above
+            // If we reach here, just treat it as an enum pattern
+            // Extract the path components
+            let text = &node.text;
+            if let Some((enum_name, variant_name)) = text.rsplit_once("::") {
+                let enum_sym = ctx.intern(enum_name);
+                let variant_sym = ctx.intern(variant_name);
+
+                // Look up the enum definition
+                let def = ctx.scope_tree.resolve(current_scope, enum_name);
+                let type_def = def.and_then(|sym_id| {
+                    ctx.symbol_defs.get(&sym_id).and_then(|def_id| match def_id {
+                        DefId::Type(type_id) => Some(*type_id),
+                        _ => None,
+                    })
+                });
+
+                Pattern::Enum {
+                    enum_name: enum_sym,
+                    variant: variant_sym,
+                    def: type_def,
+                    sub_patterns: Vec::new(),
+                    span: file_span,
+                }
+            } else {
+                // No :: separator, treat as a simple binding
+                Pattern::Binding {
+                    name: ctx.intern(text),
+                    mutable: false,
+                    sub_pattern: None,
+                    span: file_span,
+                }
+            }
+        }
         _ => {
             panic!(
                 "COMPILER BUG: Unknown pattern type {:?} at {:?}. \
