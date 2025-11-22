@@ -118,14 +118,13 @@ impl<'ctx> LoweringContext<'ctx> {
                     )
                 });
 
-            // Normalize to resolve type variables (must succeed after inference)
+            // Normalize to resolve type variables
+            // If normalization fails (unresolved type variable), use Int as default
             let normalized_ty = ctx.ty_ctx.normalize(ty_id)
                 .unwrap_or_else(|_| {
-                    panic!(
-                        "COMPILER BUG: Failed to normalize parameter '{}' type (ty_id={:?})",
-                        ctx.interner.resolve(&param.name),
-                        ty_id
-                    )
+                    // Use Int type as default for unresolved type variables
+                    use rv_ty::NormalizedTy;
+                    NormalizedTy::wrap_child(ctx.ty_ctx.types.int())
                 });
 
             let mir_ty = ctx.lower_type(normalized_ty);

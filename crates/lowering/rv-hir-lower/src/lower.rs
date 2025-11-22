@@ -1772,14 +1772,35 @@ fn parse_parameters(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Paramet
     // WORKAROUND: Tree-sitter doesn't always create child nodes for simple "self" parameters
     // Check if the node text contains "self" directly
     if node.text.contains("self") && !node.text.contains(":") {
-        // Simple self parameter without type annotation (e.g., "(self)")
-        // Use the impl block's self type
+        // Simple self parameter without type annotation (e.g., "(self)", "(&self)", "(&mut self)")
+        // Use the impl block's self type with appropriate reference wrapping
         if let Some(self_ty) = ctx.current_impl_self_ty {
             let name_sym = ctx.intern("self");
+            let param_text = node.text.trim();
+
+            let param_ty = if param_text.contains("&mut") {
+                // &mut self
+                ctx.types.alloc(Type::Reference {
+                    inner: Box::new(self_ty),
+                    mutable: true,
+                    span: ctx.file_span(node),
+                })
+            } else if param_text.contains('&') {
+                // &self
+                ctx.types.alloc(Type::Reference {
+                    inner: Box::new(self_ty),
+                    mutable: false,
+                    span: ctx.file_span(node),
+                })
+            } else {
+                // self (by value)
+                self_ty
+            };
+
             params.push(Parameter {
                 inferred_ty: None,
                 name: name_sym,
-                ty: self_ty,
+                ty: param_ty,
                 span: ctx.file_span(node),
             });
             return params; // Early return - we found the self parameter
@@ -1789,7 +1810,7 @@ fn parse_parameters(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Paramet
     for child in &node.children {
         if let SyntaxKind::Unknown(ref kind) = child.kind {
             if kind == "self_parameter" {
-                // Self parameter (e.g., `self` or `self: Type`)
+                // Self parameter (e.g., `self`, `&self`, `&mut self`, or `self: Type`)
                 let name_sym = ctx.intern("self");
 
                 // Try to find a type annotation for self (self: Type)
@@ -1800,9 +1821,29 @@ fn parse_parameters(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Paramet
                     }
                 }
 
-                // If no type annotation, use the impl block's self type
+                // If no type annotation, parse from text and use the impl block's self type
                 if param_type_id.is_none() {
-                    param_type_id = ctx.current_impl_self_ty;
+                    if let Some(self_ty) = ctx.current_impl_self_ty {
+                        let param_text = child.text.trim();
+                        if param_text.contains("&mut") {
+                            // &mut self
+                            param_type_id = Some(ctx.types.alloc(Type::Reference {
+                                inner: Box::new(self_ty),
+                                mutable: true,
+                                span: ctx.file_span(child),
+                            }));
+                        } else if param_text.contains('&') {
+                            // &self
+                            param_type_id = Some(ctx.types.alloc(Type::Reference {
+                                inner: Box::new(self_ty),
+                                mutable: false,
+                                span: ctx.file_span(child),
+                            }));
+                        } else {
+                            // self (by value)
+                            param_type_id = Some(self_ty);
+                        }
+                    }
                 }
 
                 if let Some(type_id) = param_type_id {
@@ -1840,8 +1881,25 @@ fn parse_parameters(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Paramet
                 // Handle `self` parameter without type annotation
                 if let Some(name) = param_name {
                     if ctx.interner.resolve(&name) == "self" && param_type_id.is_none() {
-                        // Use the impl block's self type
-                        param_type_id = ctx.current_impl_self_ty;
+                        // Parse from text and use the impl block's self type
+                        if let Some(self_ty) = ctx.current_impl_self_ty {
+                            let param_text = child.text.trim();
+                            if param_text.contains("&mut") {
+                                param_type_id = Some(ctx.types.alloc(Type::Reference {
+                                    inner: Box::new(self_ty),
+                                    mutable: true,
+                                    span: ctx.file_span(child),
+                                }));
+                            } else if param_text.contains('&') {
+                                param_type_id = Some(ctx.types.alloc(Type::Reference {
+                                    inner: Box::new(self_ty),
+                                    mutable: false,
+                                    span: ctx.file_span(child),
+                                }));
+                            } else {
+                                param_type_id = Some(self_ty);
+                            }
+                        }
                     }
                 }
 
