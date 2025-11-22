@@ -889,6 +889,11 @@ impl<'ctx> LoweringContext<'ctx> {
                 // Resolve method name to function ID with mutability checking
                 let receiver_ty = self.ty_ctx.get_expr_type(*receiver);
 
+                // Normalize receiver type to resolve type variables before method resolution
+                let normalized_receiver_ty = receiver_ty.and_then(|ty_id| {
+                    self.ty_ctx.normalize(ty_id).ok().map(|norm| norm.ty_id())
+                });
+
                 // Get receiver mutability from type context (set during type inference)
                 let receiver_is_mut = self.ty_ctx.receiver_mutability
                     .get(&expr_id)
@@ -896,7 +901,7 @@ impl<'ctx> LoweringContext<'ctx> {
                     .unwrap_or(false);
 
                 // ARCHITECTURE: Method resolution MUST succeed - no fallbacks allowed (per user directive)
-                let func_id = self.resolve_method(receiver_ty, *method, receiver_is_mut)
+                let func_id = self.resolve_method(normalized_receiver_ty, *method, receiver_is_mut)
                     .unwrap_or_else(|err| {
                         panic!(
                             "COMPILER BUG: Method resolution failed for method '{:?}': {:?}",
@@ -1442,40 +1447,17 @@ impl<'ctx> LoweringContext<'ctx> {
         method_name: Symbol,
         receiver_is_mut: bool,
     ) -> Result<FunctionId, MethodResolutionError> {
-        // First, resolve the receiver type (follow type variables and auto-deref)
-        let resolved_ty = receiver_ty.map(|ty_id| {
-            let ty = self.ty_ctx.types.get(ty_id);
+        // Receiver type should already be normalized by caller
+        // Just extract the type definition ID and handle auto-deref
+        let ty = receiver_ty.map(|ty_id| self.ty_ctx.types.get(ty_id));
 
-            // Follow type variable substitutions
-            let concrete_ty = match &ty.kind {
-                TyKind::Var { id: var_id} => {
-                    if let Some(&subst_ty_id) = self.ty_ctx.subst.get(var_id) {
-                        self.ty_ctx.types.get(subst_ty_id)
-                    } else {
-                        ty
-                    }
-                }
-                _ => ty,
-            };
-
-            // Handle references - auto-deref to find the underlying type
-            match &concrete_ty.kind {
+        // Handle references - auto-deref to find the underlying type
+        let resolved_ty = ty.and_then(|t| {
+            match &t.kind {
                 TyKind::Ref { inner, .. } => {
-                    let inner_ty_id = **inner;
-                    let inner_ty = self.ty_ctx.types.get(inner_ty_id);
-                    // Follow substitutions on the inner type too
-                    match &inner_ty.kind {
-                        TyKind::Var { id: var_id } => {
-                            if let Some(&subst_ty_id) = self.ty_ctx.subst.get(var_id) {
-                                self.ty_ctx.types.get(subst_ty_id)
-                            } else {
-                                inner_ty
-                            }
-                        }
-                        _ => inner_ty,
-                    }
+                    Some(self.ty_ctx.types.get(**inner))
                 }
-                _ => concrete_ty,
+                _ => Some(t),
             }
         });
 
