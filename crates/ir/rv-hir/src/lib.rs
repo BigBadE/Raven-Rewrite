@@ -16,6 +16,11 @@ pub type StmtId = Idx<Stmt>;
 pub type TypeId = Idx<Type>;
 pub type PatternId = Idx<Pattern>;
 
+/// Opaque reference to an inferred type from rv-ty (avoids circular dependency)
+/// This is type-erased to break the circular dependency between rv-hir and rv-ty.
+/// At runtime, rv-ty can safely transmute between Idx<Ty> and Idx<()>.
+pub type InferredTyId = Idx<()>;
+
 /// Unique ID for a macro
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MacroId(pub u32);
@@ -266,7 +271,7 @@ pub struct Parameter {
     pub ty: TypeId,
     /// Inferred type (populated by type inference)
     /// ARCHITECTURE: This is the single source of truth after type inference completes
-    pub inferred_ty: Option<rv_ty_id::TyId>,
+    pub inferred_ty: Option<InferredTyId>,
     /// Source location
     pub span: FileSpan,
 }

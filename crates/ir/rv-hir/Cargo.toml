@@ -8,7 +8,6 @@ license.workspace = true
 rv-span = { path = "../../foundation/rv-span" }
 rv-intern = { path = "../../foundation/rv-intern" }
 la-arena.workspace = true
-rv-ty-id = { path = "../../foundation/rv-ty-id" }
 rv-derive.workspace = true
 rustc-hash.workspace = true
 serde.workspace = true

@@ -6,6 +6,7 @@ members = [
     "crates/ir/*",
     "crates/lowering/*",
     "crates/passes/*",
+    "crates/driver/*",
     "crates/codegen/*",
     "crates/language-support/*",
     "crates/analyzer/*",
@@ -30,7 +31,6 @@ rv-database = { path = "crates/foundation/rv-database" }
 rv-intern = { path = "crates/foundation/rv-intern" }
 rv-span = { path = "crates/foundation/rv-span" }
 rv-syntax = { path = "crates/foundation/rv-syntax" }
-rv-ty-id = { path = "crates/foundation/rv-ty-id" }
 rv-vfs = { path = "crates/foundation/rv-vfs" }
 
 # Internal crates - parser
@@ -44,6 +44,9 @@ rv-lir = { path = "crates/ir/rv-lir" }
 # Internal crates - lowering
 rv-hir-lower = { path = "crates/lowering/rv-hir-lower" }
 rv-mir-lower = { path = "crates/lowering/rv-mir-lower" }
+
+# Internal crates - driver
+rv-driver = { path = "crates/driver/rv-driver" }
 
 # Internal crates - passes
 rv-ty = { path = "crates/passes/rv-ty-infer" }
