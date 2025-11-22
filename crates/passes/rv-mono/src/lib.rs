@@ -206,38 +206,30 @@ impl MonoCollector {
         hir_functions: &HashMap<FunctionId, rv_hir::Function>,
         hir_types: &la_arena::Arena<rv_hir::Type>,
     ) -> Vec<MirType> {
-        eprintln!("[DEBUG infer] Inferring type args for {:?}, arg_types: {:?}", func_id, arg_types);
         // Look up the called function
         let Some(hir_func) = hir_functions.get(&func_id) else {
             // Function not found in HIR - return empty type args
-            eprintln!("[DEBUG infer] Function not found in HIR");
             return vec![];
         };
 
         // If not generic, return empty vec
         if hir_func.generics.is_empty() {
-            eprintln!("[DEBUG infer] Function is not generic");
             return vec![];
         }
 
-        eprintln!("[DEBUG infer] Function has {} generics, {} parameters", hir_func.generics.len(), hir_func.parameters.len());
 
         // Initialize substitutions for each generic parameter
         let mut substitutions: HashMap<rv_intern::Symbol, MirType> = HashMap::new();
 
         // Match each argument type against its corresponding parameter type
         for (arg_idx, arg_type) in arg_types.iter().enumerate() {
-            eprintln!("[DEBUG infer] Matching arg {} with type {:?}", arg_idx, arg_type);
             if let Some(param) = hir_func.parameters.get(arg_idx) {
                 let param_hir_type = &hir_types[param.ty];
-                eprintln!("[DEBUG infer]   Against param type: {:?}", param_hir_type);
                 self.match_type(arg_type, param_hir_type, hir_types, &mut substitutions);
             } else {
-                eprintln!("[DEBUG infer]   No parameter at index {}", arg_idx);
             }
         }
 
-        eprintln!("[DEBUG infer] Collected substitutions: {:?}", substitutions);
 
         // Convert substitutions to ordered Vec based on generic parameter order
         let result: Vec<_> = hir_func.generics.iter()
@@ -245,13 +237,11 @@ impl MonoCollector {
                 substitutions.get(&gen_param.name)
                     .cloned()
                     .unwrap_or_else(|| {
-                        eprintln!("[DEBUG infer] No substitution for generic param, using Unit");
                         MirType::Unit
                     })
             })
             .collect();
 
-        eprintln!("[DEBUG infer] Final type_args: {:?}", result);
         result
     }
 
@@ -263,37 +253,30 @@ impl MonoCollector {
         hir_types: &la_arena::Arena<rv_hir::Type>,
         substitutions: &mut HashMap<rv_intern::Symbol, MirType>,
     ) {
-        eprintln!("[DEBUG match_type] Matching arg_type {:?} against param_type {:?}", arg_type, param_type);
         match param_type {
             // Generic parameter - record the substitution
             rv_hir::Type::Generic { name, .. } => {
-                eprintln!("[DEBUG match_type]   Recording substitution for generic param");
                 substitutions.insert(*name, arg_type.clone());
             }
 
             // Reference type - match recursively on inner type
             rv_hir::Type::Reference { inner, .. } => {
-                eprintln!("[DEBUG match_type]   Param is Reference");
                 // Extract inner type from argument if it's a reference
                 if let MirType::Ref { inner: arg_inner, .. } = arg_type {
                     let param_inner_type = &hir_types[**inner];
-                    eprintln!("[DEBUG match_type]   Arg is also Ref, recursing on inner types");
                     self.match_type(arg_inner, param_inner_type, hir_types, substitutions);
                 } else {
-                    eprintln!("[DEBUG match_type]   Arg is not Ref, can't match");
                 }
                 // If argument is not a reference, can't match - skip
             }
 
             // Named type - exact match expected (not generic)
             rv_hir::Type::Named { .. } => {
-                eprintln!("[DEBUG match_type]   Param is Named, no generics to extract");
                 // No generic parameters to extract
             }
 
             // Other types - no generic parameters
             _ => {
-                eprintln!("[DEBUG match_type]   Other param type, no generics");
             }
         }
     }
@@ -352,17 +335,10 @@ pub fn monomorphize_functions(
             instance_map.insert((*func_id, type_args.clone()), instance_id);
 
             // Create type substitution map: generic param name -> concrete MirType
-            eprintln!("[DEBUG mono] Function has {} generic params, {} type args",
-                hir_func.generics.len(), type_args.len());
             let mut type_subst: HashMap<Symbol, MirType> = HashMap::new();
-            for (i, generic_param) in hir_func.generics.iter().enumerate() {
-                eprintln!("[DEBUG mono] Processing generic param {} at index {}",
-                    hir_ctx.interner.resolve(&generic_param.name), i);
-                if let Some(concrete_ty) = type_args.get(i) {
-                    eprintln!("[DEBUG mono]   Found concrete type: {:?}", concrete_ty);
+            for (_i, generic_param) in hir_func.generics.iter().enumerate() {
+                if let Some(concrete_ty) = type_args.get(_i) {
                     type_subst.insert(generic_param.name, concrete_ty.clone());
-                } else {
-                    eprintln!("[DEBUG mono]   No concrete type at index {}", i);
                 }
             }
 
@@ -373,11 +349,8 @@ pub fn monomorphize_functions(
             // ARCHITECTURE: Store parameter types by DefId (not Symbol name)
             // For each function parameter, look up its type from type_subst
             for (param_idx, param) in hir_func.parameters.iter().enumerate() {
-                eprintln!("[DEBUG mono] Processing parameter '{}' at index {}",
-                    hir_ctx.interner.resolve(&param.name), param_idx);
                 // Check if this parameter's HIR type is a generic parameter
                 let hir_ty = &hir_ctx.types[param.ty];
-                eprintln!("[DEBUG mono]   HIR type: {:?}", hir_ty);
                 let ty_id = match hir_ty {
                     // Generic parameter (e.g., T in fn foo<T>(x: T))
                     rv_hir::Type::Generic { name, .. } => {
@@ -391,15 +364,11 @@ pub fn monomorphize_functions(
                     }
                     // Reference to generic (e.g., &T in fn foo<T>(x: &T))
                     rv_hir::Type::Reference { inner, mutable, .. } => {
-                        eprintln!("[DEBUG mono]   It's a Reference, mutable={}", mutable);
                         // Check if the inner type is a generic
                         let inner_ty = &hir_ctx.types[**inner];
-                        eprintln!("[DEBUG mono]   Inner type: {:?}", inner_ty);
                         let inner_ty_id = match inner_ty {
                             rv_hir::Type::Generic { name, .. } => {
-                                eprintln!("[DEBUG mono]   Inner is Generic with name '{}'", hir_ctx.interner.resolve(name));
                                 if let Some(mir_ty) = type_subst.get(name) {
-                                    eprintln!("[DEBUG mono]   Found substitution: {:?}", mir_ty);
                                     // Convert MirType to TyId for concrete substitution
                                     convert_mir_type_to_ty_id(&mir_ty, &mut ty_ctx_clone)
                                 } else {
@@ -421,7 +390,6 @@ pub fn monomorphize_functions(
                     _ => ty_ctx_clone.fresh_ty_var(),
                 };
 
-                eprintln!("[DEBUG mono]   Created ty_id={:?}, kind={:?}", ty_id, ty_ctx_clone.types.get(ty_id).kind);
 
                 // Store by DefId
                 let local_id = rv_hir::LocalId(param_idx as u32);

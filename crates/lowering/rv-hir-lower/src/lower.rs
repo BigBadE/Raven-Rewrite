@@ -2076,11 +2076,6 @@ fn lower_type_node(ctx: &mut LoweringContext, node: &SyntaxNode) -> TypeId {
 
 /// Lower an impl block
 fn lower_impl(ctx: &mut LoweringContext, current_scope: ScopeId, node: &SyntaxNode) {
-    eprintln!("[DEBUG lower_impl] Impl node has {} children:", node.children.len());
-    for (i, child) in node.children.iter().enumerate() {
-        eprintln!("[DEBUG lower_impl]   Child {}: kind={:?}, text={:?}", i, child.kind, child.text);
-    }
-
     // Check for "impl Trait for Type" pattern by looking for "for" keyword
     let mut trait_ref = None;
     let mut self_ty_node = None;
@@ -2091,24 +2086,20 @@ fn lower_impl(ctx: &mut LoweringContext, current_scope: ScopeId, node: &SyntaxNo
         if child.kind == SyntaxKind::Type && !found_for {
             // This is the trait name (before "for")
             let trait_name = ctx.intern(&child.text);
-            eprintln!("[DEBUG lower_impl] Found Type before 'for': {}", child.text);
             // Look up trait by name
             for (trait_id, trait_def) in &ctx.traits {
                 if trait_def.name == trait_name {
                     trait_ref = Some(*trait_id);
-                    eprintln!("[DEBUG lower_impl] Matched trait {:?}", trait_id);
                     break;
                 }
             }
         } else if let SyntaxKind::Unknown(ref s) = child.kind {
             if s == "for" {
                 found_for = true;
-                eprintln!("[DEBUG lower_impl] Found 'for' keyword");
             }
         } else if child.kind == SyntaxKind::Type && found_for {
             // This is the self type (after "for")
             self_ty_node = Some(child);
-            eprintln!("[DEBUG lower_impl] Found self type after 'for': {}", child.text);
         }
     }
 
@@ -2267,31 +2258,24 @@ fn lower_trait(ctx: &mut LoweringContext, current_scope: ScopeId, node: &SyntaxN
     // Parse trait methods and associated types
     let mut methods = vec![];
     let mut associated_types = vec![];
-    eprintln!("[DEBUG lower_trait] Trait '{}' has {} children", ctx.interner.resolve(&trait_name), node.children.len());
     for child in &node.children {
         let is_decl_list = if let SyntaxKind::Unknown(ref s) = child.kind {
             s == "declaration_list"
         } else {
             false
         };
-        eprintln!("[DEBUG lower_trait]   Child: kind={:?}", child.kind);
         if child.kind == SyntaxKind::Block || is_decl_list {
-            eprintln!("[DEBUG lower_trait]   Found declaration_list with {} items", child.children.len());
             // The trait block body contains method signatures and associated types
             for item in &child.children {
-                eprintln!("[DEBUG lower_trait]     Item: kind={:?}", item.kind);
 
                 // Check for function_signature_item (trait methods) or Function (trait impl methods)
                 let is_function_sig = matches!(&item.kind, SyntaxKind::Unknown(ref s) if s == "function_signature_item");
 
                 if item.kind == SyntaxKind::Function || is_function_sig {
                     // Parse method signature
-                    eprintln!("[DEBUG lower_trait]     Parsing trait method...");
                     if let Some(method) = lower_trait_method(ctx, trait_scope, item) {
-                        eprintln!("[DEBUG lower_trait]       Added method '{}'", ctx.interner.resolve(&method.name));
                         methods.push(method);
                     } else {
-                        eprintln!("[DEBUG lower_trait]       Failed to parse trait method");
                     }
                 } else if let SyntaxKind::Unknown(ref s) = item.kind {
                     if s == "type_item" {
@@ -2304,7 +2288,6 @@ fn lower_trait(ctx: &mut LoweringContext, current_scope: ScopeId, node: &SyntaxN
             }
         }
     }
-    eprintln!("[DEBUG lower_trait] Trait '{}' has {} methods after parsing", ctx.interner.resolve(&trait_name), methods.len());
 
     // Create and store the trait definition
     let trait_def = TraitDef {
