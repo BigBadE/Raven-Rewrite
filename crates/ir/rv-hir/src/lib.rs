@@ -36,8 +36,13 @@ pub enum DefId {
     Trait(TraitId),
     /// Implementation block
     Impl(ImplId),
-    /// Variable/local binding
-    Local(LocalId),
+    /// Variable/local binding (function-scoped)
+    Local {
+        /// The function this local belongs to
+        func: FunctionId,
+        /// The local ID within that function
+        local: LocalId,
+    },
     /// Module definition
     Module(ModuleId),
 }

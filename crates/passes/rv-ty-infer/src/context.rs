@@ -325,6 +325,13 @@ impl TyContext {
     pub fn get_def_type(&self, def: DefId) -> Option<TyId> {
         self.def_types.get(&def).copied()
     }
+
+    /// Clear all local variable types from def_types
+    /// This should be called at the start of each function inference to avoid
+    /// LocalId collisions between different functions
+    pub fn clear_local_types(&mut self) {
+        self.def_types.retain(|def_id, _| !matches!(def_id, DefId::Local { .. }));
+    }
 }
 
 impl Default for TyContext {

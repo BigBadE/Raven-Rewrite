@@ -104,11 +104,19 @@ impl<'ctx> LoweringContext<'ctx> {
             // ARCHITECTURE: Use DefId for type lookup (not Symbol name)
             // This eliminates HashMap<Symbol, TyId> dependency
             let local_id = rv_hir::LocalId(param_idx as u32);
-            let def_id = rv_hir::DefId::Local(local_id);
+            let def_id = rv_hir::DefId::Local {
+                func: function.id,
+                local: local_id,
+            };
 
             // ARCHITECTURE: STRICT - No fallbacks, DefId lookup only
+            eprintln!("[DEBUG mir-lower] Looking up parameter {} (DefId={:?})", ctx.interner.resolve(&param.name), def_id);
             let ty_id = ctx.ty_ctx.get_def_type(def_id)
                 .unwrap_or_else(|| {
+                    eprintln!("[DEBUG mir-lower] NOT FOUND! def_types has {} entries:", ctx.ty_ctx.def_types.len());
+                    for (k, v) in ctx.ty_ctx.def_types.iter().take(10) {
+                        eprintln!("[DEBUG mir-lower]   {:?} -> {:?}", k, ctx.ty_ctx.types.get(*v).kind);
+                    }
                     panic!(
                         "COMPILER BUG: Parameter '{}' (function '{}', DefId={:?}) has no inferred type. \
                          Type inference MUST populate def_types before MIR lowering.",
@@ -193,7 +201,10 @@ impl<'ctx> LoweringContext<'ctx> {
                 // Non-generic type - use DefId lookup
                 _ => {
                     let local_id = rv_hir::LocalId(param_idx as u32);
-                    let def_id = rv_hir::DefId::Local(local_id);
+                    let def_id = rv_hir::DefId::Local {
+                        func: function.id,
+                        local: local_id,
+                    };
 
                     let ty_id = ctx.ty_ctx.get_def_type(def_id)
                         .unwrap_or_else(|| {
@@ -351,14 +362,24 @@ impl<'ctx> LoweringContext<'ctx> {
             )
         });
 
+        eprintln!("[DEBUG lower_expr] expr_id={:?}, ty_id={:?}, ty_kind={:?}",
+            expr_id, ty_id, self.ty_ctx.types.get(ty_id).kind);
+
         // Normalize the type to resolve type variables
-        // If normalization fails (unresolved type variable), use Int as default
         let mir_ty = match self.ty_ctx.normalize(ty_id) {
-            Ok(normalized_ty) => self.lower_type(normalized_ty),
-            Err(_) => {
-                // Use Int type as default for unresolved type variables
-                // This can happen for expressions involving generic parameters
-                MirType::Int
+            Ok(normalized_ty) => {
+                eprintln!("[DEBUG lower_expr] normalization SUCCESS: {:?}",
+                    self.ty_ctx.types.get(normalized_ty.ty_id()).kind);
+                self.lower_type(normalized_ty)
+            }
+            Err(e) => {
+                eprintln!("[DEBUG lower_expr] normalization FAILED: {:?}", e);
+                panic!(
+                    "COMPILER BUG: Type normalization failed for expression {:?} with type {:?}. \
+                    Error: {:?}. This indicates unresolved type variables that should have been \
+                    resolved by type inference.",
+                    expr, ty_id, e
+                )
             }
         };
 
@@ -425,6 +446,9 @@ impl<'ctx> LoweringContext<'ctx> {
 
             Expr::UnaryOp { op, operand, span } => {
                 let operand_local = self.lower_expr(body, *operand);
+
+                eprintln!("[DEBUG lower UnaryOp] op={:?}, operand_local={:?}, result type={:?}",
+                    op, operand_local, mir_ty);
 
                 self.builder.add_statement(Statement::Assign {
                     place: Place::from_local(result_local),
@@ -828,6 +852,8 @@ impl<'ctx> LoweringContext<'ctx> {
                 args,
                 span,
             } => {
+                eprintln!("[DEBUG MethodCall] method={:?}, receiver expr={:?}", self.interner.resolve(method), receiver);
+
                 // Lower receiver
                 let receiver_local = self.lower_expr(body, *receiver);
 
@@ -845,6 +871,7 @@ impl<'ctx> LoweringContext<'ctx> {
 
                 // Resolve method name to function ID with mutability checking
                 let receiver_ty = self.ty_ctx.get_expr_type(*receiver);
+                eprintln!("[DEBUG MethodCall] receiver_ty from TyContext: {:?}", receiver_ty.map(|t| &self.ty_ctx.types.get(t).kind));
 
                 // Get receiver mutability from type context (set during type inference)
                 let receiver_is_mut = self.ty_ctx.receiver_mutability
@@ -1420,12 +1447,15 @@ impl<'ctx> LoweringContext<'ctx> {
                 TyKind::Ref { inner, .. } => {
                     let inner_ty_id = **inner;
                     let inner_ty = self.ty_ctx.types.get(inner_ty_id);
+                    eprintln!("[DEBUG resolve_method]   Auto-deref from Ref to inner: {:?}", &inner_ty.kind);
                     // Follow substitutions on the inner type too
                     match &inner_ty.kind {
                         TyKind::Var { id: var_id } => {
                             if let Some(&subst_ty_id) = self.ty_ctx.subst.get(var_id) {
+                                eprintln!("[DEBUG resolve_method]   Inner TyVar has substitution: {:?}", self.ty_ctx.types.get(subst_ty_id).kind);
                                 self.ty_ctx.types.get(subst_ty_id)
                             } else {
+                                eprintln!("[DEBUG resolve_method]   Inner TyVar has NO substitution");
                                 inner_ty
                             }
                         }
@@ -1488,13 +1518,23 @@ impl<'ctx> LoweringContext<'ctx> {
             };
 
             if impl_type_matches {
-                eprintln!("[DEBUG resolve_method] Found matching impl!");
+                eprintln!("[DEBUG resolve_method] Found matching impl with {} methods!", impl_block.methods.len());
+
+                // Debug: print all methods in this impl
+                for &func_id in &impl_block.methods {
+                    if let Some(func) = self.functions.get(&func_id) {
+                        eprintln!("[DEBUG resolve_method]   Method: {:?} (name: '{}')", func_id, self.interner.resolve(&func.name));
+                    }
+                }
 
                 // If this impl block implements a trait, check trait methods
                 if let Some(trait_id) = impl_block.trait_ref {
+                    eprintln!("[DEBUG resolve_method] This impl implements trait {:?}", trait_id);
                     if let Some(trait_def) = self.traits.get(&trait_id) {
+                        eprintln!("[DEBUG resolve_method] Trait has {} methods", trait_def.methods.len());
                         // Check if the method is a trait method
                         if let Some(trait_method) = trait_def.methods.iter().find(|m| m.name == method_name) {
+                            eprintln!("[DEBUG resolve_method] Found method in trait definition!");
                             // Found a trait method, check mutability requirements
                             if let Some(self_param) = trait_method.self_param {
                                 if !self.check_mutability_compatible(self_param, receiver_is_mut) {
@@ -1506,13 +1546,19 @@ impl<'ctx> LoweringContext<'ctx> {
                             }
 
                             // Look it up in the impl block
+                            eprintln!("[DEBUG resolve_method] Searching for method in impl block methods...");
                             for &func_id in &impl_block.methods {
                                 if let Some(func) = self.functions.get(&func_id) {
+                                    eprintln!("[DEBUG resolve_method]   Checking func {:?} with name '{}'", func_id, self.interner.resolve(&func.name));
                                     if func.name == method_name {
+                                        eprintln!("[DEBUG resolve_method]   MATCH! Returning {:?}", func_id);
                                         return Ok(func_id);
                                     }
                                 }
                             }
+                            eprintln!("[DEBUG resolve_method] Method not found in impl block methods!");
+                        } else {
+                            eprintln!("[DEBUG resolve_method] Method not in trait definition");
                         }
                     }
                 }

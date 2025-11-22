@@ -425,7 +425,10 @@ pub fn monomorphize_functions(
 
                 // Store by DefId
                 let local_id = rv_hir::LocalId(param_idx as u32);
-                let def_id = rv_hir::DefId::Local(local_id);
+                let def_id = rv_hir::DefId::Local {
+                    func: *func_id,
+                    local: local_id,
+                };
                 ty_ctx_clone.set_def_type(def_id, ty_id);
             }
 

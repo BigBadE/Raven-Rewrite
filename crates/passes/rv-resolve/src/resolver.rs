@@ -126,7 +126,10 @@ impl<'a> NameResolver<'a> {
             let local_id = LocalId(self.next_local_id);
             self.next_local_id += 1;
 
-            let def_id = DefId::Local(local_id);
+            let def_id = DefId::Local {
+                func: self.function.id,
+                local: local_id,
+            };
 
             if let Err(error) = self.scopes.define(
                 self.current_scope,
@@ -289,7 +292,10 @@ impl<'a> NameResolver<'a> {
                 for param in params {
                     let local_id = LocalId(self.next_local_id);
                     self.next_local_id += 1;
-                    let def_id = DefId::Local(local_id);
+                    let def_id = DefId::Local {
+                        func: self.function.id,
+                        local: local_id,
+                    };
 
                     if let Err(error) = self.scopes.define(
                         self.current_scope,
@@ -356,7 +362,10 @@ impl<'a> NameResolver<'a> {
                 // Create a new local
                 let local_id = LocalId(self.next_local_id);
                 self.next_local_id += 1;
-                let def_id = DefId::Local(local_id);
+                let def_id = DefId::Local {
+                    func: self.function.id,
+                    local: local_id,
+                };
 
                 // Record the mapping from pattern to local
                 self.pattern_locals.insert(pattern_id, local_id);

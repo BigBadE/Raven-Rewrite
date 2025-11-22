@@ -60,6 +60,8 @@ pub struct LoweringContext {
     current_impl_self_ty: Option<TypeId>,
     /// Current function's generic parameter names (for resolving T -> Type::Generic)
     current_generic_params: Vec<InternedString>,
+    /// Current function ID (for creating function-scoped DefId::Local)
+    current_function_id: Option<FunctionId>,
     /// Macro expansion context
     pub macro_context: MacroExpansionContext,
 }
@@ -95,6 +97,7 @@ impl LoweringContext {
             next_local_id: 0,
             current_impl_self_ty: None,
             current_generic_params: Vec::new(),
+            current_function_id: None,
             macro_context,
         }
     }
@@ -248,6 +251,9 @@ fn lower_function(ctx: &mut LoweringContext, current_scope: ScopeId, node: &Synt
     ctx.symbols.set_def_id(symbol_id, def_id);
     ctx.symbol_defs.insert(symbol_id, def_id);
 
+    // Set current function ID for DefId::Local creation
+    ctx.current_function_id = Some(function_id);
+
     // Parse generic parameters
     let mut generics = vec![];
     for child in &node.children {
@@ -304,7 +310,10 @@ fn lower_function(ctx: &mut LoweringContext, current_scope: ScopeId, node: &Synt
 
         // Create a LocalId for the parameter
         let local_id = rv_hir::LocalId(param_idx as u32);
-        let def_id = DefId::Local(local_id);
+        let def_id = DefId::Local {
+            func: function_id,
+            local: local_id,
+        };
         ctx.symbols.set_def_id(param_symbol, def_id);
         ctx.symbol_defs.insert(param_symbol, def_id);
     }
@@ -1024,7 +1033,11 @@ fn register_pattern_bindings(
             // Create a LocalId and DefId for this binding
             let local_id = LocalId(ctx.next_local_id);
             ctx.next_local_id += 1;
-            let def_id = DefId::Local(local_id);
+            let function_id = ctx.current_function_id.expect("register_pattern_bindings called outside function context");
+            let def_id = DefId::Local {
+                func: function_id,
+                local: local_id,
+            };
             ctx.symbols.set_def_id(symbol_id, def_id);
             ctx.symbol_defs.insert(symbol_id, def_id);
         }
@@ -1490,7 +1503,11 @@ fn lower_let_stmt(
             // Create a local definition for this binding
             let local_id = LocalId(ctx.next_local_id);
             ctx.next_local_id += 1;
-            let def_id = DefId::Local(local_id);
+            let function_id = ctx.current_function_id.expect("lower_let_stmt called outside function context");
+            let def_id = DefId::Local {
+                func: function_id,
+                local: local_id,
+            };
             ctx.symbols.set_def_id(symbol_id, def_id);
             ctx.symbol_defs.insert(symbol_id, def_id);
 
@@ -2250,19 +2267,31 @@ fn lower_trait(ctx: &mut LoweringContext, current_scope: ScopeId, node: &SyntaxN
     // Parse trait methods and associated types
     let mut methods = vec![];
     let mut associated_types = vec![];
+    eprintln!("[DEBUG lower_trait] Trait '{}' has {} children", ctx.interner.resolve(&trait_name), node.children.len());
     for child in &node.children {
         let is_decl_list = if let SyntaxKind::Unknown(ref s) = child.kind {
             s == "declaration_list"
         } else {
             false
         };
+        eprintln!("[DEBUG lower_trait]   Child: kind={:?}", child.kind);
         if child.kind == SyntaxKind::Block || is_decl_list {
+            eprintln!("[DEBUG lower_trait]   Found declaration_list with {} items", child.children.len());
             // The trait block body contains method signatures and associated types
             for item in &child.children {
-                if item.kind == SyntaxKind::Function {
+                eprintln!("[DEBUG lower_trait]     Item: kind={:?}", item.kind);
+
+                // Check for function_signature_item (trait methods) or Function (trait impl methods)
+                let is_function_sig = matches!(&item.kind, SyntaxKind::Unknown(ref s) if s == "function_signature_item");
+
+                if item.kind == SyntaxKind::Function || is_function_sig {
                     // Parse method signature
+                    eprintln!("[DEBUG lower_trait]     Parsing trait method...");
                     if let Some(method) = lower_trait_method(ctx, trait_scope, item) {
+                        eprintln!("[DEBUG lower_trait]       Added method '{}'", ctx.interner.resolve(&method.name));
                         methods.push(method);
+                    } else {
+                        eprintln!("[DEBUG lower_trait]       Failed to parse trait method");
                     }
                 } else if let SyntaxKind::Unknown(ref s) = item.kind {
                     if s == "type_item" {
@@ -2275,6 +2304,7 @@ fn lower_trait(ctx: &mut LoweringContext, current_scope: ScopeId, node: &SyntaxN
             }
         }
     }
+    eprintln!("[DEBUG lower_trait] Trait '{}' has {} methods after parsing", ctx.interner.resolve(&trait_name), methods.len());
 
     // Create and store the trait definition
     let trait_def = TraitDef {

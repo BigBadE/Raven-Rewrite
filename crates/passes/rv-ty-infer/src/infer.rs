@@ -283,12 +283,15 @@ impl<'a> TypeInference<'a> {
 
     /// Infer types for a function
     pub fn infer_function(&mut self, function: &Function) {
+        eprintln!("[DEBUG infer_function] Inferring function {:?}", function.name);
+
         // Clear and populate generic parameter map for this function
         // Each generic parameter T, U, etc. maps to a single type variable
         self.generic_param_map.clear();
         for generic_param in &function.generics {
             let ty_var = self.ctx.fresh_ty_var();
             self.generic_param_map.insert(generic_param.name, ty_var);
+            eprintln!("[DEBUG infer_function]   Generic param {:?} -> {:?}", generic_param.name, ty_var);
         }
 
         // Set expected return type
@@ -310,7 +313,10 @@ impl<'a> TypeInference<'a> {
 
         for (param_idx, param) in function.parameters.iter().enumerate() {
             let local_id = rv_hir::LocalId(param_idx as u32);
-            let def_id = rv_hir::DefId::Local(local_id);
+            let def_id = rv_hir::DefId::Local {
+                func: function.id,
+                local: local_id,
+            };
 
             // ARCHITECTURE: Check if monomorphization already set a concrete type
             // If def_types already contains a concrete type (not a type variable),
@@ -320,19 +326,28 @@ impl<'a> TypeInference<'a> {
                 match &self.ctx.types.get(existing_ty).kind {
                     TyKind::Var { .. } => {
                         // It's a type variable, convert from HIR
-                        self.hir_type_to_ty_id(param.ty, hir_types, structs, interner)
+                        let converted = self.hir_type_to_ty_id(param.ty, hir_types, structs, interner);
+                        eprintln!("[DEBUG infer_function]   Param {:?} (idx {}): existing was TyVar, converted from HIR -> {:?}",
+                            param.name, param_idx, self.ctx.types.get(converted).kind);
+                        converted
                     }
                     _ => {
                         // It's a concrete type from monomorphization - use it
+                        eprintln!("[DEBUG infer_function]   Param {:?} (idx {}): using existing concrete type -> {:?}",
+                            param.name, param_idx, self.ctx.types.get(existing_ty).kind);
                         existing_ty
                     }
                 }
             } else {
                 // No existing type, convert from HIR
-                self.hir_type_to_ty_id(param.ty, hir_types, structs, interner)
+                let converted = self.hir_type_to_ty_id(param.ty, hir_types, structs, interner);
+                eprintln!("[DEBUG infer_function]   Param {:?} (idx {}): no existing type, converted from HIR -> {:?}",
+                    param.name, param_idx, self.ctx.types.get(converted).kind);
+                converted
             };
 
             // ARCHITECTURE: Store type by DefId (structured ID, not Symbol name)
+            eprintln!("[DEBUG infer_function]   Storing DefId={:?} -> TyId={:?}", def_id, self.ctx.types.get(param_ty).kind);
             self.ctx.set_def_type(def_id, param_ty);
 
             // Also keep in var map for local variable tracking
@@ -540,6 +555,18 @@ impl<'a> TypeInference<'a> {
     fn infer_body(&mut self, body: &Body) {
         // Infer root expression with expected return type
         let expected = self.current_function_return_ty;
+        let root_expr = &body.exprs[body.root_expr];
+        eprintln!("[DEBUG infer_body] root_expr type: {}", match root_expr {
+            Expr::Literal { .. } => "Literal",
+            Expr::Variable { .. } => "Variable",
+            Expr::Call { .. } => "Call",
+            Expr::Block { statements, .. } => {
+                eprintln!("[DEBUG infer_body]   Block with {} statements", statements.len());
+                "Block"
+            },
+            Expr::UnaryOp { .. } => "UnaryOp",
+            _ => "Other",
+        });
         self.infer_expr(body, body.root_expr, expected);
     }
 
@@ -581,6 +608,7 @@ impl<'a> TypeInference<'a> {
             Expr::Literal { kind, .. } => self.infer_literal(kind),
 
             Expr::Variable { name, def, .. } => {
+                eprintln!("[DEBUG infer Variable] name={:?}, def={:?}", name, def);
                 // Prefer using resolved DefId from name resolution
                 let result_ty = if let Some(def_id) = def {
                     match def_id {
@@ -630,12 +658,16 @@ impl<'a> TypeInference<'a> {
                         // Other DefIds: look up from context or name-based lookup
                         _ => {
                             if let Some(def_ty) = self.ctx.get_def_type(*def_id) {
+                                eprintln!("[DEBUG infer Variable]   Found in def_types: {:?}", self.ctx.types.get(def_ty).kind);
                                 def_ty
                             } else {
+                                eprintln!("[DEBUG infer Variable]   NOT found in def_types, trying name lookup");
                                 // DefId not yet typed, try name-based lookup (for parameters)
                                 if let Some(var_ty) = self.lookup_var(*name) {
+                                    eprintln!("[DEBUG infer Variable]   Found via name lookup: {:?}", self.ctx.types.get(var_ty).kind);
                                     var_ty
                                 } else {
+                                    eprintln!("[DEBUG infer Variable]   NOT found, creating fresh TyVar");
                                     // Unknown definition, create fresh variable
                                     self.ctx.fresh_ty_var()
                                 }
@@ -738,18 +770,23 @@ impl<'a> TypeInference<'a> {
                 }
             }
 
-            Expr::UnaryOp { op, operand, .. } => {
+            Expr::UnaryOp { op, operand, span } => {
                 use rv_hir::UnaryOp;
                 match op {
                     UnaryOp::Ref | UnaryOp::RefMut => {
                         // Reference operations: &x or &mut x
                         // Infer the operand type first
                         let operand_ty = self.infer_expr(body, *operand, None);
+                        let operand_expr = &body.exprs[*operand];
+                        eprintln!("[DEBUG infer UnaryOp::Ref] expr_id={:?}, span={:?}", expr_id, span);
+                        eprintln!("[DEBUG infer UnaryOp::Ref]   operand_expr={:?}", operand_expr);
+                        eprintln!("[DEBUG infer UnaryOp::Ref]   operand_ty: {:?}", self.ctx.types.get(operand_ty).kind);
                         // Create a reference type wrapping the operand type
                         let ref_ty = self.ctx.types.alloc(TyKind::Ref {
                             inner: Box::new(operand_ty),
                             mutable: matches!(op, UnaryOp::RefMut),
                         });
+                        eprintln!("[DEBUG infer UnaryOp::Ref]   created ref_ty: {:?}", self.ctx.types.get(ref_ty).kind);
                         self.ctx.set_expr_type(expr_id, ref_ty);
                         ref_ty
                     }
