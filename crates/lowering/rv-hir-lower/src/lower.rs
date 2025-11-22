@@ -1413,6 +1413,12 @@ fn lower_pattern(
                 }
             }
         }
+        SyntaxKind::Unknown(ref name) if name == "|" => {
+            // Pipe separator - this shouldn't be parsed as a standalone pattern
+            // It should be filtered out by parent pattern handlers
+            // Return None to skip it
+            return None;
+        }
         _ => {
             panic!(
                 "COMPILER BUG: Unknown pattern type {:?} at {:?}. \
