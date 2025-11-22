@@ -3,7 +3,9 @@ resolver = "3"
 members = [
     "crates/foundation/*",
     "crates/parser/*",
-    "crates/analysis/*",
+    "crates/ir/*",
+    "crates/lowering/*",
+    "crates/passes/*",
     "crates/codegen/*",
     "crates/language-support/*",
     "crates/analyzer/*",
@@ -35,23 +37,27 @@ rv-vfs = { path = "crates/foundation/rv-vfs" }
 # Internal crates - parser
 rv-parser = { path = "crates/parser/rv-parser" }
 
-# Internal crates - analysis
-rv-hir = { path = "crates/analysis/rv-hir" }
-rv-hir-lower = { path = "crates/analysis/rv-hir-lower" }
-rv-resolve = { path = "crates/analysis/rv-resolve" }
-rv-mir = { path = "crates/analysis/rv-mir" }
-rv-ty = { path = "crates/analysis/rv-ty" }
-rv-const-eval = { path = "crates/analysis/rv-const-eval" }
-rv-macro = { path = "crates/analysis/rv-macro" }
-rv-lifetime = { path = "crates/analysis/rv-lifetime" }
-rv-borrow-check = { path = "crates/analysis/rv-borrow-check" }
+# Internal crates - IR
+rv-hir = { path = "crates/ir/rv-hir" }
+rv-mir = { path = "crates/ir/rv-mir" }
+rv-lir = { path = "crates/ir/rv-lir" }
+
+# Internal crates - lowering
+rv-hir-lower = { path = "crates/lowering/rv-hir-lower" }
+
+# Internal crates - passes
+rv-ty = { path = "crates/passes/rv-ty-infer" }
+rv-resolve = { path = "crates/passes/rv-resolve" }
+rv-mono = { path = "crates/passes/rv-mono" }
+rv-const-eval = { path = "crates/passes/rv-const-eval" }
+rv-lifetime = { path = "crates/passes/rv-lifetime" }
+rv-borrow-check = { path = "crates/passes/rv-borrow-check" }
+rv-macro = { path = "crates/foundation/rv-macro" }
 
 # Internal crates - codegen
 rv-interpreter = { path = "crates/codegen/rv-interpreter" }
 rv-cranelift = { path = "crates/codegen/rv-cranelift" }
 rv-llvm-backend = { path = "crates/codegen/rv-llvm-backend" }
-rv-lir = { path = "crates/codegen/rv-lir" }
-rv-mono = { path = "crates/analysis/rv-mono" }
 
 # Internal crates - analyzer
 rv-metrics = { path = "crates/analyzer/rv-metrics" }

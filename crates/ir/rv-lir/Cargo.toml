@@ -4,9 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-rv-hir.workspace = true
+rv-hir = { path = "../rv-hir" }
 rv-hir-lower.workspace = true
-rv-mir.workspace = true
+rv-mir = { path = "../rv-mir" }
 rv-mono.workspace = true
 rv-ty.workspace = true
 rv-intern.workspace = true

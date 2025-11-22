@@ -5,10 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-rv-hir = { path = "../rv-hir" }
-rv-hir-lower = { path = "../rv-hir-lower" }
-rv-ty = { path = "../rv-ty" }
-rv-mir = { path = "../rv-mir" }
+rv-hir.workspace = true
+rv-hir-lower.workspace = true
+rv-ty.workspace = true
+rv-mir.workspace = true
 rv-intern = { path = "../../foundation/rv-intern" }
 rv-span = { path = "../../foundation/rv-span" }
 rustc-hash.workspace = true

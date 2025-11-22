@@ -9,7 +9,7 @@ rv-span = { path = "../../foundation/rv-span" }
 rv-intern = { path = "../../foundation/rv-intern" }
 rv-arena = { path = "../../foundation/rv-arena" }
 rv-hir = { path = "../rv-hir" }
-rv-ty = { path = "../rv-ty" }
+rv-ty.workspace = true
 serde.workspace = true
 indexmap.workspace = true
 rustc-hash.workspace = true

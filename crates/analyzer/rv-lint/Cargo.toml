@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-rv-hir = { path = "../../analysis/rv-hir" }
+rv-hir.workspace = true
 rv-metrics = { path = "../rv-metrics" }
 rv-span = { path = "../../foundation/rv-span" }
 rv-intern = { path = "../../foundation/rv-intern" }

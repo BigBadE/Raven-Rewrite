@@ -5,8 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-rv-mir = { path = "../../analysis/rv-mir" }
-rv-hir = { path = "../../analysis/rv-hir" }
+rv-mir.workspace = true
+rv-hir.workspace = true
 rv-span = { path = "../../foundation/rv-span" }
 cranelift.workspace = true
 cranelift-jit.workspace = true

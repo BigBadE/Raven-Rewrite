@@ -23,14 +23,14 @@ indexmap = { workspace = true, features = ["serde"] }
 rv-vfs = { path = "../../foundation/rv-vfs" }
 rv-database = { path = "../../foundation/rv-database" }
 rv-parser = { path = "../../parser/rv-parser" }
-rv-hir-lower = { path = "../../analysis/rv-hir-lower" }
-rv-ty = { path = "../../analysis/rv-ty" }
-rv-mir = { path = "../../analysis/rv-mir" }
-rv-lir = { path = "../../codegen/rv-lir" }
+rv-hir-lower.workspace = true
+rv-ty.workspace = true
+rv-mir.workspace = true
+rv-lir.workspace = true
 rv-interpreter = { path = "../../codegen/rv-interpreter" }
 rv-cranelift = { path = "../../codegen/rv-cranelift" }
 rv-llvm-backend = { path = "../../codegen/rv-llvm-backend" }
-rv-mono = { path = "../../analysis/rv-mono" }
+rv-mono.workspace = true
 rv-syntax = { path = "../../foundation/rv-syntax" }
 lang-raven = { path = "../../language-support/lang-raven" }
-rv-hir = { version = "0.1.0", path = "../../analysis/rv-hir" }
+rv-hir.workspace = true
