@@ -896,7 +896,8 @@ fn lower_match_expr(
     let mut found_scrutinee = false;
 
     for child in &node.children {
-        if !found_scrutinee && is_expression(&child.kind) {
+        // Skip the 'match' keyword and braces - anything else before match_block is the scrutinee
+        if !found_scrutinee && !is_keyword_or_delimiter(&child.kind, &child.text) {
             scrutinee = Some(lower_expr(ctx, current_scope, child, body));
             found_scrutinee = true;
         } else if found_scrutinee {
@@ -1483,6 +1484,16 @@ fn is_expression(kind: &SyntaxKind) -> bool {
             | SyntaxKind::Match
             | SyntaxKind::Identifier
     )
+}
+
+/// Check if a node is a keyword or delimiter (not an expression)
+fn is_keyword_or_delimiter(kind: &SyntaxKind, text: &str) -> bool {
+    // Keywords and delimiters that shouldn't be treated as expressions
+    matches!(text, "match" | "{" | "}" | "(" | ")" | "[" | "]" | "," | ";" | ":")
+        || matches!(
+            kind,
+            SyntaxKind::Unknown(ref s) if s == "match_block" || s.contains("_list")
+        )
 }
 
 /// Lower a struct definition
