@@ -1331,7 +1331,27 @@ impl<'ctx> LoweringContext<'ctx> {
             _ => ty,
         };
 
-        match &concrete_ty.kind {
+        // Handle references - auto-deref to find the underlying type
+        let inner_ty = match &concrete_ty.kind {
+            TyKind::Ref { inner, .. } => {
+                let inner_ty_id = **inner;
+                let inner_ty = self.ty_ctx.types.get(inner_ty_id);
+                // Follow substitutions on the inner type too
+                match &inner_ty.kind {
+                    TyKind::Var { id: var_id } => {
+                        if let Some(&subst_ty_id) = self.ty_ctx.subst.get(var_id) {
+                            self.ty_ctx.types.get(subst_ty_id)
+                        } else {
+                            inner_ty
+                        }
+                    }
+                    _ => inner_ty,
+                }
+            }
+            _ => concrete_ty,
+        };
+
+        match &inner_ty.kind {
             TyKind::Struct { def_id, .. } => {
                 // Look up the struct definition
                 if let Some(struct_def) = self.structs.get(def_id) {
@@ -1380,8 +1400,8 @@ impl<'ctx> LoweringContext<'ctx> {
         method_name: Symbol,
         receiver_is_mut: bool,
     ) -> Result<FunctionId, MethodResolutionError> {
-        // Get the type definition ID from the receiver type
-        let type_def_id = receiver_ty.and_then(|ty_id| {
+        // First, resolve the receiver type (follow type variables and auto-deref)
+        let resolved_ty = receiver_ty.map(|ty_id| {
             let ty = self.ty_ctx.types.get(ty_id);
 
             // Follow type variable substitutions
@@ -1396,7 +1416,30 @@ impl<'ctx> LoweringContext<'ctx> {
                 _ => ty,
             };
 
+            // Handle references - auto-deref to find the underlying type
             match &concrete_ty.kind {
+                TyKind::Ref { inner, .. } => {
+                    let inner_ty_id = **inner;
+                    let inner_ty = self.ty_ctx.types.get(inner_ty_id);
+                    // Follow substitutions on the inner type too
+                    match &inner_ty.kind {
+                        TyKind::Var { id: var_id } => {
+                            if let Some(&subst_ty_id) = self.ty_ctx.subst.get(var_id) {
+                                self.ty_ctx.types.get(subst_ty_id)
+                            } else {
+                                inner_ty
+                            }
+                        }
+                        _ => inner_ty,
+                    }
+                }
+                _ => concrete_ty,
+            }
+        });
+
+        // Get the type definition ID from the resolved type
+        let type_def_id = resolved_ty.and_then(|inner_ty| {
+            match &inner_ty.kind {
                 TyKind::Struct { def_id, .. } => Some(*def_id),
                 TyKind::Enum { def_id, .. } => Some(*def_id),
                 TyKind::Named { name, .. } => {
@@ -1415,15 +1458,28 @@ impl<'ctx> LoweringContext<'ctx> {
                 }
                 _ => None,
             }
-        }).ok_or(MethodResolutionError::MethodNotFound)?;
+        });
 
         // Search all impl blocks for one that matches this type
         for impl_block in self.impl_blocks.values() {
             let hir_ty = &self.hir_types[impl_block.self_ty];
 
-            let impl_type_matches = match hir_ty {
-                Type::Named { def: Some(def_id), .. } => def_id == &type_def_id,
-                _ => false,
+            let impl_type_matches = if let Some(type_def_id) = type_def_id {
+                match hir_ty {
+                    Type::Named { def: Some(def_id), .. } => def_id == &type_def_id,
+                    _ => false,
+                }
+            } else if let Some(resolved) = resolved_ty {
+                // Handle primitive types - match by comparing HIR type names
+                match &resolved.kind {
+                    TyKind::Int => matches!(hir_ty, Type::Named { name, .. } if self.interner.resolve(name) == "i64"),
+                    TyKind::Bool => matches!(hir_ty, Type::Named { name, .. } if self.interner.resolve(name) == "bool"),
+                    TyKind::String => matches!(hir_ty, Type::Named { name, .. } if self.interner.resolve(name) == "String"),
+                    TyKind::Float => matches!(hir_ty, Type::Named { name, .. } if self.interner.resolve(name) == "f64"),
+                    _ => false,
+                }
+            } else {
+                false
             };
 
             if impl_type_matches {
