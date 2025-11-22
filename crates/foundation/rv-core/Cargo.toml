@@ -1,0 +1,22 @@
+[package]
+name = "rv-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# String interning
+lasso = { workspace = true }
+# File system
+rustc-hash.workspace = true
+# Salsa for incremental computation
+salsa.workspace = true
+# Serialization
+serde = { workspace = true }
+derive_more = { workspace = true }
+# Error handling
+anyhow.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
