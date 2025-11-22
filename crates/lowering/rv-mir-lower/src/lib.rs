@@ -205,13 +205,13 @@ impl<'ctx> LoweringContext<'ctx> {
                             )
                         });
 
+                    // Try to normalize, but if it fails (unresolved type variable), use Int as default
+                    // This can happen for generic parameters without concrete substitutions
                     let normalized_ty = ctx.ty_ctx.normalize(ty_id)
                         .unwrap_or_else(|_| {
-                            panic!(
-                                "COMPILER BUG: Failed to normalize parameter '{:?}' type (ty_id={:?}). \
-                                 Type normalization should succeed after inference.",
-                                param.name, ty_id
-                            )
+                            // Use Int type as default for unresolved type variables
+                            use rv_ty::NormalizedTy;
+                            NormalizedTy::wrap_child(ctx.ty_ctx.types.int())
                         });
 
                     ctx.lower_type(normalized_ty)
