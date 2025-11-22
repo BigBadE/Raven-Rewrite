@@ -746,13 +746,25 @@ impl<'ctx> LoweringContext<'ctx> {
                         )
                     });
 
-                // Resolve field name to index
-                let field_idx = self.resolve_field_index(base_ty_id, *field)
-                    .unwrap_or_else(|| {
+                // Normalize the type to resolve type variables
+                let normalized_ty = self.ty_ctx.normalize(base_ty_id)
+                    .unwrap_or_else(|_| {
                         panic!(
-                            "COMPILER BUG: Failed to resolve field '{}' on type {:?}. \
+                            "COMPILER BUG: Failed to normalize type {:?} for field access. \
+                             Type inference should resolve all type variables.",
+                            base_ty_id
+                        )
+                    });
+
+                // Resolve field name to index using the normalized type
+                let concrete_ty_id = normalized_ty.ty_id();
+                let field_idx = self.resolve_field_index(concrete_ty_id, *field)
+                    .unwrap_or_else(|| {
+                        let ty_kind = &self.ty_ctx.types.get(concrete_ty_id).kind;
+                        panic!(
+                            "COMPILER BUG: Failed to resolve field '{}' on type {:?} (kind: {:?}). \
                              Type checker should have validated field access.",
-                            self.interner.resolve(field), base_ty_id
+                            self.interner.resolve(field), concrete_ty_id, ty_kind
                         )
                     });
 
