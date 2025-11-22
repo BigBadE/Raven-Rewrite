@@ -2476,10 +2476,14 @@ fn lower_trait_method(
                                 )
                             });
 
+                        // Find the type node - could be SyntaxKind::Type or Unknown("reference_type") etc.
                         let param_ty = param_child
                             .children
                             .iter()
-                            .find(|c| c.kind == SyntaxKind::Type)
+                            .find(|c| {
+                                c.kind == SyntaxKind::Type ||
+                                matches!(c.kind, SyntaxKind::Unknown(ref s) if s.contains("type"))
+                            })
                             .map(|c| lower_type_node(ctx, c))
                             .unwrap_or_else(|| {
                                 panic!(

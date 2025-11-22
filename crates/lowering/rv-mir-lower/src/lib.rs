@@ -436,12 +436,32 @@ impl<'ctx> LoweringContext<'ctx> {
             Expr::UnaryOp { op, operand, span } => {
                 let operand_local = self.lower_expr(body, *operand);
 
+                // References should use RValue::Ref, not RValue::UnaryOp
+                use rv_hir::UnaryOp as HirUnaryOp;
+                let rvalue = match op {
+                    HirUnaryOp::Ref => {
+                        RValue::Ref {
+                            mutable: false,
+                            place: Place::from_local(operand_local),
+                        }
+                    }
+                    HirUnaryOp::RefMut => {
+                        RValue::Ref {
+                            mutable: true,
+                            place: Place::from_local(operand_local),
+                        }
+                    }
+                    _ => {
+                        RValue::UnaryOp {
+                            op: UnaryOp::from(*op),
+                            operand: Operand::Copy(Place::from_local(operand_local)),
+                        }
+                    }
+                };
+
                 self.builder.add_statement(Statement::Assign {
                     place: Place::from_local(result_local),
-                    rvalue: RValue::UnaryOp {
-                        op: UnaryOp::from(*op),
-                        operand: Operand::Copy(Place::from_local(operand_local)),
-                    },
+                    rvalue,
                     span: *span,
                 });
             }

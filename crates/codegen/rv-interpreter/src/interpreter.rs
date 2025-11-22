@@ -193,9 +193,11 @@ impl<'ctx> Interpreter<'ctx> {
                 // Call the function
                 self.call_function(*func, arg_values)
             }
-            RValue::Ref { .. } => Err(InterpreterError::InvalidOperation(
-                "references not yet implemented".to_string(),
-            )),
+            RValue::Ref { place, .. } => {
+                // For the interpreter, references are just values
+                // We don't track memory addresses, so &x just evaluates to x's value
+                self.read_place(place)
+            }
             RValue::Aggregate { kind, operands } => {
                 let field_values: Result<Vec<Value>, InterpreterError> =
                     operands.iter().map(|op| self.eval_operand(op)).collect();
