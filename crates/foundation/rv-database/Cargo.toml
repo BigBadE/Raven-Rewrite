@@ -11,6 +11,7 @@ rv-vfs = { path = "../rv-vfs" }
 rv-intern = { path = "../rv-intern" }
 rv-hir.workspace = true
 rv-mir.workspace = true
+rv-mir-lower.workspace = true
 rv-ty.workspace = true
 rv-parser.workspace = true
 rv-hir-lower.workspace = true

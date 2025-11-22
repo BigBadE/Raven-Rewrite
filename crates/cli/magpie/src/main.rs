@@ -235,7 +235,7 @@ fn cmd_compile(cli: &Cli, file: &PathBuf, output_file: Option<&PathBuf>, args: &
     if let Some(output) = output_file {
         use lang_raven::RavenLanguage;
         use rv_hir_lower::lower_source_file;
-        use rv_mir::lower::LoweringContext;
+        use rv_mir_lower::LoweringContext;
         use rv_syntax::Language;
 
         // Read source file

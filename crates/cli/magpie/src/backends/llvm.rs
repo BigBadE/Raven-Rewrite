@@ -20,7 +20,7 @@ impl LLVMBackend {
     fn compile_to_executable(&self, source: &str, output_path: &Path) -> Result<()> {
         use lang_raven::RavenLanguage;
         use rv_hir_lower::lower_source_file;
-        use rv_mir::lower::LoweringContext;
+        use rv_mir_lower::LoweringContext;
         use rv_syntax::Language;
 
         // Parse source code
@@ -184,7 +184,7 @@ impl Backend for LLVMBackend {
     fn test(&self, _manifest: &Manifest, project_dir: &Path) -> Result<TestResult> {
         use lang_raven::RavenLanguage;
         use rv_hir_lower::lower_source_file;
-        use rv_mir::lower::LoweringContext;
+        use rv_mir_lower::LoweringContext;
         use rv_syntax::Language;
 
         let src_dir = project_dir.join("src");

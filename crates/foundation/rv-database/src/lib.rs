@@ -213,7 +213,7 @@ pub fn lower_function_to_mir(
     let mut ty_ctx = inference.context.clone();
 
     // Lower to MIR
-    let mir = rv_mir::lower::LoweringContext::lower_function(
+    let mir = rv_mir_lower::LoweringContext::lower_function(
         &func_hir,
         &mut ty_ctx,
         &hir_data.structs,

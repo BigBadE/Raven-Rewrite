@@ -311,7 +311,7 @@ pub fn monomorphize_functions(
             // Lower to MIR with type substitution and unique instance ID
             // The type_subst map handles generic parameter substitution (T -> Int, etc.)
             // The ty_ctx_with_inference has expression types from inference above
-            let mir_func = rv_mir::lower::LoweringContext::lower_function_with_subst(
+            let mir_func = rv_mir_lower::LoweringContext::lower_function_with_subst(
                 hir_func,
                 &mut ty_ctx_with_inference,
                 &hir_ctx.structs,

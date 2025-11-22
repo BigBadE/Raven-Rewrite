@@ -43,6 +43,7 @@ rv-lir = { path = "crates/ir/rv-lir" }
 
 # Internal crates - lowering
 rv-hir-lower = { path = "crates/lowering/rv-hir-lower" }
+rv-mir-lower = { path = "crates/lowering/rv-mir-lower" }
 
 # Internal crates - passes
 rv-ty = { path = "crates/passes/rv-ty-infer" }

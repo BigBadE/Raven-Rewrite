@@ -53,7 +53,7 @@ pub struct LoweringContext {
     /// File ID for creating spans
     file_id: FileId,
     /// Type arena
-    pub types: rv_arena::Arena<rv_hir::Type>,
+    pub types: la_arena::Arena<rv_hir::Type>,
     /// Next local ID for pattern bindings
     next_local_id: u32,
     /// Current impl block's self type (for resolving `self` parameters)
@@ -91,7 +91,7 @@ impl LoweringContext {
             next_module_id: 0,
             symbol_defs: HashMap::new(),
             file_id: FileId(0),
-            types: rv_arena::Arena::new(),
+            types: la_arena::Arena::new(),
             next_local_id: 0,
             current_impl_self_ty: None,
             current_generic_params: Vec::new(),

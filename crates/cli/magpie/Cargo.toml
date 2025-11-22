@@ -24,6 +24,7 @@ rv-vfs = { path = "../../foundation/rv-vfs" }
 rv-database = { path = "../../foundation/rv-database" }
 rv-parser = { path = "../../parser/rv-parser" }
 rv-hir-lower.workspace = true
+rv-mir-lower.workspace = true
 rv-ty.workspace = true
 rv-mir.workspace = true
 rv-lir.workspace = true

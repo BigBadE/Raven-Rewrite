@@ -3,8 +3,9 @@
 //! MIR is a control-flow graph based representation used for optimization
 //! and code generation. It's lower-level than HIR but still mostly independent
 //! of the target architecture.
-
-pub mod lower;
+//!
+//! This crate contains only MIR data structures. For HIR → MIR lowering,
+//! see the rv-mir-lower crate.
 
 use indexmap::IndexMap;
 use rv_hir::{BinaryOp as HirBinaryOp, FunctionId, LiteralKind, UnaryOp as HirUnaryOp};
@@ -456,5 +457,11 @@ impl MirBuilder {
     #[must_use]
     pub fn finish(self) -> MirFunction {
         self.function
+    }
+
+    /// Get a reference to the locals (for reading during lowering)
+    #[must_use]
+    pub fn locals(&self) -> &[Local] {
+        &self.function.locals
     }
 }

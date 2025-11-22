@@ -491,7 +491,7 @@ impl<'ctx> Interpreter<'ctx> {
             let mut ty_ctx_with_inference = inference_result.ctx;
 
             // Now lower with inferred types
-            let mir_func = rv_mir::lower::LoweringContext::lower_function(
+            let mir_func = rv_mir_lower::LoweringContext::lower_function(
                 hir_func,
                 &mut ty_ctx_with_inference,
                 &hir_ctx.structs,

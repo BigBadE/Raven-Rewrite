@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use rv_cranelift::JitCompiler;
 use rv_database::{RootDatabase, SourceFile};
 use rv_hir_lower::lower::lower_source_file;
-use rv_mir::lower::LoweringContext;
+use rv_mir_lower::LoweringContext;
 use rv_ty::infer::TypeInference;
 use std::path::Path;
 

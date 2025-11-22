@@ -916,7 +916,7 @@ impl<'ctx> LoweringContext<'ctx> {
                     match pat {
                         rv_hir::Pattern::Binding { name, .. } => {
                             // Create a new local for this binding with the initializer's type
-                            let init_ty = self.builder.function.locals.iter()
+                            let init_ty = self.builder.locals().iter()
                                 .find(|l| l.id == init_local)
                                 .map(|l| l.ty.clone())
                                 .expect("Failed to find type for initializer local. This indicates a bug in MIR lowering.");
