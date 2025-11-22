@@ -822,49 +822,25 @@ impl<'ctx> LoweringContext<'ctx> {
                     .copied()
                     .unwrap_or(false);
 
-                match self.resolve_method(receiver_ty, *method, receiver_is_mut) {
-                    Ok(func_id) => {
-                        // Emit a function call with the resolved method
-                        self.builder.add_statement(Statement::Assign {
-                            place: Place::from_local(result_local),
-                            rvalue: RValue::Call {
-                                func: func_id,
-                                args: arg_operands,
-                            },
-                            span: *span,
-                        });
-                    }
-                    Err(MethodResolutionError::MutabilityMismatch { required, provided_mutable }) => {
-                        // Report mutability mismatch
-                        eprintln!(
-                            "Method resolution error: method requires {:?} but receiver is {}",
-                            required,
-                            if provided_mutable { "mutable" } else { "immutable" }
-                        );
-                        // Return Unit for now
-                        let constant = Constant {
-                            kind: LiteralKind::Unit,
-                            ty: MirType::Unit,
-                        };
-                        self.builder.add_statement(Statement::Assign {
-                            place: Place::from_local(result_local),
-                            rvalue: RValue::Use(Operand::Constant(constant)),
-                            span: *span,
-                        });
-                    }
-                    Err(MethodResolutionError::MethodNotFound) => {
-                        // Method not found, return Unit
-                        let constant = Constant {
-                            kind: LiteralKind::Unit,
-                            ty: MirType::Unit,
-                        };
-                        self.builder.add_statement(Statement::Assign {
-                            place: Place::from_local(result_local),
-                            rvalue: RValue::Use(Operand::Constant(constant)),
-                            span: *span,
-                        });
-                    }
-                }
+                // ARCHITECTURE: Method resolution MUST succeed - no fallbacks allowed (per user directive)
+                let func_id = self.resolve_method(receiver_ty, *method, receiver_is_mut)
+                    .unwrap_or_else(|err| {
+                        panic!(
+                            "COMPILER BUG: Method resolution failed for method '{:?}': {:?}",
+                            self.interner.resolve(method),
+                            err
+                        )
+                    });
+
+                // Emit a function call with the resolved method
+                self.builder.add_statement(Statement::Assign {
+                    place: Place::from_local(result_local),
+                    rvalue: RValue::Call {
+                        func: func_id,
+                        args: arg_operands,
+                    },
+                    span: *span,
+                });
             }
 
             Expr::Closure {
