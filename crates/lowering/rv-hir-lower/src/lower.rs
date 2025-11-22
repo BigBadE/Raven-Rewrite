@@ -1245,9 +1245,11 @@ fn lower_pattern(
                         }
                     }
                     _ => {
-                        // Try to parse sub-patterns directly
-                        if let Some(pat) = lower_pattern(ctx, current_scope, child, body) {
-                            sub_patterns.push(pat);
+                        // Try to parse sub-patterns directly, but skip delimiters
+                        if !matches!(child.text.as_str(), "(" | ")" | "," | "{" | "}" | "::" | "|") {
+                            if let Some(pat) = lower_pattern(ctx, current_scope, child, body) {
+                                sub_patterns.push(pat);
+                            }
                         }
                     }
                 }
