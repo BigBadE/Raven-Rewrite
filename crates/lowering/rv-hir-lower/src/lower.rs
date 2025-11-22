@@ -1080,6 +1080,10 @@ fn lower_pattern(
                         // Wildcard pattern
                         return Some(body.patterns.alloc(Pattern::Wildcard { span: file_span }));
                     }
+                    SyntaxKind::Unknown(ref child_name) if child_name == "|" => {
+                        // Pipe separator in or-pattern - skip it
+                        continue;
+                    }
                     _ => {
                         // Try to recursively parse complex patterns (tuple_struct_pattern, etc.)
                         if let Some(pat_id) = lower_pattern(ctx, current_scope, child, body) {
