@@ -1587,7 +1587,7 @@ fn lower_enum(ctx: &mut LoweringContext, current_scope: ScopeId, node: &SyntaxNo
     let name = node
         .children
         .iter()
-        .find(|child| child.kind == SyntaxKind::Identifier)
+        .find(|child| child.kind == SyntaxKind::Identifier || child.kind == SyntaxKind::Type)
         .map(|child| child.text.clone())
         .unwrap_or_else(|| {
             panic!(
@@ -2029,11 +2029,11 @@ fn lower_impl(ctx: &mut LoweringContext, current_scope: ScopeId, node: &SyntaxNo
 
 /// Lower a trait definition
 fn lower_trait(ctx: &mut LoweringContext, current_scope: ScopeId, node: &SyntaxNode) {
-    // Extract trait name
+    // Extract trait name (can be Identifier or Type node)
     let trait_name = node
         .children
         .iter()
-        .find(|child| child.kind == SyntaxKind::Identifier)
+        .find(|child| child.kind == SyntaxKind::Identifier || child.kind == SyntaxKind::Type)
         .map(|child| ctx.intern(&child.text))
         .unwrap_or_else(|| {
             panic!(
