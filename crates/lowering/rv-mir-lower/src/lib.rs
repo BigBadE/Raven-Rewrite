@@ -1,6 +1,6 @@
 //! HIR → MIR lowering
 
-use crate::{
+use rv_mir::{
     AggregateKind, BinaryOp, Constant, LocalId, MirBuilder, MirFunction, MirType, MirVariant,
     Operand, Place, PlaceElem, RValue, Statement, Terminator, UnaryOp,
 };
@@ -9,7 +9,6 @@ use rustc_hash::FxHashMap;
 use la_arena::Arena;
 use rv_hir::{Body, DefId, EnumDef, Expr, ExprId, Function, FunctionId, ImplBlock, ImplId, LiteralKind, Pattern, SelfParam, Stmt, StmtId, StructDef, TraitDef, TraitId, Type, TypeDefId};
 use rv_intern::{Interner, Symbol};
-use rv_span::{FileId, FileSpan, Span};
 use rv_ty::{TyContext, TyId, TyKind};
 use std::collections::HashMap;
 
@@ -182,7 +181,7 @@ impl<'ctx> LoweringContext<'ctx> {
             let hir_ty = &hir_types[param.ty];
 
             // Determine the MIR type for this parameter
-            let param_ty = match hir_ty {
+            let param_ty: MirType = match hir_ty {
                 // Generic parameter (e.g., T in fn foo<T>(x: T)) - use substitution
                 Type::Generic { name, .. } => {
                     if let Some(concrete_ty) = type_subst.get(name) {
@@ -876,19 +875,6 @@ impl<'ctx> LoweringContext<'ctx> {
                     span: *span,
                 });
             }
-
-            _ => {
-                // For unsupported expressions, create unit
-                let constant = Constant {
-                    kind: LiteralKind::Unit,
-                    ty: MirType::Unit,
-                };
-                self.builder.add_statement(Statement::Assign {
-                    place: Place::from_local(result_local),
-                    rvalue: RValue::Use(Operand::Constant(constant)),
-                    span: get_expr_span(expr),
-                });
-            }
         }
 
         // Cache the result
@@ -965,7 +951,7 @@ impl<'ctx> LoweringContext<'ctx> {
     /// Takes a NormalizedTy which guarantees all type variables are resolved.
     /// This prevents the silent `TyKind::Var → MirType::Int` bug.
     fn lower_type(&self, ty: rv_ty::NormalizedTy) -> MirType {
-        use crate::MirVariant;
+        use rv_mir::MirVariant;
         use rv_ty::{NormalizedTy, VariantTy};
 
         // No need for apply_subst - NormalizedTy guarantees no unresolved variables!
