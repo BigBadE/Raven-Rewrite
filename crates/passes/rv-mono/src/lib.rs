@@ -239,8 +239,8 @@ pub fn monomorphize_functions(
                                 }
                             }
                         } else {
-                            panic!("Generic parameter '{}' has no substitution in type_subst",
-                                hir_ctx.interner.resolve(name));
+                            // Generic parameter has no substitution - let type inference handle it
+                            ty_ctx_clone.fresh_ty_var()
                         }
                     }
                     // Reference to generic (e.g., &T in fn foo<T>(x: &T))
@@ -267,8 +267,8 @@ pub fn monomorphize_functions(
                                         }
                                     }
                                 } else {
-                                    panic!("Generic parameter '{}' has no substitution in type_subst",
-                                        hir_ctx.interner.resolve(name));
+                                    // Generic parameter has no substitution - let type inference handle it
+                                    ty_ctx_clone.fresh_ty_var()
                                 }
                             }
                             // Non-generic inner type - will be inferred
