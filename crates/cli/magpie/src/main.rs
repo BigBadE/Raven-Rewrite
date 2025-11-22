@@ -302,7 +302,7 @@ fn cmd_compile(cli: &Cli, file: &PathBuf, output_file: Option<&PathBuf>, args: &
         for mir_func in &mir_functions {
             if let Some(hir_func) = hir.functions.get(&mir_func.id) {
                 if hir_func.generics.is_empty() {
-                    collector.collect_from_mir(mir_func);
+                    collector.collect_from_mir(mir_func, &hir.functions, &hir.types);
                 }
             }
         }

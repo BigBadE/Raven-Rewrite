@@ -5,8 +5,8 @@ use rv_hir::{
     AssociatedType, AssociatedTypeImpl, Body, DefId, EnumDef, Expr, ExprId, ExternalFunction,
     FieldDef, Function, FunctionId, GenericParam, ImplBlock, ImplId, Item, LiteralKind, LocalId,
     ModuleDef, ModuleId, Parameter, Pattern, PatternId, SelfParam, Stmt, StmtId, StructDef,
-    TraitBound, TraitDef, TraitId, TraitMethod, Type, TypeDefId, TypeId, UseItem, VariantDef,
-    VariantFields, Visibility, WhereClause,
+    TraitBound, TraitDef, TraitId, TraitMethod, Type, TypeDefId, TypeId, UnaryOp, UseItem,
+    VariantDef, VariantFields, Visibility, WhereClause,
 };
 use rv_intern::{Interner, Symbol as InternedString};
 use rv_macro::{
@@ -457,7 +457,7 @@ fn is_expr_node(node: &SyntaxNode) -> bool {
             | SyntaxKind::If
             | SyntaxKind::Match
             | SyntaxKind::Identifier
-    ) || matches!(&node.kind, SyntaxKind::Unknown(name) if name == "field_expression" || name == "struct_expression" || name == "self" || name == "closure_expression")
+    ) || matches!(&node.kind, SyntaxKind::Unknown(name) if name == "field_expression" || name == "struct_expression" || name == "self" || name == "closure_expression" || name == "reference_expression")
 }
 
 /// Lower an expression
@@ -513,6 +513,24 @@ fn lower_expr(
                 body.exprs.alloc(Expr::Variable {
                     name: name_sym,
                     def: def.and_then(|sym_id| ctx.symbol_defs.get(&sym_id).copied()),
+                    span: file_span,
+                })
+            }
+            "reference_expression" => {
+                // Reference expression: &expr or &mut expr
+                // Determine if it's mutable or not
+                let is_mut = node.children.iter().any(|child| child.text == "mut");
+
+                // Find the operand expression (skip & and mut tokens)
+                let operand_node = node.children.iter()
+                    .find(|child| is_expr_node(child))
+                    .expect("reference_expression must have an operand");
+
+                let operand = lower_expr(ctx, current_scope, operand_node, body);
+
+                body.exprs.alloc(Expr::UnaryOp {
+                    op: if is_mut { UnaryOp::RefMut } else { UnaryOp::Ref },
+                    operand,
                     span: file_span,
                 })
             }
