@@ -1320,7 +1320,20 @@ impl<'ctx> LoweringContext<'ctx> {
     /// Resolve a field name to its index in a struct
     fn resolve_field_index(&self, ty_id: TyId, field_name: Symbol) -> Option<usize> {
         let ty = self.ty_ctx.types.get(ty_id);
-        match &ty.kind {
+
+        // Follow type variable substitutions
+        let concrete_ty = match &ty.kind {
+            TyKind::Var { id: var_id } => {
+                if let Some(&subst_ty_id) = self.ty_ctx.subst.get(var_id) {
+                    self.ty_ctx.types.get(subst_ty_id)
+                } else {
+                    ty
+                }
+            }
+            _ => ty,
+        };
+
+        match &concrete_ty.kind {
             TyKind::Struct { def_id, .. } => {
                 // Look up the struct definition
                 if let Some(struct_def) = self.structs.get(def_id) {
