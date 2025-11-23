@@ -1,0 +1,435 @@
+{
+  "os": "ubuntu-latest",
+  "backend": "all",
+  "total": 148,
+  "passed": 85,
+  "failed": 60,
+  "ignored": 3,
+  "tests": [
+    {
+      "name": "test_cross_function_detection",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_custom_similarity_threshold",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_detect_duplicates_across_functions",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_custom_expression_threshold",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_detect_duplicates_within_function",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_no_duplicates_in_simple_code",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_detector_builder_pattern",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_duplicate_span_information",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_similarity_score_range",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_empty_function_analysis",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_analyzer_consistency",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_error_recovery",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_all_analyzers_produce_output",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_complete_analysis_pipeline",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_real_world_pattern_conditional_logic",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_real_world_pattern_simple_arithmetic",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_multiple_files_analysis",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_complexity_rule_triggers",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_lint_levels",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_deep_nesting_rule",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_cognitive_complexity_rule",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_simple_function_passes_all_rules",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_linter_suggestions",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_linter_with_multiple_rules",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_unused_variable_rule",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_too_many_parameters_rule",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_metrics_consistency",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_all_functions_analyzed",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_simple_function_metrics",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_high_cognitive_complexity",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_complex_function_high_complexity",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "run_compile_fail_tests",
+      "status": "failed",
+      "backend": "all",
+      "project": "unknown",
+      "error": "test [run-pass] run-pass/match-range.rs ... FAILED\ntest [run-pass] run-pass/multiple-functions.rs ... FAILED\ntest [run-pass] edge-cases/trait-supertrait.rs ... FAILED\n\nfailures:\n\nfailures:\n    [run-pass] edge-cases/generic-multiple-params.rs\n    [run-pass] edge-cases/match-exhaustive-all-arms.rs\n    [run-pass] edge-cases/nested-generics-depth-3.rs"
+    },
+    {
+      "name": "run_edge_case_tests",
+      "status": "failed",
+      "backend": "all",
+      "project": "unknown",
+      "error": "test [run-pass] run-pass/nested-blocks.rs ... FAILED\ntest [run-pass] run-pass/struct-basic.rs ... FAILED\ntest [run-pass] run-pass/struct-method.rs ... FAILED\ntest [run-pass] run-pass/trait-basic.rs ... FAILED\ntest [run-pass] run-pass/trait-generic-bound.rs ... FAILED\n\nfailures:\n\nfailures:\n    [run-pass] run-pass/basic-arithmetic.rs"
+    },
+    {
+      "name": "run_run_pass_tests",
+      "status": "failed",
+      "backend": "all",
+      "project": "unknown",
+      "error": "running 15 tests\ntest [ui] ui/borrow-conflict.rs ... FAILED\ntest [ui] ui/field-not-found.rs ... FAILED\ntest [ui] ui/generic-type-param-count.rs ... FAILED\ntest [ui] ui/if-else-type-mismatch.rs ... FAILED\ntest [ui] ui/lifetime-dangling-ref.rs ... FAILED\ntest [ui] ui/match-pattern-type-mismatch.rs ... FAILED\ntest [ui] ui/method-not-found.rs ... FAILED\ntest [ui] ui/name-resolution-ambiguous.rs ... FAILED\ntest [ui] ui/struct-field-missing.rs ... FAILED"
+    },
+    {
+      "name": "run_ui_tests",
+      "status": "failed",
+      "backend": "all",
+      "project": "unknown",
+      "error": "failures:\n\n---- run_compile_fail_tests stdout ----\n\nthread '[compile-fail] compile-fail/constraint-associated-type.rs' (17915) panicked at /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compiletest_rs-0.11.2/src/runtest.rs:1479:14:\nfailed to exec `LD_LIBRARY_PATH=\":target/compiletest/constraint-associated-type.stage-id.aux:/home/runner/work/Raven-Rewrite/Raven-Rewrite/target/debug/build/bzip2-sys-808dd54f87f8a633/out/lib:/home/runner/work/Raven-Rewrite/Raven-Rewrite/target/deb..."
+    },
+    {
+      "name": "multi_file::tests::test_add_file",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "multi_file::tests::test_create_project",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "multi_file::tests::test_expect_errors",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "multi_file::tests::test_expect_success",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "multi_file::tests::test_run_creates_files",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_all_projects",
+      "status": "failed",
+      "backend": "all",
+      "project": "unknown",
+      "error": "failures:\n\n---- test_all_projects stdout ----\n\n==== Testing project: 01-basic-arithmetic ====\n\n  -- Interpreter Backend --\nTesting basic-arithmetic v0.1.0\nRunning test: test_subtraction\n  \u2713 test_subtraction"
+    },
+    {
+      "name": "test_16_multi_file_modules",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_17_module_hierarchy",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_18_use_declarations",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_19_large_codebase",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "tests::test_jit_simple",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "tests::test_incremental_file_contents",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "tests::test_detector_creation",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "tests::test_detector_with_settings",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "tests::test_hash_different_literals",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "tests::test_simple_function",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "tests::test_complexity_rule_pass",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "tests::test_linter",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "tests::test_linter_with_complex_function",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "tests::test_too_many_parameters",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_optimization_levels",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "test_simple_function_to_llvm",
+      "status": "ok",
+      "backend": "llvm",
+      "project": "unknown"
+    },
+    {
+      "name": "tests::test_cognitive_simple",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "tests::test_cyclomatic_if",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "tests::test_cyclomatic_simple",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "tests::test_max_nesting_simple",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "error::tests::test_error_fields_are_used",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "tests::test_parse_success",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "tests::test_parse_with_syntax_error",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "tests::test_error_display_with_context",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "error::tests::test_levenshtein_distance",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "unify::tests::test_unify_mismatch",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "unify::tests::test_unify_same_type",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "unify::tests::test_unify_type_var",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    },
+    {
+      "name": "tests::test_duplicate_registration",
+      "status": "ok",
+      "backend": "all",
+      "project": "unknown"
+    }
+  ]
+}

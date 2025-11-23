@@ -674,7 +674,3 @@ extern "Rust" {
 - [ ] Actual multi-file compilation (requires VFS integration)
 
 **Status**: Multi-file test infrastructure complete. Framework successfully creates projects with module hierarchies and verifies file structure. Actual compilation integration deferred until module system is fully connected to compiler pipeline.
-
-## Test Status
-
-For detailed test results across all platforms and backends, see [TEST_STATUS.md](./TEST_STATUS.md).
