@@ -10,9 +10,9 @@ path = "src/main.rs"
 
 [dependencies]
 rv-syntax = { path = "../../foundation/rv-syntax" }
-rv-hir = { path = "../../analysis/rv-hir" }
-rv-hir-lower = { path = "../../analysis/rv-hir-lower" }
-rv-mir = { path = "../../analysis/rv-mir" }
+rv-hir.workspace = true
+rv-hir-lower.workspace = true
+rv-mir.workspace = true
 rv-intern = { path = "../../foundation/rv-intern" }
 rv-interpreter = { path = "../../codegen/rv-interpreter" }
 rv-cranelift = { path = "../../codegen/rv-cranelift" }

@@ -17,11 +17,11 @@ struct Box {
     value: i64,
 }
 
-// Implement Container for Box with associated type = i64
+// Implement Container for Box with associated type
 impl Container for Box {
     type Item = i64;
 
-    fn get(&self) -> &i64 {
+    fn get(&self) -> &Self::Item {
         &self.value
     }
 }
@@ -29,6 +29,7 @@ impl Container for Box {
 // Implement Display for Box (requires Container to be implemented)
 impl Display for Box {
     fn show(&self) -> i64 {
+        // Dereference the result from get()
         *self.get()
     }
 }

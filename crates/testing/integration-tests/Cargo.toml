@@ -12,10 +12,10 @@ rv-span = { path = "../../foundation/rv-span" }
 rv-intern = { path = "../../foundation/rv-intern" }
 rv-syntax = { path = "../../foundation/rv-syntax" }
 rv-parser = { path = "../../parser/rv-parser" }
-rv-hir = { path = "../../analysis/rv-hir" }
-rv-hir-lower = { path = "../../analysis/rv-hir-lower" }
-rv-ty = { path = "../../analysis/rv-ty" }
-rv-mir = { path = "../../analysis/rv-mir" }
+rv-hir.workspace = true
+rv-hir-lower.workspace = true
+rv-ty.workspace = true
+rv-mir.workspace = true
 rv-interpreter = { path = "../../codegen/rv-interpreter" }
 rv-cranelift = { path = "../../codegen/rv-cranelift" }
 rv-llvm-backend = { path = "../../codegen/rv-llvm-backend", optional = true }

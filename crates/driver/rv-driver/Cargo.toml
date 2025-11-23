@@ -1,0 +1,39 @@
+[package]
+name = "rv-driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Core infrastructure
+rv-vfs = { path = "../../foundation/rv-vfs" }
+rv-intern = { path = "../../foundation/rv-intern" }
+rv-span = { path = "../../foundation/rv-span" }
+rv-syntax.workspace = true
+
+# Parser
+rv-parser.workspace = true
+
+# IR layers
+rv-hir.workspace = true
+rv-mir.workspace = true
+rv-lir.workspace = true
+
+# Lowering
+rv-hir-lower.workspace = true
+rv-mir-lower.workspace = true
+
+# Passes
+rv-ty.workspace = true
+rv-mono.workspace = true
+
+# Error handling
+anyhow.workspace = true
+thiserror.workspace = true
+
+# Utilities
+la-arena.workspace = true
+rustc-hash.workspace = true
+
+[lints]
+workspace = true

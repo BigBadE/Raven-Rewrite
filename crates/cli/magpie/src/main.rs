@@ -231,34 +231,112 @@ fn cmd_compile(cli: &Cli, file: &PathBuf, output_file: Option<&PathBuf>, args: &
         anyhow::bail!("File '{}' not found", file.display());
     }
 
-    // If -o is specified, create a wrapper script instead of running directly
+    // If -o is specified, compile to native executable using LLVM backend
     if let Some(output) = output_file {
-        // Get absolute path to magpie and source file
-        let magpie_path = std::env::current_exe()
-            .context("Failed to get magpie executable path")?;
-        let source_path = file.canonicalize()
-            .with_context(|| format!("Failed to canonicalize source path: {}", file.display()))?;
+        use lang_raven::RavenLanguage;
+        use rv_hir_lower::lower_source_file;
+        use rv_mir_lower::LoweringContext;
+        use rv_syntax::Language;
 
-        // Create a wrapper script that calls magpie
-        let wrapper_content = format!(
-            "#!/bin/bash\nexec '{}' compile '{}' \"$@\"\n",
-            magpie_path.display(),
-            source_path.display()
-        );
+        // Read source file
+        let source = std::fs::read_to_string(file)?;
 
-        std::fs::write(&output, wrapper_content)
-            .with_context(|| format!("Failed to write output file: {}", output.display()))?;
+        // Parse source code
+        let language = RavenLanguage::new();
+        let tree = language.parse(&source)?;
 
-        // Make it executable
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&output)?.permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&output, perms)?;
+        // Lower to HIR
+        let root = language.lower_node(&tree.root_node(), &source);
+        let hir = lower_source_file(&root);
+
+        if hir.functions.is_empty() && hir.external_functions.is_empty() {
+            anyhow::bail!("No functions found in source");
         }
 
-        // Success - wrapper created
+        // Lower HIR to MIR with type inference
+        use rv_ty::TypeInference;
+        let mut type_inference = TypeInference::with_hir_context(
+            &hir.impl_blocks,
+            &hir.functions,
+            &hir.types,
+            &hir.structs,
+            &hir.enums,
+            &hir.traits,
+            &hir.interner,
+        );
+
+        // ARCHITECTURE: Type inference is MANDATORY before MIR lowering
+        // ALL non-generic functions must have types inferred here
+        for (_, func) in &hir.functions {
+            if func.generics.is_empty() {
+                type_inference.infer_function(func);
+            }
+        }
+
+        // Lower non-generic functions to MIR (entry points)
+        // ARCHITECTURE: No catch_unwind - let panics bubble up to expose bugs
+        let mut mir_functions: Vec<_> = hir
+            .functions
+            .iter()
+            .filter(|(_, func)| func.generics.is_empty())
+            .map(|(_, func)| {
+                LoweringContext::lower_function(
+                    func,
+                    type_inference.context_mut(),
+                    &hir.structs,
+                    &hir.enums,
+                    &hir.impl_blocks,
+                    &hir.functions,
+                    &hir.types,
+                    &hir.traits,
+                    &hir.interner,
+                )
+            })
+            .collect();
+
+        // Monomorphization: collect generic function instantiations needed from MIR
+        use rv_mono::MonoCollector;
+        let mut collector = MonoCollector::new();
+
+        // Only collect from non-generic functions (entry points)
+        for mir_func in &mir_functions {
+            if let Some(hir_func) = hir.functions.get(&mir_func.id) {
+                if hir_func.generics.is_empty() {
+                    collector.collect_from_mir(mir_func, &hir.functions, &hir.types);
+                }
+            }
+        }
+
+        // Generate monomorphized instances
+        // ARCHITECTURE: No catch_unwind - let monomorphization failures bubble up
+        use rv_mono::monomorphize_functions;
+        let next_func_id = hir.functions.keys().map(|id| id.0).max().unwrap_or(0) + 1;
+        let (mono_functions, instance_map) = monomorphize_functions(
+            &hir,
+            type_inference.context(),
+            collector.needed_instances(),
+            next_func_id,
+        );
+
+        // Add monomorphized functions to MIR functions list
+        mir_functions.extend(mono_functions);
+
+        // Remap function calls in all MIR functions to use monomorphized instance IDs
+        use rv_mono::rewrite_calls_to_instances;
+        rewrite_calls_to_instances(&mut mir_functions, &instance_map);
+
+        // Lower MIR to LIR (now all generics are monomorphized)
+        let lir_functions = rv_lir::lower::lower_mir_to_lir(mir_functions, &hir);
+
+        // Compile LIR to LLVM IR and generate object file
+        use rv_llvm_backend::{compile_to_native_with_externals, OptLevel};
+        compile_to_native_with_externals(
+            &lir_functions,
+            &hir.external_functions,
+            output,
+            OptLevel::Default,
+        )?;
+
         return Ok(());
     }
 

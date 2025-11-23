@@ -51,14 +51,8 @@ pub fn compile_to_native_with_externals(
         std::fs::write(&ir_path, backend.to_llvm_ir())?;
     }
 
-    // Link object file to executable
-    // Use the first function as entry point (typically func_0 or main)
-    let entry_point = if !functions.is_empty() {
-        format!("func_{}", functions[0].id.0)
-    } else {
-        "func_0".to_string()
-    };
-    link_object_to_executable(&obj_path, output_path, &entry_point)?;
+    // Link object file to executable using main() entry point
+    link_object_to_executable(&obj_path, output_path)?;
 
     // Clean up object file
     let _ = std::fs::remove_file(&obj_path);
@@ -66,24 +60,21 @@ pub fn compile_to_native_with_externals(
     Ok(())
 }
 
-fn link_object_to_executable(obj_path: &Path, output_path: &Path, entry_point: &str) -> Result<()> {
+fn link_object_to_executable(obj_path: &Path, output_path: &Path) -> Result<()> {
     use std::process::Command;
 
     // Try linkers in order of preference:
-    // 1. GCC (Unix, Linux, MINGW with GCC installed)
+    // 1. GCC (Unix, Linux, MINGW with GCC installed) - uses main() as entry point by default
     // 2. ld.lld (LLVM's linker - cross-platform)
     // 3. lld-link (LLVM's MSVC-compatible linker)
 
     let mut errors = Vec::new();
 
-    // Try GCC first
+    // Try GCC first - standard linking with libc
     if let Ok(output) = Command::new("gcc")
         .arg("-o")
         .arg(output_path)
         .arg(obj_path)
-        .arg("-e")
-        .arg(entry_point)
-        .arg("-no-pie")
         .output()
     {
         if output.status.success() {
@@ -97,13 +88,13 @@ fn link_object_to_executable(obj_path: &Path, output_path: &Path, entry_point: &
         }
     }
 
-    // Try ld.lld (LLVM linker)
+    // Try ld.lld (LLVM linker) with main entry point
     if let Ok(output) = Command::new("ld.lld")
         .arg("-o")
         .arg(output_path)
         .arg(obj_path)
         .arg("-e")
-        .arg(entry_point)
+        .arg("main")
         .output()
     {
         if output.status.success() {
@@ -122,7 +113,7 @@ fn link_object_to_executable(obj_path: &Path, output_path: &Path, entry_point: &
         .arg(format!("/OUT:{}", output_path.display()))
         .arg(obj_path)
         .arg("/SUBSYSTEM:CONSOLE")
-        .arg(format!("/ENTRY:{}", entry_point))
+        .arg("/ENTRY:main")
         .output()
     {
         if output.status.success() {

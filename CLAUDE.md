@@ -5,6 +5,7 @@
 ## 1. Keep this doc in sync and up to date with only relevant information.
 ## 2. Do not take shortcuts, use heuristics, stubs, defer work, or implement temporary fixes. This is production-level project, and you are a senior software engineer who is rigorous and methodical
 ## 3. Recognize and report architectural flaws, stubs, todos, or other things that do not belong in a full, production project. This is your highest priority, if you see one, report it ALWAYS.
+## 4. NEVER use fallback logic, workarounds, or "try this first, then try that" patterns. ALWAYS fix the root cause of bugs. If something doesn't work, debug and fix it properly - don't add fallback paths that mask the real problem. Fallbacks are architectural flaws.
 
 ## Project Overview
 

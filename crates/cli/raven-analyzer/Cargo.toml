@@ -10,8 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 rv-syntax = { path = "../../foundation/rv-syntax" }
-rv-hir = { path = "../../analysis/rv-hir" }
-rv-hir-lower = { path = "../../analysis/rv-hir-lower" }
+rv-hir.workspace = true
+rv-hir-lower.workspace = true
 rv-metrics = { path = "../../analyzer/rv-metrics" }
 rv-lint = { path = "../../analyzer/rv-lint" }
 rv-duplicates = { path = "../../analyzer/rv-duplicates" }

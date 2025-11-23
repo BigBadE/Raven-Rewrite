@@ -193,9 +193,11 @@ impl<'ctx> Interpreter<'ctx> {
                 // Call the function
                 self.call_function(*func, arg_values)
             }
-            RValue::Ref { .. } => Err(InterpreterError::InvalidOperation(
-                "references not yet implemented".to_string(),
-            )),
+            RValue::Ref { place, .. } => {
+                // For the interpreter, references are just values
+                // We don't track memory addresses, so &x just evaluates to x's value
+                self.read_place(place)
+            }
             RValue::Aggregate { kind, operands } => {
                 let field_values: Result<Vec<Value>, InterpreterError> =
                     operands.iter().map(|op| self.eval_operand(op)).collect();
@@ -455,7 +457,13 @@ impl<'ctx> Interpreter<'ctx> {
                 // For each parameter, create TyId and store by DefId::Local
                 for (param_idx, _param) in hir_func.parameters.iter().enumerate() {
                     // Get the corresponding type argument
-                    let mir_ty = type_args.get(param_idx).unwrap_or(&MirType::Unit);
+                    let mir_ty = type_args.get(param_idx).unwrap_or_else(|| {
+                        panic!(
+                            "COMPILER BUG: Generic function called with insufficient type arguments. \
+                             Expected at least {} type arguments for parameter {}, got {}.",
+                            param_idx + 1, param_idx, type_args.len()
+                        )
+                    });
 
                     // Create TyId for this concrete type
                     let concrete_ty_id = match mir_ty {
@@ -463,12 +471,21 @@ impl<'ctx> Interpreter<'ctx> {
                         MirType::Float => ty_ctx_clone.types.alloc(rv_ty::TyKind::Float),
                         MirType::Bool => ty_ctx_clone.types.alloc(rv_ty::TyKind::Bool),
                         MirType::Unit => ty_ctx_clone.types.alloc(rv_ty::TyKind::Unit),
-                        _ => ty_ctx_clone.types.alloc(rv_ty::TyKind::Int), // Default to Int
+                        other => {
+                            panic!(
+                                "COMPILER BUG: Unsupported MIR type {:?} in generic instantiation. \
+                                 All MIR types should have corresponding TyKind mappings.",
+                                other
+                            )
+                        }
                     };
 
                     // ARCHITECTURE: Store by DefId (not Symbol name)
                     let local_id = rv_hir::LocalId(param_idx as u32);
-                    let def_id = rv_hir::DefId::Local(local_id);
+                    let def_id = rv_hir::DefId::Local {
+                        func: func_id,
+                        local: local_id,
+                    };
                     ty_ctx_clone.set_def_type(def_id, concrete_ty_id);
                 }
             }
@@ -491,7 +508,7 @@ impl<'ctx> Interpreter<'ctx> {
             let mut ty_ctx_with_inference = inference_result.ctx;
 
             // Now lower with inferred types
-            let mir_func = rv_mir::lower::LoweringContext::lower_function(
+            let mir_func = rv_mir_lower::LoweringContext::lower_function(
                 hir_func,
                 &mut ty_ctx_with_inference,
                 &hir_ctx.structs,

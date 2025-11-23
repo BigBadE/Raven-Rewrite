@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use rv_cranelift::JitCompiler;
 use rv_database::{RootDatabase, SourceFile};
 use rv_hir_lower::lower::lower_source_file;
-use rv_mir::lower::LoweringContext;
+use rv_mir_lower::LoweringContext;
 use rv_ty::infer::TypeInference;
 use std::path::Path;
 
@@ -105,7 +105,7 @@ impl CraneliftBackend {
             use rv_mono::MonoCollector;
             let mut collector = MonoCollector::new();
             for mir_func in &mir_functions {
-                collector.collect_from_mir(mir_func);
+                collector.collect_from_mir(mir_func, &hir_ctx.functions, &hir_ctx.types);
             }
 
             // Generate specialized versions of generic functions with proper type substitution

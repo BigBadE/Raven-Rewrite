@@ -1,0 +1,16 @@
+[package]
+name = "rv-ty"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+la-arena.workspace = true
+rv-derive.workspace = true
+rv-hir.workspace = true
+rv-intern.workspace = true
+rv-span.workspace = true
+rustc-hash.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
