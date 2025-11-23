@@ -55,7 +55,7 @@ impl JitCompiler {
             for bb in &mir_func.basic_blocks {
                 for stmt in &bb.statements {
                     if let Statement::Assign { rvalue, .. } = stmt {
-                        if let RValue::Call { func, args } = rvalue {
+                        if let RValue::Call { func, args, .. } = rvalue {
                             // This tells us how many parameters the called function has
                             // Only insert if not already present (prefer function definition count)
                             param_counts.entry(*func).or_insert(args.len());
@@ -435,7 +435,7 @@ impl JitCompiler {
                 Ok(result)
             }
             RValue::UnaryOp { .. } => anyhow::bail!("Unary operations not yet implemented"),
-            RValue::Call { func, args } => {
+            RValue::Call { func, args, .. } => {
                 // Get the function reference
                 let func_ref = func_refs.get(func)
                     .ok_or_else(|| anyhow::anyhow!("Function {:?} not found in func_refs", func))?;

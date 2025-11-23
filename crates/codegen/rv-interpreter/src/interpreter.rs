@@ -184,7 +184,7 @@ impl<'ctx> Interpreter<'ctx> {
                 let val = self.eval_operand(operand)?;
                 Self::eval_unary_op(*op, val)
             }
-            RValue::Call { func, args } => {
+            RValue::Call { func, args, .. } => {
                 // Evaluate arguments
                 let arg_values: Result<Vec<Value>, InterpreterError> =
                     args.iter().map(|arg| self.eval_operand(arg)).collect();

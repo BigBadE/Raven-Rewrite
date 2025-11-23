@@ -102,33 +102,39 @@ impl MonoCollector {
             // Check statements for function calls in RValue::Call
             for stmt in &bb.statements {
                 if let Statement::Assign { rvalue, .. } = stmt {
-                    if let RValue::Call { func, args, .. } = rvalue {
-                        // Extract argument types from operands
-                        let arg_types: Vec<MirType> = args.iter().map(|operand| {
-                            match operand {
-                                Operand::Copy(place) | Operand::Move(place) => {
-                                    // Find the local type
-                                    mir.locals.iter()
-                                        .find(|local| local.id == place.local)
-                                        .map(|local| local.ty.clone())
-                                        .expect("Failed to find local type for monomorphization - internal compiler error")
-                                }
-                                Operand::Constant(constant) => {
-                                    // Infer type from constant
-                                    use rv_hir::LiteralKind;
-                                    match &constant.kind {
-                                        LiteralKind::Integer(_) => MirType::Int,
-                                        LiteralKind::Float(_) => MirType::Float,
-                                        LiteralKind::Bool(_) => MirType::Bool,
-                                        LiteralKind::String(_) => MirType::String,
-                                        LiteralKind::Unit => MirType::Unit,
+                    if let RValue::Call { func, args, type_args: explicit_type_args, .. } = rvalue {
+                        // Use explicit type arguments if provided (turbofish syntax)
+                        let type_args = if let Some(explicit_types) = explicit_type_args {
+                            explicit_types.clone()
+                        } else {
+                            // Otherwise, infer type arguments from argument types
+                            let arg_types: Vec<MirType> = args.iter().map(|operand| {
+                                match operand {
+                                    Operand::Copy(place) | Operand::Move(place) => {
+                                        // Find the local type
+                                        mir.locals.iter()
+                                            .find(|local| local.id == place.local)
+                                            .map(|local| local.ty.clone())
+                                            .expect("Failed to find local type for monomorphization - internal compiler error")
+                                    }
+                                    Operand::Constant(constant) => {
+                                        // Infer type from constant
+                                        use rv_hir::LiteralKind;
+                                        match &constant.kind {
+                                            LiteralKind::Integer(_) => MirType::Int,
+                                            LiteralKind::Float(_) => MirType::Float,
+                                            LiteralKind::Bool(_) => MirType::Bool,
+                                            LiteralKind::String(_) => MirType::String,
+                                            LiteralKind::Unit => MirType::Unit,
+                                        }
                                     }
                                 }
-                            }
-                        }).collect();
+                            }).collect();
 
-                        // Match argument types against parameter types to infer generic parameters
-                        let type_args = self.infer_generic_args(*func, &arg_types, hir_functions, hir_types);
+                            // Match argument types against parameter types to infer generic parameters
+                            self.infer_generic_args(*func, &arg_types, hir_functions, hir_types)
+                        };
+
                         self.needed_instances.push((*func, type_args));
                     }
                 }
@@ -314,39 +320,11 @@ pub fn monomorphize_functions(
                 }
             }
 
-            // ARCHITECTURE: Run type inference with concrete parameter types
-            // Create a fresh TyContext and pre-populate parameter DefIds with concrete types
-            let mut ty_ctx_for_inference = TyContext::new();
-
-            // Set up parameter types BEFORE running type inference
-            for (param_idx, param) in hir_func.parameters.iter().enumerate() {
-                let hir_ty = &hir_ctx.types[param.ty];
-                if let rv_hir::Type::Generic { name, .. } = hir_ty {
-                    if let Some(mir_ty) = type_subst.get(name) {
-                        // Create concrete TyId for this generic parameter
-                        let concrete_ty_id = match mir_ty {
-                            MirType::Int => ty_ctx_for_inference.types.int(),
-                            MirType::Bool => ty_ctx_for_inference.types.bool(),
-                            MirType::Float => ty_ctx_for_inference.types.float(),
-                            MirType::Unit => ty_ctx_for_inference.types.unit(),
-                            MirType::String => ty_ctx_for_inference.types.string(),
-                            _ => ty_ctx_for_inference.fresh_ty_var(), // Complex types become type vars
-                        };
-
-                        // Set the DefId to point to this concrete type
-                        let local_id = rv_hir::LocalId(param_idx as u32);
-                        let def_id = rv_hir::DefId::Local {
-                            func: *func_id,
-                            local: local_id,
-                        };
-                        ty_ctx_for_inference.set_def_type(def_id, concrete_ty_id);
-                    }
-                }
-            }
-
-            // Now run type inference with the concrete parameter types
+            // ARCHITECTURE: Run type inference normally, then apply substitutions
+            // Type inference will create type variables for generic parameters
+            // We'll replace them with concrete types after inference
             use rv_ty::TypeInference;
-            let mut type_inference = TypeInference::with_hir_context_and_tyctx(
+            let mut type_inference = TypeInference::with_hir_context(
                 &hir_ctx.impl_blocks,
                 &hir_ctx.functions,
                 &hir_ctx.types,
@@ -354,11 +332,64 @@ pub fn monomorphize_functions(
                 &hir_ctx.enums,
                 &hir_ctx.traits,
                 &hir_ctx.interner,
-                ty_ctx_for_inference,
             );
+
+            // Run type inference - this creates type variables for generic parameters
             type_inference.infer_function(hir_func);
             let inference_result = type_inference.finish();
             let mut ty_ctx_with_inference = inference_result.ctx;
+
+            // CRITICAL: Apply concrete type substitutions to ALL type variables for generic params
+            // Type inference creates ONE type variable per generic parameter (e.g., one for T)
+            // We need to substitute ALL references to that type variable with the concrete type
+            use rv_ty::TyKind;
+
+            // Build a map from generic parameter names to their type variable IDs
+            // by inspecting the first parameter that uses each generic
+            let mut generic_ty_vars: HashMap<Symbol, (rv_ty::ty::TyVarId, MirType)> = HashMap::new();
+
+            for (param_idx, param) in hir_func.parameters.iter().enumerate() {
+                let hir_ty = &hir_ctx.types[param.ty];
+                if let rv_hir::Type::Generic { name, .. } = hir_ty {
+                    if let Some(mir_ty) = type_subst.get(name) {
+                        // Skip if we already found this generic parameter
+                        if generic_ty_vars.contains_key(name) {
+                            continue;
+                        }
+
+                        // Get the DefId for this parameter to find its type variable
+                        let local_id = rv_hir::LocalId(param_idx as u32);
+                        let def_id = rv_hir::DefId::Local {
+                            func: *func_id,
+                            local: local_id,
+                        };
+
+                        // Get the type variable that was assigned to this parameter
+                        if let Some(param_ty_id) = ty_ctx_with_inference.get_def_type(def_id) {
+                            let param_ty = ty_ctx_with_inference.types.get(param_ty_id);
+                            if let TyKind::Var { id } = param_ty.kind {
+                                // Record this generic parameter's type variable
+                                generic_ty_vars.insert(*name, (id, mir_ty.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Now substitute ALL the generic type variables with concrete types
+            for (_name, (ty_var_id, mir_ty)) in generic_ty_vars {
+                let concrete_ty_id = match mir_ty {
+                    MirType::Int => ty_ctx_with_inference.types.int(),
+                    MirType::Bool => ty_ctx_with_inference.types.bool(),
+                    MirType::Float => ty_ctx_with_inference.types.float(),
+                    MirType::Unit => ty_ctx_with_inference.types.unit(),
+                    MirType::String => ty_ctx_with_inference.types.string(),
+                    _ => continue, // Skip complex types
+                };
+
+                // Add substitution: this type variable represents the generic param, replace everywhere
+                ty_ctx_with_inference.subst.insert(ty_var_id, concrete_ty_id);
+            }
 
             // Lower to MIR with type substitution and unique instance ID
             // The type_subst map handles generic parameter substitution (T -> Int, etc.)
@@ -400,28 +431,32 @@ pub fn rewrite_calls_to_instances(
             // Rewrite calls in statements
             for stmt in &mut bb.statements {
                 if let Statement::Assign { rvalue, .. } = stmt {
-                    if let RValue::Call { func, args } = rvalue {
-                        // Extract argument types to look up in instance_map
-                        let arg_types: Vec<MirType> = args.iter().map(|operand| {
-                            match operand {
-                                Operand::Copy(place) | Operand::Move(place) => {
-                                    mir_func.locals.iter()
-                                        .find(|local| local.id == place.local)
-                                        .map(|local| local.ty.clone())
-                                        .unwrap_or(MirType::Unit)
-                                }
-                                Operand::Constant(constant) => {
-                                    use rv_hir::LiteralKind;
-                                    match &constant.kind {
-                                        LiteralKind::Integer(_) => MirType::Int,
-                                        LiteralKind::Float(_) => MirType::Float,
-                                        LiteralKind::Bool(_) => MirType::Bool,
-                                        LiteralKind::String(_) => MirType::String,
-                                        LiteralKind::Unit => MirType::Unit,
+                    if let RValue::Call { func, args, type_args } = rvalue {
+                        // Use explicit type arguments if provided, otherwise infer from arguments
+                        let arg_types: Vec<MirType> = if let Some(explicit_types) = type_args {
+                            explicit_types.clone()
+                        } else {
+                            args.iter().map(|operand| {
+                                match operand {
+                                    Operand::Copy(place) | Operand::Move(place) => {
+                                        mir_func.locals.iter()
+                                            .find(|local| local.id == place.local)
+                                            .map(|local| local.ty.clone())
+                                            .unwrap_or(MirType::Unit)
+                                    }
+                                    Operand::Constant(constant) => {
+                                        use rv_hir::LiteralKind;
+                                        match &constant.kind {
+                                            LiteralKind::Integer(_) => MirType::Int,
+                                            LiteralKind::Float(_) => MirType::Float,
+                                            LiteralKind::Bool(_) => MirType::Bool,
+                                            LiteralKind::String(_) => MirType::String,
+                                            LiteralKind::Unit => MirType::Unit,
+                                        }
                                     }
                                 }
-                            }
-                        }).collect();
+                            }).collect()
+                        };
 
                         // Look up the monomorphized instance
                         if let Some(&instance_id) = instance_map.get(&(*func, arg_types)) {

@@ -477,6 +477,8 @@ pub enum Expr {
         callee: ExprId,
         /// Arguments
         args: Vec<ExprId>,
+        /// Explicit type arguments (turbofish syntax: foo::<i64>)
+        type_args: Option<Vec<TypeId>>,
         /// Source location
         span: FileSpan,
     },

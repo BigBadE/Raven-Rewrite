@@ -613,12 +613,30 @@ fn lower_call(
         }
     }
 
-    // Regular function call
+    // Regular function call - parse callee and type arguments
     let mut callee = None;
+    let mut type_args = None;
+
     for child in &node.children {
+        // Look for the callee (can be identifier or generic_function)
         if child.kind == SyntaxKind::Identifier && callee.is_none() {
             callee = Some(lower_expr(ctx, current_scope, child, body));
-            break;
+        }
+        // Look for generic_function node (contains identifier + type_arguments)
+        else if matches!(&child.kind, SyntaxKind::Unknown(ref s) if s == "generic_function") {
+            // Extract identifier and type_arguments from generic_function node
+            for gen_child in &child.children {
+                if gen_child.kind == SyntaxKind::Identifier && callee.is_none() {
+                    callee = Some(lower_expr(ctx, current_scope, gen_child, body));
+                } else if matches!(&gen_child.kind, SyntaxKind::Unknown(ref s) if s == "type_arguments") {
+                    // Parse type arguments (turbofish syntax: ::<T1, T2, ...>)
+                    type_args = Some(parse_type_arguments(ctx, current_scope, gen_child));
+                }
+            }
+        }
+        // Also check for standalone type_arguments (in case the structure is different)
+        else if matches!(&child.kind, SyntaxKind::Unknown(ref s) if s == "type_arguments") {
+            type_args = Some(parse_type_arguments(ctx, current_scope, child));
         }
     }
 
@@ -626,6 +644,7 @@ fn lower_call(
         body.exprs.alloc(Expr::Call {
             callee: callee_expr,
             args,
+            type_args,
             span: file_span,
         })
     } else {
@@ -1798,6 +1817,22 @@ fn parse_generic_params(ctx: &mut LoweringContext, node: &SyntaxNode) -> Vec<Gen
     }
 
     params
+}
+
+/// Parse type arguments from a type_arguments node (turbofish syntax: ::<i64, String>)
+fn parse_type_arguments(ctx: &mut LoweringContext, _current_scope: ScopeId, node: &SyntaxNode) -> Vec<TypeId> {
+    let mut type_args = vec![];
+
+    for child in &node.children {
+        // Look for type nodes (primitive_type, type_identifier, generic_type, etc.)
+        if child.kind == SyntaxKind::Type
+            || matches!(&child.kind, SyntaxKind::Unknown(ref s) if s == "primitive_type" || s == "type_identifier" || s == "generic_type") {
+            let type_id = lower_type_node(ctx, child);
+            type_args.push(type_id);
+        }
+    }
+
+    type_args
 }
 
 /// Parse function parameters from a Parameters node

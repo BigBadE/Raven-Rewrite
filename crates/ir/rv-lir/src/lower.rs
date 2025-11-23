@@ -141,7 +141,7 @@ fn lower_rvalue(rvalue: &rv_mir::RValue) -> RValue {
             op: *op,
             operand: lower_operand(operand),
         },
-        rv_mir::RValue::Call { func, args } => RValue::Call {
+        rv_mir::RValue::Call { func, args, .. } => RValue::Call {
             func: *func,
             args: args.iter().map(lower_operand).collect(),
         },

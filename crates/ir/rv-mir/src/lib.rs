@@ -208,6 +208,8 @@ pub enum RValue {
         func: FunctionId,
         /// Arguments
         args: Vec<Operand>,
+        /// Explicit type arguments (turbofish syntax: foo::<i64>)
+        type_args: Option<Vec<MirType>>,
     },
     /// Create a reference
     Ref {

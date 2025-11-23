@@ -827,6 +827,7 @@ impl<'ctx> LoweringContext<'ctx> {
             Expr::Call {
                 callee,
                 args,
+                type_args,
                 span,
             } => {
                 // Lower arguments
@@ -838,6 +839,13 @@ impl<'ctx> LoweringContext<'ctx> {
                     })
                     .collect();
 
+                // Convert HIR type arguments to MIR types
+                let mir_type_args = type_args.as_ref().map(|type_ids| {
+                    type_ids.iter().map(|type_id| {
+                        self.lower_hir_type_recursive(&self.hir_types[*type_id])
+                    }).collect()
+                });
+
                 // Extract the function ID from the callee expression
                 let callee_expr = &body.exprs[*callee];
                 if let Expr::Variable { def: Some(DefId::Function(func_id)), .. } = callee_expr {
@@ -847,6 +855,7 @@ impl<'ctx> LoweringContext<'ctx> {
                         rvalue: RValue::Call {
                             func: *func_id,
                             args: arg_operands,
+                            type_args: mir_type_args,
                         },
                         span: *span,
                     });
@@ -916,6 +925,7 @@ impl<'ctx> LoweringContext<'ctx> {
                     rvalue: RValue::Call {
                         func: func_id,
                         args: arg_operands,
+                        type_args: None,  // Method calls don't have turbofish syntax
                     },
                     span: *span,
                 });

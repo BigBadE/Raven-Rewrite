@@ -16,7 +16,7 @@ fn main() -> i64 {
 
 #[test]
 fn test_identity() -> bool {
-    if identity(42) == 42 {
+    if identity::<i64>(42) == 42 {
         true
     } else {
         false
@@ -25,7 +25,7 @@ fn test_identity() -> bool {
 
 #[test]
 fn test_identity_different_value() -> bool {
-    if identity(100) == 100 {
+    if identity::<i64>(100) == 100 {
         true
     } else {
         false
@@ -34,7 +34,7 @@ fn test_identity_different_value() -> bool {
 
 #[test]
 fn test_max() -> bool {
-    if max(10, 20) == 20 {
+    if max::<i64>(10, 20) == 20 {
         true
     } else {
         false
@@ -43,7 +43,7 @@ fn test_max() -> bool {
 
 #[test]
 fn test_max_reversed() -> bool {
-    if max(20, 10) == 20 {
+    if max::<i64>(20, 10) == 20 {
         true
     } else {
         false
@@ -52,7 +52,7 @@ fn test_max_reversed() -> bool {
 
 #[test]
 fn test_max_equal() -> bool {
-    if max(15, 15) == 15 {
+    if max::<i64>(15, 15) == 15 {
         true
     } else {
         false
