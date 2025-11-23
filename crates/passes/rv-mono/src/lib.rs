@@ -8,42 +8,7 @@ use std::collections::HashMap;
 use rv_hir::FunctionId;
 use rv_hir_lower::LoweringContext;
 use rv_mir::{MirFunction, MirType};
-use rv_ty::{TyContext, TyId, TyKind};
-
-/// Helper function to recursively convert MirType to TyId
-fn convert_mir_type_to_ty_id(mir_ty: &MirType, ty_ctx: &mut TyContext) -> TyId {
-    match mir_ty {
-        MirType::Int => ty_ctx.types.int(),
-        MirType::Float => ty_ctx.types.float(),
-        MirType::Bool => ty_ctx.types.bool(),
-        MirType::Unit => ty_ctx.types.unit(),
-        MirType::String => ty_ctx.types.string(),
-        MirType::Ref { inner, mutable } => {
-            // Recursively convert the inner type
-            let inner_ty_id = convert_mir_type_to_ty_id(inner, ty_ctx);
-            // Create a reference type
-            ty_ctx.types.alloc(TyKind::Ref {
-                inner: Box::new(inner_ty_id),
-                mutable: *mutable,
-            })
-        }
-        MirType::Named(_sym) => {
-            // For named types, we need the TypeDefId which we don't have here
-            // Let type inference resolve this from the HIR type
-            ty_ctx.fresh_ty_var()
-        }
-        MirType::Function { .. } => {
-            // Function types are not yet fully supported in type inference
-            // Create a type variable and let type inference resolve it
-            ty_ctx.fresh_ty_var()
-        }
-        MirType::Struct { .. } | MirType::Enum { .. } | MirType::Tuple(_) | MirType::Array { .. } => {
-            // Complex types that need more sophisticated handling
-            // For now, create type variables and let type inference resolve them
-            ty_ctx.fresh_ty_var()
-        }
-    }
-}
+use rv_ty::TyContext;
 
 /// Monomorphization context
 pub struct MonoContext {
@@ -349,66 +314,37 @@ pub fn monomorphize_functions(
                 }
             }
 
-            // ARCHITECTURE: Run type inference with concrete type substitutions
-            // Create a fresh type context for this monomorphized instance
-            let mut ty_ctx_clone = TyContext::new();
+            // ARCHITECTURE: Run type inference with concrete parameter types
+            // Create a fresh TyContext and pre-populate parameter DefIds with concrete types
+            let mut ty_ctx_for_inference = TyContext::new();
 
-            // ARCHITECTURE: Store parameter types by DefId (not Symbol name)
-            // For each function parameter, look up its type from type_subst
+            // Set up parameter types BEFORE running type inference
             for (param_idx, param) in hir_func.parameters.iter().enumerate() {
-                // Check if this parameter's HIR type is a generic parameter
                 let hir_ty = &hir_ctx.types[param.ty];
-                let ty_id = match hir_ty {
-                    // Generic parameter (e.g., T in fn foo<T>(x: T))
-                    rv_hir::Type::Generic { name, .. } => {
-                        if let Some(mir_ty) = type_subst.get(name) {
-                            // Convert MirType to TyId for concrete substitution
-                            convert_mir_type_to_ty_id(&mir_ty, &mut ty_ctx_clone)
-                        } else {
-                            // Generic parameter has no substitution - let type inference handle it
-                            ty_ctx_clone.fresh_ty_var()
-                        }
-                    }
-                    // Reference to generic (e.g., &T in fn foo<T>(x: &T))
-                    rv_hir::Type::Reference { inner, mutable, .. } => {
-                        // Check if the inner type is a generic
-                        let inner_ty = &hir_ctx.types[**inner];
-                        let inner_ty_id = match inner_ty {
-                            rv_hir::Type::Generic { name, .. } => {
-                                if let Some(mir_ty) = type_subst.get(name) {
-                                    // Convert MirType to TyId for concrete substitution
-                                    convert_mir_type_to_ty_id(&mir_ty, &mut ty_ctx_clone)
-                                } else {
-                                    // Generic parameter has no substitution - let type inference handle it
-                                    ty_ctx_clone.fresh_ty_var()
-                                }
-                            }
-                            // Non-generic inner type - will be inferred
-                            _ => ty_ctx_clone.fresh_ty_var(),
+                if let rv_hir::Type::Generic { name, .. } = hir_ty {
+                    if let Some(mir_ty) = type_subst.get(name) {
+                        // Create concrete TyId for this generic parameter
+                        let concrete_ty_id = match mir_ty {
+                            MirType::Int => ty_ctx_for_inference.types.int(),
+                            MirType::Bool => ty_ctx_for_inference.types.bool(),
+                            MirType::Float => ty_ctx_for_inference.types.float(),
+                            MirType::Unit => ty_ctx_for_inference.types.unit(),
+                            MirType::String => ty_ctx_for_inference.types.string(),
+                            _ => ty_ctx_for_inference.fresh_ty_var(), // Complex types become type vars
                         };
 
-                        // Create reference type
-                        ty_ctx_clone.types.alloc(rv_ty::TyKind::Ref {
-                            inner: Box::new(inner_ty_id),
-                            mutable: *mutable,
-                        })
+                        // Set the DefId to point to this concrete type
+                        let local_id = rv_hir::LocalId(param_idx as u32);
+                        let def_id = rv_hir::DefId::Local {
+                            func: *func_id,
+                            local: local_id,
+                        };
+                        ty_ctx_for_inference.set_def_type(def_id, concrete_ty_id);
                     }
-                    // Named type (e.g., struct name) - will be inferred
-                    _ => ty_ctx_clone.fresh_ty_var(),
-                };
-
-
-                // Store by DefId
-                let local_id = rv_hir::LocalId(param_idx as u32);
-                let def_id = rv_hir::DefId::Local {
-                    func: *func_id,
-                    local: local_id,
-                };
-                ty_ctx_clone.set_def_type(def_id, ty_id);
+                }
             }
 
-            // Run type inference on the generic function
-            // This populates expr_types in ty_ctx_clone, which lower_function_with_subst needs
+            // Now run type inference with the concrete parameter types
             use rv_ty::TypeInference;
             let mut type_inference = TypeInference::with_hir_context_and_tyctx(
                 &hir_ctx.impl_blocks,
@@ -418,7 +354,7 @@ pub fn monomorphize_functions(
                 &hir_ctx.enums,
                 &hir_ctx.traits,
                 &hir_ctx.interner,
-                ty_ctx_clone,
+                ty_ctx_for_inference,
             );
             type_inference.infer_function(hir_func);
             let inference_result = type_inference.finish();
