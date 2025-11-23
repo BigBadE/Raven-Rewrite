@@ -634,11 +634,13 @@ impl<'a> TypeInference<'a> {
                         // Other DefIds: look up from context or name-based lookup
                         _ => {
                             if let Some(def_ty) = self.ctx.get_def_type(*def_id) {
-                                def_ty
+                                // Follow substitutions to get the most current type
+                                self.ctx.follow_var(def_ty)
                             } else {
                                 // DefId not yet typed, try name-based lookup (for parameters)
                                 if let Some(var_ty) = self.lookup_var(*name) {
-                                    var_ty
+                                    // Follow substitutions to get the most current type
+                                    self.ctx.follow_var(var_ty)
                                 } else {
                                     // Unknown definition, create fresh variable
                                     self.ctx.fresh_ty_var()
