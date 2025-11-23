@@ -41,16 +41,24 @@ impl JitCompiler {
 
     /// Compile multiple MIR functions (for programs with function calls)
     pub fn compile_multiple(&mut self, mir_funcs: &[MirFunction]) -> Result<*const u8> {
-        // Phase 1: Infer parameter counts by scanning all call sites
+        // Phase 1: Infer parameter counts by scanning all call sites AND function definitions
         let mut param_counts: FxHashMap<rv_hir::FunctionId, usize> = FxHashMap::default();
 
+        // First, register all functions being compiled with their actual parameter counts
+        for mir_func in mir_funcs {
+            // MirFunction stores the number of parameters directly
+            param_counts.insert(mir_func.id, mir_func.param_count);
+        }
+
+        // Then, scan call sites to infer parameter counts for any called functions
         for mir_func in mir_funcs {
             for bb in &mir_func.basic_blocks {
                 for stmt in &bb.statements {
                     if let Statement::Assign { rvalue, .. } = stmt {
                         if let RValue::Call { func, args } = rvalue {
                             // This tells us how many parameters the called function has
-                            param_counts.insert(*func, args.len());
+                            // Only insert if not already present (prefer function definition count)
+                            param_counts.entry(*func).or_insert(args.len());
                         }
                     }
                 }

@@ -32,8 +32,15 @@ fn convert_mir_type_to_ty_id(mir_ty: &MirType, ty_ctx: &mut TyContext) -> TyId {
             // Let type inference resolve this from the HIR type
             ty_ctx.fresh_ty_var()
         }
-        _ => {
-            panic!("Unsupported MirType for generic substitution: {:?}", mir_ty);
+        MirType::Function { .. } => {
+            // Function types are not yet fully supported in type inference
+            // Create a type variable and let type inference resolve it
+            ty_ctx.fresh_ty_var()
+        }
+        MirType::Struct { .. } | MirType::Enum { .. } | MirType::Tuple(_) | MirType::Array { .. } => {
+            // Complex types that need more sophisticated handling
+            // For now, create type variables and let type inference resolve them
+            ty_ctx.fresh_ty_var()
         }
     }
 }

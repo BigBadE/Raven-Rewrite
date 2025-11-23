@@ -294,36 +294,68 @@ fn cmd_compile(cli: &Cli, file: &PathBuf, output_file: Option<&PathBuf>, args: &
             })
             .collect();
 
-        // Monomorphization: collect generic function instantiations needed from MIR
-        use rv_mono::MonoCollector;
-        let mut collector = MonoCollector::new();
+        // Monomorphization: iteratively collect and generate generic function instantiations
+        // We need to do this iteratively because monomorphized functions may call other generic functions
+        use rv_mono::{MonoCollector, monomorphize_functions};
+        use std::collections::HashMap;
 
-        // Only collect from non-generic functions (entry points)
-        for mir_func in &mir_functions {
-            if let Some(hir_func) = hir.functions.get(&mir_func.id) {
-                if hir_func.generics.is_empty() {
+        let mut all_instance_map: HashMap<(rv_hir::FunctionId, Vec<rv_mir::MirType>), rv_hir::FunctionId> = HashMap::new();
+        let mut next_func_id = hir.functions.keys().map(|id| id.0).max().unwrap_or(0) + 1;
+
+        // Keep iterating until no new instances are discovered
+        loop {
+            let mut collector = MonoCollector::new();
+
+            // Collect from all non-generic MIR functions
+            for mir_func in &mir_functions {
+                // Only collect from non-generic functions (both original entry points and monomorphized instances)
+                if let Some(hir_func) = hir.functions.get(&mir_func.id) {
+                    // This is an original HIR function that hasn't been monomorphized
+                    if hir_func.generics.is_empty() {
+                        collector.collect_from_mir(mir_func, &hir.functions, &hir.types);
+                    }
+                } else {
+                    // This is a monomorphized instance (doesn't have HIR entry with same ID)
+                    // It's non-generic by definition, so always collect from it
                     collector.collect_from_mir(mir_func, &hir.functions, &hir.types);
                 }
             }
+
+            // Filter out instances we've already generated
+            let new_instances: Vec<_> = collector.needed_instances()
+                .iter()
+                .filter(|(func_id, type_args)| !all_instance_map.contains_key(&(*func_id, type_args.clone())))
+                .cloned()
+                .collect();
+
+            // If no new instances, we're done
+            if new_instances.is_empty() {
+                break;
+            }
+
+            // Generate the new monomorphized instances
+            let (mono_functions, instance_map) = monomorphize_functions(
+                &hir,
+                type_inference.context(),
+                &new_instances,
+                next_func_id,
+            );
+
+            // Update next_func_id for the next iteration
+            if let Some(max_id) = mono_functions.iter().map(|f| f.id.0).max() {
+                next_func_id = max_id + 1;
+            }
+
+            // Merge the new instance mappings
+            all_instance_map.extend(instance_map);
+
+            // Add monomorphized functions to MIR functions list
+            mir_functions.extend(mono_functions);
         }
-
-        // Generate monomorphized instances
-        // ARCHITECTURE: No catch_unwind - let monomorphization failures bubble up
-        use rv_mono::monomorphize_functions;
-        let next_func_id = hir.functions.keys().map(|id| id.0).max().unwrap_or(0) + 1;
-        let (mono_functions, instance_map) = monomorphize_functions(
-            &hir,
-            type_inference.context(),
-            collector.needed_instances(),
-            next_func_id,
-        );
-
-        // Add monomorphized functions to MIR functions list
-        mir_functions.extend(mono_functions);
 
         // Remap function calls in all MIR functions to use monomorphized instance IDs
         use rv_mono::rewrite_calls_to_instances;
-        rewrite_calls_to_instances(&mut mir_functions, &instance_map);
+        rewrite_calls_to_instances(&mut mir_functions, &all_instance_map);
 
         // Lower MIR to LIR (now all generics are monomorphized)
         let lir_functions = rv_lir::lower::lower_mir_to_lir(mir_functions, &hir);
