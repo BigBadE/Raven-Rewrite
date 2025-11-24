@@ -746,13 +746,16 @@ impl<'ctx> LoweringContext<'ctx> {
                         )
                     });
 
+                // Follow substitutions to get the resolved type
+                let resolved_ty_id = self.ty_ctx.follow_var(base_ty_id);
+
                 // Normalize the type to resolve type variables
-                let normalized_ty = self.ty_ctx.normalize(base_ty_id)
+                let normalized_ty = self.ty_ctx.normalize(resolved_ty_id)
                     .unwrap_or_else(|_| {
                         panic!(
                             "COMPILER BUG: Failed to normalize type {:?} for field access. \
                              Type inference should resolve all type variables.",
-                            base_ty_id
+                            resolved_ty_id
                         )
                     });
 

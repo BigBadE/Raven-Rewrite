@@ -881,9 +881,12 @@ impl<'a> TypeInference<'a> {
                 // Infer base type (no expected type for base)
                 let base_ty = self.infer_expr(body, *base, None);
 
+                // Follow substitutions to get the actual resolved type
+                let resolved_base_ty = self.ctx.follow_var(base_ty);
+
                 // Look up the field type from the struct DEFINITION, not the inferred type
                 // This ensures we get concrete types, not type variables from struct construction
-                let base_ty_kind = &self.ctx.types.get(base_ty).kind;
+                let base_ty_kind = &self.ctx.types.get(resolved_base_ty).kind;
                 match base_ty_kind {
                     TyKind::Struct { def_id, .. } => {
                         // Look up the struct definition to get field types
