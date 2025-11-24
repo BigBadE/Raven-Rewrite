@@ -640,7 +640,10 @@ impl<'a> TypeInference<'a> {
                                 // DefId not yet typed, try name-based lookup (for parameters)
                                 if let Some(var_ty) = self.lookup_var(*name) {
                                     // Follow substitutions to get the most current type
-                                    self.ctx.follow_var(var_ty)
+                                    let resolved_ty = self.ctx.follow_var(var_ty);
+                                    // Cache this lookup in def_types for future use
+                                    self.ctx.set_def_type(*def_id, resolved_ty);
+                                    resolved_ty
                                 } else {
                                     // Unknown definition, create fresh variable
                                     self.ctx.fresh_ty_var()

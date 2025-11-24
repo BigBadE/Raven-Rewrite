@@ -357,8 +357,11 @@ impl<'ctx> LoweringContext<'ctx> {
             )
         });
 
+        // Follow substitutions to get the resolved type
+        let resolved_ty_id = self.ty_ctx.follow_var(ty_id);
+
         // Normalize the type to resolve type variables
-        let mir_ty = match self.ty_ctx.normalize(ty_id) {
+        let mir_ty = match self.ty_ctx.normalize(resolved_ty_id) {
             Ok(normalized_ty) => {
                 self.lower_type(normalized_ty)
             }
