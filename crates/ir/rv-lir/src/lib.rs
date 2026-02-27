@@ -8,14 +8,17 @@
 //!
 //! The type system enforces that LLVM backend never receives generic code.
 
-#![allow(missing_docs, reason = "LIR is in active development, documentation will be added")]
+#![allow(
+    missing_docs,
+    reason = "LIR types mirror MIR types with identical semantics — struct field docs would be redundant"
+)]
 
 pub mod lower;
 
 use indexmap::IndexMap;
 use rv_hir::{FunctionId, LiteralKind};
-pub use rv_mir::{BinaryOp, UnaryOp};
 use rv_intern::Symbol;
+pub use rv_mir::{BinaryOp, UnaryOp};
 use rv_span::FileSpan;
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +38,19 @@ pub struct LirFunction {
     pub entry_block: BasicBlockId,
     /// Number of parameters (first N locals are parameters)
     pub param_count: usize,
+    /// Return type of the function (guaranteed concrete)
+    pub return_type: LirType,
+}
+
+impl LirFunction {
+    /// Get the LIR type of a local variable by its ID.
+    #[must_use]
+    pub fn get_local_type(&self, local: LocalId) -> Option<LirType> {
+        self.locals
+            .iter()
+            .find(|l| l.id == local)
+            .map(|l| l.ty.clone())
+    }
 }
 
 /// Local variable with concrete type
@@ -45,6 +61,8 @@ pub struct Local {
     /// Guaranteed concrete type (no type variables)
     pub ty: LirType,
     pub mutable: bool,
+    /// Source span for error reporting
+    pub span: rv_span::FileSpan,
 }
 
 /// Concrete type information for LIR
@@ -53,8 +71,9 @@ pub struct Local {
 /// All variants represent concrete, monomorphized types.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LirType {
-    Int,
-    Float,
+    Int(rv_hir::IntWidth, rv_hir::Signedness),
+    Float(rv_hir::FloatWidth),
+    Char,
     Bool,
     Unit,
     String,
@@ -83,12 +102,109 @@ pub enum LirType {
     Ref {
         mutable: bool,
         inner: Box<LirType>,
+        lifetime: Option<rv_span::LifetimeId>,
     },
     /// Function pointer with concrete signature
     Function {
         params: Vec<LirType>,
         ret: Box<LirType>,
     },
+    /// Raw pointer type (*const T or *mut T)
+    Pointer {
+        mutable: bool,
+        inner: Box<LirType>,
+    },
+    /// Never type (!)
+    Never,
+    /// Dynamic trait object (dyn Trait)
+    DynTrait {
+        principal: Symbol,
+    },
+    /// Impl trait (opaque type)
+    ImplTrait {
+        principal: Symbol,
+    },
+    /// Function pointer type: fn(T, U) -> V
+    FunctionPointer {
+        params: Vec<LirType>,
+        ret: Box<LirType>,
+        abi: Option<String>,
+    },
+    /// Box<T> - heap-allocated smart pointer
+    Box {
+        inner: Box<LirType>,
+    },
+}
+
+impl LirType {
+    /// Returns true if this type is unsized (slices, dyn Trait).
+    #[must_use]
+    pub fn is_unsized(&self) -> bool {
+        matches!(self, LirType::Slice { .. } | LirType::DynTrait { .. })
+    }
+
+    /// Returns true if a reference to this type is a fat pointer (16 bytes).
+    #[must_use]
+    pub fn ref_is_fat_ptr(&self) -> bool {
+        self.is_unsized()
+    }
+
+    /// Check if this type needs to be dropped.
+    ///
+    /// A type needs drop if:
+    /// - It's a Box (heap deallocation)
+    /// - It's a struct/enum/tuple/array containing fields that need drop
+    /// - It's a dyn Trait (drop called through vtable)
+    ///
+    /// A type does NOT need drop if:
+    /// - It's a primitive (int, float, char, bool, unit)
+    /// - It's a reference/pointer (doesn't own the data)
+    /// - It's a function pointer
+    #[must_use]
+    pub fn needs_drop(&self) -> bool {
+        match self {
+            // Primitives never need drop
+            LirType::Int(..)
+            | LirType::Float(..)
+            | LirType::Char
+            | LirType::Bool
+            | LirType::Unit
+            | LirType::String
+            | LirType::Never => false,
+
+            // References and pointers don't own their data
+            LirType::Ref { .. } | LirType::Pointer { .. } => false,
+
+            // Function pointers and function types are just addresses
+            LirType::Function { .. } | LirType::FunctionPointer { .. } => false,
+
+            // Box types need drop (heap deallocation)
+            LirType::Box { .. } => true,
+
+            // dyn Trait calls drop through vtable
+            LirType::DynTrait { .. } => true,
+
+            // impl Trait might need drop (conservatively assume yes)
+            LirType::ImplTrait { .. } => true,
+
+            // Structs: check fields recursively
+            LirType::Struct { fields, .. } => fields.iter().any(LirType::needs_drop),
+
+            // Enums: check if any variant has fields that need drop
+            LirType::Enum { variants, .. } => {
+                variants.iter().any(|v| v.fields.iter().any(LirType::needs_drop))
+            }
+
+            // Tuples: check elements
+            LirType::Tuple(elements) => elements.iter().any(LirType::needs_drop),
+
+            // Arrays: check element type
+            LirType::Array { element, .. } => element.needs_drop(),
+
+            // Slices: we don't own the data
+            LirType::Slice { .. } => false,
+        }
+    }
 }
 
 /// Enum variant with concrete types
@@ -145,8 +261,10 @@ pub enum Statement {
     Assign {
         place: Place,
         rvalue: RValue,
+        /// Source span for error reporting
+        span: FileSpan,
     },
-    /// No-op placeholder
+    /// No-op (used for storage liveness markers converted from MIR)
     Nop,
 }
 
@@ -154,13 +272,9 @@ pub enum Statement {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Terminator {
     /// Return from function
-    Return {
-        value: Option<Operand>,
-    },
+    Return { value: Option<Operand> },
     /// Unconditional jump
-    Goto {
-        target: BasicBlockId,
-    },
+    Goto { target: BasicBlockId },
     /// Switch on integer value
     SwitchInt {
         discriminant: Operand,
@@ -174,8 +288,41 @@ pub enum Terminator {
         destination: Place,
         target: Option<BasicBlockId>,
     },
+    /// Drop the value at a place, then continue to target block
+    Drop { place: Place, target: BasicBlockId },
     /// Unreachable code
     Unreachable,
+    /// Assert a condition, panic if false
+    Assert {
+        /// Condition that must be true
+        cond: Operand,
+        /// Whether to panic when cond is true (false) or false (true)
+        expected: bool,
+        /// Message to display on failure
+        msg: LirAssertMessage,
+        /// Block to continue to if assertion passes
+        target: BasicBlockId,
+    },
+}
+
+/// Message to display when an LIR assertion fails
+#[derive(Debug, Clone, PartialEq)]
+pub enum LirAssertMessage {
+    /// Index out of bounds: (index_value, length)
+    BoundsCheck {
+        /// The index that was out of bounds
+        index: Operand,
+        /// The length of the array/slice
+        len: Operand,
+    },
+    /// Overflow in arithmetic operation
+    Overflow(BinaryOp),
+    /// Division by zero
+    DivisionByZero,
+    /// Remainder by zero
+    RemainderByZero,
+    /// Explicit panic message
+    Panic(String),
 }
 
 /// R-values (things that can be assigned)
@@ -190,24 +337,52 @@ pub enum RValue {
         right: Operand,
     },
     /// Unary operation
-    UnaryOp {
-        op: UnaryOp,
-        operand: Operand,
-    },
+    UnaryOp { op: UnaryOp, operand: Operand },
     /// Function call
     Call {
         func: FunctionId,
         args: Vec<Operand>,
     },
     /// Reference (address-of)
-    Ref {
-        mutable: bool,
-        place: Place,
-    },
+    Ref { mutable: bool, place: Place },
     /// Create aggregate (struct, tuple, array)
     Aggregate {
         kind: AggregateKind,
         operands: Vec<Operand>,
+    },
+    /// Extract the discriminant of an enum value as an integer
+    Discriminant(Place),
+    /// Type cast (as)
+    Cast {
+        /// Value to cast
+        operand: Operand,
+        /// Source type
+        from: LirType,
+        /// Target type
+        to: LirType,
+    },
+    /// Dynamic dispatch via vtable
+    VtableCall {
+        receiver: Operand,
+        vtable_index: usize,
+        args: Vec<Operand>,
+        trait_id: rv_hir::TraitId,
+        method_name: Symbol,
+    },
+    /// Box allocation (heap allocate)
+    BoxNew {
+        operand: Operand,
+        inner_ty: LirType,
+    },
+    /// Box deallocation (free heap memory)
+    BoxFree {
+        place: Place,
+    },
+    /// Compiler intrinsic call
+    Intrinsic {
+        intrinsic: rv_mir::Intrinsic,
+        args: Vec<Operand>,
+        type_args: Vec<LirType>,
     },
 }
 
@@ -215,7 +390,16 @@ pub enum RValue {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AggregateKind {
     Tuple,
-    Struct,
+    Struct {
+        /// Struct name
+        name: Symbol,
+    },
+    Enum {
+        /// Enum name
+        name: Symbol,
+        /// Variant index within the enum definition
+        variant_idx: usize,
+    },
     Array(LirType),
 }
 
@@ -233,4 +417,24 @@ pub struct Constant {
     pub kind: LiteralKind,
     pub ty: LirType,
     pub span: FileSpan,
+}
+
+/// External function declaration with fully resolved LIR types.
+///
+/// This is the LIR equivalent of `rv_hir::ExternalFunction`, with all
+/// HIR `TypeId` references resolved to concrete `LirType` values.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LirExternalFunction {
+    /// Unique ID
+    pub id: FunctionId,
+    /// Function name (unmangled)
+    pub name: Symbol,
+    /// Mangled name (for linking)
+    pub mangled_name: Option<String>,
+    /// Parameter types (resolved to LIR)
+    pub param_types: Vec<LirType>,
+    /// Return type (resolved to LIR), None = void
+    pub return_type: Option<LirType>,
+    /// ABI (e.g., "C", "Rust")
+    pub abi: Option<String>,
 }

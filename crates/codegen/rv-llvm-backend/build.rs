@@ -1,5 +1,4 @@
 extern crate anyhow;
-extern crate cc;
 
 use anyhow::Context as _;
 use std::ffi::OsStr;
@@ -75,7 +74,10 @@ fn main() {
 
     // Set LLVM_SYS_180_PREFIX to point to the downloaded LLVM
     // This tells llvm-sys where to find LLVM
-    println!("cargo:rustc-env=LLVM_SYS_180_PREFIX={}", llvm_path.display());
+    println!(
+        "cargo:rustc-env=LLVM_SYS_180_PREFIX={}",
+        llvm_path.display()
+    );
 
     build(llvm_path);
 }
@@ -112,17 +114,41 @@ fn setup_llvm(mut target: PathBuf, url: &'static str) {
     // This allows linking libzstd and libxml2 without dev packages installed
     if env::consts::OS == "linux" {
         let llvm_lib_dir = llvm_path.join("target").join("lib");
-        fs::create_dir_all(&llvm_lib_dir).ok();
+        fs::create_dir_all(&llvm_lib_dir).unwrap_or_else(|e| {
+            panic!(
+                "Failed to create LLVM lib dir {}: {}",
+                llvm_lib_dir.display(),
+                e
+            )
+        });
 
-        // Create symlinks to system libraries
-        let _ = std::os::unix::fs::symlink(
-            "/usr/lib/x86_64-linux-gnu/libzstd.so.1",
-            llvm_lib_dir.join("libzstd.so")
-        );
-        let _ = std::os::unix::fs::symlink(
-            "/usr/lib/x86_64-linux-gnu/libxml2.so.2",
-            llvm_lib_dir.join("libxml2.so")
-        );
+        // Create symlinks to system libraries if they exist.
+        // Symlink creation may fail for two acceptable reasons:
+        // 1. The source library doesn't exist on this system (not all distros use the same paths)
+        // 2. The symlink already exists from a previous build
+        // Other failures (e.g., permission denied) are logged as warnings.
+        for (source, link_name) in [
+            ("/usr/lib/x86_64-linux-gnu/libzstd.so.1", "libzstd.so"),
+            ("/usr/lib/x86_64-linux-gnu/libxml2.so.2", "libxml2.so"),
+        ] {
+            let link_path = llvm_lib_dir.join(link_name);
+            if let Err(e) = std::os::unix::fs::symlink(source, &link_path) {
+                match e.kind() {
+                    io::ErrorKind::AlreadyExists => {
+                        // Symlink already exists from a previous build — expected
+                    }
+                    io::ErrorKind::NotFound => {
+                        eprintln!("cargo:warning=System library not found at {source}, {link_name} symlink skipped");
+                    }
+                    _ => {
+                        eprintln!(
+                            "cargo:warning=Failed to create symlink {}: {e}",
+                            link_path.display()
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -457,14 +483,8 @@ fn build(llvm_path: PathBuf) {
         env::set_var(CFLAGS, get_llvm_cflags(&llvm_config_path));
     }
 
-    // Build C wrapper if it exists
-    if Path::new("wrappers/target.c").exists() {
-        cc::Build::new()
-            .file("wrappers/target.c")
-            .compile("targetwrappers");
-    }
-
     let libdir = llvm_config(&llvm_config_path, ["--libdir"]);
+    let includedir = llvm_config(&llvm_config_path, ["--includedir"]);
 
     // Export information to other crates
     println!("cargo:config_path={}", llvm_config_path.display());
@@ -491,5 +511,19 @@ fn build(llvm_path: PathBuf) {
     let sys_lib_kind = LibraryKind::Dynamic;
     for name in get_system_libraries(&llvm_config_path, kind) {
         println!("cargo:rustc-link-lib={}={}", sys_lib_kind.string(), name);
+    }
+
+    // Compile the LLVM target initialization wrapper
+    // This provides the LLVM_InitializeAll* symbols that inkwell expects
+    // The LLVM headers define these as inline functions, so we need to
+    // compile a C file that exposes them as actual exported symbols
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let wrapper_source = Path::new(&manifest_dir).join("src").join("target_init.c");
+
+    if wrapper_source.exists() {
+        cc::Build::new()
+            .file(&wrapper_source)
+            .include(includedir.trim())
+            .compile("llvm_target_init");
     }
 }

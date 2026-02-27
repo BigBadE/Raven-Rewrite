@@ -25,6 +25,8 @@ pub enum Constraint {
         ty: TyId,
         /// Trait that must be implemented
         trait_id: TraitId,
+        /// Name of the generic parameter this bound applies to (for error messages)
+        param_name: Option<rv_intern::Symbol>,
         /// Source of this constraint
         source: ConstraintSource,
     },
@@ -140,10 +142,17 @@ impl Constraints {
     }
 
     /// Add a trait bound constraint
-    pub fn add_trait_bound(&mut self, ty: TyId, trait_id: TraitId, source: ConstraintSource) {
+    pub fn add_trait_bound(
+        &mut self,
+        ty: TyId,
+        trait_id: TraitId,
+        param_name: Option<rv_intern::Symbol>,
+        source: ConstraintSource,
+    ) {
         self.constraints.push(Constraint::TraitBound {
             ty,
             trait_id,
+            param_name,
             source,
         });
     }

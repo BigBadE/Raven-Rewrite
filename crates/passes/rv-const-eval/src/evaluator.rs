@@ -2,6 +2,7 @@
 
 use crate::{ConstError, ConstValue};
 use rv_hir::{BinaryOp, Body, Expr, LiteralKind, UnaryOp};
+use rv_intern::Interner;
 use rv_span::FileSpan;
 use std::collections::HashMap;
 
@@ -13,6 +14,8 @@ use std::collections::HashMap;
 pub struct ConstEvaluator {
     /// Known const values (for const items)
     const_values: HashMap<String, ConstValue>,
+    /// String interner for resolving Symbol names during variable lookup
+    interner: Option<Interner>,
 }
 
 impl ConstEvaluator {
@@ -21,6 +24,16 @@ impl ConstEvaluator {
     pub fn new() -> Self {
         Self {
             const_values: HashMap::new(),
+            interner: None,
+        }
+    }
+
+    /// Creates a new const evaluator with an interner for resolving variable names
+    #[must_use]
+    pub fn new_with_interner(interner: Interner) -> Self {
+        Self {
+            const_values: HashMap::new(),
+            interner: Some(interner),
         }
     }
 
@@ -113,22 +126,54 @@ impl ConstEvaluator {
                 }
             }
 
-            Expr::Variable { span, .. }
-            | Expr::Call { span, .. }
+            Expr::Variable { name, span, .. } => {
+                // Look up in registered const values (allows const items to reference other consts)
+                let name_str = self
+                    .interner
+                    .as_ref()
+                    .map(|i| i.resolve(name).to_string())
+                    .unwrap_or_default();
+                self.const_values
+                    .get(&name_str)
+                    .cloned()
+                    .ok_or(ConstError::NonConstExpr { span: *span })
+            }
+
+            Expr::Call { span, .. }
             | Expr::Match { span, .. }
             | Expr::Field { span, .. }
             | Expr::MethodCall { span, .. }
             | Expr::StructConstruct { span, .. }
             | Expr::EnumVariant { span, .. }
-            | Expr::Closure { span, .. } => Err(ConstError::NonConstExpr { span: *span }),
+            | Expr::Closure { span, .. }
+            | Expr::PathCall { span, .. }
+            | Expr::Assign { span, .. }
+            | Expr::CompoundAssign { span, .. }
+            | Expr::WhileLoop { span, .. }
+            | Expr::Loop { span, .. }
+            | Expr::Break { span, .. }
+            | Expr::Continue { span, .. }
+            | Expr::Array { span, .. }
+            | Expr::Tuple { span, .. }
+            | Expr::Index { span, .. }
+            | Expr::Cast { span, .. }
+            | Expr::UnsafeBlock { span, .. }
+            | Expr::WhileLet { span, .. }
+            | Expr::IfLet { span, .. }
+            | Expr::Error { span, .. }
+            | Expr::Range { span, .. }
+            | Expr::Try { span, .. }
+            | Expr::ForLoop { span, .. }
+            | Expr::Box { span, .. } => Err(ConstError::NonConstExpr { span: *span }),
         }
     }
 
     /// Evaluates a literal to a const value
     fn eval_literal(&self, kind: &LiteralKind) -> Result<ConstValue, ConstError> {
         Ok(match kind {
-            LiteralKind::Integer(value) => ConstValue::Int(*value),
-            LiteralKind::Float(value) => ConstValue::Float(*value),
+            LiteralKind::Integer(value, _) => ConstValue::Int(*value),
+            LiteralKind::Float(value, _) => ConstValue::Float(*value),
+            LiteralKind::Char(value) => ConstValue::Int(*value as i64),
             LiteralKind::String(value) => ConstValue::String(value.clone()),
             LiteralKind::Bool(value) => ConstValue::Bool(*value),
             LiteralKind::Unit => ConstValue::Unit,
@@ -136,7 +181,10 @@ impl ConstEvaluator {
     }
 
     /// Evaluates a binary operation
-    #[allow(clippy::too_many_lines, reason = "Comprehensive operator handling required")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Comprehensive operator handling required"
+    )]
     fn eval_binary_op(
         &self,
         op: BinaryOp,
@@ -224,12 +272,12 @@ impl ConstEvaluator {
             }
 
             // Float comparisons
-            (BinaryOp::Eq, ConstValue::Float(left_val), ConstValue::Float(right_val)) => {
-                Ok(ConstValue::Bool((left_val - right_val).abs() < f64::EPSILON))
-            }
-            (BinaryOp::Ne, ConstValue::Float(left_val), ConstValue::Float(right_val)) => {
-                Ok(ConstValue::Bool((left_val - right_val).abs() >= f64::EPSILON))
-            }
+            (BinaryOp::Eq, ConstValue::Float(left_val), ConstValue::Float(right_val)) => Ok(
+                ConstValue::Bool((left_val - right_val).abs() < f64::EPSILON),
+            ),
+            (BinaryOp::Ne, ConstValue::Float(left_val), ConstValue::Float(right_val)) => Ok(
+                ConstValue::Bool((left_val - right_val).abs() >= f64::EPSILON),
+            ),
             (BinaryOp::Lt, ConstValue::Float(left_val), ConstValue::Float(right_val)) => {
                 Ok(ConstValue::Bool(left_val < right_val))
             }
@@ -273,24 +321,30 @@ impl ConstEvaluator {
                 if *right_val < 0 || *right_val >= 64 {
                     Err(ConstError::OverflowError { span })
                 } else {
-                    left_val.checked_shl(u32::try_from(*right_val).map_err(|_| {
-                        ConstError::OverflowError { span }
-                    })?).map_or_else(
-                        || Err(ConstError::OverflowError { span }),
-                        |result| Ok(ConstValue::Int(result)),
-                    )
+                    left_val
+                        .checked_shl(
+                            u32::try_from(*right_val)
+                                .map_err(|_| ConstError::OverflowError { span })?,
+                        )
+                        .map_or_else(
+                            || Err(ConstError::OverflowError { span }),
+                            |result| Ok(ConstValue::Int(result)),
+                        )
                 }
             }
             (BinaryOp::Shr, ConstValue::Int(left_val), ConstValue::Int(right_val)) => {
                 if *right_val < 0 || *right_val >= 64 {
                     Err(ConstError::OverflowError { span })
                 } else {
-                    left_val.checked_shr(u32::try_from(*right_val).map_err(|_| {
-                        ConstError::OverflowError { span }
-                    })?).map_or_else(
-                        || Err(ConstError::OverflowError { span }),
-                        |result| Ok(ConstValue::Int(result)),
-                    )
+                    left_val
+                        .checked_shr(
+                            u32::try_from(*right_val)
+                                .map_err(|_| ConstError::OverflowError { span })?,
+                        )
+                        .map_or_else(
+                            || Err(ConstError::OverflowError { span }),
+                            |result| Ok(ConstValue::Int(result)),
+                        )
                 }
             }
 
@@ -313,12 +367,10 @@ impl ConstEvaluator {
     ) -> Result<ConstValue, ConstError> {
         match (op, &operand) {
             // Integer negation
-            (UnaryOp::Neg, ConstValue::Int(value)) => {
-                value.checked_neg().map_or_else(
-                    || Err(ConstError::OverflowError { span }),
-                    |result| Ok(ConstValue::Int(result)),
-                )
-            }
+            (UnaryOp::Neg, ConstValue::Int(value)) => value.checked_neg().map_or_else(
+                || Err(ConstError::OverflowError { span }),
+                |result| Ok(ConstValue::Int(result)),
+            ),
 
             // Float negation
             (UnaryOp::Neg, ConstValue::Float(value)) => Ok(ConstValue::Float(-value)),

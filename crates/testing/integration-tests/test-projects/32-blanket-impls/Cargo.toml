@@ -1,0 +1,10 @@
+[package]
+name = "blanket-impls"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[[bin]]
+name = "blanket-impls"
+path = "src/main.rs"

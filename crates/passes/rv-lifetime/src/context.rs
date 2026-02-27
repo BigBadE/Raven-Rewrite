@@ -70,8 +70,7 @@ impl LifetimeContext {
     /// # Examples
     ///
     /// ```rust
-    /// use rv_lifetime::{LifetimeContext, Lifetime, LifetimeId};
-    /// use rv_lifetime::lifetime::LifetimeConstraint;
+    /// use rv_lifetime::{LifetimeContext, LifetimeConstraint, Lifetime, LifetimeId};
     /// use rv_span::{FileId, FileSpan, Span};
     ///
     /// let mut ctx = LifetimeContext::new();

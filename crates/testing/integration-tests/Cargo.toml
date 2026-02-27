@@ -27,3 +27,4 @@ tempfile.workspace = true
 [dev-dependencies]
 expect-test.workspace = true
 indexmap.workspace = true
+tree-sitter.workspace = true

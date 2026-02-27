@@ -3,11 +3,7 @@
 use rustc_hash::FxHashMap;
 use rv_hir::{Body, Expr, ExprId};
 
-use crate::{
-    context::LifetimeContext,
-    error::{LifetimeError, LifetimeResult},
-    lifetime::LifetimeId,
-};
+use crate::{context::LifetimeContext, error::LifetimeResult, lifetime::LifetimeId};
 
 /// Lifetime inference engine.
 ///
@@ -92,16 +88,19 @@ impl LifetimeInference {
     fn constrain_expr(&mut self, expr_id: ExprId, expr: &Expr) -> LifetimeResult<()> {
         match expr {
             Expr::UnaryOp { operand, .. } => {
-                // For now, we don't distinguish reference operations in HIR
-                // This is a simplified placeholder for when Ref operations are added
+                // HIR UnaryOp covers both arithmetic negation and address-of (&).
+                // When Expr::Ref is added to HIR, this should generate an outlives
+                // constraint: operand_lifetime outlives the reference's lifetime.
+                // Until then, we just assign fresh lifetimes to both.
                 let _operand_lifetime = self.expr_lifetime(*operand);
                 let expr_lifetime = self.ctx.fresh_lifetime();
                 self.expr_lifetimes.insert(expr_id, expr_lifetime);
             }
 
             Expr::BinaryOp { left, right, .. } => {
-                // Binary operations typically don't create new lifetimes
-                // The result lifetime is based on the operands
+                // Binary operations don't create new lifetime constraints.
+                // We record sub-expression lifetimes for completeness but don't
+                // relate them — the result is a new value, not a borrow.
                 let _left_lifetime = self.expr_lifetime(*left);
                 let _right_lifetime = self.expr_lifetime(*right);
 
@@ -149,48 +148,118 @@ impl LifetimeInference {
 
     /// Solves the collected lifetime constraints.
     ///
-    /// This implements a simplified constraint solver. A production
-    /// implementation would use a proper outlives graph with cycle detection
-    /// and transitive closure.
+    /// Builds an outlives graph from constraints, computes transitive closure
+    /// to propagate relationships, detects cycles, and unifies equality
+    /// constraints.
     ///
     /// # Errors
     ///
     /// Returns an error if constraints cannot be satisfied (e.g., circular
     /// dependencies or impossible outlives relationships).
     fn solve(&mut self) -> LifetimeResult<()> {
-        // Simplified constraint solving
-        // A full implementation would:
-        // 1. Build an outlives graph
-        // 2. Check for cycles
-        // 3. Compute transitive closure
-        // 4. Verify all constraints are satisfiable
+        use crate::lifetime::LifetimeConstraint;
 
         // Collect constraints to avoid borrow checker issues
         let constraints: Vec<_> = self.ctx.constraints().to_vec();
 
-        // For now, we just check for obvious contradictions
+        // Phase 1: Process equality constraints via unification
         for constraint in &constraints {
-            match constraint {
-                crate::lifetime::LifetimeConstraint::Outlives { sub, sup, source: _ } => {
-                    // Check for trivially unsatisfiable constraints
-                    if sub == sup && !sub.is_static() {
-                        return Err(LifetimeError::UnsatisfiableConstraint {
-                            constraint: format!("{sub:?}: {sup:?}"),
-                            span: constraint.source(),
-                        });
+            if let LifetimeConstraint::Equality { left, right, .. } = constraint {
+                if let (Some(left_id), Some(right_id)) = (left.id(), right.id()) {
+                    if left_id != right_id {
+                        self.ctx.record_subst(left_id, right.clone());
+                        self.ctx.record_subst(right_id, left.clone());
                     }
                 }
-                crate::lifetime::LifetimeConstraint::Equality {
-                    left,
-                    right,
-                    source: _,
-                } => {
-                    // Equality constraints are always satisfiable by unification
-                    if let (Some(left_id), Some(right_id)) = (left.id(), right.id()) {
-                        if left_id != right_id {
-                            self.ctx.record_subst(left_id, right.clone());
-                            self.ctx.record_subst(right_id, left.clone());
+            }
+        }
+
+        // Phase 2: Build outlives graph and check for contradictions
+        // Edges represent "sub outlives sup" relationships.
+        // An edge from A → B means lifetime A must outlive lifetime B.
+        let mut outlives_edges: FxHashMap<LifetimeId, Vec<(LifetimeId, rv_span::FileSpan)>> =
+            FxHashMap::default();
+
+        for constraint in &constraints {
+            if let LifetimeConstraint::Outlives { sub, sup, source } = constraint {
+                // 'static outlives everything — that's always true
+                if sub.is_static() {
+                    continue;
+                }
+
+                // Nothing outlives 'static unless it is also 'static
+                if sup.is_static() && !sub.is_static() {
+                    if let Some(sub_id) = sub.id() {
+                        // Record that this variable must be 'static
+                        self.ctx
+                            .record_subst(sub_id, crate::lifetime::Lifetime::Static);
+                    }
+                    continue;
+                }
+
+                if let (Some(sub_id), Some(sup_id)) = (sub.id(), sup.id()) {
+                    // Self-outlives is trivially true
+                    if sub_id == sup_id {
+                        continue;
+                    }
+                    outlives_edges
+                        .entry(sub_id)
+                        .or_default()
+                        .push((sup_id, *source));
+                }
+            }
+        }
+
+        // Phase 3: Compute transitive closure of the outlives graph
+        // If A outlives B and B outlives C, then A must outlive C.
+        let mut changed = true;
+        let max_iterations = self.ctx.num_lifetimes() * 2 + 1;
+        let mut iteration = 0;
+
+        while changed && iteration < max_iterations {
+            changed = false;
+            iteration += 1;
+
+            let current_edges: Vec<_> = outlives_edges
+                .iter()
+                .flat_map(|(src, dsts)| dsts.iter().map(move |(dst, span)| (*src, *dst, *span)))
+                .collect();
+
+            for (a, b, span_ab) in &current_edges {
+                if let Some(b_edges) = outlives_edges.get(b).cloned() {
+                    for (c, _span_bc) in b_edges {
+                        if *a != c {
+                            let a_edges = outlives_edges.entry(*a).or_default();
+                            if !a_edges.iter().any(|(dst, _)| *dst == c) {
+                                a_edges.push((c, *span_ab));
+                                changed = true;
+                            }
                         }
+                    }
+                }
+            }
+        }
+
+        // Phase 4: Detect cycles (A outlives B and B outlives A is a contradiction
+        // for non-equal, non-static lifetimes — unless unified by equality)
+        for (src, dsts) in &outlives_edges {
+            for (dst, span) in dsts {
+                if src == dst {
+                    continue; // Self-loop, skip
+                }
+                // Check if reverse edge exists
+                if let Some(reverse_dsts) = outlives_edges.get(dst) {
+                    if reverse_dsts.iter().any(|(rev_dst, _)| rev_dst == src) {
+                        // Bidirectional outlives — unify the lifetimes
+                        let dst_lifetime = crate::lifetime::Lifetime::Inferred { id: *dst };
+                        self.ctx.record_subst(*src, dst_lifetime.clone());
+                        let src_lifetime = crate::lifetime::Lifetime::Inferred { id: *src };
+                        self.ctx.record_subst(*dst, src_lifetime);
+                        // This is not an error — mutual outlives implies equality.
+                        // Only report if we can prove it's genuinely unsatisfiable,
+                        // which would require concrete scope information we don't
+                        // have at this stage.
+                        let _ = span; // suppress unused warning
                     }
                 }
             }

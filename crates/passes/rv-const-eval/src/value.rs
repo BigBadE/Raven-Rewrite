@@ -1,5 +1,6 @@
 //! Const value representation
 
+use rv_hir::LiteralKind;
 use rv_intern::Symbol;
 
 /// A compile-time constant value
@@ -63,6 +64,23 @@ impl ConstValue {
         match self {
             Self::Float(value) => Some(*value),
             _ => None,
+        }
+    }
+
+    /// Converts a const value to a HIR `LiteralKind` for embedding in MIR.
+    ///
+    /// Returns `None` for compound types (Tuple, Struct, Array) which require
+    /// aggregate MIR support and cannot be represented as simple literals.
+    #[must_use]
+    pub fn to_literal_kind(&self) -> Option<LiteralKind> {
+        match self {
+            Self::Int(v) => Some(LiteralKind::Integer(*v, None)),
+            Self::Float(v) => Some(LiteralKind::Float(*v, None)),
+            Self::Bool(v) => Some(LiteralKind::Bool(*v)),
+            Self::String(v) => Some(LiteralKind::String(v.clone())),
+            Self::Unit => Some(LiteralKind::Unit),
+            // Compound types need aggregate MIR support
+            Self::Tuple(_) | Self::Struct { .. } | Self::Array(_) => None,
         }
     }
 }

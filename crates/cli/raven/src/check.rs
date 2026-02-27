@@ -17,7 +17,7 @@ pub fn check(path: &Path) -> Result<()> {
     println!("  {} {} source files", "Found:".bold(), source_files.len());
 
     let mut total_errors = 0;
-    let total_warnings = 0;
+    let mut total_warnings = 0;
 
     // Check all files
     for file_path in &source_files {
@@ -26,8 +26,45 @@ pub fn check(path: &Path) -> Result<()> {
         match crate::compiler::compile_file(file_path) {
             Ok(result) => {
                 println!("    {} Parsed successfully", "✓".green());
-                println!("    {} {} functions in HIR", "✓".green(), result.hir_ctx.functions.len());
-                println!("    {} Name resolution complete", "✓".green());
+                println!(
+                    "    {} {} functions in HIR",
+                    "✓".green(),
+                    result.hir_ctx.functions.len()
+                );
+
+                // Run coherence checking
+                match crate::compiler::check_coherence(&result.hir_ctx) {
+                    Ok(()) => {
+                        println!("    {} Coherence check passed", "✓".green());
+                    }
+                    Err(e) => {
+                        total_errors += 1;
+                        eprintln!("    {} {}", "✗".red(), e);
+                    }
+                }
+
+                // Run type inference and MIR lowering to catch more errors
+                match crate::compiler::lower_to_mir(&result.hir_ctx) {
+                    Ok((_inference_result, mir_functions)) => {
+                        println!(
+                            "    {} {} functions lowered to MIR",
+                            "✓".green(),
+                            mir_functions.len()
+                        );
+                    }
+                    Err(e) => {
+                        total_errors += 1;
+                        eprintln!("    {} {}", "✗".red(), e);
+                    }
+                }
+
+                // Count HIR lowering diagnostics as warnings
+                for diag in &result.hir_ctx.diagnostics {
+                    if diag.severity == rv_hir_lower::lower::DiagnosticSeverity::Warning {
+                        total_warnings += 1;
+                        eprintln!("    {} warning: {}", "⚠".yellow(), diag.message);
+                    }
+                }
             }
             Err(e) => {
                 total_errors += 1;
@@ -44,7 +81,11 @@ pub fn check(path: &Path) -> Result<()> {
             eprintln!("{} {} errors found", "Failed:".red().bold(), total_errors);
         }
         if total_warnings > 0 {
-            eprintln!("{} {} warnings found", "Warning:".yellow().bold(), total_warnings);
+            eprintln!(
+                "{} {} warnings found",
+                "Warning:".yellow().bold(),
+                total_warnings
+            );
         }
 
         if total_errors > 0 {

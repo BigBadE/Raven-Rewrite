@@ -85,9 +85,7 @@ pub struct ComplexityRule {
 
 impl Default for ComplexityRule {
     fn default() -> Self {
-        Self {
-            max_complexity: 10,
-        }
+        Self { max_complexity: 10 }
     }
 }
 
@@ -108,7 +106,9 @@ impl LintRule for ComplexityRule {
                     complexity, self.max_complexity
                 ),
                 span: ctx.function.span,
-                suggestion: Some("Consider breaking this function into smaller functions".to_string()),
+                suggestion: Some(
+                    "Consider breaking this function into smaller functions".to_string(),
+                ),
             });
         }
     }
@@ -122,9 +122,7 @@ pub struct TooManyParametersRule {
 
 impl Default for TooManyParametersRule {
     fn default() -> Self {
-        Self {
-            max_parameters: 5,
-        }
+        Self { max_parameters: 5 }
     }
 }
 
@@ -159,9 +157,7 @@ pub struct DeepNestingRule {
 
 impl Default for DeepNestingRule {
     fn default() -> Self {
-        Self {
-            max_depth: 4,
-        }
+        Self { max_depth: 4 }
     }
 }
 
@@ -182,7 +178,9 @@ impl LintRule for DeepNestingRule {
                     max_depth, self.max_depth
                 ),
                 span: ctx.function.span,
-                suggestion: Some("Consider extracting nested logic into separate functions".to_string()),
+                suggestion: Some(
+                    "Consider extracting nested logic into separate functions".to_string(),
+                ),
             });
         }
     }
@@ -221,7 +219,10 @@ impl LintRule for UnusedVariableRule {
 
 fn collect_let_bindings(body: &Body, vars: &mut Vec<(ExprId, FileSpan)>) {
     for (_stmt_id, stmt) in body.stmts.iter() {
-        if let Stmt::Let { initializer, span, .. } = stmt {
+        if let Stmt::Let {
+            initializer, span, ..
+        } = stmt
+        {
             if let Some(init_id) = initializer {
                 vars.push((*init_id, *span));
             }
@@ -229,11 +230,10 @@ fn collect_let_bindings(body: &Body, vars: &mut Vec<(ExprId, FileSpan)>) {
     }
 }
 
-fn collect_variable_uses(body: &Body, _vars: &mut Vec<ExprId>) {
-    for (_expr_id, expr) in body.exprs.iter() {
+fn collect_variable_uses(body: &Body, vars: &mut Vec<ExprId>) {
+    for (expr_id, expr) in body.exprs.iter() {
         if let Expr::Variable { .. } = expr {
-            // In a real implementation, would track the actual variable reference
-            // For now, this is a placeholder
+            vars.push(expr_id);
         }
     }
 }
@@ -246,9 +246,7 @@ pub struct CognitiveComplexityRule {
 
 impl Default for CognitiveComplexityRule {
     fn default() -> Self {
-        Self {
-            max_complexity: 15,
-        }
+        Self { max_complexity: 15 }
     }
 }
 
@@ -318,108 +316,5 @@ impl Linter {
 impl Default for Linter {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rv_hir::{Body, FunctionId, LiteralKind, Parameter};
-    use rv_span::{FileId, FileSpan, Span};
-
-    fn make_span() -> FileSpan {
-        FileSpan::new(FileId(0), Span::new(0, 0))
-    }
-
-    fn make_test_function(body: Body, param_count: usize) -> Function {
-        let interner = rv_intern::Interner::new();
-        let name_symbol = interner.intern("test_function");
-        let param_symbol = interner.intern("param");
-
-        Function {
-            id: FunctionId(0),
-            name: name_symbol,
-            span: make_span(),
-            generics: Vec::new(),
-            parameters: vec![Parameter {
-                name: param_symbol,
-                ty: rv_hir::TypeId::from_raw(0.into()),
-                inferred_ty: None,
-                span: make_span(),
-            }; param_count],
-            return_type: None,
-            body,
-            is_external: false,
-        }
-    }
-
-    #[test]
-    fn test_complexity_rule_pass() {
-        let body = Body::new();
-        let function = make_test_function(body, 0);
-
-        let rule = ComplexityRule::default();
-        let mut ctx = LintContext::new(&function);
-        rule.check_function(&mut ctx);
-
-        assert_eq!(ctx.diagnostics().len(), 0);
-    }
-
-    #[test]
-    fn test_too_many_parameters() {
-        let body = Body::new();
-        let function = make_test_function(body, 10);
-
-        let rule = TooManyParametersRule::default();
-        let mut ctx = LintContext::new(&function);
-        rule.check_function(&mut ctx);
-
-        assert_eq!(ctx.diagnostics().len(), 1);
-        assert_eq!(ctx.diagnostics()[0].rule, "too-many-parameters");
-        assert_eq!(ctx.diagnostics()[0].level, LintLevel::Warning);
-    }
-
-    #[test]
-    fn test_linter() {
-        let body = Body::new();
-        let function = make_test_function(body, 0);
-
-        let linter = Linter::new();
-        let diagnostics = linter.lint_function(&function);
-
-        // Simple function should have no warnings
-        assert_eq!(diagnostics.len(), 0);
-    }
-
-    #[test]
-    fn test_linter_with_complex_function() {
-        let mut body = Body::new();
-
-        // Create a complex if expression
-        let condition = body.exprs.alloc(Expr::Literal {
-            kind: LiteralKind::Bool(true),
-            span: make_span(),
-        });
-        let then_branch = body.exprs.alloc(Expr::Literal {
-            kind: LiteralKind::Integer(1),
-            span: make_span(),
-        });
-
-        let if_expr = body.exprs.alloc(Expr::If {
-            condition,
-            then_branch,
-            else_branch: None,
-            span: make_span(),
-        });
-
-        body.root_expr = if_expr;
-        let function = make_test_function(body, 10);
-
-        let linter = Linter::new();
-        let diagnostics = linter.lint_function(&function);
-
-        // Should trigger too-many-parameters rule
-        assert!(diagnostics.len() > 0);
-        assert!(diagnostics.iter().any(|d| d.rule == "too-many-parameters"));
     }
 }

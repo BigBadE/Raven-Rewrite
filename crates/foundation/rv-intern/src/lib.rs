@@ -18,17 +18,24 @@ impl Interner {
     }
 
     pub fn intern(&self, s: &str) -> Symbol {
-        self.inner.lock().unwrap().get_or_intern(s)
+        self.inner
+            .lock()
+            .expect("interner mutex poisoned")
+            .get_or_intern(s)
     }
 
     pub fn resolve(&self, sym: &Symbol) -> String {
-        self.inner.lock().unwrap().resolve(sym).to_string()
+        self.inner
+            .lock()
+            .expect("interner mutex poisoned")
+            .resolve(sym)
+            .to_string()
     }
 
     pub fn try_resolve(&self, sym: &Symbol) -> Option<String> {
         self.inner
             .lock()
-            .unwrap()
+            .expect("interner mutex poisoned")
             .try_resolve(sym)
             .map(|s| s.to_string())
     }

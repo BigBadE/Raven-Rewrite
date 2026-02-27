@@ -16,6 +16,9 @@ members = [
 ]
 exclude = [
     "crates/testing/integration-tests/test-projects/*",
+    "crates/passes/rv-attrs",
+    "crates/passes/rv-closure",
+    "crates/passes/rv-intrinsics",
 ]
 
 [workspace.package]
@@ -55,6 +58,7 @@ rv-mono = { path = "crates/passes/rv-mono" }
 rv-const-eval = { path = "crates/passes/rv-const-eval" }
 rv-lifetime = { path = "crates/passes/rv-lifetime" }
 rv-borrow-check = { path = "crates/passes/rv-borrow-check" }
+rv-intrinsics = { path = "crates/passes/rv-intrinsics" }
 rv-macro = { path = "crates/foundation/rv-macro" }
 
 # Internal crates - codegen
@@ -81,7 +85,7 @@ salsa = "0.24"
 
 # Parsing
 tree-sitter = "0.25"
-tree-sitter-rust = "0.24"
+tree-sitter-rust = { path = "deps/tree-sitter-rust" }
 
 # Code generation
 cranelift = "0.125"

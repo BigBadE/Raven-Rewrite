@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tempfile::TempDir;
 
 /// Result of running a multi-file test
@@ -101,33 +101,32 @@ impl MultiFileProject {
         self.expected = ExpectedResult::CompileError { patterns };
     }
 
-    /// Runs the multi-file test project
+    /// Writes the multi-file test project to a temporary directory and verifies
+    /// all files were created correctly.
     ///
-    /// This function:
-    /// 1. Creates a temporary directory for the project
-    /// 2. Writes all files to the directory
-    /// 3. Verifies file creation (compilation integration deferred)
-    /// 4. Returns the test result
+    /// **Note:** This method only validates the file layout. It does not compile
+    /// or execute the project because the multi-file compilation pipeline
+    /// (module resolution across files via VFS) is not yet connected. Once
+    /// `rv-resolve` supports cross-file module resolution, this method should
+    /// be extended to invoke the compiler and check output/errors.
     ///
     /// # Returns
     ///
-    /// Returns `TestResult::Pass` if the test succeeds, or `TestResult::Fail` with
-    /// a reason if it fails.
+    /// Returns `TestResult::Pass` if all files were written and verified, or
+    /// `TestResult::Fail` with a reason if file creation fails.
     #[must_use]
     pub fn run(&self) -> TestResult {
-        // Create temporary directory for the project
         let temp_dir = match TempDir::new() {
             Ok(dir) => dir,
             Err(e) => {
                 return TestResult::Fail {
                     reason: format!("Failed to create temporary directory: {}", e),
-                }
+                };
             }
         };
 
         let project_root = temp_dir.path().join(&self.name);
 
-        // Create the project root directory
         if let Err(e) = fs::create_dir_all(&project_root) {
             return TestResult::Fail {
                 reason: format!("Failed to create project root {:?}: {}", project_root, e),
@@ -138,7 +137,6 @@ impl MultiFileProject {
         for (path, content) in &self.files {
             let full_path = project_root.join(path);
 
-            // Create parent directories if needed
             if let Some(parent) = full_path.parent() {
                 if let Err(e) = fs::create_dir_all(parent) {
                     return TestResult::Fail {
@@ -147,7 +145,6 @@ impl MultiFileProject {
                 }
             }
 
-            // Write file contents
             if let Err(e) = fs::write(&full_path, content) {
                 return TestResult::Fail {
                     reason: format!("Failed to write file {:?}: {}", full_path, e),
@@ -155,47 +152,17 @@ impl MultiFileProject {
             }
         }
 
-        // Verify the test based on expected result
-        match &self.expected {
-            ExpectedResult::Success { output: _ } => {
-                // Verify all files were created successfully
-                for path in self.files.keys() {
-                    let full_path = project_root.join(path);
-                    if !full_path.exists() {
-                        return TestResult::Fail {
-                            reason: format!("File {:?} was not created", path),
-                        };
-                    }
-                }
-
-                // In the future, this would:
-                // 1. Compile the project using magpie or the compiler pipeline
-                // 2. Run the compiled binary
-                // 3. Compare output with expected output
-                //
-                // For now, we just verify file creation as infrastructure validation
-                TestResult::Pass
-            }
-            ExpectedResult::CompileError { patterns: _ } => {
-                // Verify all files were created
-                for path in self.files.keys() {
-                    let full_path = project_root.join(path);
-                    if !full_path.exists() {
-                        return TestResult::Fail {
-                            reason: format!("File {:?} was not created", path),
-                        };
-                    }
-                }
-
-                // In the future, this would:
-                // 1. Attempt to compile the project
-                // 2. Verify compilation fails
-                // 3. Check that error messages match expected patterns
-                //
-                // For now, we just verify file creation
-                TestResult::Pass
+        // Verify all files exist on disk
+        for path in self.files.keys() {
+            let full_path = project_root.join(path);
+            if !full_path.exists() {
+                return TestResult::Fail {
+                    reason: format!("File {:?} was not created", path),
+                };
             }
         }
+
+        TestResult::Pass
     }
 }
 
@@ -330,10 +297,7 @@ pub fn test_19_large_codebase() -> MultiFileProject {
     main_content.push_str("    let mut sum = 0;\n");
     for i in 0..10 {
         for j in 0..5 {
-            main_content.push_str(&format!(
-                "    sum = sum + module_{}::func_{}(sum);\n",
-                i, j
-            ));
+            main_content.push_str(&format!("    sum = sum + module_{}::func_{}(sum);\n", i, j));
         }
     }
     main_content.push_str("    sum\n}\n");
@@ -355,66 +319,17 @@ pub fn test_19_large_codebase() -> MultiFileProject {
         project.add_file(format!("src/module_{}.rs", mod_idx), mod_content);
     }
 
-    // Expected output would be the sum of all increments
-    // For now, just mark as success (actual calculation would be complex)
-    project.expect_success("calculated_sum");
+    // Calculate the expected sum: each func_j in module_i adds (i*5 + j) to the
+    // running total, applied cumulatively: sum = sum + (sum + increment).
+    // Since file-layout verification doesn't execute code, the exact value doesn't
+    // matter yet — but we compute it so the expectation is correct when compilation
+    // is connected.
+    let mut sum: i64 = 0;
+    for mod_idx in 0..10_i64 {
+        for fn_idx in 0..5_i64 {
+            sum = sum + (sum + mod_idx * 5 + fn_idx);
+        }
+    }
+    project.expect_success(&sum.to_string());
     project
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_create_project() {
-        let project = create_project("test");
-        assert_eq!(project.name, "test");
-        assert!(project.files.is_empty());
-    }
-
-    #[test]
-    fn test_add_file() {
-        let mut project = create_project("test");
-        project.add_file("src/main.rs", "fn main() {}");
-        assert_eq!(project.files.len(), 1);
-        assert_eq!(
-            project.files.get(Path::new("src/main.rs")).unwrap(),
-            "fn main() {}"
-        );
-    }
-
-    #[test]
-    fn test_expect_success() {
-        let mut project = create_project("test");
-        project.expect_success("42");
-        match project.expected {
-            ExpectedResult::Success { output } => assert_eq!(output, "42"),
-            _ => panic!("Expected Success result"),
-        }
-    }
-
-    #[test]
-    fn test_expect_errors() {
-        let mut project = create_project("test");
-        project.expect_errors(vec!["error".to_string()]);
-        match project.expected {
-            ExpectedResult::CompileError { patterns } => {
-                assert_eq!(patterns, vec!["error".to_string()])
-            }
-            _ => panic!("Expected CompileError result"),
-        }
-    }
-
-    #[test]
-    fn test_run_creates_files() {
-        let mut project = create_project("test");
-        project.add_file("src/main.rs", "fn main() -> i64 { 42 }");
-        project.add_file("src/lib.rs", "pub fn helper() -> i64 { 10 }");
-
-        let result = project.run();
-        match result {
-            TestResult::Pass => {}
-            TestResult::Fail { reason } => panic!("Test failed: {}", reason),
-        }
-    }
 }

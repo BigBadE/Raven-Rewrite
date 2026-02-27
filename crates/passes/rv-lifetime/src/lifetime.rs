@@ -3,18 +3,8 @@
 use rv_intern::Symbol;
 use rv_span::FileSpan;
 
-/// Lifetime identifier used during inference.
-///
-/// Each lifetime variable gets a unique ID during the inference process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LifetimeId(pub u32);
-
-/// Region identifier representing runtime lifetime scope.
-///
-/// Regions are the concrete representation of lifetimes during execution.
-/// They correspond to scopes in the program where values are live.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RegionId(pub u32);
+// Re-export from rv-span where the canonical definitions live.
+pub use rv_span::{LifetimeId, RegionId};
 
 /// A lifetime in the type system.
 ///
@@ -60,9 +50,11 @@ impl Lifetime {
     ///
     /// ```rust
     /// use rv_lifetime::{Lifetime, LifetimeId};
-    /// use rv_intern::Symbol;
+    /// use rv_intern::Interner;
     ///
-    /// let lifetime = Lifetime::named(LifetimeId(0), Symbol::from("a"));
+    /// let interner = Interner::new();
+    /// let sym = interner.intern("a");
+    /// let lifetime = Lifetime::named(LifetimeId(0), sym);
     /// ```
     #[must_use]
     pub fn named(id: LifetimeId, name: Symbol) -> Self {
@@ -128,12 +120,14 @@ impl LifetimeParam {
     ///
     /// ```rust
     /// use rv_lifetime::{LifetimeParam, LifetimeId};
-    /// use rv_intern::Symbol;
+    /// use rv_intern::Interner;
     /// use rv_span::{FileId, FileSpan, Span};
     ///
+    /// let interner = Interner::new();
+    /// let sym = interner.intern("a");
     /// let param = LifetimeParam::new(
     ///     LifetimeId(0),
-    ///     Symbol::from("a"),
+    ///     sym,
     ///     vec![],
     ///     FileSpan::new(FileId(0), Span::new(0, 0)),
     /// );

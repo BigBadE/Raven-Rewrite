@@ -82,6 +82,13 @@ impl ScopeTree {
         None
     }
 
+    /// Resolve a name in a specific scope only (no parent walking).
+    /// Used for module-qualified path resolution where each segment must
+    /// resolve within the module's own scope.
+    pub fn resolve_in_scope(&self, scope: ScopeId, name: &str) -> Option<super::SymbolId> {
+        self.scopes[scope].symbols.get(name).copied()
+    }
+
     /// Add a symbol to a scope
     pub fn add_symbol(&mut self, scope: ScopeId, name: String, symbol: super::SymbolId) {
         self.scopes[scope].symbols.insert(name, symbol);

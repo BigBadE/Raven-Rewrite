@@ -13,8 +13,8 @@ mod types;
 pub use codegen::LLVMBackend;
 
 use anyhow::Result;
-use rv_hir::{ExternalFunction, FunctionId};
-use rv_lir::LirFunction;
+use rv_hir::FunctionId;
+use rv_lir::{LirExternalFunction, LirFunction};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -33,12 +33,18 @@ pub fn compile_to_native(
 /// Compile LIR to native code with external function support
 pub fn compile_to_native_with_externals(
     functions: &[LirFunction],
-    external_functions: &HashMap<FunctionId, ExternalFunction>,
+    external_functions: &HashMap<FunctionId, LirExternalFunction>,
     output_path: &Path,
     opt_level: OptLevel,
 ) -> Result<()> {
     // Use a unique module name to avoid conflicts
-    let module_name = format!("raven_module_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+    let module_name = format!(
+        "raven_module_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock is before UNIX epoch")
+            .as_nanos()
+    );
     let backend = LLVMBackend::new(&module_name, opt_level)?;
 
     // Write object file directly (combined compile + write for efficiency)
@@ -60,85 +66,64 @@ pub fn compile_to_native_with_externals(
     Ok(())
 }
 
+/// Detect the system linker once by checking what is available on the PATH.
+/// Returns the linker command name on success.
+fn detect_linker() -> Result<&'static str> {
+    use std::process::Command;
+
+    if cfg!(target_family = "unix") {
+        // On Unix/Linux, GCC is the standard system linker driver
+        if Command::new("gcc").arg("--version").output().is_ok() {
+            return Ok("gcc");
+        }
+        anyhow::bail!(
+            "No linker found. GCC is required for linking on Unix/Linux.\n\
+             Install it with: apt install gcc (Debian/Ubuntu) or dnf install gcc (Fedora)"
+        );
+    } else if cfg!(target_family = "windows") {
+        // On Windows, use LLVM's MSVC-compatible linker
+        if Command::new("lld-link").arg("--version").output().is_ok() {
+            return Ok("lld-link");
+        }
+        anyhow::bail!(
+            "No linker found. lld-link is required for linking on Windows.\n\
+             Install LLVM or use the Visual Studio Build Tools."
+        );
+    } else {
+        anyhow::bail!("Unsupported platform for native linking");
+    }
+}
+
 fn link_object_to_executable(obj_path: &Path, output_path: &Path) -> Result<()> {
     use std::process::Command;
 
-    // Try linkers in order of preference:
-    // 1. GCC (Unix, Linux, MINGW with GCC installed) - uses main() as entry point by default
-    // 2. ld.lld (LLVM's linker - cross-platform)
-    // 3. lld-link (LLVM's MSVC-compatible linker)
+    let linker = detect_linker()?;
 
-    let mut errors = Vec::new();
+    let output = match linker {
+        "gcc" => Command::new("gcc")
+            .arg("-o")
+            .arg(output_path)
+            .arg(obj_path)
+            .output()
+            .map_err(|e| anyhow::anyhow!("Failed to execute gcc: {}", e))?,
+        "lld-link" => Command::new("lld-link")
+            .arg(format!("/OUT:{}", output_path.display()))
+            .arg(obj_path)
+            .arg("/SUBSYSTEM:CONSOLE")
+            .arg("/ENTRY:main")
+            .output()
+            .map_err(|e| anyhow::anyhow!("Failed to execute lld-link: {}", e))?,
+        other => anyhow::bail!("Unknown linker: {}", other),
+    };
 
-    // Try GCC first - standard linking with libc
-    if let Ok(output) = Command::new("gcc")
-        .arg("-o")
-        .arg(output_path)
-        .arg(obj_path)
-        .output()
-    {
-        if output.status.success() {
-            return Ok(());
-        } else {
-            errors.push(format!(
-                "gcc failed:\n  stdout: {}\n  stderr: {}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-    }
-
-    // Try ld.lld (LLVM linker) with main entry point
-    if let Ok(output) = Command::new("ld.lld")
-        .arg("-o")
-        .arg(output_path)
-        .arg(obj_path)
-        .arg("-e")
-        .arg("main")
-        .output()
-    {
-        if output.status.success() {
-            return Ok(());
-        } else {
-            errors.push(format!(
-                "ld.lld failed:\n  stdout: {}\n  stderr: {}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-    }
-
-    // Try lld-link (LLVM's MSVC-compatible linker)
-    if let Ok(output) = Command::new("lld-link")
-        .arg(format!("/OUT:{}", output_path.display()))
-        .arg(obj_path)
-        .arg("/SUBSYSTEM:CONSOLE")
-        .arg("/ENTRY:main")
-        .output()
-    {
-        if output.status.success() {
-            return Ok(());
-        } else {
-            errors.push(format!(
-                "lld-link failed:\n  stdout: {}\n  stderr: {}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-    }
-
-    // All linkers failed or none found
-    if errors.is_empty() {
-        anyhow::bail!(
-            "No linker found. Please ensure one of the following is in your PATH:\n\
-             - gcc (for Unix/Linux/MINGW)\n\
-             - ld.lld (LLVM linker)\n\
-             - lld-link (LLVM MSVC-compatible linker)"
-        );
+    if output.status.success() {
+        Ok(())
     } else {
         anyhow::bail!(
-            "All linkers failed:\n{}",
-            errors.join("\n\n")
+            "{} linking failed:\n  stdout: {}\n  stderr: {}",
+            linker,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }

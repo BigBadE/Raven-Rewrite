@@ -6,7 +6,7 @@ license.workspace = true
 
 [lib]
 name = "magpie"
-path = "src/main.rs"
+path = "src/lib.rs"
 
 [[bin]]
 name = "magpie"
@@ -35,3 +35,6 @@ rv-mono.workspace = true
 rv-syntax = { path = "../../foundation/rv-syntax" }
 lang-raven = { path = "../../language-support/lang-raven" }
 rv-hir.workspace = true
+rv-borrow-check.workspace = true
+rv-const-eval.workspace = true
+rv-span.workspace = true

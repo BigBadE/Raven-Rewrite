@@ -1,7 +1,9 @@
 //! Compilation driver and high-level APIs
 //!
 //! This crate provides the high-level driver logic for the Raven compiler.
-//! It orchestrates the compilation pipeline using the incremental queries from rv-database.
+//! It orchestrates the compilation pipeline for both single-file and multi-file projects.
+
+mod project;
 
 use anyhow::Result;
 use rv_hir::{FunctionId, ImplBlock, ImplId, StructDef, TraitDef, TraitId, TypeDefId};
@@ -9,6 +11,10 @@ use rv_intern::Interner;
 use rv_mir::MirFunction;
 use std::collections::HashMap;
 use std::path::Path;
+
+pub use project::{
+    compile_project, compile_project_to_mir, ProjectCompilation, ProjectCompilationError,
+};
 
 /// High-level compilation context containing all HIR data
 pub struct CompilationContext {
@@ -34,10 +40,21 @@ pub fn compile_file_to_mir(path: impl AsRef<Path>) -> Result<HashMap<FunctionId,
 
     // Parse source
     let parse_result = rv_parser::parse_source(&source);
-    let syntax = parse_result.syntax.ok_or_else(|| anyhow::anyhow!("Parse failed"))?;
+    let syntax = parse_result
+        .syntax
+        .ok_or_else(|| anyhow::anyhow!("Parse failed"))?;
 
     // Lower to HIR
     let hir_ctx = rv_hir_lower::lower_source_file(&syntax);
+
+    // Evaluate const and static items
+    let const_values = rv_const_eval::evaluate_const_items(&hir_ctx.const_items, &hir_ctx.interner);
+    let static_values = rv_const_eval::evaluate_static_items(
+        &hir_ctx.static_items,
+        &hir_ctx.const_items,
+        &const_values,
+        &hir_ctx.interner,
+    );
 
     // Run type inference and lower to MIR for each function
     let mut mir_functions = HashMap::new();
@@ -55,14 +72,14 @@ pub fn compile_file_to_mir(path: impl AsRef<Path>) -> Result<HashMap<FunctionId,
             &hir_ctx.types,
             &hir_ctx.structs,
             &hir_ctx.enums,
-            &hir_ctx.traits,
             &hir_ctx.interner,
         );
+        ty_ctx.set_const_static_items(&hir_ctx.const_items, &hir_ctx.static_items);
         ty_ctx.infer_function(function);
         let mut ty_result = ty_ctx.finish();
 
         // Lower to MIR
-        let mir = rv_mir_lower::LoweringContext::lower_function(
+        let mir_result = rv_mir_lower::LoweringContext::lower_function(
             function,
             &mut ty_result.ctx,
             &hir_ctx.structs,
@@ -72,9 +89,12 @@ pub fn compile_file_to_mir(path: impl AsRef<Path>) -> Result<HashMap<FunctionId,
             &hir_ctx.types,
             &hir_ctx.traits,
             &hir_ctx.interner,
+            &hir_ctx.lang_items,
+            &const_values,
+            &static_values,
         );
 
-        mir_functions.insert(*func_id, mir);
+        mir_functions.insert(*func_id, mir_result.function);
     }
 
     Ok(mir_functions)
@@ -86,7 +106,9 @@ pub fn compile_file_to_hir(path: impl AsRef<Path>) -> Result<CompilationContext>
 
     // Parse source
     let parse_result = rv_parser::parse_source(&source);
-    let syntax = parse_result.syntax.ok_or_else(|| anyhow::anyhow!("Parse failed"))?;
+    let syntax = parse_result
+        .syntax
+        .ok_or_else(|| anyhow::anyhow!("Parse failed"))?;
 
     // Lower to HIR
     let hir_ctx = rv_hir_lower::lower_source_file(&syntax);

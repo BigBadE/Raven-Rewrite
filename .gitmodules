@@ -1,0 +1,3 @@
+[submodule "deps/tree-sitter-rust"]
+	path = deps/tree-sitter-rust
+	url = git@github.com:BigBadE/tree-sitter-rust.git

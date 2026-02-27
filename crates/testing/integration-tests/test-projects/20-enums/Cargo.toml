@@ -1,0 +1,10 @@
+[package]
+name = "test-enums"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[[bin]]
+name = "test-enums"
+path = "src/main.rs"

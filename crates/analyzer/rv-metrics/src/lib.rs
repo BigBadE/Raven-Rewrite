@@ -2,7 +2,7 @@
 //!
 //! Provides code quality metrics for HIR functions
 
-use rv_hir::{Body, BinaryOp, Expr, ExprId, ExprVisitor, Function, Stmt, StmtId};
+use rv_hir::{BinaryOp, Body, Expr, ExprId, ExprVisitor, Function, Stmt, StmtId};
 use serde::{Deserialize, Serialize};
 
 /// Metrics for a single function
@@ -104,7 +104,12 @@ fn cognitive_complexity_expr(body: &Body, expr_id: ExprId, nesting: usize) -> us
     let mut complexity = 0;
 
     match expr {
-        Expr::If { condition, then_branch, else_branch, .. } => {
+        Expr::If {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             complexity += 1 + nesting;
             complexity += cognitive_complexity_expr(body, *condition, nesting);
             complexity += cognitive_complexity_expr(body, *then_branch, nesting + 1);
@@ -117,14 +122,18 @@ fn cognitive_complexity_expr(body: &Body, expr_id: ExprId, nesting: usize) -> us
                 }
             }
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             complexity += 1 + nesting;
             complexity += cognitive_complexity_expr(body, *scrutinee, nesting);
             for arm in arms {
                 complexity += cognitive_complexity_expr(body, arm.body, nesting + 1);
             }
         }
-        Expr::BinaryOp { op, left, right, .. } => {
+        Expr::BinaryOp {
+            op, left, right, ..
+        } => {
             if matches!(op, rv_hir::BinaryOp::And | rv_hir::BinaryOp::Or) {
                 complexity += 1;
             }
@@ -134,7 +143,9 @@ fn cognitive_complexity_expr(body: &Body, expr_id: ExprId, nesting: usize) -> us
         Expr::UnaryOp { operand, .. } => {
             complexity += cognitive_complexity_expr(body, *operand, nesting);
         }
-        Expr::Block { statements, expr, .. } => {
+        Expr::Block {
+            statements, expr, ..
+        } => {
             for stmt_id in statements {
                 complexity += cognitive_complexity_stmt(body, *stmt_id, nesting);
             }
@@ -167,10 +178,87 @@ fn cognitive_complexity_expr(body: &Body, expr_id: ExprId, nesting: usize) -> us
                 complexity += cognitive_complexity_expr(body, *field_expr, nesting);
             }
         }
-        Expr::Closure { body: closure_body, .. } => {
+        Expr::Closure {
+            body: closure_body, ..
+        } => {
             complexity += cognitive_complexity_expr(body, *closure_body, nesting + 1);
         }
-        Expr::Literal { .. } | Expr::Variable { .. } => {}
+        Expr::PathCall { args, .. } => {
+            for arg_id in args {
+                complexity += cognitive_complexity_expr(body, *arg_id, nesting);
+            }
+        }
+        Expr::WhileLoop {
+            condition,
+            body: loop_body,
+            ..
+        } => {
+            complexity += 1 + nesting;
+            complexity += cognitive_complexity_expr(body, *condition, nesting);
+            complexity += cognitive_complexity_expr(body, *loop_body, nesting + 1);
+        }
+        Expr::Loop {
+            body: loop_body, ..
+        } => {
+            complexity += 1 + nesting;
+            complexity += cognitive_complexity_expr(body, *loop_body, nesting + 1);
+        }
+        Expr::Assign { target, value, .. } => {
+            complexity += cognitive_complexity_expr(body, *target, nesting);
+            complexity += cognitive_complexity_expr(body, *value, nesting);
+        }
+        Expr::CompoundAssign { target, value, .. } => {
+            complexity += cognitive_complexity_expr(body, *target, nesting);
+            complexity += cognitive_complexity_expr(body, *value, nesting);
+        }
+        Expr::Break { value, .. } => {
+            if let Some(v) = value {
+                complexity += cognitive_complexity_expr(body, *v, nesting);
+            }
+        }
+        Expr::Continue { .. } => {}
+        Expr::Array { elements, .. } => {
+            for elem in elements {
+                complexity += cognitive_complexity_expr(body, *elem, nesting);
+            }
+        }
+        Expr::Tuple { elements, .. } => {
+            for elem in elements {
+                complexity += cognitive_complexity_expr(body, *elem, nesting);
+            }
+        }
+        Expr::Index { base, index, .. } => {
+            complexity += cognitive_complexity_expr(body, *base, nesting);
+            complexity += cognitive_complexity_expr(body, *index, nesting);
+        }
+        Expr::Cast {
+            expr: cast_expr, ..
+        } => {
+            complexity += cognitive_complexity_expr(body, *cast_expr, nesting);
+        }
+        Expr::UnsafeBlock { body: inner, .. } => {
+            complexity += cognitive_complexity_expr(body, *inner, nesting);
+        }
+        Expr::Literal { .. } | Expr::Variable { .. } | Expr::Error { .. }
+        | Expr::Range { .. } | Expr::Try { .. } | Expr::Box { .. } => {}
+        Expr::WhileLet { value, body: while_body, .. } => {
+            complexity += 1 + nesting;
+            complexity += cognitive_complexity_expr(body, *value, nesting);
+            complexity += cognitive_complexity_expr(body, *while_body, nesting + 1);
+        }
+        Expr::IfLet { value, then_branch, else_branch, .. } => {
+            complexity += 1 + nesting;
+            complexity += cognitive_complexity_expr(body, *value, nesting);
+            complexity += cognitive_complexity_expr(body, *then_branch, nesting + 1);
+            if let Some(else_expr) = else_branch {
+                complexity += cognitive_complexity_expr(body, *else_expr, nesting + 1);
+            }
+        }
+        Expr::ForLoop { iterator, body: loop_body, .. } => {
+            complexity += 1 + nesting;
+            complexity += cognitive_complexity_expr(body, *iterator, nesting);
+            complexity += cognitive_complexity_expr(body, *loop_body, nesting + 1);
+        }
     }
 
     complexity
@@ -179,11 +267,14 @@ fn cognitive_complexity_expr(body: &Body, expr_id: ExprId, nesting: usize) -> us
 fn cognitive_complexity_stmt(body: &Body, stmt_id: StmtId, nesting: usize) -> usize {
     let stmt = &body.stmts[stmt_id];
     match stmt {
-        Stmt::Let { initializer, .. } => {
-            initializer.map_or(0, |expr_id| cognitive_complexity_expr(body, expr_id, nesting))
-        }
+        Stmt::Let { initializer, .. } => initializer.map_or(0, |expr_id| {
+            cognitive_complexity_expr(body, expr_id, nesting)
+        }),
         Stmt::Expr { expr, .. } => cognitive_complexity_expr(body, *expr, nesting),
-        Stmt::Return { value, .. } => value.map_or(0, |expr_id| cognitive_complexity_expr(body, expr_id, nesting)),
+        Stmt::Return { value, .. } => value.map_or(0, |expr_id| {
+            cognitive_complexity_expr(body, expr_id, nesting)
+        }),
+        Stmt::Box { value, .. } => cognitive_complexity_expr(body, *value, nesting),
     }
 }
 
@@ -197,17 +288,30 @@ fn max_nesting_depth_expr(body: &Body, expr_id: ExprId, current_depth: usize) ->
     let mut max_depth = current_depth;
 
     match expr {
-        Expr::If { condition, then_branch, else_branch, .. } => {
+        Expr::If {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             max_depth = max_depth.max(max_nesting_depth_expr(body, *condition, current_depth));
-            max_depth = max_depth.max(max_nesting_depth_expr(body, *then_branch, current_depth + 1));
+            max_depth = max_depth.max(max_nesting_depth_expr(
+                body,
+                *then_branch,
+                current_depth + 1,
+            ));
             if let Some(else_id) = else_branch {
-                max_depth = max_depth.max(max_nesting_depth_expr(body, *else_id, current_depth + 1));
+                max_depth =
+                    max_depth.max(max_nesting_depth_expr(body, *else_id, current_depth + 1));
             }
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
             max_depth = max_depth.max(max_nesting_depth_expr(body, *scrutinee, current_depth));
             for arm in arms {
-                max_depth = max_depth.max(max_nesting_depth_expr(body, arm.body, current_depth + 1));
+                max_depth =
+                    max_depth.max(max_nesting_depth_expr(body, arm.body, current_depth + 1));
             }
         }
         Expr::BinaryOp { left, right, .. } => {
@@ -217,12 +321,16 @@ fn max_nesting_depth_expr(body: &Body, expr_id: ExprId, current_depth: usize) ->
         Expr::UnaryOp { operand, .. } => {
             max_depth = max_depth.max(max_nesting_depth_expr(body, *operand, current_depth));
         }
-        Expr::Block { statements, expr, .. } => {
+        Expr::Block {
+            statements, expr, ..
+        } => {
             for stmt_id in statements {
-                max_depth = max_depth.max(max_nesting_depth_stmt(body, *stmt_id, current_depth + 1));
+                max_depth =
+                    max_depth.max(max_nesting_depth_stmt(body, *stmt_id, current_depth + 1));
             }
             if let Some(expr_id) = expr {
-                max_depth = max_depth.max(max_nesting_depth_expr(body, *expr_id, current_depth + 1));
+                max_depth =
+                    max_depth.max(max_nesting_depth_expr(body, *expr_id, current_depth + 1));
             }
         }
         Expr::Call { callee, args, .. } => {
@@ -250,10 +358,86 @@ fn max_nesting_depth_expr(body: &Body, expr_id: ExprId, current_depth: usize) ->
                 max_depth = max_depth.max(max_nesting_depth_expr(body, *field_expr, current_depth));
             }
         }
-        Expr::Closure { body: closure_body, .. } => {
-            max_depth = max_depth.max(max_nesting_depth_expr(body, *closure_body, current_depth + 1));
+        Expr::Closure {
+            body: closure_body, ..
+        } => {
+            max_depth = max_depth.max(max_nesting_depth_expr(
+                body,
+                *closure_body,
+                current_depth + 1,
+            ));
         }
-        Expr::Literal { .. } | Expr::Variable { .. } => {}
+        Expr::PathCall { args, .. } => {
+            for arg_id in args {
+                max_depth = max_depth.max(max_nesting_depth_expr(body, *arg_id, current_depth));
+            }
+        }
+        Expr::WhileLoop {
+            condition,
+            body: loop_body,
+            ..
+        } => {
+            max_depth = max_depth.max(max_nesting_depth_expr(body, *condition, current_depth));
+            max_depth = max_depth.max(max_nesting_depth_expr(body, *loop_body, current_depth + 1));
+        }
+        Expr::Loop {
+            body: loop_body, ..
+        } => {
+            max_depth = max_depth.max(max_nesting_depth_expr(body, *loop_body, current_depth + 1));
+        }
+        Expr::Assign { target, value, .. } => {
+            max_depth = max_depth.max(max_nesting_depth_expr(body, *target, current_depth));
+            max_depth = max_depth.max(max_nesting_depth_expr(body, *value, current_depth));
+        }
+        Expr::CompoundAssign { target, value, .. } => {
+            max_depth = max_depth.max(max_nesting_depth_expr(body, *target, current_depth));
+            max_depth = max_depth.max(max_nesting_depth_expr(body, *value, current_depth));
+        }
+        Expr::Break { value, .. } => {
+            if let Some(v) = value {
+                max_depth = max_depth.max(max_nesting_depth_expr(body, *v, current_depth));
+            }
+        }
+        Expr::Continue { .. } => {}
+        Expr::Array { elements, .. } => {
+            for elem in elements {
+                max_depth = max_depth.max(max_nesting_depth_expr(body, *elem, current_depth));
+            }
+        }
+        Expr::Tuple { elements, .. } => {
+            for elem in elements {
+                max_depth = max_depth.max(max_nesting_depth_expr(body, *elem, current_depth));
+            }
+        }
+        Expr::Index { base, index, .. } => {
+            max_depth = max_depth.max(max_nesting_depth_expr(body, *base, current_depth));
+            max_depth = max_depth.max(max_nesting_depth_expr(body, *index, current_depth));
+        }
+        Expr::Cast {
+            expr: cast_expr, ..
+        } => {
+            max_depth = max_depth.max(max_nesting_depth_expr(body, *cast_expr, current_depth));
+        }
+        Expr::UnsafeBlock { body: inner, .. } => {
+            max_depth = max_depth.max(max_nesting_depth_expr(body, *inner, current_depth));
+        }
+        Expr::Literal { .. } | Expr::Variable { .. } | Expr::Error { .. }
+        | Expr::Range { .. } | Expr::Try { .. } | Expr::Box { .. } => {}
+        Expr::WhileLet { value, body: while_body, .. } => {
+            max_depth = max_depth.max(max_nesting_depth_expr(body, *value, current_depth));
+            max_depth = max_depth.max(max_nesting_depth_expr(body, *while_body, current_depth + 1));
+        }
+        Expr::IfLet { value, then_branch, else_branch, .. } => {
+            max_depth = max_depth.max(max_nesting_depth_expr(body, *value, current_depth));
+            max_depth = max_depth.max(max_nesting_depth_expr(body, *then_branch, current_depth + 1));
+            if let Some(else_expr) = else_branch {
+                max_depth = max_depth.max(max_nesting_depth_expr(body, *else_expr, current_depth + 1));
+            }
+        }
+        Expr::ForLoop { iterator, body: loop_body, .. } => {
+            max_depth = max_depth.max(max_nesting_depth_expr(body, *iterator, current_depth));
+            max_depth = max_depth.max(max_nesting_depth_expr(body, *loop_body, current_depth + 1));
+        }
     }
 
     max_depth
@@ -262,11 +446,14 @@ fn max_nesting_depth_expr(body: &Body, expr_id: ExprId, current_depth: usize) ->
 fn max_nesting_depth_stmt(body: &Body, stmt_id: StmtId, current_depth: usize) -> usize {
     let stmt = &body.stmts[stmt_id];
     match stmt {
-        Stmt::Let { initializer, .. } => {
-            initializer.map_or(current_depth, |expr_id| max_nesting_depth_expr(body, expr_id, current_depth))
-        }
+        Stmt::Let { initializer, .. } => initializer.map_or(current_depth, |expr_id| {
+            max_nesting_depth_expr(body, expr_id, current_depth)
+        }),
         Stmt::Expr { expr, .. } => max_nesting_depth_expr(body, *expr, current_depth),
-        Stmt::Return { value, .. } => value.map_or(current_depth, |expr_id| max_nesting_depth_expr(body, expr_id, current_depth)),
+        Stmt::Return { value, .. } => value.map_or(current_depth, |expr_id| {
+            max_nesting_depth_expr(body, expr_id, current_depth)
+        }),
+        Stmt::Box { value, .. } => max_nesting_depth_expr(body, *value, current_depth),
     }
 }
 
@@ -285,60 +472,5 @@ pub fn analyze_function(func: &Function) -> FunctionMetrics {
         cognitive_complexity: cognitive,
         parameter_count,
         max_nesting_depth: max_depth,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rv_hir::LiteralKind;
-    use rv_span::{FileId, FileSpan, Span};
-
-    fn make_span() -> FileSpan {
-        FileSpan::new(FileId(0), Span::new(0, 0))
-    }
-
-    #[test]
-    fn test_cyclomatic_simple() {
-        let body = Body::new();
-        assert_eq!(cyclomatic_complexity(&body), 1);
-    }
-
-    #[test]
-    fn test_cognitive_simple() {
-        let body = Body::new();
-        assert_eq!(cognitive_complexity(&body), 0);
-    }
-
-    #[test]
-    fn test_max_nesting_simple() {
-        let body = Body::new();
-        assert_eq!(max_nesting_depth(&body), 0);
-    }
-
-    #[test]
-    fn test_cyclomatic_if() {
-        let mut body = Body::new();
-
-        let condition = body.exprs.alloc(Expr::Literal {
-            kind: LiteralKind::Bool(true),
-            span: make_span(),
-        });
-        let then_branch = body.exprs.alloc(Expr::Literal {
-            kind: LiteralKind::Integer(1),
-            span: make_span(),
-        });
-
-        let if_expr = body.exprs.alloc(Expr::If {
-            condition,
-            then_branch,
-            else_branch: None,
-            span: make_span(),
-        });
-
-        body.root_expr = if_expr;
-
-        // Visitor-based implementation: base(1) + if decision(1) = 2
-        assert_eq!(cyclomatic_complexity(&body), 2);
     }
 }

@@ -1,0 +1,10 @@
+[package]
+name = "test-option-type"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[[bin]]
+name = "test-option-type"
+path = "src/main.rs"

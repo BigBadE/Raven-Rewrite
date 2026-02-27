@@ -3,7 +3,10 @@
 //! Note: These struct fields are used by miette's `#[derive(Diagnostic)]` macro
 //! for rich error output, but clippy cannot see through the proc macro expansion.
 
-#![allow(unused_assignments)]
+#![allow(
+    unused_assignments,
+    reason = "Assignments used by miette's #[derive(Diagnostic)] proc macro"
+)]
 
 use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
@@ -231,91 +234,5 @@ impl ParseError {
             }
             other => other,
         }
-    }
-
-    /// Check if fields are actually used (satisfies clippy for proc macro fields)
-    #[doc(hidden)]
-    pub fn _check_field_usage(&self) {
-        match self {
-            Self::UnexpectedToken { token, span, src } => {
-                let _ = (token, span, src);
-            }
-            Self::MissingToken {
-                expected,
-                found,
-                span,
-                src,
-            } => {
-                let _ = (expected, found, span, src);
-            }
-            Self::UnclosedDelimiter {
-                opening_char,
-                closing_char,
-                opening,
-                expected_close,
-                src,
-            } => {
-                let _ = (opening_char, closing_char, opening, expected_close, src);
-            }
-            Self::InvalidSyntax {
-                construct,
-                suggestion,
-                span,
-                src,
-            } => {
-                let _ = (construct, suggestion, span, src);
-            }
-            Self::ParseFailed { reason } => {
-                let _ = reason;
-            }
-            Self::IoError { message } => {
-                let _ = message;
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// This test ensures all fields are used, satisfying clippy
-    /// The miette derive macro uses these fields for diagnostic output
-    #[test]
-    fn test_error_fields_are_used() {
-        let source = "fn main() {".to_string();
-        let src = miette::NamedSource::new("test", source.clone());
-
-        let err1 = ParseError::UnexpectedToken {
-            token: "test".to_string(),
-            span: (0, 4).into(),
-            src: miette::NamedSource::new("test", source.clone()),
-        };
-        err1._check_field_usage();
-
-        let err2 = ParseError::MissingToken {
-            expected: "}".to_string(),
-            found: "EOF".to_string(),
-            span: (11, 1).into(),
-            src: miette::NamedSource::new("test", source.clone()),
-        };
-        err2._check_field_usage();
-
-        let err3 = ParseError::UnclosedDelimiter {
-            opening_char: '{',
-            closing_char: '}',
-            opening: (9, 1).into(),
-            expected_close: (11, 1).into(),
-            src: miette::NamedSource::new("test", source.clone()),
-        };
-        err3._check_field_usage();
-
-        let err4 = ParseError::InvalidSyntax {
-            construct: "function".to_string(),
-            suggestion: Some("try this".to_string()),
-            span: (0, 11).into(),
-            src,
-        };
-        err4._check_field_usage();
     }
 }

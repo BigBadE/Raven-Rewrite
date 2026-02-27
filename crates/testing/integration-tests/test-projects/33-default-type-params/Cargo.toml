@@ -1,0 +1,10 @@
+[package]
+name = "default-type-params"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[[bin]]
+name = "default-type-params"
+path = "src/main.rs"

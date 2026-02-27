@@ -1,0 +1,4 @@
+[package]
+name = "test-25-bound-checking"
+version = "0.1.0"
+edition = "2021"

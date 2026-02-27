@@ -11,6 +11,7 @@ rv-mono.workspace = true
 rv-ty.workspace = true
 rv-intern.workspace = true
 rv-span.workspace = true
+la-arena.workspace = true
 indexmap.workspace = true
 lasso.workspace = true
 serde = { workspace = true, features = ["derive"] }

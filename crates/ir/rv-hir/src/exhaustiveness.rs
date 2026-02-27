@@ -3,7 +3,9 @@
 //! This module implements full exhaustiveness checking for match expressions using
 //! the pattern matrix algorithm.
 
-use crate::{Body, EnumDef, LiteralKind, MatchArm, Pattern, PatternId, StructDef, TypeDefId, VariantFields};
+use crate::{
+    Body, EnumDef, LiteralKind, MatchArm, Pattern, PatternId, StructDef, TypeDefId, VariantFields,
+};
 use rv_intern::Symbol;
 use std::collections::HashMap;
 
@@ -133,11 +135,7 @@ impl PatternMatrix {
     }
 
     /// Specialize the matrix for a given constructor
-    fn specialize(
-        &self,
-        constructor: &Constructor,
-        body: &Body,
-    ) -> PatternMatrix {
+    fn specialize(&self, constructor: &Constructor, body: &Body) -> PatternMatrix {
         let mut specialized = PatternMatrix::new();
 
         for row in &self.rows {
@@ -155,7 +153,11 @@ impl PatternMatrix {
                     new_row.extend_from_slice(rest);
                     specialized.add_row(new_row);
                 }
-                Pattern::Enum { variant, sub_patterns, def, .. } => {
+                Pattern::Enum {
+                    variant,
+                    sub_patterns,
+                    ..
+                } => {
                     if let Constructor::Variant { name, .. } = constructor {
                         if variant == name {
                             let mut new_row = sub_patterns.clone();
@@ -164,12 +166,17 @@ impl PatternMatrix {
                         }
                     }
                 }
-                Pattern::Struct { fields, ty, .. } => {
-                    if let Constructor::Struct { name, fields: expected_fields, .. } = constructor {
+                Pattern::Struct { fields, .. } => {
+                    if let Constructor::Struct {
+                        fields: expected_fields,
+                        ..
+                    } = constructor
+                    {
                         // Match struct patterns
                         let mut new_row = Vec::new();
                         for expected_field in expected_fields {
-                            if let Some(field_pat) = fields.iter().find(|f| f.0 == *expected_field) {
+                            if let Some(field_pat) = fields.iter().find(|f| f.0 == *expected_field)
+                            {
                                 new_row.push(field_pat.1);
                             } else {
                                 // Missing field treated as wildcard
@@ -189,25 +196,32 @@ impl PatternMatrix {
                         }
                     }
                 }
-                Pattern::Literal { kind, .. } => {
-                    match (kind, constructor) {
-                        (LiteralKind::Integer(val), Constructor::IntRange { start, end }) => {
-                            if val >= start && val <= end {
-                                specialized.add_row(rest.to_vec());
-                            }
+                Pattern::Literal { kind, .. } => match (kind, constructor) {
+                    (LiteralKind::Integer(val, _), Constructor::IntRange { start, end }) => {
+                        if val >= start && val <= end {
+                            specialized.add_row(rest.to_vec());
                         }
-                        (LiteralKind::Bool(b), Constructor::Bool(cb)) => {
-                            if b == cb {
-                                specialized.add_row(rest.to_vec());
-                            }
-                        }
-                        _ => {}
                     }
-                }
-                Pattern::Range { start, end, inclusive, .. } => {
+                    (LiteralKind::Bool(b), Constructor::Bool(cb)) => {
+                        if b == cb {
+                            specialized.add_row(rest.to_vec());
+                        }
+                    }
+                    _ => {}
+                },
+                Pattern::Range {
+                    start,
+                    end,
+                    inclusive,
+                    ..
+                } => {
                     if let (Some(s), Some(e)) = (literal_to_value(start), literal_to_value(end)) {
                         let pattern_end = if *inclusive { e } else { e - 1 };
-                        if let Constructor::IntRange { start: c_start, end: c_end } = constructor {
+                        if let Constructor::IntRange {
+                            start: c_start,
+                            end: c_end,
+                        } = constructor
+                        {
                             // Check if ranges overlap
                             if s <= *c_end && pattern_end >= *c_start {
                                 specialized.add_row(rest.to_vec());
@@ -222,6 +236,13 @@ impl PatternMatrix {
                         new_row.extend_from_slice(rest);
                         specialized.add_row(new_row);
                     }
+                }
+                Pattern::Slice { prefix, suffix, .. } => {
+                    // Slice patterns - expand to prefix + suffix wildcards
+                    let mut new_row = prefix.clone();
+                    new_row.extend(suffix.iter().copied());
+                    new_row.extend_from_slice(rest);
+                    specialized.add_row(new_row);
                 }
             }
         }
@@ -251,7 +272,10 @@ impl PatternMatrix {
                     // Expand or-pattern
                     for pat_id in patterns {
                         let first_pat = &body.patterns[*pat_id];
-                        if matches!(first_pat, Pattern::Wildcard { .. } | Pattern::Binding { .. }) {
+                        if matches!(
+                            first_pat,
+                            Pattern::Wildcard { .. } | Pattern::Binding { .. }
+                        ) {
                             if row.len() > 1 {
                                 default.add_row(row[1..].to_vec());
                             } else {
@@ -282,11 +306,7 @@ fn compute_missing_patterns(
     }
 
     // Check if first column has a non-wildcard pattern
-    let first_patterns: Vec<_> = matrix
-        .rows
-        .iter()
-        .filter_map(|row| row.first())
-        .collect();
+    let first_patterns: Vec<_> = matrix.rows.iter().filter_map(|row| row.first()).collect();
 
     if first_patterns.is_empty() {
         // All rows are empty - check is complete
@@ -294,16 +314,14 @@ fn compute_missing_patterns(
     }
 
     // Find the type of the first pattern (if available)
-    let type_def_id = first_patterns
-        .iter()
-        .find_map(|&&pat_id| {
-            let pattern = &body.patterns[pat_id];
-            match pattern {
-                Pattern::Enum { def, .. } => *def,
-                Pattern::Struct { .. } => None, // Type resolution would need additional context
-                _ => None,
-            }
-        });
+    let type_def_id = first_patterns.iter().find_map(|&&pat_id| {
+        let pattern = &body.patterns[pat_id];
+        match pattern {
+            Pattern::Enum { def, .. } => *def,
+            Pattern::Struct { .. } => None, // Type resolution would need additional context
+            _ => None,
+        }
+    });
 
     // Get all possible constructors for this type
     let constructors = Constructor::all_for_type(type_def_id, structs, enums);
@@ -357,7 +375,8 @@ fn compute_missing_patterns(
 
     // Check default matrix (for wildcards)
     if !matrix.default_matrix(body).is_empty() {
-        let default_missing = compute_missing_patterns(&matrix.default_matrix(body), body, structs, enums);
+        let default_missing =
+            compute_missing_patterns(&matrix.default_matrix(body), body, structs, enums);
         missing.extend(default_missing);
     }
 
@@ -366,7 +385,7 @@ fn compute_missing_patterns(
 
 fn literal_to_value(kind: &LiteralKind) -> Option<i64> {
     match kind {
-        LiteralKind::Integer(val) => Some(*val),
+        LiteralKind::Integer(val, _) => Some(*val),
         LiteralKind::Bool(b) => Some(if *b { 1 } else { 0 }),
         _ => None,
     }

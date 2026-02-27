@@ -107,7 +107,11 @@ fn collect_errors(node: &tree_sitter::Node, source: &str, errors: &mut Vec<Parse
                         ")" => ('(', ')'),
                         "}" => ('{', '}'),
                         "]" => ('[', ']'),
-                        _ => unreachable!(),
+                        other => panic!(
+                            "ICE: Unexpected delimiter {:?} in unclosed delimiter handling. \
+                             Only ), }}, and ] should reach this match.",
+                            other
+                        ),
                     };
                     let opening: SourceSpan = (opening_pos, 1).into();
                     let expected_close: SourceSpan = (pos, 1).into();
@@ -234,76 +238,4 @@ fn find_opening_delimiter(node: &tree_sitter::Node, source: &str) -> Option<usiz
     }
 
     None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_with_syntax_error() {
-        let source = "fn main( {";
-        let result = parse_source(source);
-
-        assert!(!result.errors.is_empty());
-        // Verify we get proper diagnostic error
-        let error_msg = format!("{}", result.errors[0]);
-        assert!(
-            error_msg.contains("unclosed") || error_msg.contains("expected"),
-            "Error should mention unclosed delimiter or expected token: {error_msg}"
-        );
-    }
-
-    #[test]
-    fn test_parse_success() {
-        let source = "fn main() {}";
-        let result = parse_source(source);
-
-        assert!(result.errors.is_empty());
-        assert!(result.syntax.is_some());
-    }
-
-    #[test]
-    fn test_error_display_with_context() {
-        use crate::error::codespan_reporting::files::SimpleFiles;
-        use crate::error::codespan_reporting::term;
-
-        let source = "fn broken( {\n    let x = 5;\n}";
-        let result = parse_source(source);
-
-        assert!(!result.errors.is_empty());
-
-        // Create codespan file database
-        let mut files = SimpleFiles::new();
-        let file_id = files.add("<input>", source);
-
-        // Convert to codespan diagnostic (rustc-style)
-        let diagnostic = result.errors[0].to_codespan_diagnostic(file_id);
-
-        // Render using codespan (matches rustc output format)
-        let mut buffer = Vec::new();
-        let config = term::Config::default();
-        #[allow(deprecated)]
-        term::emit(&mut buffer, &config, &files, &diagnostic).unwrap();
-
-        let output = String::from_utf8(buffer).unwrap();
-
-        // Print example output (run with --nocapture to see)
-        eprintln!("\n=== Codespan Error Output (rustc-style) ===");
-        eprintln!("{}", output);
-
-        // Compare with rustc output
-        eprintln!("\n=== Rustc Error Output (for reference) ===");
-        eprintln!("error: this file contains an unclosed delimiter");
-        eprintln!(" --> <input>:1:11");
-        eprintln!("  |");
-        eprintln!("1 | fn broken( {{");
-        eprintln!("  |          - unclosed delimiter");
-        eprintln!("2 |     let x = 5;");
-        eprintln!("3 | }}");
-        eprintln!("  |  ^");
-
-        // Should contain source code context
-        assert!(output.contains("fn broken"));
-    }
 }

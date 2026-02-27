@@ -1,0 +1,10 @@
+[package]
+name = "rv-intrinsics"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rv-intern = { path = "../../foundation/rv-intern" }
+
+[lints]
+workspace = true

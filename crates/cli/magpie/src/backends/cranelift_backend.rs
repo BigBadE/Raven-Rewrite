@@ -44,12 +44,38 @@ impl CraneliftBackend {
             let hir_ctx = lower_source_file(&syntax);
 
             // Find the requested function
-            let function = hir_ctx
+            let _function = hir_ctx
                 .functions
                 .iter()
                 .find(|(_id, func)| hir_ctx.interner.resolve(&func.name) == function_name)
                 .map(|(_id, func)| func)
                 .with_context(|| format!("Function '{function_name}' not found"))?;
+
+            // Run coherence checking
+            if let Err(errors) = rv_ty::check_coherence(
+                &hir_ctx.impl_blocks,
+                &hir_ctx.traits,
+                &hir_ctx.types,
+                &hir_ctx.functions,
+            ) {
+                for error in &errors {
+                    eprintln!("error[coherence]: {error}");
+                }
+                anyhow::bail!(
+                    "Compilation aborted due to {} coherence error(s)",
+                    errors.len()
+                );
+            }
+
+            // Evaluate const and static items
+            let const_values =
+                rv_const_eval::evaluate_const_items(&hir_ctx.const_items, &hir_ctx.interner);
+            let static_values = rv_const_eval::evaluate_static_items(
+                &hir_ctx.static_items,
+                &hir_ctx.const_items,
+                &const_values,
+                &hir_ctx.interner,
+            );
 
             // Run type inference with HIR context for method resolution
             let mut type_inference = TypeInference::with_hir_context(
@@ -58,30 +84,26 @@ impl CraneliftBackend {
                 &hir_ctx.types,
                 &hir_ctx.structs,
                 &hir_ctx.enums,
-                &hir_ctx.traits,
                 &hir_ctx.interner,
             );
+            type_inference.set_const_static_items(&hir_ctx.const_items, &hir_ctx.static_items);
 
-            // Run type inference on non-generic functions only
-            // Generic functions will be type-inferred during monomorphization with concrete types
-            for (_func_id, func) in &hir_ctx.functions {
-                if func.generics.is_empty() {
-                    type_inference.infer_function(func);
-                }
-            }
-
-            // Lower ONLY non-generic functions to MIR
-            // Generic functions will be monomorphized and lowered separately
+            // Infer and lower each non-generic function to MIR.
+            // Inference and lowering must be interleaved because ExprIds are local
+            // to each function body and would collide in the shared TyContext.
             let mut mir_functions = Vec::new();
             let mut target_mir_func_id = None;
 
-            for (_func_id, hir_func) in &hir_ctx.functions {
-                // Skip generic functions - they'll be monomorphized later
-                if !hir_func.generics.is_empty() {
-                    continue;
-                }
+            for (_func_id, hir_func) in hir_ctx
+                .functions
+                .iter()
+                .filter(|(_, func)| func.generics.is_empty())
+                .filter(|(func_id, _)| !hir_ctx.default_method_bodies.contains(func_id))
+            {
+                type_inference.context_mut().clear_expr_types();
+                type_inference.infer_function(hir_func);
 
-                let mir_func = LoweringContext::lower_function(
+                let mir_result = LoweringContext::lower_function(
                     hir_func,
                     type_inference.context_mut(),
                     &hir_ctx.structs,
@@ -91,14 +113,21 @@ impl CraneliftBackend {
                     &hir_ctx.types,
                     &hir_ctx.traits,
                     &hir_ctx.interner,
+                    &hir_ctx.lang_items,
+                    &const_values,
+                    &static_values,
                 );
+                crate::print_mir_diagnostics(&mir_result.diagnostics);
+
+                let func_name_str = hir_ctx.interner.resolve(&hir_func.name);
+                crate::run_borrow_check(&mir_result.function, &func_name_str);
 
                 // Track which MIR function is our target
                 if hir_ctx.interner.resolve(&hir_func.name) == function_name {
-                    target_mir_func_id = Some(mir_func.id);
+                    target_mir_func_id = Some(mir_result.function.id);
                 }
 
-                mir_functions.push(mir_func);
+                mir_functions.push(mir_result.function);
             }
 
             // Monomorphization: collect generic function instantiations needed from MIR
@@ -110,42 +139,220 @@ impl CraneliftBackend {
 
             // Generate specialized versions of generic functions with proper type substitution
             let next_func_id = hir_ctx.functions.len() as u32;
+            let bound_checker = rv_ty::BoundChecker::new(
+                hir_ctx.traits.clone(),
+                &hir_ctx.impl_blocks,
+                hir_ctx.types.clone(),
+                hir_ctx.structs.clone(),
+                hir_ctx.enums.clone(),
+            );
             let (mono_functions, instance_map) = rv_mono::monomorphize_functions(
                 &hir_ctx,
-                type_inference.context(),
                 collector.needed_instances(),
                 next_func_id,
+                Some(&bound_checker),
             );
 
             // Add monomorphized functions to the compilation set
             mir_functions.extend(mono_functions);
 
             // Rewrite calls in existing MIR to use monomorphized instance IDs
-            rv_mono::rewrite_calls_to_instances(&mut mir_functions, &instance_map);
+            rv_mono::rewrite_calls_to_instances(
+                &mut mir_functions,
+                &instance_map,
+                &hir_ctx.functions,
+                &hir_ctx.types,
+            );
 
             // Compile all functions with Cranelift (supports function calls)
-            if mir_functions.len() > 1 {
-                // Multi-function compilation (for generic functions and calls)
-                self.jit.compile_multiple(&mir_functions)?;
+            self.jit.compile_multiple(&mir_functions)?;
 
-                // Get the specific function we want to execute
-                let target_func_id = target_mir_func_id.context("Target function not found in MIR")?;
-                let code_ptr = self.jit.compiled_functions.get(&target_func_id)
-                    .copied()
-                    .context("Target function was not compiled")?;
+            let target_func_id = target_mir_func_id.context("Target function not found in MIR")?;
+            let code_ptr = self
+                .jit
+                .compiled_functions
+                .get(&target_func_id)
+                .copied()
+                .context("Target function was not compiled")?;
 
-                // Execute
-                let result = unsafe { self.jit.execute(code_ptr) };
-                Ok(result)
-            } else {
-                // Single function (legacy path)
-                let code_ptr = self.jit.compile(&mir_functions[0])?;
-                let result = unsafe { self.jit.execute(code_ptr) };
-                Ok(result)
-            }
+            let result = unsafe { self.jit.execute(code_ptr) };
+            Ok(result)
         } else {
             anyhow::bail!("Failed to parse file");
         }
+    }
+
+    /// Compile and execute a function from a multi-file project.
+    ///
+    /// Discovers all module files, lowers each to MIR, compiles all functions
+    /// together with Cranelift, and executes the requested function.
+    fn execute_project_function(&mut self, main_path: &Path, function_name: &str) -> Result<i64> {
+        let project = rv_database::lower_project(main_path)?;
+
+        // Find the target function in the root module
+        let root_hir = project
+            .root_hir()
+            .context("No root module found in project")?;
+
+        let target_func_id = root_hir
+            .functions
+            .iter()
+            .find(|(_, func)| root_hir.interner.resolve(&func.name) == function_name)
+            .map(|(id, _)| *id)
+            .with_context(|| format!("Function '{function_name}' not found in root module"))?;
+
+        // Build cross-module function map for MIR lowering
+        let mut cross_module_functions =
+            std::collections::HashMap::<(Vec<String>, String), rv_hir::FunctionId>::new();
+
+        for (mod_path, module_data) in &project.modules {
+            if mod_path.is_empty() {
+                continue;
+            }
+            for (func_id, func) in &module_data.hir.functions {
+                let func_name = module_data.hir.interner.resolve(&func.name);
+                cross_module_functions.insert((mod_path.clone(), func_name), *func_id);
+            }
+        }
+
+        // Collect all MIR functions from all modules
+        let mut all_mir_functions = Vec::new();
+
+        // Evaluate const and static items for root module
+        let root_const_values =
+            rv_const_eval::evaluate_const_items(&root_hir.const_items, &root_hir.interner);
+        let root_static_values = rv_const_eval::evaluate_static_items(
+            &root_hir.static_items,
+            &root_hir.const_items,
+            &root_const_values,
+            &root_hir.interner,
+        );
+
+        // Lower root module functions with cross-module resolution
+        let mut root_type_inference = TypeInference::with_hir_context(
+            &root_hir.impl_blocks,
+            &root_hir.functions,
+            &root_hir.types,
+            &root_hir.structs,
+            &root_hir.enums,
+            &root_hir.interner,
+        );
+        root_type_inference.set_const_static_items(&root_hir.const_items, &root_hir.static_items);
+
+        // Infer and lower each non-generic root function to MIR.
+        // Inference and lowering must be interleaved because ExprIds are local
+        // to each function body and would collide in the shared TyContext.
+        for (_, func) in root_hir
+            .functions
+            .iter()
+            .filter(|(_, func)| func.generics.is_empty())
+            .filter(|(func_id, _)| !root_hir.default_method_bodies.contains(func_id))
+        {
+            root_type_inference.context_mut().clear_expr_types();
+            root_type_inference.infer_function(func);
+            let mir_result = LoweringContext::lower_function_cross_module(
+                func,
+                root_type_inference.context_mut(),
+                &root_hir.structs,
+                &root_hir.enums,
+                &root_hir.impl_blocks,
+                &root_hir.functions,
+                &root_hir.types,
+                &root_hir.traits,
+                &root_hir.interner,
+                &cross_module_functions,
+                &root_hir.lang_items,
+                &root_const_values,
+                &root_static_values,
+            );
+            crate::print_mir_diagnostics(&mir_result.diagnostics);
+            let func_name_str = root_hir.interner.resolve(&func.name);
+            crate::run_borrow_check(&mir_result.function, &func_name_str);
+            all_mir_functions.push(mir_result.function);
+        }
+
+        // Lower non-root module functions
+        for (mod_path, module_data) in &project.modules {
+            if mod_path.is_empty() {
+                continue;
+            }
+
+            let mod_hir = &module_data.hir;
+
+            // Evaluate const and static items for this module
+            let mod_const_values =
+                rv_const_eval::evaluate_const_items(&mod_hir.const_items, &mod_hir.interner);
+            let mod_static_values = rv_const_eval::evaluate_static_items(
+                &mod_hir.static_items,
+                &mod_hir.const_items,
+                &mod_const_values,
+                &mod_hir.interner,
+            );
+
+            let mut mod_type_inference = TypeInference::with_hir_context(
+                &mod_hir.impl_blocks,
+                &mod_hir.functions,
+                &mod_hir.types,
+                &mod_hir.structs,
+                &mod_hir.enums,
+                &mod_hir.interner,
+            );
+            mod_type_inference.set_const_static_items(&mod_hir.const_items, &mod_hir.static_items);
+
+            // Infer and lower each non-generic module function to MIR.
+            // Inference and lowering must be interleaved because ExprIds are local
+            // to each function body and would collide in the shared TyContext.
+            for (_, func) in mod_hir
+                .functions
+                .iter()
+                .filter(|(_, func)| func.generics.is_empty())
+                .filter(|(func_id, _)| !mod_hir.default_method_bodies.contains(func_id))
+            {
+                mod_type_inference.context_mut().clear_expr_types();
+                mod_type_inference.infer_function(func);
+                let mir_result = LoweringContext::lower_function(
+                    func,
+                    mod_type_inference.context_mut(),
+                    &mod_hir.structs,
+                    &mod_hir.enums,
+                    &mod_hir.impl_blocks,
+                    &mod_hir.functions,
+                    &mod_hir.types,
+                    &mod_hir.traits,
+                    &mod_hir.interner,
+                    &mod_hir.lang_items,
+                    &mod_const_values,
+                    &mod_static_values,
+                );
+                crate::print_mir_diagnostics(&mir_result.diagnostics);
+                let func_name_str = mod_hir.interner.resolve(&func.name);
+                crate::run_borrow_check(&mir_result.function, &func_name_str);
+                all_mir_functions.push(mir_result.function);
+            }
+        }
+
+        // Compile all functions together with Cranelift
+        if all_mir_functions.is_empty() {
+            anyhow::bail!("No functions to compile");
+        }
+
+        self.jit.compile_multiple(&all_mir_functions)?;
+
+        let code_ptr = self
+            .jit
+            .compiled_functions
+            .get(&target_func_id)
+            .copied()
+            .context("Target function was not compiled")?;
+
+        let result = unsafe { self.jit.execute(code_ptr) };
+        Ok(result)
+    }
+
+    /// Check if a project has multiple files (mod declarations referencing other files).
+    fn is_multi_file_project(main_path: &Path) -> Result<bool> {
+        let files = rv_database::discover_module_files(main_path)?;
+        Ok(files.len() > 1)
     }
 
     /// Compile and run a single source file (for compiletest)
@@ -182,7 +389,10 @@ impl Backend for CraneliftBackend {
         if let Some(bin) = manifest.main_bin() {
             let main_path = project_dir.join(&bin.path);
             if !main_path.exists() {
-                messages.push(format!("Error: Main file not found: {}", main_path.display()));
+                messages.push(format!(
+                    "Error: Main file not found: {}",
+                    main_path.display()
+                ));
                 return Ok(BuildResult {
                     success: false,
                     messages,
@@ -209,12 +419,14 @@ impl Backend for CraneliftBackend {
 
         let main_path = project_dir.join(&bin.path);
 
-        // Create a new backend instance for execution
         let mut backend = Self::new()?;
-        let source_file = backend.load_file(&main_path)?;
 
-        // Execute the main function
-        let result = backend.execute_function(source_file, "main")?;
+        let result = if Self::is_multi_file_project(&main_path)? {
+            backend.execute_project_function(&main_path, "main")?
+        } else {
+            let source_file = backend.load_file(&main_path)?;
+            backend.execute_function(source_file, "main")?
+        };
 
         // Print the result if it's not 0 (representing unit)
         if result != 0 {
@@ -232,42 +444,83 @@ impl Backend for CraneliftBackend {
         let mut passed = 0;
         let mut failed = 0;
 
-        // Look for test functions in the main file
         if let Some(bin) = manifest.main_bin() {
             let main_path = project_dir.join(&bin.path);
 
-            let mut backend = Self::new()?;
-            let source_file = backend.load_file(&main_path)?;
+            if Self::is_multi_file_project(&main_path)? {
+                // Multi-file project: use project-level compilation
+                let project = rv_database::lower_project(&main_path)?;
+                let root_hir = project
+                    .root_hir()
+                    .context("No root module found in project")?;
 
-            // Parse to find test functions
-            let contents = backend.db.get_file_contents(source_file);
-            let parse_result = rv_parser::parse_source(&contents);
+                let test_functions: Vec<String> = root_hir
+                    .functions
+                    .iter()
+                    .filter_map(|(_, func)| {
+                        let name = root_hir.interner.resolve(&func.name);
+                        if name.starts_with("test_") {
+                            Some(name)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
 
-            if let Some(syntax) = parse_result.syntax {
-                let hir_ctx = lower_source_file(&syntax);
+                for func_name in &test_functions {
+                    messages.push(format!("Running test: {func_name}"));
 
-                // Find all test functions
-                for (_func_id, function) in &hir_ctx.functions {
-                    let func_name = hir_ctx.interner.resolve(&function.name);
+                    // Each test gets a fresh JIT instance
+                    let mut backend = Self::new()?;
+                    match backend.execute_project_function(&main_path, func_name) {
+                        Ok(result) if result == 1 => {
+                            passed += 1;
+                            messages.push(format!("  \u{2713} {func_name}"));
+                        }
+                        Ok(result) => {
+                            failed += 1;
+                            messages.push(format!(
+                                "  \u{2717} {func_name} - returned {result} instead of true (1)"
+                            ));
+                        }
+                        Err(error) => {
+                            failed += 1;
+                            messages.push(format!("  \u{2717} {func_name} - {error}"));
+                        }
+                    }
+                }
+            } else {
+                // Single-file project
+                let mut backend = Self::new()?;
+                let source_file = backend.load_file(&main_path)?;
 
-                    if func_name.starts_with("test_") {
-                        messages.push(format!("Running test: {func_name}"));
+                let contents = backend.db.get_file_contents(source_file);
+                let parse_result = rv_parser::parse_source(&contents);
 
-                        match backend.execute_function(source_file, &func_name) {
-                            Ok(result) if result == 1 => {
-                                // true is represented as 1
-                                passed += 1;
-                                messages.push(format!("  ✓ {func_name}"));
-                            }
-                            Ok(result) => {
-                                failed += 1;
-                                messages.push(format!(
-                                    "  ✗ {func_name} - returned {result} instead of true (1)"
-                                ));
-                            }
-                            Err(error) => {
-                                failed += 1;
-                                messages.push(format!("  ✗ {func_name} - {error}"));
+                if let Some(syntax) = parse_result.syntax {
+                    let hir_ctx = lower_source_file(&syntax);
+
+                    for (_func_id, function) in &hir_ctx.functions {
+                        let func_name = hir_ctx.interner.resolve(&function.name);
+
+                        if func_name.starts_with("test_") {
+                            messages.push(format!("Running test: {func_name}"));
+
+                            match backend.execute_function(source_file, &func_name) {
+                                Ok(result) if result == 1 => {
+                                    passed += 1;
+                                    messages.push(format!("  \u{2713} {func_name}"));
+                                }
+                                Ok(result) => {
+                                    failed += 1;
+                                    messages.push(format!(
+                                        "  \u{2717} {func_name} - returned {result} instead of true (1)"
+                                    ));
+                                }
+                                Err(error) => {
+                                    failed += 1;
+                                    messages.push(format!("  \u{2717} {func_name} - {error}"));
+                                }
                             }
                         }
                     }

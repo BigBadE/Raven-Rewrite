@@ -10,6 +10,8 @@ rv-mir.workspace = true
 rv-ty.workspace = true
 rv-span.workspace = true
 rv-intern.workspace = true
+rv-const-eval.workspace = true
+# rv-intrinsics dependency removed - crate has permission issues
 la-arena.workspace = true
 rustc-hash.workspace = true
 indexmap.workspace = true

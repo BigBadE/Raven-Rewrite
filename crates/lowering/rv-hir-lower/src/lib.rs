@@ -6,10 +6,10 @@
 //! - Name resolution across scopes and modules
 //! - CST → HIR lowering
 
+pub mod lower;
 pub mod scope;
 pub mod symbol;
-pub mod lower;
 
+pub use lower::{lower_source_file, lower_source_file_with_id_offset, LoweringContext};
 pub use scope::{Scope, ScopeData, ScopeId, ScopeTree};
-pub use symbol::{Symbol, SymbolTable, SymbolId, SymbolKind};
-pub use lower::{LoweringContext, lower_source_file};
+pub use symbol::{Symbol, SymbolId, SymbolKind, SymbolTable};

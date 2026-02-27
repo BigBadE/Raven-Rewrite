@@ -1,14 +1,14 @@
 //! Macro expansion engine
 
 use crate::ast::{
-    Delimiter, FragmentKind, MacroDef, MacroExpander, MacroId, MacroKind, MacroMatcher,
-    MacroRule, SequenceKind, Token, TokenStream,
+    Delimiter, FragmentKind, MacroDef, MacroExpander, MacroId, MacroKind, MacroMatcher, MacroRule,
+    MetaVarExpr, SequenceKind, Token, TokenStream,
 };
 use crate::builtins;
 use crate::error::MacroExpansionError;
+use rustc_hash::FxHashMap;
 use rv_intern::{Interner, Symbol};
 use rv_span::FileSpan;
-use rustc_hash::FxHashMap;
 
 /// Bindings collected during pattern matching
 type Bindings = FxHashMap<Symbol, Binding>;
@@ -70,15 +70,16 @@ impl MacroExpansionContext {
         let macro_def = self
             .macros
             .get(&name)
-            .ok_or(MacroExpansionError::UndefinedMacro { name, span })?
+            .ok_or_else(|| MacroExpansionError::undefined_macro(name, span))?
             .clone();
 
         // Check recursion depth
         if self.expansion_stack.len() >= self.max_depth {
-            return Err(MacroExpansionError::RecursionLimit {
-                macro_id: macro_def.id,
+            return Err(MacroExpansionError::recursion_limit(
+                macro_def.id,
+                self.expansion_stack.len(),
                 span,
-            });
+            ));
         }
 
         // Push to expansion stack
@@ -117,11 +118,7 @@ impl MacroExpansionContext {
         }
 
         // No rule matched
-        Err(MacroExpansionError::NoRuleMatched {
-            name,
-            num_tokens: arguments.len(),
-            span,
-        })
+        Err(MacroExpansionError::no_rule_matched(name, arguments.len(), span))
     }
 
     /// Try to match a pattern against tokens
@@ -142,7 +139,10 @@ impl MacroExpansionContext {
     }
 
     /// Match a pattern against tokens
-    #[allow(clippy::only_used_in_recursion, reason = "Will be used when full pattern matching is implemented")]
+    #[allow(
+        clippy::only_used_in_recursion,
+        reason = "self is used to call parse_fragment, match_sequence, and match_group"
+    )]
     fn match_pattern(
         &self,
         matcher: &MacroMatcher,
@@ -239,10 +239,10 @@ impl MacroExpansionContext {
             // Merge bindings
             for current_bindings in all_bindings {
                 for (name, binding) in current_bindings {
-                    bindings
+                    let entry = bindings
                         .entry(name)
                         .or_insert_with(|| Binding::Multiple(Vec::new()));
-                    if let Binding::Multiple(vec) = bindings.get_mut(&name).unwrap() {
+                    if let Binding::Multiple(vec) = entry {
                         if let Binding::Single(stream) = binding {
                             vec.push(stream);
                         }
@@ -292,7 +292,12 @@ impl MacroExpansionContext {
     }
 
     /// Parse a fragment from tokens
-    fn parse_fragment(&self, kind: FragmentKind, tokens: &[Token], pos: &mut usize) -> Option<TokenStream> {
+    fn parse_fragment(
+        &self,
+        kind: FragmentKind,
+        tokens: &[Token],
+        pos: &mut usize,
+    ) -> Option<TokenStream> {
         if *pos >= tokens.len() {
             return None;
         }
@@ -310,18 +315,15 @@ impl MacroExpansionContext {
                 }
             }
             FragmentKind::Expr => {
-                // Simplified expression parsing: consume tokens until separator
-                // This is a heuristic approach
+                // Expression parsing: consume tokens until a top-level separator.
+                // Group tokens (`(…)`, `[…]`, `{…}`) are single tokens containing
+                // a nested sub-stream, so commas/semicolons inside them are never
+                // visible at this level — no depth tracking is needed.
                 let start = *pos;
-                let mut depth = 0;
 
                 while *pos < tokens.len() {
                     match &tokens[*pos] {
-                        Token::Group { .. } => {
-                            depth += 1;
-                            *pos += 1;
-                        }
-                        Token::Punct(',') | Token::Punct(';') if depth == 0 => {
+                        Token::Punct(',') | Token::Punct(';') => {
                             break;
                         }
                         _ => {
@@ -341,17 +343,12 @@ impl MacroExpansionContext {
                 }
             }
             FragmentKind::Ty => {
-                // Simplified type parsing: similar to expr
+                // Type parsing: same approach as expr — consume until separator.
                 let start = *pos;
-                let mut depth = 0;
 
                 while *pos < tokens.len() {
                     match &tokens[*pos] {
-                        Token::Group { .. } => {
-                            depth += 1;
-                            *pos += 1;
-                        }
-                        Token::Punct(',') | Token::Punct(';') if depth == 0 => {
+                        Token::Punct(',') | Token::Punct(';') => {
                             break;
                         }
                         _ => {
@@ -395,17 +392,21 @@ impl MacroExpansionContext {
         span: FileSpan,
     ) -> Result<TokenStream, MacroExpansionError> {
         let mut result = TokenStream::new();
-        self.expand_template(expander, bindings, &mut result, span)?;
+        self.expand_template(expander, bindings, &mut result, span, None)?;
         Ok(result)
     }
 
     /// Expand a template into a token stream
+    ///
+    /// The `repetition_context` parameter is Some((current_index, total_length)) when
+    /// expanding inside a repetition, for ${index()} and ${length()} support.
     fn expand_template(
         &mut self,
         expander: &MacroExpander,
         bindings: &Bindings,
         output: &mut TokenStream,
         span: FileSpan,
+        repetition_context: Option<(usize, usize)>,
     ) -> Result<(), MacroExpansionError> {
         match expander {
             MacroExpander::Token(token) => {
@@ -413,9 +414,12 @@ impl MacroExpansionContext {
             }
             MacroExpander::Substitute(name) => {
                 // Look up binding
-                let binding = bindings.get(name).ok_or(MacroExpansionError::UnboundVariable {
-                    name: *name,
-                    span,
+                let binding = bindings.get(name).ok_or_else(|| {
+                    MacroExpansionError::unbound_variable(
+                        *name,
+                        span,
+                        bindings.keys().copied().collect(),
+                    )
                 })?;
 
                 match binding {
@@ -424,9 +428,51 @@ impl MacroExpansionContext {
                     }
                     Binding::Multiple(_) => {
                         return Err(MacroExpansionError::InvalidSyntax {
-                            message: "cannot substitute sequence binding outside of sequence".to_string(),
+                            message: "cannot substitute sequence binding outside of sequence"
+                                .to_string(),
                             span,
                         });
+                    }
+                }
+            }
+            MacroExpander::MetaVarExpr(expr) => {
+                use crate::ast::LiteralKind;
+                match expr {
+                    MetaVarExpr::Count(var) => {
+                        // Get the count of repetitions for this variable
+                        let count = if let Some(Binding::Multiple(streams)) = bindings.get(var) {
+                            streams.len()
+                        } else {
+                            0
+                        };
+                        output.push(Token::Literal(LiteralKind::Integer(count as i64)));
+                    }
+                    MetaVarExpr::Index => {
+                        // Get current index from repetition context
+                        if let Some((index, _)) = repetition_context {
+                            output.push(Token::Literal(LiteralKind::Integer(index as i64)));
+                        } else {
+                            return Err(MacroExpansionError::InvalidSyntax {
+                                message: "${index()} can only be used inside repetitions"
+                                    .to_string(),
+                                span,
+                            });
+                        }
+                    }
+                    MetaVarExpr::Length => {
+                        // Get total length from repetition context
+                        if let Some((_, length)) = repetition_context {
+                            output.push(Token::Literal(LiteralKind::Integer(length as i64)));
+                        } else {
+                            return Err(MacroExpansionError::InvalidSyntax {
+                                message: "${length()} can only be used inside repetitions"
+                                    .to_string(),
+                                span,
+                            });
+                        }
+                    }
+                    MetaVarExpr::Ignore(_) => {
+                        // Ignore the variable, don't expand it
                     }
                 }
             }
@@ -460,15 +506,22 @@ impl MacroExpansionContext {
                         if let MacroExpander::Substitute(name) = exp {
                             if let Some(Binding::Multiple(streams)) = bindings.get(name) {
                                 if index < streams.len() {
-                                    iter_bindings.insert(*name, Binding::Single(streams[index].clone()));
+                                    iter_bindings
+                                        .insert(*name, Binding::Single(streams[index].clone()));
                                 }
                             }
                         }
                     }
 
-                    // Expand each expander
+                    // Expand each expander with repetition context
                     for exp in expanders {
-                        self.expand_template(exp, &iter_bindings, output, span)?;
+                        self.expand_template(
+                            exp,
+                            &iter_bindings,
+                            output,
+                            span,
+                            Some((index, len)),
+                        )?;
                     }
 
                     // Add separator if not last
@@ -485,7 +538,7 @@ impl MacroExpansionContext {
             } => {
                 let mut inner = TokenStream::new();
                 for exp in expanders {
-                    self.expand_template(exp, bindings, &mut inner, span)?;
+                    self.expand_template(exp, bindings, &mut inner, span, repetition_context)?;
                 }
                 output.push(Token::Group {
                     delim: *delimiter,

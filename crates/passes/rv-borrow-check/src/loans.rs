@@ -234,6 +234,15 @@ impl LoanSet {
         self.loans.retain(|loan| loan.region != region);
     }
 
+    /// Removes all loans whose place overlaps with the given place.
+    ///
+    /// Called when a local's storage ends (`StorageDead`) to release any
+    /// borrows that reference it.
+    pub fn remove_loans_for(&mut self, place: &rv_mir::Place) {
+        self.loans
+            .retain(|loan| !places_overlap(&loan.place, place));
+    }
+
     /// Returns all active loans.
     #[must_use]
     pub fn loans(&self) -> &[Loan] {
@@ -292,7 +301,10 @@ pub fn places_overlap(place1: &Place, place2: &Place) -> bool {
         // For our purposes, we use a simplified check
         // A full implementation would need to handle all projection types
         match (&place1.projection[idx], &place2.projection[idx]) {
-            (rv_mir::PlaceElem::Field { field_idx: f1 }, rv_mir::PlaceElem::Field { field_idx: f2 }) => {
+            (
+                rv_mir::PlaceElem::Field { field_idx: f1 },
+                rv_mir::PlaceElem::Field { field_idx: f2 },
+            ) => {
                 if f1 != f2 {
                     return false;
                 }

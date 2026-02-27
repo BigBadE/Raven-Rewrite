@@ -9,6 +9,7 @@
 //! The name resolution pass consists of:
 //! - **Scope tree**: Tracks all scopes and their parent relationships
 //! - **Name resolver**: Walks the HIR, defines names, and resolves references
+//! - **Module resolver**: Handles cross-file module resolution and imports
 //! - **Resolution errors**: Undefined names, duplicate definitions, and visibility violations
 //!
 //! # Usage
@@ -24,9 +25,11 @@
 //! ```
 
 pub mod error;
+pub mod module;
 pub mod resolver;
 pub mod scope;
 
 pub use error::ResolutionError;
+pub use module::{ImportKind, ModuleExports, ModuleResolver, ResolvedImport};
 pub use resolver::{NameResolver, ResolutionResult};
 pub use scope::{Resolution, Scope, ScopeId, ScopeKind, ScopeTree};

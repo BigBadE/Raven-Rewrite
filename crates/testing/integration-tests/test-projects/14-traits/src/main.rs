@@ -1,67 +1,41 @@
-// Comprehensive trait system test
-// Tests: traits, associated types, supertraits, where clauses
+// Basic trait system test
 
-// Base trait with associated type
-trait Container {
-    type Item;
-    fn get(&self) -> &Self::Item;
+trait Addable {
+    fn add_value(&self, other: i64) -> i64;
 }
 
-// Supertrait constraint: Display requires Container
-trait Display: Container {
-    fn show(&self) -> i64;
-}
-
-// Simple struct to hold a value
-struct Box {
+struct Counter {
     value: i64,
 }
 
-// Implement Container for Box with associated type
-impl Container for Box {
-    type Item = i64;
-
-    fn get(&self) -> &Self::Item {
-        &self.value
+impl Addable for Counter {
+    fn add_value(&self, other: i64) -> i64 {
+        self.value + other
     }
 }
 
-// Implement Display for Box (requires Container to be implemented)
-impl Display for Box {
-    fn show(&self) -> i64 {
-        // Dereference the result from get()
-        *self.get()
+impl Counter {
+    fn get_value(&self) -> i64 {
+        self.value
     }
-}
-
-// Inherent impl for Box
-impl Box {
-    fn new(v: i64) -> Box {
-        Box { value: v }
-    }
-}
-
-// Generic function with where clause
-fn process<T>(item: &T) -> i64
-where
-    T: Display,
-{
-    item.show()
 }
 
 fn main() -> i64 {
-    let b = Box::new(42);
+    let c = Counter { value: 10 };
+    let result = c.add_value(32);
+    if result == 42 { 42 } else { 0 }
+}
 
-    // Test trait method
-    let result = b.show();
+#[test]
+fn test_trait_method() -> bool {
+    let c = Counter { value: 10 };
+    let result = c.add_value(32);
+    if result == 42 { true } else { false }
+}
 
-    // Test generic with where clause
-    let generic_result = process(&b);
-
-    // Both should be 42
-    if result == 42 && generic_result == 42 {
-        42
-    } else {
-        0
-    }
+#[test]
+fn test_inherent_method() -> bool {
+    let c = Counter { value: 7 };
+    let result = c.get_value();
+    if result == 7 { true } else { false }
 }

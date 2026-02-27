@@ -5,7 +5,7 @@
 
 use crate::backend::{Backend, BuildResult, TestResult};
 use crate::manifest::Manifest;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::Path;
 
 /// LLVM backend (AOT compilation)
@@ -14,6 +14,152 @@ pub struct LLVMBackend;
 impl LLVMBackend {
     pub fn new() -> Result<Self> {
         Ok(Self)
+    }
+
+    /// Check if a project has multiple files (mod declarations referencing other files).
+    fn is_multi_file_project(main_path: &Path) -> Result<bool> {
+        let files = rv_database::discover_module_files(main_path)?;
+        Ok(files.len() > 1)
+    }
+
+    /// Compile a multi-file project to an executable.
+    fn compile_project_to_executable(&self, main_path: &Path, output_path: &Path) -> Result<()> {
+        use rv_mir_lower::LoweringContext;
+
+        let project = rv_database::lower_project(main_path)?;
+
+        let root_hir = project
+            .root_hir()
+            .context("No root module found in project")?;
+
+        // Build cross-module function map
+        let mut cross_module_functions =
+            std::collections::HashMap::<(Vec<String>, String), rv_hir::FunctionId>::new();
+
+        for (mod_path, module_data) in &project.modules {
+            if mod_path.is_empty() {
+                continue;
+            }
+            for (func_id, func) in &module_data.hir.functions {
+                let func_name = module_data.hir.interner.resolve(&func.name);
+                cross_module_functions.insert((mod_path.clone(), func_name), *func_id);
+            }
+        }
+
+        // Evaluate const and static items for root module
+        let root_const_values =
+            rv_const_eval::evaluate_const_items(&root_hir.const_items, &root_hir.interner);
+        let root_static_values = rv_const_eval::evaluate_static_items(
+            &root_hir.static_items,
+            &root_hir.const_items,
+            &root_const_values,
+            &root_hir.interner,
+        );
+
+        use rv_ty::TypeInference;
+        let mut root_type_inference = TypeInference::with_hir_context(
+            &root_hir.impl_blocks,
+            &root_hir.functions,
+            &root_hir.types,
+            &root_hir.structs,
+            &root_hir.enums,
+            &root_hir.interner,
+        );
+        root_type_inference.set_const_static_items(&root_hir.const_items, &root_hir.static_items);
+
+        let mut mir_functions: Vec<rv_mir::MirFunction> = Vec::new();
+        for (_, func) in root_hir
+            .functions
+            .iter()
+            .filter(|(_, func)| func.generics.is_empty())
+            .filter(|(func_id, _)| !root_hir.default_method_bodies.contains(func_id))
+        {
+            root_type_inference.context_mut().clear_expr_types();
+            root_type_inference.infer_function(func);
+            let mir_result = LoweringContext::lower_function_cross_module(
+                func,
+                root_type_inference.context_mut(),
+                &root_hir.structs,
+                &root_hir.enums,
+                &root_hir.impl_blocks,
+                &root_hir.functions,
+                &root_hir.types,
+                &root_hir.traits,
+                &root_hir.interner,
+                &cross_module_functions,
+                &root_hir.lang_items,
+                &root_const_values,
+                &root_static_values,
+            );
+            crate::print_mir_diagnostics(&mir_result.diagnostics);
+            let func_name = root_hir.interner.resolve(&func.name);
+            crate::run_borrow_check(&mir_result.function, &func_name);
+            mir_functions.push(mir_result.function);
+        }
+
+        // Lower non-root modules
+        for (mod_path, module_data) in &project.modules {
+            if mod_path.is_empty() {
+                continue;
+            }
+
+            let mod_hir = &module_data.hir;
+            let mod_const_values =
+                rv_const_eval::evaluate_const_items(&mod_hir.const_items, &mod_hir.interner);
+            let mod_static_values = rv_const_eval::evaluate_static_items(
+                &mod_hir.static_items,
+                &mod_hir.const_items,
+                &mod_const_values,
+                &mod_hir.interner,
+            );
+
+            let mut mod_type_inference = TypeInference::with_hir_context(
+                &mod_hir.impl_blocks,
+                &mod_hir.functions,
+                &mod_hir.types,
+                &mod_hir.structs,
+                &mod_hir.enums,
+                &mod_hir.interner,
+            );
+            mod_type_inference.set_const_static_items(&mod_hir.const_items, &mod_hir.static_items);
+
+            for (func_id, func) in &mod_hir.functions {
+                if func.generics.is_empty() && !mod_hir.default_method_bodies.contains(func_id) {
+                    mod_type_inference.context_mut().clear_expr_types();
+                    mod_type_inference.infer_function(func);
+                    let mir_result = LoweringContext::lower_function(
+                        func,
+                        mod_type_inference.context_mut(),
+                        &mod_hir.structs,
+                        &mod_hir.enums,
+                        &mod_hir.impl_blocks,
+                        &mod_hir.functions,
+                        &mod_hir.types,
+                        &mod_hir.traits,
+                        &mod_hir.interner,
+                        &mod_hir.lang_items,
+                        &mod_const_values,
+                        &mod_static_values,
+                    );
+                    crate::print_mir_diagnostics(&mir_result.diagnostics);
+                    let func_name = mod_hir.interner.resolve(&func.name);
+                    crate::run_borrow_check(&mir_result.function, &func_name);
+                    mir_functions.push(mir_result.function);
+                }
+            }
+        }
+
+        // Multi-file compilation does not yet run monomorphization because
+        // there is no unified HIR context spanning all files. Generic functions
+        // in multi-file projects will fail at LIR lowering. This requires the
+        // module resolution system (rv-resolve) to provide a cross-file HIR.
+        let combined_hir = rv_hir_lower::LoweringContext::new();
+
+        let lir_functions = rv_lir::lower::lower_mir_to_lir(mir_functions, &combined_hir);
+
+        use rv_llvm_backend::{OptLevel, compile_to_native};
+        compile_to_native(&lir_functions, output_path, OptLevel::Default)?;
+        Ok(())
     }
 
     /// Compile a Raven source file to an executable
@@ -35,6 +181,28 @@ impl LLVMBackend {
             anyhow::bail!("No functions found in source");
         }
 
+        // Run coherence checking
+        if let Err(errors) =
+            rv_ty::check_coherence(&hir.impl_blocks, &hir.traits, &hir.types, &hir.functions)
+        {
+            for error in &errors {
+                eprintln!("error[coherence]: {error}");
+            }
+            anyhow::bail!(
+                "Compilation aborted due to {} coherence error(s)",
+                errors.len()
+            );
+        }
+
+        // Evaluate const and static items
+        let const_values = rv_const_eval::evaluate_const_items(&hir.const_items, &hir.interner);
+        let static_values = rv_const_eval::evaluate_static_items(
+            &hir.static_items,
+            &hir.const_items,
+            &const_values,
+            &hir.interner,
+        );
+
         // Lower HIR to MIR with type inference
         use rv_ty::TypeInference;
         let mut type_inference = TypeInference::with_hir_context(
@@ -43,38 +211,41 @@ impl LLVMBackend {
             &hir.types,
             &hir.structs,
             &hir.enums,
-            &hir.traits,
             &hir.interner,
         );
+        type_inference.set_const_static_items(&hir.const_items, &hir.static_items);
 
-        // ARCHITECTURE: Type inference is MANDATORY before MIR lowering
-        // ALL non-generic functions must have types inferred here
-        for (_, func) in &hir.functions {
-            if func.generics.is_empty() {
-                type_inference.infer_function(func);
-            }
-        }
-
-        // Lower non-generic functions to MIR (entry points)
-        // ARCHITECTURE: No catch_unwind - let panics bubble up to expose bugs
-        let mut mir_functions: Vec<_> = hir
+        // Infer and lower each non-generic function to MIR.
+        // Inference and lowering must be interleaved because ExprIds are local
+        // to each function body and would collide in the shared TyContext.
+        let mut mir_functions: Vec<rv_mir::MirFunction> = Vec::new();
+        for (_, func) in hir
             .functions
             .iter()
             .filter(|(_, func)| func.generics.is_empty())
-            .map(|(_, func)| {
-                LoweringContext::lower_function(
-                    func,
-                    type_inference.context_mut(),
-                    &hir.structs,
-                    &hir.enums,
-                    &hir.impl_blocks,
-                    &hir.functions,
-                    &hir.types,
-                    &hir.traits,
-                    &hir.interner,
-                )
-            })
-            .collect();
+            .filter(|(func_id, _)| !hir.default_method_bodies.contains(func_id))
+        {
+            type_inference.context_mut().clear_expr_types();
+            type_inference.infer_function(func);
+            let mir_result = LoweringContext::lower_function(
+                func,
+                type_inference.context_mut(),
+                &hir.structs,
+                &hir.enums,
+                &hir.impl_blocks,
+                &hir.functions,
+                &hir.types,
+                &hir.traits,
+                &hir.interner,
+                &hir.lang_items,
+                &const_values,
+                &static_values,
+            );
+            crate::print_mir_diagnostics(&mir_result.diagnostics);
+            let func_name = hir.interner.resolve(&func.name);
+            crate::run_borrow_check(&mir_result.function, &func_name);
+            mir_functions.push(mir_result.function);
+        }
 
         // Monomorphization: collect generic function instantiations needed from MIR
         use rv_mono::MonoCollector;
@@ -93,11 +264,18 @@ impl LLVMBackend {
         // ARCHITECTURE: No catch_unwind - let monomorphization failures bubble up
         use rv_mono::monomorphize_functions;
         let next_func_id = hir.functions.keys().map(|id| id.0).max().unwrap_or(0) + 1;
+        let bound_checker = rv_ty::BoundChecker::new(
+            hir.traits.clone(),
+            &hir.impl_blocks,
+            hir.types.clone(),
+            hir.structs.clone(),
+            hir.enums.clone(),
+        );
         let (mono_functions, instance_map) = monomorphize_functions(
             &hir,
-            type_inference.context(),
             collector.needed_instances(),
             next_func_id,
+            Some(&bound_checker),
         );
 
         // Add monomorphized functions to MIR functions list
@@ -105,16 +283,26 @@ impl LLVMBackend {
 
         // Remap function calls in all MIR functions to use monomorphized instance IDs
         use rv_mono::rewrite_calls_to_instances;
-        rewrite_calls_to_instances(&mut mir_functions, &instance_map);
+        rewrite_calls_to_instances(
+            &mut mir_functions,
+            &instance_map,
+            &hir.functions,
+            &hir.types,
+        );
 
         // Lower MIR to LIR (now all generics are monomorphized)
         let lir_functions = rv_lir::lower::lower_mir_to_lir(mir_functions, &hir);
+        let lir_externals = rv_lir::lower::lower_external_functions(
+            &hir.external_functions,
+            &hir.types,
+            &hir.interner,
+        );
 
         // Compile LIR to LLVM IR and generate object file
-        use rv_llvm_backend::{compile_to_native_with_externals, OptLevel};
+        use rv_llvm_backend::{OptLevel, compile_to_native_with_externals};
         compile_to_native_with_externals(
             &lir_functions,
-            &hir.external_functions,
+            &lir_externals,
             output_path,
             OptLevel::Default,
         )?;
@@ -131,8 +319,6 @@ impl Backend for LLVMBackend {
             anyhow::bail!("No main.rs found in {}", src_dir.display());
         }
 
-        let source = std::fs::read_to_string(&main_file)?;
-
         // Create target directory
         let target_dir = project_dir.join("target");
         std::fs::create_dir_all(&target_dir)?;
@@ -145,8 +331,12 @@ impl Backend for LLVMBackend {
         };
         let output_path = target_dir.join(&exe_name);
 
-        // Compile to native executable
-        self.compile_to_executable(&source, &output_path)?;
+        if Self::is_multi_file_project(&main_file)? {
+            self.compile_project_to_executable(&main_file, &output_path)?;
+        } else {
+            let source = std::fs::read_to_string(&main_file)?;
+            self.compile_to_executable(&source, &output_path)?;
+        }
 
         Ok(BuildResult {
             success: true,
@@ -176,19 +366,10 @@ impl Backend for LLVMBackend {
     }
 
     fn test(&self, _manifest: &Manifest, project_dir: &Path) -> Result<TestResult> {
-        use lang_raven::RavenLanguage;
-        use rv_hir_lower::lower_source_file;
         use rv_mir_lower::LoweringContext;
-        use rv_syntax::Language;
 
         let src_dir = project_dir.join("src");
         let main_file = src_dir.join("main.rs");
-
-        let source = std::fs::read_to_string(&main_file)?;
-        let language = RavenLanguage::new();
-        let tree = language.parse(&source)?;
-        let root = language.lower_node(&tree.root_node(), &source);
-        let hir = lower_source_file(&root);
 
         let mut messages = Vec::new();
         let mut passed = 0;
@@ -198,34 +379,199 @@ impl Backend for LLVMBackend {
         let target_dir = project_dir.join("target").join("llvm-tests");
         std::fs::create_dir_all(&target_dir)?;
 
-        // Type inference and MIR lowering
-        use rv_ty::TypeInference;
-        let mut type_inference = TypeInference::with_hir_context(
-            &hir.impl_blocks,
-            &hir.functions,
-            &hir.types,
-            &hir.structs,
-            &hir.enums,
-            &hir.traits,
-            &hir.interner,
-        );
+        let is_multi = Self::is_multi_file_project(&main_file)?;
 
-        // ARCHITECTURE: Type inference is MANDATORY before MIR lowering
-        // ALL non-generic functions must have types inferred here
-        for (_, func) in &hir.functions {
-            if func.generics.is_empty() {
-                type_inference.infer_function(func);
+        // Lower all functions to MIR, handling multi-file projects with cross-module resolution
+        let (mut mir_functions, hir) = if is_multi {
+            let project = rv_database::lower_project(&main_file)?;
+            let root_hir = project
+                .root_hir()
+                .context("No root module found in project")?;
+
+            // Build cross-module function map
+            let mut cross_module_functions =
+                std::collections::HashMap::<(Vec<String>, String), rv_hir::FunctionId>::new();
+            for (mod_path, module_data) in &project.modules {
+                if mod_path.is_empty() {
+                    continue;
+                }
+                for (func_id, func) in &module_data.hir.functions {
+                    let func_name = module_data.hir.interner.resolve(&func.name);
+                    cross_module_functions.insert((mod_path.clone(), func_name), *func_id);
+                }
             }
-        }
 
-        // Lower non-generic functions to MIR (entry points)
-        // ARCHITECTURE: No catch_unwind - let panics bubble up to expose bugs
-        let mut mir_functions: Vec<_> = hir
-            .functions
-            .iter()
-            .filter(|(_, func)| func.generics.is_empty())
-            .map(|(_, func)| {
-                LoweringContext::lower_function(
+            // Evaluate const and static items for root module
+            let root_const_values =
+                rv_const_eval::evaluate_const_items(&root_hir.const_items, &root_hir.interner);
+            let root_static_values = rv_const_eval::evaluate_static_items(
+                &root_hir.static_items,
+                &root_hir.const_items,
+                &root_const_values,
+                &root_hir.interner,
+            );
+
+            use rv_ty::TypeInference;
+            let mut root_type_inference = TypeInference::with_hir_context(
+                &root_hir.impl_blocks,
+                &root_hir.functions,
+                &root_hir.types,
+                &root_hir.structs,
+                &root_hir.enums,
+                &root_hir.interner,
+            );
+            root_type_inference
+                .set_const_static_items(&root_hir.const_items, &root_hir.static_items);
+
+            let mut mir_functions: Vec<rv_mir::MirFunction> = Vec::new();
+            for (_, func) in root_hir
+                .functions
+                .iter()
+                .filter(|(_, func)| func.generics.is_empty())
+                .filter(|(func_id, _)| !root_hir.default_method_bodies.contains(func_id))
+            {
+                root_type_inference.context_mut().clear_expr_types();
+                root_type_inference.infer_function(func);
+                let mir_result = LoweringContext::lower_function_cross_module(
+                    func,
+                    root_type_inference.context_mut(),
+                    &root_hir.structs,
+                    &root_hir.enums,
+                    &root_hir.impl_blocks,
+                    &root_hir.functions,
+                    &root_hir.types,
+                    &root_hir.traits,
+                    &root_hir.interner,
+                    &cross_module_functions,
+                    &root_hir.lang_items,
+                    &root_const_values,
+                    &root_static_values,
+                );
+                crate::print_mir_diagnostics(&mir_result.diagnostics);
+                let func_name = root_hir.interner.resolve(&func.name);
+                crate::run_borrow_check(&mir_result.function, &func_name);
+                mir_functions.push(mir_result.function);
+            }
+
+            // Lower non-root module functions
+            for (mod_path, module_data) in &project.modules {
+                if mod_path.is_empty() {
+                    continue;
+                }
+                let mod_hir = &module_data.hir;
+                let mod_const_values =
+                    rv_const_eval::evaluate_const_items(&mod_hir.const_items, &mod_hir.interner);
+                let mod_static_values = rv_const_eval::evaluate_static_items(
+                    &mod_hir.static_items,
+                    &mod_hir.const_items,
+                    &mod_const_values,
+                    &mod_hir.interner,
+                );
+
+                let mut mod_type_inference = TypeInference::with_hir_context(
+                    &mod_hir.impl_blocks,
+                    &mod_hir.functions,
+                    &mod_hir.types,
+                    &mod_hir.structs,
+                    &mod_hir.enums,
+                    &mod_hir.interner,
+                );
+                mod_type_inference
+                    .set_const_static_items(&mod_hir.const_items, &mod_hir.static_items);
+
+                for (func_id, func) in &mod_hir.functions {
+                    if func.generics.is_empty() && !mod_hir.default_method_bodies.contains(func_id)
+                    {
+                        mod_type_inference.context_mut().clear_expr_types();
+                        mod_type_inference.infer_function(func);
+                        let mir_result = LoweringContext::lower_function(
+                            func,
+                            mod_type_inference.context_mut(),
+                            &mod_hir.structs,
+                            &mod_hir.enums,
+                            &mod_hir.impl_blocks,
+                            &mod_hir.functions,
+                            &mod_hir.types,
+                            &mod_hir.traits,
+                            &mod_hir.interner,
+                            &mod_hir.lang_items,
+                            &mod_const_values,
+                            &mod_static_values,
+                        );
+                        crate::print_mir_diagnostics(&mir_result.diagnostics);
+                        let func_name = mod_hir.interner.resolve(&func.name);
+                        crate::run_borrow_check(&mir_result.function, &func_name);
+                        mir_functions.push(mir_result.function);
+                    }
+                }
+            }
+
+            // Convert HirFileData to LoweringContext for downstream APIs
+            let root_data = root_hir.as_ref();
+            let hir = rv_hir_lower::LoweringContext::from_hir_fields(
+                root_data.functions.clone(),
+                root_data.structs.clone(),
+                root_data.enums.clone(),
+                root_data.traits.clone(),
+                root_data.impl_blocks.clone(),
+                root_data.types.clone(),
+                root_data.interner.clone(),
+            );
+            (mir_functions, hir)
+        } else {
+            use lang_raven::RavenLanguage;
+            use rv_hir_lower::lower_source_file;
+            use rv_syntax::Language;
+
+            let source = std::fs::read_to_string(&main_file)?;
+            let language = RavenLanguage::new();
+            let tree = language.parse(&source)?;
+            let root = language.lower_node(&tree.root_node(), &source);
+            let hir = lower_source_file(&root);
+
+            // Run coherence checking
+            if let Err(errors) =
+                rv_ty::check_coherence(&hir.impl_blocks, &hir.traits, &hir.types, &hir.functions)
+            {
+                for error in &errors {
+                    eprintln!("error[coherence]: {error}");
+                }
+                anyhow::bail!(
+                    "Compilation aborted due to {} coherence error(s)",
+                    errors.len()
+                );
+            }
+
+            // Evaluate const and static items
+            let const_values = rv_const_eval::evaluate_const_items(&hir.const_items, &hir.interner);
+            let static_values = rv_const_eval::evaluate_static_items(
+                &hir.static_items,
+                &hir.const_items,
+                &const_values,
+                &hir.interner,
+            );
+
+            use rv_ty::TypeInference;
+            let mut type_inference = TypeInference::with_hir_context(
+                &hir.impl_blocks,
+                &hir.functions,
+                &hir.types,
+                &hir.structs,
+                &hir.enums,
+                &hir.interner,
+            );
+            type_inference.set_const_static_items(&hir.const_items, &hir.static_items);
+
+            let mut mir_functions: Vec<rv_mir::MirFunction> = Vec::new();
+            for (_, func) in hir
+                .functions
+                .iter()
+                .filter(|(_, func)| func.generics.is_empty())
+                .filter(|(func_id, _)| !hir.default_method_bodies.contains(func_id))
+            {
+                type_inference.context_mut().clear_expr_types();
+                type_inference.infer_function(func);
+                let mir_result = LoweringContext::lower_function(
                     func,
                     type_inference.context_mut(),
                     &hir.structs,
@@ -235,9 +581,18 @@ impl Backend for LLVMBackend {
                     &hir.types,
                     &hir.traits,
                     &hir.interner,
-                )
-            })
-            .collect();
+                    &hir.lang_items,
+                    &const_values,
+                    &static_values,
+                );
+                crate::print_mir_diagnostics(&mir_result.diagnostics);
+                let func_name = hir.interner.resolve(&func.name);
+                crate::run_borrow_check(&mir_result.function, &func_name);
+                mir_functions.push(mir_result.function);
+            }
+
+            (mir_functions, hir)
+        };
 
         // Monomorphization: collect generic function instantiations needed from MIR
         use rv_mono::MonoCollector;
@@ -253,14 +608,20 @@ impl Backend for LLVMBackend {
         }
 
         // Generate monomorphized instances
-        // ARCHITECTURE: No catch_unwind - let monomorphization failures bubble up
         use rv_mono::monomorphize_functions;
         let next_func_id = hir.functions.keys().map(|id| id.0).max().unwrap_or(0) + 1;
+        let bound_checker = rv_ty::BoundChecker::new(
+            hir.traits.clone(),
+            &hir.impl_blocks,
+            hir.types.clone(),
+            hir.structs.clone(),
+            hir.enums.clone(),
+        );
         let (mono_functions, instance_map) = monomorphize_functions(
             &hir,
-            type_inference.context(),
             collector.needed_instances(),
             next_func_id,
+            Some(&bound_checker),
         );
 
         // Add monomorphized functions to MIR functions list
@@ -268,11 +629,16 @@ impl Backend for LLVMBackend {
 
         // Remap function calls in all MIR functions to use monomorphized instance IDs
         use rv_mono::rewrite_calls_to_instances;
-        rewrite_calls_to_instances(&mut mir_functions, &instance_map);
+        rewrite_calls_to_instances(
+            &mut mir_functions,
+            &instance_map,
+            &hir.functions,
+            &hir.types,
+        );
 
         // Collect test function names (only from non-generic functions in HIR)
         let mut test_functions = Vec::new();
-        for (func_id, function) in &hir.functions {
+        for (_func_id, function) in &hir.functions {
             let func_name = hir.interner.resolve(&function.name);
             if func_name.starts_with("test_") && function.generics.is_empty() {
                 test_functions.push(func_name.to_string());
@@ -294,12 +660,12 @@ impl Backend for LLVMBackend {
         let lir_functions = rv_lir::lower::lower_mir_to_lir(mir_functions, &hir);
 
         // Compile ALL LIR functions at once (supports cross-function calls)
-        use rv_llvm_backend::{compile_to_native, OptLevel};
+        use rv_llvm_backend::{OptLevel, compile_to_native};
         let temp_exe = target_dir.join("test_all.exe");
 
         messages.push("Starting LLVM compilation...".to_string());
-        let compile_result = compile_to_native(&lir_functions, &temp_exe, OptLevel::Default)
-            .map(|_| temp_exe);
+        let compile_result =
+            compile_to_native(&lir_functions, &temp_exe, OptLevel::Default).map(|_| temp_exe);
         messages.push("LLVM compilation finished".to_string());
 
         match compile_result {

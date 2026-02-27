@@ -37,4 +37,4 @@ mod lifetime;
 pub use context::LifetimeContext;
 pub use error::{LifetimeError, LifetimeResult};
 pub use infer::LifetimeInference;
-pub use lifetime::{Lifetime, LifetimeId, LifetimeParam, RegionId};
+pub use lifetime::{Lifetime, LifetimeConstraint, LifetimeId, LifetimeParam, RegionId};

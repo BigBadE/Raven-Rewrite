@@ -101,10 +101,7 @@ impl<'a> ConstraintSolver<'a> {
         for (left, right) in equality_constraints {
             let mut unifier = Unifier::new(self.ctx);
             if let Err(error) = unifier.unify(left, right) {
-                errors.push(TypeError::Unification {
-                    error,
-                    expr: None,
-                });
+                errors.push(TypeError::Unification { error, expr: None });
             }
         }
 
@@ -153,13 +150,18 @@ impl<'a> ConstraintSolver<'a> {
             .constraints
             .iter()
             .filter_map(|c| match c {
-                Constraint::TraitBound { ty, trait_id, .. } => Some((*ty, *trait_id)),
+                Constraint::TraitBound {
+                    ty,
+                    trait_id,
+                    param_name,
+                    ..
+                } => Some((*ty, *trait_id, *param_name)),
                 _ => None,
             })
             .collect();
 
         // Check each trait bound
-        for (ty, trait_id) in trait_bounds {
+        for (ty, trait_id, param_name) in trait_bounds {
             // Normalize to get concrete type
             let concrete_ty = self.ctx.normalize(ty).map(|n| n.ty_id()).unwrap_or(ty);
 
@@ -169,16 +171,16 @@ impl<'a> ConstraintSolver<'a> {
                 let trait_bound = rv_hir::TraitBound {
                     trait_ref: trait_id,
                     args: vec![],
+                    for_lifetimes: vec![],
                 };
 
                 // Check if the bound is satisfied
                 if !bound_checker.check_bound(type_def_id, &trait_bound) {
-                    // Create a placeholder symbol for the error
-                    // In a real implementation, we'd track which parameter this is
-                    let placeholder_symbol = rv_intern::Interner::new().intern("_");
+                    let error_param_name =
+                        param_name.unwrap_or_else(|| rv_intern::Interner::new().intern("_"));
                     errors.push(TypeError::BoundError {
                         error: BoundError::UnsatisfiedBound {
-                            param_name: placeholder_symbol,
+                            param_name: error_param_name,
                             trait_id,
                         },
                         expr: None,

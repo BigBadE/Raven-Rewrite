@@ -4,13 +4,13 @@
     reason = "Ty and TyId are conventional names in type system implementations"
 )]
 
-use crate::bounds::{BoundChecker, BoundError};
+use crate::bounds::BoundError;
 use crate::constraint::{ConstraintSource, Constraints};
 use crate::context::TyContext;
 use crate::module_context::ModuleTypeContext;
 use crate::ty::{TyId, TyKind};
 use crate::unify::{UnificationError, Unifier};
-use rv_hir::{Body, Expr, ExprId, Function, LiteralKind, Stmt, StmtId, TraitDef, TraitId};
+use rv_hir::{Body, Expr, ExprId, Function, LiteralKind, Stmt, StmtId};
 
 /// Type inference result
 pub struct InferenceResult {
@@ -18,6 +18,9 @@ pub struct InferenceResult {
     pub ctx: TyContext,
     /// Errors encountered during inference
     pub errors: Vec<TypeError>,
+    /// Lifetime outlives constraints: (sub, sup, source_expr)
+    /// sub's lifetime must outlive sup's lifetime
+    pub lifetime_constraints: Vec<(rv_span::LifetimeId, rv_span::LifetimeId, Option<ExprId>)>,
 }
 
 /// Type error
@@ -42,6 +45,11 @@ pub enum TypeError {
         /// Expression where error occurred
         expr: Option<ExprId>,
     },
+    /// Calling an unsafe function outside an unsafe context
+    UnsafeCallInSafeContext {
+        /// Source location of the call
+        span: rv_span::FileSpan,
+    },
 }
 
 /// Type inference engine
@@ -61,16 +69,17 @@ pub struct TypeInference<'a> {
     structs: Option<&'a std::collections::HashMap<rv_hir::TypeDefId, rv_hir::StructDef>>,
     /// Reference to enum definitions for variant type lookup
     enums: Option<&'a std::collections::HashMap<rv_hir::TypeDefId, rv_hir::EnumDef>>,
-    /// Reference to trait definitions for bound checking
-    #[allow(dead_code, reason = "Will be used for bound checking at monomorphization time")]
-    traits: Option<&'a std::collections::HashMap<TraitId, TraitDef>>,
+    /// Reference to trait definitions for dyn Trait resolution
+    trait_defs: Option<&'a std::collections::HashMap<rv_hir::TraitId, rv_hir::TraitDef>>,
+    /// Reference to const items for type registration
+    const_items: Option<&'a std::collections::HashMap<rv_hir::ConstId, rv_hir::ConstItem>>,
+    /// Reference to static items for type registration
+    static_items: Option<&'a std::collections::HashMap<rv_hir::StaticId, rv_hir::StaticItem>>,
+
     /// Reference to interner for resolving type names
     interner: Option<&'a rv_intern::Interner>,
     /// Cache for HIR TypeId → TyId conversions to prevent infinite recursion
     type_conversion_cache: rustc_hash::FxHashMap<rv_hir::TypeId, TyId>,
-    /// Bound checker for validating trait constraints (created once we have all context)
-    #[allow(dead_code, reason = "Will be used for bound checking at monomorphization time")]
-    bound_checker: Option<BoundChecker>,
     /// Expected return type for the current function being inferred
     current_function_return_ty: Option<TyId>,
     /// Stack tracking variable mutability (variable name → is_mutable)
@@ -86,6 +95,14 @@ pub struct TypeInference<'a> {
     /// Map from generic parameter names to type variables (for current function being inferred)
     /// This ensures all occurrences of the same generic parameter T map to the same type variable
     generic_param_map: rustc_hash::FxHashMap<rv_intern::Symbol, TyId>,
+    /// Next lifetime ID for fresh lifetime generation during reference type creation
+    next_lifetime_id: u32,
+    /// Lifetime outlives constraints collected during inference (sub, sup, source_expr)
+    /// These are forwarded to the borrow checker's LifetimeContext after inference completes
+    lifetime_constraints: Vec<(rv_span::LifetimeId, rv_span::LifetimeId, Option<ExprId>)>,
+    /// Tracks nesting depth of unsafe contexts (unsafe blocks, unsafe fn bodies)
+    /// When > 0, operations requiring unsafe (raw pointer deref, unsafe fn calls) are allowed
+    unsafe_depth: u32,
 }
 
 impl<'a> TypeInference<'a> {
@@ -100,10 +117,11 @@ impl<'a> TypeInference<'a> {
             hir_types: None,
             structs: None,
             enums: None,
-            traits: None,
+            trait_defs: None,
+            const_items: None,
+            static_items: None,
             interner: None,
             type_conversion_cache: rustc_hash::FxHashMap::default(),
-            bound_checker: None,
             current_function_return_ty: None,
             var_mutability: vec![rustc_hash::FxHashMap::default()],
             receiver_mutability: rustc_hash::FxHashMap::default(),
@@ -111,6 +129,9 @@ impl<'a> TypeInference<'a> {
             generic_param_map: rustc_hash::FxHashMap::default(),
             constraints: Constraints::new(),
             module_ctx: None,
+            next_lifetime_id: 0,
+            lifetime_constraints: Vec::new(),
+            unsafe_depth: 0,
         }
     }
 
@@ -121,7 +142,6 @@ impl<'a> TypeInference<'a> {
         hir_types: &'a la_arena::Arena<rv_hir::Type>,
         structs: &'a std::collections::HashMap<rv_hir::TypeDefId, rv_hir::StructDef>,
         enums: &'a std::collections::HashMap<rv_hir::TypeDefId, rv_hir::EnumDef>,
-        traits: &'a std::collections::HashMap<TraitId, TraitDef>,
         interner: &'a rv_intern::Interner,
     ) -> Self {
         Self::with_hir_context_and_tyctx(
@@ -130,7 +150,6 @@ impl<'a> TypeInference<'a> {
             hir_types,
             structs,
             enums,
-            traits,
             interner,
             TyContext::new(),
         )
@@ -145,17 +164,9 @@ impl<'a> TypeInference<'a> {
         hir_types: &'a la_arena::Arena<rv_hir::Type>,
         structs: &'a std::collections::HashMap<rv_hir::TypeDefId, rv_hir::StructDef>,
         enums: &'a std::collections::HashMap<rv_hir::TypeDefId, rv_hir::EnumDef>,
-        traits: &'a std::collections::HashMap<TraitId, TraitDef>,
         interner: &'a rv_intern::Interner,
         ctx: TyContext,
     ) -> Self {
-        // Create bound checker with trait and impl information
-        let bound_checker = BoundChecker::new(
-            traits.clone(),
-            impl_blocks,
-            hir_types.clone(),
-        );
-
         Self {
             ctx,
             errors: vec![],
@@ -165,10 +176,11 @@ impl<'a> TypeInference<'a> {
             hir_types: Some(hir_types),
             structs: Some(structs),
             enums: Some(enums),
-            traits: Some(traits),
+            trait_defs: None,
+            const_items: None,
+            static_items: None,
             interner: Some(interner),
             type_conversion_cache: rustc_hash::FxHashMap::default(),
-            bound_checker: Some(bound_checker),
             current_function_return_ty: None,
             var_mutability: vec![rustc_hash::FxHashMap::default()],
             receiver_mutability: rustc_hash::FxHashMap::default(),
@@ -176,6 +188,45 @@ impl<'a> TypeInference<'a> {
             generic_param_map: rustc_hash::FxHashMap::default(),
             constraints: Constraints::new(),
             module_ctx: None,
+            next_lifetime_id: 0,
+            lifetime_constraints: Vec::new(),
+            unsafe_depth: 0,
+        }
+    }
+
+    /// Set trait definitions for dyn Trait resolution
+    pub fn set_trait_defs(
+        &mut self,
+        trait_defs: &'a std::collections::HashMap<rv_hir::TraitId, rv_hir::TraitDef>,
+    ) {
+        self.trait_defs = Some(trait_defs);
+    }
+
+    /// Set const and static item definitions for type registration.
+    ///
+    /// This registers the declared types of all const and static items in the TyContext
+    /// so that when `Expr::Variable { def: DefId::Const(..) }` is encountered during
+    /// inference, `ctx.get_def_type()` returns the correct type.
+    pub fn set_const_static_items(
+        &mut self,
+        const_items: &'a std::collections::HashMap<rv_hir::ConstId, rv_hir::ConstItem>,
+        static_items: &'a std::collections::HashMap<rv_hir::StaticId, rv_hir::StaticItem>,
+    ) {
+        self.const_items = Some(const_items);
+        self.static_items = Some(static_items);
+
+        // Register types for all const items in the TyContext
+        if let (Some(hir_types), Some(structs), Some(interner)) =
+            (self.hir_types, self.structs, self.interner)
+        {
+            for (const_id, const_item) in const_items {
+                let ty = self.hir_type_to_ty_id(const_item.ty, hir_types, structs, interner);
+                self.ctx.set_def_type(rv_hir::DefId::Const(*const_id), ty);
+            }
+            for (static_id, static_item) in static_items {
+                let ty = self.hir_type_to_ty_id(static_item.ty, hir_types, structs, interner);
+                self.ctx.set_def_type(rv_hir::DefId::Static(*static_id), ty);
+            }
         }
     }
 
@@ -201,6 +252,39 @@ impl<'a> TypeInference<'a> {
     #[must_use]
     pub fn context_mut(&mut self) -> &mut TyContext {
         &mut self.ctx
+    }
+
+    /// Allocate a fresh lifetime ID for a new reference type
+    fn fresh_lifetime(&mut self) -> rv_span::LifetimeId {
+        let id = rv_span::LifetimeId(self.next_lifetime_id);
+        self.next_lifetime_id += 1;
+        id
+    }
+
+    /// Add a lifetime outlives constraint: `sub` must outlive `sup`
+    fn add_lifetime_outlives(
+        &mut self,
+        sub: rv_span::LifetimeId,
+        sup: rv_span::LifetimeId,
+        source_expr: Option<ExprId>,
+    ) {
+        self.lifetime_constraints.push((sub, sup, source_expr));
+    }
+
+    /// Get the lifetime constraints collected during inference
+    #[must_use]
+    pub fn lifetime_constraints(
+        &self,
+    ) -> &[(rv_span::LifetimeId, rv_span::LifetimeId, Option<ExprId>)] {
+        &self.lifetime_constraints
+    }
+
+    /// Extract the lifetime ID from a TyKind::Ref, if present
+    fn ref_lifetime(&self, ty_id: TyId) -> Option<rv_span::LifetimeId> {
+        match &self.ctx.types.get(ty_id).kind {
+            TyKind::Ref { lifetime, .. } => *lifetime,
+            _ => None,
+        }
     }
 
     /// Bind a variable name to a concrete type in the global scope
@@ -261,6 +345,17 @@ impl<'a> TypeInference<'a> {
         false // Default to immutable if not found
     }
 
+    /// Resolve a call expression's callee to a FunctionId, if possible.
+    fn resolve_callee_function(&self, body: &Body, callee: ExprId) -> Option<rv_hir::FunctionId> {
+        match &body.exprs[callee] {
+            Expr::Variable {
+                def: Some(rv_hir::DefId::Function(fid)),
+                ..
+            } => Some(*fid),
+            _ => None,
+        }
+    }
+
     /// Recursively check if an expression is mutable
     fn is_expr_mutable(&self, body: &Body, expr_id: ExprId) -> bool {
         let expr = &body.exprs[expr_id];
@@ -281,8 +376,137 @@ impl<'a> TypeInference<'a> {
         }
     }
 
+    /// Infer types for pattern bindings and register them in the variable scope.
+    ///
+    /// For match patterns like `Option::Some(v)`, this extracts the type of `v` from
+    /// the scrutinee type and registers it so that `v` can be used in the arm body.
+    fn infer_pattern_bindings(&mut self, body: &Body, pattern: &rv_hir::Pattern, scrutinee_ty: TyId) {
+        match pattern {
+            rv_hir::Pattern::Binding { name, .. } => {
+                // Register the binding with the scrutinee type (the whole matched value)
+                self.insert_var(*name, scrutinee_ty);
+            }
+            rv_hir::Pattern::Enum { sub_patterns, def, .. } => {
+                // For enum patterns, extract field types from the scrutinee
+                // scrutinee_ty should be TyKind::Named { def, args }
+                let resolved_ty = self.ctx.follow_var(scrutinee_ty);
+                let ty_kind = self.ctx.types.get(resolved_ty).kind.clone();
+
+                if let TyKind::Named { args, def: ty_def, .. } = ty_kind {
+                    // Get the enum definition to find field types
+                    let enum_def_id = def.or(Some(ty_def));
+                    if let (Some(enum_def_id), Some(enums)) = (enum_def_id, self.enums) {
+                        if let Some(enum_def) = enums.get(&enum_def_id) {
+                            // Find this variant in the enum definition
+                            // Note: we need the variant name, which is in the Pattern::Enum
+                            // For now, assume sub_patterns correspond to generic args for simple cases
+                            // like Option::Some(v) where v gets the type arg
+                            for (idx, sub_pat_id) in sub_patterns.iter().enumerate() {
+                                let sub_pattern = &body.patterns[*sub_pat_id];
+                                // If the sub-pattern is a binding, register it with the appropriate type
+                                // For Option<T>, Some(v) means v has type T, which is args[0]
+                                let field_ty = if idx < args.len() {
+                                    args[idx]
+                                } else {
+                                    // Fallback to fresh type variable
+                                    self.ctx.fresh_ty_var()
+                                };
+                                self.infer_pattern_bindings(body, sub_pattern, field_ty);
+                            }
+                            let _ = enum_def; // Suppress unused warning - needed for pattern matching
+                        }
+                    }
+                }
+            }
+            rv_hir::Pattern::Tuple { patterns, .. } => {
+                // For tuple patterns, extract element types
+                let resolved_ty = self.ctx.follow_var(scrutinee_ty);
+                let ty_kind = self.ctx.types.get(resolved_ty).kind.clone();
+
+                if let TyKind::Tuple { elements } = ty_kind {
+                    for (idx, sub_pat_id) in patterns.iter().enumerate() {
+                        let sub_pattern = &body.patterns[*sub_pat_id];
+                        let elem_ty = if idx < elements.len() {
+                            elements[idx]
+                        } else {
+                            self.ctx.fresh_ty_var()
+                        };
+                        self.infer_pattern_bindings(body, sub_pattern, elem_ty);
+                    }
+                }
+            }
+            rv_hir::Pattern::Struct { fields, .. } => {
+                // For struct patterns, extract field types by name
+                let resolved_ty = self.ctx.follow_var(scrutinee_ty);
+                let ty_kind = self.ctx.types.get(resolved_ty).kind.clone();
+
+                if let TyKind::Struct { fields: struct_fields, .. } = ty_kind {
+                    for (field_name, sub_pat_id) in fields {
+                        let sub_pattern = &body.patterns[*sub_pat_id];
+                        let field_ty = struct_fields
+                            .iter()
+                            .find(|(name, _)| name == field_name)
+                            .map(|(_, ty)| *ty)
+                            .unwrap_or_else(|| self.ctx.fresh_ty_var());
+                        self.infer_pattern_bindings(body, sub_pattern, field_ty);
+                    }
+                }
+            }
+            rv_hir::Pattern::Or { patterns, .. } => {
+                // For or-patterns, all alternatives should bind the same variables
+                // with the same types, so we just process the first one
+                if let Some(first_pat_id) = patterns.first() {
+                    let first_pattern = &body.patterns[*first_pat_id];
+                    self.infer_pattern_bindings(body, first_pattern, scrutinee_ty);
+                }
+            }
+            rv_hir::Pattern::Slice { prefix, rest, suffix, .. } => {
+                // For slice patterns, extract element type from the scrutinee
+                let resolved_ty = self.ctx.follow_var(scrutinee_ty);
+                let ty_kind = self.ctx.types.get(resolved_ty).kind.clone();
+
+                // Get element type from Array or Slice type
+                let elem_ty = match ty_kind {
+                    TyKind::Array { element, .. } => *element,
+                    TyKind::Slice { element } => *element,
+                    _ => self.ctx.fresh_ty_var(),
+                };
+
+                // Process prefix patterns
+                for sub_pat_id in prefix {
+                    let sub_pattern = &body.patterns[*sub_pat_id];
+                    self.infer_pattern_bindings(body, sub_pattern, elem_ty);
+                }
+
+                // Process rest pattern (if any) - binds to the remaining slice
+                if let Some(rest_pat_id) = rest {
+                    let rest_pattern = &body.patterns[*rest_pat_id];
+                    // Rest binds to a slice of the element type
+                    let slice_ty = self.ctx.types.alloc(TyKind::Slice {
+                        element: Box::new(elem_ty),
+                    });
+                    self.infer_pattern_bindings(body, rest_pattern, slice_ty);
+                }
+
+                // Process suffix patterns
+                for sub_pat_id in suffix {
+                    let sub_pattern = &body.patterns[*sub_pat_id];
+                    self.infer_pattern_bindings(body, sub_pattern, elem_ty);
+                }
+            }
+            // These patterns don't introduce bindings
+            rv_hir::Pattern::Wildcard { .. }
+            | rv_hir::Pattern::Literal { .. }
+            | rv_hir::Pattern::Range { .. } => {}
+        }
+    }
+
     /// Infer types for a function
     pub fn infer_function(&mut self, function: &Function) {
+        // Clear type conversion cache between functions to avoid stale type variable references.
+        // Types containing generic parameters get cached with function-specific type variables,
+        // and those type variables won't be resolved in subsequent functions.
+        self.type_conversion_cache.clear();
 
         // Clear and populate generic parameter map for this function
         // Each generic parameter T, U, etc. maps to a single type variable
@@ -305,7 +529,9 @@ impl<'a> TypeInference<'a> {
 
         // ARCHITECTURE: Initialize parameter types from HIR type annotations
         // NO fallbacks - HIR context is REQUIRED for type inference
-        let hir_types = self.hir_types.expect("HIR types required for type inference");
+        let hir_types = self
+            .hir_types
+            .expect("HIR types required for type inference");
         let structs = self.structs.expect("Structs required for type inference");
         let interner = self.interner.expect("Interner required for type inference");
 
@@ -322,8 +548,8 @@ impl<'a> TypeInference<'a> {
             let param_ty = if let Some(existing_ty) = self.ctx.get_def_type(def_id) {
                 // Check if it's a concrete type (not a type variable)
                 match &self.ctx.types.get(existing_ty).kind {
-                    TyKind::Var { .. } => {
-                        // It's a type variable, convert from HIR
+                    TyKind::Var { .. } | TyKind::IntVar { .. } | TyKind::FloatVar { .. } => {
+                        // It's an inference variable, convert from HIR
                         self.hir_type_to_ty_id(param.ty, hir_types, structs, interner)
                     }
                     _ => {
@@ -343,8 +569,18 @@ impl<'a> TypeInference<'a> {
             self.insert_var(param.name, param_ty);
         }
 
+        // Unsafe functions have an implicit unsafe context for their entire body
+        if function.is_unsafe {
+            self.unsafe_depth += 1;
+        }
+
         // Infer body
         self.infer_body(&function.body);
+
+        // Restore unsafe depth after function
+        if function.is_unsafe {
+            self.unsafe_depth -= 1;
+        }
 
         // Clear expected return type after function
         self.current_function_return_ty = None;
@@ -383,7 +619,7 @@ impl<'a> TypeInference<'a> {
         let hir_type = &hir_types[hir_ty_id];
 
         let result_ty = match hir_type {
-            rv_hir::Type::Named { name, def, .. } => {
+            rv_hir::Type::Named { name, def, args, .. } => {
                 // If it's a struct with resolved definition, create proper struct type
                 if let Some(type_def_id) = def {
                     if let Some(struct_def) = structs.get(type_def_id) {
@@ -392,7 +628,13 @@ impl<'a> TypeInference<'a> {
                             .fields
                             .iter()
                             .map(|field| {
-                                let field_ty = self.hir_type_to_ty_id_impl(field.ty, hir_types, structs, interner, depth + 1);
+                                let field_ty = self.hir_type_to_ty_id_impl(
+                                    field.ty,
+                                    hir_types,
+                                    structs,
+                                    interner,
+                                    depth + 1,
+                                );
                                 (field.name, field_ty)
                             })
                             .collect();
@@ -401,8 +643,33 @@ impl<'a> TypeInference<'a> {
                             def_id: *type_def_id,
                             fields: field_types,
                         })
+                    } else if let Some(enums) = self.enums {
+                        if let Some(enum_def) = enums.get(type_def_id) {
+                            // Enum type — convert args to TyIds
+                            let ty_args: Vec<TyId> = args
+                                .iter()
+                                .map(|arg_ty_id| {
+                                    self.hir_type_to_ty_id_impl(
+                                        *arg_ty_id,
+                                        hir_types,
+                                        structs,
+                                        interner,
+                                        depth + 1,
+                                    )
+                                })
+                                .collect();
+
+                            self.ctx.types.alloc(TyKind::Named {
+                                name: enum_def.name,
+                                def: *type_def_id,
+                                args: ty_args,
+                            })
+                        } else {
+                            // Type definition not found in structs or enums
+                            self.ctx.fresh_ty_var()
+                        }
                     } else {
-                        // Struct definition not found, use type variable
+                        // No enums context available
                         self.ctx.fresh_ty_var()
                     }
                 } else {
@@ -412,8 +679,57 @@ impl<'a> TypeInference<'a> {
                     // Check if it's a primitive type
                     let type_name = interner.resolve(name);
                     match type_name.as_str() {
-                        "i64" | "i32" | "int" => self.ctx.types.int(),
-                        "f64" | "f32" | "float" => self.ctx.types.float(),
+                        "i8" => self
+                            .ctx
+                            .types
+                            .int_typed(rv_hir::IntWidth::I8, rv_hir::Signedness::Signed),
+                        "i16" => self
+                            .ctx
+                            .types
+                            .int_typed(rv_hir::IntWidth::I16, rv_hir::Signedness::Signed),
+                        "i32" | "int" => self
+                            .ctx
+                            .types
+                            .int_typed(rv_hir::IntWidth::I32, rv_hir::Signedness::Signed),
+                        "i64" => self
+                            .ctx
+                            .types
+                            .int_typed(rv_hir::IntWidth::I64, rv_hir::Signedness::Signed),
+                        "i128" => self
+                            .ctx
+                            .types
+                            .int_typed(rv_hir::IntWidth::I128, rv_hir::Signedness::Signed),
+                        "isize" => self
+                            .ctx
+                            .types
+                            .int_typed(rv_hir::IntWidth::Isize, rv_hir::Signedness::Signed),
+                        "u8" => self
+                            .ctx
+                            .types
+                            .int_typed(rv_hir::IntWidth::I8, rv_hir::Signedness::Unsigned),
+                        "u16" => self
+                            .ctx
+                            .types
+                            .int_typed(rv_hir::IntWidth::I16, rv_hir::Signedness::Unsigned),
+                        "u32" => self
+                            .ctx
+                            .types
+                            .int_typed(rv_hir::IntWidth::I32, rv_hir::Signedness::Unsigned),
+                        "u64" => self
+                            .ctx
+                            .types
+                            .int_typed(rv_hir::IntWidth::I64, rv_hir::Signedness::Unsigned),
+                        "u128" => self
+                            .ctx
+                            .types
+                            .int_typed(rv_hir::IntWidth::I128, rv_hir::Signedness::Unsigned),
+                        "usize" => self
+                            .ctx
+                            .types
+                            .int_typed(rv_hir::IntWidth::Isize, rv_hir::Signedness::Unsigned),
+                        "f32" => self.ctx.types.float_typed(rv_hir::FloatWidth::F32),
+                        "f64" | "float" => self.ctx.types.float_typed(rv_hir::FloatWidth::F64),
+                        "char" => self.ctx.types.char(),
                         "bool" => self.ctx.types.bool(),
                         "str" | "String" => self.ctx.types.string(),
                         "()" => self.ctx.types.unit(),
@@ -440,9 +756,12 @@ impl<'a> TypeInference<'a> {
             rv_hir::Type::Function { params, ret, .. } => {
                 let param_tys: Vec<TyId> = params
                     .iter()
-                    .map(|p| self.hir_type_to_ty_id_impl(*p, hir_types, structs, interner, depth + 1))
+                    .map(|p| {
+                        self.hir_type_to_ty_id_impl(*p, hir_types, structs, interner, depth + 1)
+                    })
                     .collect();
-                let ret_ty = self.hir_type_to_ty_id_impl(**ret, hir_types, structs, interner, depth + 1);
+                let ret_ty =
+                    self.hir_type_to_ty_id_impl(**ret, hir_types, structs, interner, depth + 1);
 
                 self.ctx.types.alloc(TyKind::Function {
                     params: param_tys,
@@ -453,47 +772,61 @@ impl<'a> TypeInference<'a> {
             rv_hir::Type::Tuple { elements, .. } => {
                 let elem_tys: Vec<TyId> = elements
                     .iter()
-                    .map(|e| self.hir_type_to_ty_id_impl(*e, hir_types, structs, interner, depth + 1))
+                    .map(|e| {
+                        self.hir_type_to_ty_id_impl(*e, hir_types, structs, interner, depth + 1)
+                    })
                     .collect();
 
-                self.ctx.types.alloc(TyKind::Tuple {
-                    elements: elem_tys,
-                })
+                self.ctx.types.alloc(TyKind::Tuple { elements: elem_tys })
             }
 
-            rv_hir::Type::QualifiedPath { base, assoc_type, .. } => {
-                // ARCHITECTURE: Resolve associated types by looking up trait impl blocks
+            rv_hir::Type::QualifiedPath {
+                base,
+                assoc_type,
+                trait_ref,
+                ..
+            } => {
+                // Resolve associated types by looking up trait impl blocks
                 // Example: Self::Item where Self is a type implementing Container trait
+                // Example: <T as Iterator>::Item with explicit trait_ref
 
                 // Step 1: Extract TypeDefId from base type
                 let base_hir_ty = &hir_types[**base];
                 let base_type_def_id = match base_hir_ty {
-                    rv_hir::Type::Named { def: Some(def_id), .. } => Some(*def_id),
+                    rv_hir::Type::Named {
+                        def: Some(def_id), ..
+                    } => Some(*def_id),
                     _ => None,
                 };
 
-                // Step 3: Look up associated type in impl blocks
+                // Step 2: Look up associated type in impl blocks
                 if let (Some(def_id), Some(impl_blocks)) = (base_type_def_id, self.impl_blocks) {
-                    // Search all impl blocks for one that:
-                    // 1. Implements a trait (has trait_ref)
-                    // 2. For this type (self_ty matches)
-                    // 3. Provides this associated type
                     for impl_block in impl_blocks.values() {
                         // Check if this impl is for our type
                         let impl_self_ty = &hir_types[impl_block.self_ty];
                         let matches_type = match impl_self_ty {
-                            rv_hir::Type::Named { def: Some(impl_def_id), .. } => {
-                                *impl_def_id == def_id
-                            }
+                            rv_hir::Type::Named {
+                                def: Some(impl_def_id),
+                                ..
+                            } => *impl_def_id == def_id,
                             _ => false,
                         };
 
-                        if matches_type && impl_block.trait_ref.is_some() {
-                            // This is a trait impl for our type
-                            // Look for the associated type implementation
+                        if !matches_type {
+                            continue;
+                        }
+
+                        // If trait_ref is specified, only match that trait
+                        let matches_trait = match (trait_ref, impl_block.trait_ref) {
+                            (Some(required), Some(actual)) => *required == actual,
+                            (Some(_), None) => false,
+                            (None, Some(_)) => true, // No constraint — any trait impl matches
+                            (None, None) => false,   // Need a trait impl for associated types
+                        };
+
+                        if matches_trait {
                             for assoc_impl in &impl_block.associated_type_impls {
                                 if assoc_impl.name == *assoc_type {
-                                    // Found it! Convert the concrete type to TyId
                                     return self.hir_type_to_ty_id_impl(
                                         assoc_impl.ty,
                                         hir_types,
@@ -507,28 +840,83 @@ impl<'a> TypeInference<'a> {
                     }
                 }
 
-                // Fallback: If we can't resolve the associated type, panic
-                // (per user directive: we should panic on type inference errors)
-                let assoc_name = interner.resolve(assoc_type);
-                panic!(
-                    "COMPILER BUG: Could not resolve associated type '{}'. \
-                     The trait implementation should have provided this type.",
-                    assoc_name
-                );
+                // Associated type could not be resolved — create a type variable as fallback
+                self.ctx.fresh_ty_var()
             }
 
-            rv_hir::Type::Reference { inner, mutable, .. } => {
+            rv_hir::Type::Reference {
+                inner,
+                mutable,
+                lifetime,
+                ..
+            } => {
                 // Reference type - convert inner type and wrap in Ref
-                let inner_ty = self.hir_type_to_ty_id_impl(**inner, hir_types, structs, interner, depth + 1);
+                let inner_ty =
+                    self.hir_type_to_ty_id_impl(**inner, hir_types, structs, interner, depth + 1);
+                // Use the HIR lifetime if explicitly annotated, otherwise generate a fresh one
+                let lt = lifetime.unwrap_or_else(|| self.fresh_lifetime());
                 self.ctx.types.alloc(TyKind::Ref {
+                    inner: Box::new(inner_ty),
+                    mutable: *mutable,
+                    lifetime: Some(lt),
+                })
+            }
+
+            rv_hir::Type::Pointer { inner, mutable, .. } => {
+                let inner_ty =
+                    self.hir_type_to_ty_id_impl(**inner, hir_types, structs, interner, depth + 1);
+                self.ctx.types.alloc(TyKind::Pointer {
                     inner: Box::new(inner_ty),
                     mutable: *mutable,
                 })
             }
 
+            rv_hir::Type::Array { element, .. } => {
+                let elem_ty =
+                    self.hir_type_to_ty_id_impl(**element, hir_types, structs, interner, depth + 1);
+                // Size is not yet resolved at this point (requires const eval)
+                self.ctx.types.alloc(TyKind::Array {
+                    element: Box::new(elem_ty),
+                    size: 0,
+                })
+            }
+
+            rv_hir::Type::Never { .. } => self.ctx.types.alloc(TyKind::Never),
+
+            rv_hir::Type::DynTrait { bounds, .. } => {
+                // Use the first bound's name as the principal trait
+                let principal_name = bounds
+                    .first()
+                    .map(|b| b.name)
+                    .unwrap_or_else(|| interner.intern("dyn"));
+                // Resolve the trait by name
+                let principal = self
+                    .trait_defs
+                    .and_then(|traits| {
+                        traits
+                            .iter()
+                            .find(|(_, td)| td.name == principal_name)
+                            .map(|(id, _)| *id)
+                    })
+                    .unwrap_or(rv_hir::TraitId(u32::MAX)); // Sentinel for unresolved
+                self.ctx.types.alloc(TyKind::DynTrait {
+                    principal,
+                    principal_name,
+                })
+            }
+
+            rv_hir::Type::ImplTrait { bounds, .. } => {
+                // Use the first bound's name as the principal trait
+                let principal = bounds
+                    .first()
+                    .map(|b| b.name)
+                    .unwrap_or_else(|| interner.intern("impl"));
+                self.ctx.types.alloc(TyKind::ImplTrait { principal })
+            }
+
             rv_hir::Type::Unknown { span } => {
                 panic!(
-                    "COMPILER BUG: Encountered Unknown type during type inference at {:?}. \
+                    "ICE: Encountered Unknown type during type inference at {:?}. \
                      Parser should not produce Unknown types in well-formed code.",
                     span
                 )
@@ -547,37 +935,16 @@ impl<'a> TypeInference<'a> {
         self.infer_expr(body, body.root_expr, expected);
     }
 
-    /// Check trait bounds for a generic parameter usage
-    /// This checks that a type satisfies the trait bounds declared on a generic parameter
-    #[allow(dead_code, reason = "Will be called during monomorphization-time bound checking")]
-    fn check_generic_param_bounds(
-        &mut self,
-        type_def_id: rv_hir::TypeDefId,
-        generic_param: &rv_hir::GenericParam,
-        expr_id: ExprId,
-    ) {
-        // Only check if we have a bound checker
-        let Some(bound_checker) = &self.bound_checker else {
-            return;
-        };
-
-        // Check all bounds on this generic parameter
-        let errors = bound_checker.check_generic_bounds(type_def_id, generic_param);
-        for error in errors {
-            self.errors.push(TypeError::BoundError {
-                error,
-                expr: Some(expr_id),
-            });
-        }
-    }
-
     /// Infer type of an expression
     ///
     /// # Parameters
     /// - `body`: The function body containing the expression
     /// - `expr_id`: The ID of the expression to infer
     /// - `expected`: Optional expected type (for bidirectional type flow)
-    #[allow(clippy::too_many_lines, reason = "Type inference requires comprehensive pattern matching")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Type inference requires comprehensive pattern matching"
+    )]
     fn infer_expr(&mut self, body: &Body, expr_id: ExprId, expected: Option<TyId>) -> TyId {
         let expr = &body.exprs[expr_id];
 
@@ -594,13 +961,19 @@ impl<'a> TypeInference<'a> {
                             if let Some(functions) = self.functions {
                                 if let Some(func) = functions.get(func_id) {
                                     // Extract signature and convert to Function type
-                                    let param_tys: Vec<TyId> = func.parameters
+                                    let param_tys: Vec<TyId> = func
+                                        .parameters
                                         .iter()
                                         .map(|p| {
-                                            if let (Some(hir_types), Some(structs), Some(interner)) =
-                                                (self.hir_types, self.structs, self.interner)
+                                            if let (
+                                                Some(hir_types),
+                                                Some(structs),
+                                                Some(interner),
+                                            ) = (self.hir_types, self.structs, self.interner)
                                             {
-                                                self.hir_type_to_ty_id(p.ty, hir_types, structs, interner)
+                                                self.hir_type_to_ty_id(
+                                                    p.ty, hir_types, structs, interner,
+                                                )
                                             } else {
                                                 self.ctx.fresh_ty_var()
                                             }
@@ -611,7 +984,9 @@ impl<'a> TypeInference<'a> {
                                         if let (Some(hir_types), Some(structs), Some(interner)) =
                                             (self.hir_types, self.structs, self.interner)
                                         {
-                                            self.hir_type_to_ty_id(ret_hir_ty, hir_types, structs, interner)
+                                            self.hir_type_to_ty_id(
+                                                ret_hir_ty, hir_types, structs, interner,
+                                            )
                                         } else {
                                             self.ctx.types.unit()
                                         }
@@ -648,37 +1023,56 @@ impl<'a> TypeInference<'a> {
                     }
                 } else {
                     // Unresolved variable - name resolution should have caught this
-                    let var_name = self.interner
+                    let var_name = self
+                        .interner
                         .map(|i| i.resolve(name))
                         .unwrap_or_else(|| format!("{:?}", name));
                     panic!(
-                        "COMPILER BUG: Variable '{}' at expr {:?} has no DefId. \
+                        "ICE: Variable '{}' at expr {:?} has no DefId. \
                          Name resolution should have assigned DefIds to all variables.",
-                        var_name,
-                        expr_id
+                        var_name, expr_id
                     )
                 };
 
                 result_ty
             }
 
-            Expr::Call { callee, args, .. } => {
+            Expr::Call { callee, args, type_args: _, span } => {
+                // Check if calling an unsafe function from a safe context
+                if self.unsafe_depth == 0 {
+                    if let Some(func_id) = self.resolve_callee_function(body, *callee) {
+                        if let Some(functions) = self.functions {
+                            if let Some(func) = functions.get(&func_id) {
+                                if func.is_unsafe {
+                                    self.errors
+                                        .push(TypeError::UnsafeCallInSafeContext { span: *span });
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Infer callee type (no expected type for callee)
                 let callee_ty = self.infer_expr(body, *callee, None);
 
                 // Extract parameter types from callee to pass as expected types to arguments
                 let callee_ty_normalized = self.ctx.types.get(callee_ty);
-                let param_expected_types = if let TyKind::Function { params, .. } = &callee_ty_normalized.kind {
-                    params.clone()
-                } else {
-                    vec![]
-                };
+                let param_expected_types =
+                    if let TyKind::Function { params, .. } = &callee_ty_normalized.kind {
+                        params.clone()
+                    } else {
+                        vec![]
+                    };
 
                 // Infer argument types with expected types from function signature
-                let arg_tys: Vec<_> = args.iter().enumerate().map(|(idx, arg)| {
-                    let expected_arg_ty = param_expected_types.get(idx).copied();
-                    self.infer_expr(body, *arg, expected_arg_ty)
-                }).collect();
+                let arg_tys: Vec<_> = args
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, arg)| {
+                        let expected_arg_ty = param_expected_types.get(idx).copied();
+                        self.infer_expr(body, *arg, expected_arg_ty)
+                    })
+                    .collect();
 
                 // Create fresh type variable for return type
                 let ret_ty = self.ctx.fresh_ty_var();
@@ -707,7 +1101,12 @@ impl<'a> TypeInference<'a> {
                 ret_ty
             }
 
-            Expr::BinaryOp { op, left, right, .. } => {
+            Expr::BinaryOp {
+                op,
+                left,
+                right,
+                span,
+            } => {
                 // Infer left operand first (no expected type)
                 let left_ty = self.infer_expr(body, *left, None);
 
@@ -716,12 +1115,8 @@ impl<'a> TypeInference<'a> {
 
                 // Unify both operands to ensure they have the same type
                 if self.generate_mode {
-                    // Generate constraint instead of immediate unification
-                    let source = ConstraintSource::binary_op(
-                        rv_span::FileId(0), // TODO: get from expr span
-                        rv_span::Span::new(0, 0), // TODO: get from expr span
-                        &format!("{op:?}"),
-                    );
+                    let source =
+                        ConstraintSource::binary_op(span.file, span.span, &format!("{op:?}"));
                     self.constraints.add_equality(left_ty, right_ty, source);
                 } else if let Err(error) = Unifier::new(&mut self.ctx).unify(left_ty, right_ty) {
                     self.errors.push(TypeError::Unification {
@@ -732,13 +1127,15 @@ impl<'a> TypeInference<'a> {
 
                 // Comparison and logical operators return Bool, others return operand type
                 match op {
-                    rv_hir::BinaryOp::Eq | rv_hir::BinaryOp::Ne
-                    | rv_hir::BinaryOp::Lt | rv_hir::BinaryOp::Le
-                    | rv_hir::BinaryOp::Gt | rv_hir::BinaryOp::Ge
-                    | rv_hir::BinaryOp::And | rv_hir::BinaryOp::Or => {
-                        self.ctx.types.bool()
-                    }
-                    _ => left_ty
+                    rv_hir::BinaryOp::Eq
+                    | rv_hir::BinaryOp::Ne
+                    | rv_hir::BinaryOp::Lt
+                    | rv_hir::BinaryOp::Le
+                    | rv_hir::BinaryOp::Gt
+                    | rv_hir::BinaryOp::Ge
+                    | rv_hir::BinaryOp::And
+                    | rv_hir::BinaryOp::Or => self.ctx.types.bool(),
+                    _ => left_ty,
                 }
             }
 
@@ -749,22 +1146,56 @@ impl<'a> TypeInference<'a> {
                         // Reference operations: &x or &mut x
                         // Infer the operand type first
                         let operand_ty = self.infer_expr(body, *operand, None);
+                        // Generate a fresh lifetime for this borrow
+                        let lifetime = self.fresh_lifetime();
                         // Create a reference type wrapping the operand type
                         let ref_ty = self.ctx.types.alloc(TyKind::Ref {
                             inner: Box::new(operand_ty),
                             mutable: matches!(op, UnaryOp::RefMut),
+                            lifetime: Some(lifetime),
                         });
                         self.ctx.set_expr_type(expr_id, ref_ty);
                         ref_ty
                     }
+                    UnaryOp::Deref => {
+                        // Dereference: *ptr or *ref
+                        let operand_ty = self.infer_expr(body, *operand, None);
+                        let resolved = self.ctx.follow_var(operand_ty);
+                        let kind = self.ctx.types.get(resolved).kind.clone();
+                        match kind {
+                            TyKind::Pointer { inner, .. } => {
+                                // Raw pointer dereference requires unsafe context
+                                if self.unsafe_depth == 0 {
+                                    eprintln!(
+                                        "error: dereference of raw pointer requires unsafe block"
+                                    );
+                                }
+                                let result = *inner;
+                                self.ctx.set_expr_type(expr_id, result);
+                                result
+                            }
+                            TyKind::Ref { inner, .. } => {
+                                // Reference dereference is always safe
+                                let result = *inner;
+                                self.ctx.set_expr_type(expr_id, result);
+                                result
+                            }
+                            _ => {
+                                // Unknown type — return fresh var
+                                self.ctx.fresh_ty_var()
+                            }
+                        }
+                    }
                     _ => {
-                        // Other unary ops (Neg, Not, BitNot, Deref) return same type as operand
+                        // Other unary ops (Neg, Not, BitNot) return same type as operand
                         self.infer_expr(body, *operand, expected)
                     }
                 }
             }
 
-            Expr::Block { statements, expr, .. } => {
+            Expr::Block {
+                statements, expr, ..
+            } => {
                 // Push a new scope for the block
                 self.push_scope();
 
@@ -787,7 +1218,12 @@ impl<'a> TypeInference<'a> {
                 block_ty
             }
 
-            Expr::If { condition, then_branch, else_branch, .. } => {
+            Expr::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 // Condition must be bool (no expected type for condition)
                 let cond_ty = self.infer_expr(body, *condition, None);
                 let bool_ty = self.ctx.types.bool();
@@ -833,16 +1269,49 @@ impl<'a> TypeInference<'a> {
                 }
             }
 
-            Expr::Match { scrutinee, arms, .. } => {
-                // Infer scrutinee type (no expected type for scrutinee)
-                let _scrutinee_ty = self.infer_expr(body, *scrutinee, None);
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                // Infer scrutinee type — used to type-check patterns against
+                let scrutinee_ty = self.infer_expr(body, *scrutinee, None);
+
+                // Type-check patterns: unify literal patterns with the scrutinee type
+                // so that e.g. matching an i64 against bool literals is caught.
+                for arm in arms {
+                    let pat = &body.patterns[arm.pattern];
+                    if let rv_hir::Pattern::Literal { kind, .. } = pat {
+                        let pat_ty = self.infer_literal(kind);
+                        if self.generate_mode {
+                            let source = ConstraintSource::new(
+                                rv_span::FileId(0),
+                                rv_span::Span::new(0, 0),
+                                "match pattern vs scrutinee".to_string(),
+                            );
+                            self.constraints.add_equality(scrutinee_ty, pat_ty, source);
+                        } else if let Err(error) =
+                            Unifier::new(&mut self.ctx).unify(scrutinee_ty, pat_ty)
+                        {
+                            self.errors.push(TypeError::Unification {
+                                error,
+                                expr: Some(*scrutinee),
+                            });
+                        }
+                    }
+                }
 
                 // All arms should produce the expected type
                 // Use expected type as the initial result type if provided
                 let mut result_ty = expected;
 
-                #[allow(clippy::excessive_nesting, reason = "Match arm unification requires nested checks")]
+                #[allow(
+                    clippy::excessive_nesting,
+                    reason = "Match arm unification requires nested checks"
+                )]
                 for arm in arms {
+                    // Register pattern bindings with inferred types before inferring arm body
+                    let pat = &body.patterns[arm.pattern];
+                    self.infer_pattern_bindings(body, pat, scrutinee_ty);
+
                     // Pass expected type down to each arm body
                     let arm_ty = self.infer_expr(body, arm.body, expected);
 
@@ -853,8 +1322,11 @@ impl<'a> TypeInference<'a> {
                                 rv_span::Span::new(0, 0),
                                 "match arms".to_string(),
                             );
-                            self.constraints.add_equality(expected_arm_ty, arm_ty, source);
-                        } else if let Err(error) = Unifier::new(&mut self.ctx).unify(expected_arm_ty, arm_ty) {
+                            self.constraints
+                                .add_equality(expected_arm_ty, arm_ty, source);
+                        } else if let Err(error) =
+                            Unifier::new(&mut self.ctx).unify(expected_arm_ty, arm_ty)
+                        {
                             self.errors.push(TypeError::Unification {
                                 error,
                                 expr: Some(arm.body),
@@ -868,7 +1340,7 @@ impl<'a> TypeInference<'a> {
 
                 result_ty.unwrap_or_else(|| {
                     panic!(
-                        "COMPILER BUG: Match expression has no arms and no expected type. \
+                        "ICE: Match expression has no arms and no expected type. \
                          Parser should ensure match expressions have at least one arm, \
                          or type checker should handle uninhabited types explicitly."
                     )
@@ -879,19 +1351,33 @@ impl<'a> TypeInference<'a> {
                 // Infer base type (no expected type for base)
                 let base_ty = self.infer_expr(body, *base, None);
 
+                // Follow type variable substitutions to resolve the concrete type.
+                // After unification, base_ty may be a type variable that was unified
+                // with a Struct type — we must follow the chain to find it.
+                let resolved_base_ty = self.ctx.follow_var(base_ty);
+
                 // Look up the field type from the struct DEFINITION, not the inferred type
                 // This ensures we get concrete types, not type variables from struct construction
-                let base_ty_kind = &self.ctx.types.get(base_ty).kind;
+                let base_ty_kind = &self.ctx.types.get(resolved_base_ty).kind;
                 match base_ty_kind {
                     TyKind::Struct { def_id, .. } => {
                         // Look up the struct definition to get field types
                         if let Some(structs) = self.structs {
                             if let Some(struct_def) = structs.get(def_id) {
                                 // Find the field in the struct definition
-                                if let Some(field_def) = struct_def.fields.iter().find(|f| f.name == *field) {
+                                if let Some(field_def) =
+                                    struct_def.fields.iter().find(|f| f.name == *field)
+                                {
                                     // Convert HIR TypeId to TyId
-                                    if let (Some(hir_types), Some(interner)) = (self.hir_types, self.interner) {
-                                        self.hir_type_to_ty_id(field_def.ty, hir_types, structs, interner)
+                                    if let (Some(hir_types), Some(interner)) =
+                                        (self.hir_types, self.interner)
+                                    {
+                                        self.hir_type_to_ty_id(
+                                            field_def.ty,
+                                            hir_types,
+                                            structs,
+                                            interner,
+                                        )
                                     } else {
                                         self.ctx.fresh_ty_var()
                                     }
@@ -915,53 +1401,73 @@ impl<'a> TypeInference<'a> {
                 }
             }
 
-            Expr::MethodCall { receiver, method, args, .. } => {
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+                ..
+            } => {
                 // Infer receiver type (no expected type for receiver)
                 let receiver_ty = self.infer_expr(body, *receiver, None);
 
                 // Check receiver mutability and store it for MIR lowering
                 let receiver_is_mutable = self.is_expr_mutable(body, *receiver);
-                self.receiver_mutability.insert(expr_id, receiver_is_mutable);
+                self.receiver_mutability
+                    .insert(expr_id, receiver_is_mutable);
+
+                // Follow type variable substitutions to resolve the concrete receiver type
+                let resolved_receiver_ty = self.ctx.follow_var(receiver_ty);
 
                 // Extract receiver TypeDefId for method lookup
-                let receiver_ty_kind = &self.ctx.types.get(receiver_ty).kind;
+                // Handles both structs (TyKind::Struct) and enums (TyKind::Named)
+                let receiver_ty_kind = &self.ctx.types.get(resolved_receiver_ty).kind;
                 let type_def_id = match receiver_ty_kind {
                     TyKind::Struct { def_id, .. } => Some(*def_id),
+                    TyKind::Named { def, .. } => Some(*def),
                     _ => None,
                 };
 
                 // Try to find the method from impl blocks
-                let method_func = if let (Some(impl_blocks), Some(functions), Some(hir_types), Some(def_id)) =
-                    (self.impl_blocks, self.functions, self.hir_types, type_def_id)
-                {
-                    let mut found_func = None;
-                    // Find impl blocks for this type
-                    'outer: for impl_block in impl_blocks.values() {
-                        // Check if this impl block is for the receiver type
-                        let impl_self_ty = &hir_types[impl_block.self_ty];
-                        if let rv_hir::Type::Named { def: Some(impl_def_id), .. } = impl_self_ty {
-                            if *impl_def_id == def_id {
-                                // Search methods in this impl block
-                                for &func_id in &impl_block.methods {
-                                    if let Some(func) = functions.get(&func_id) {
-                                        if func.name == *method {
-                                            found_func = Some(func);
-                                            break 'outer;
+                let method_func =
+                    if let (Some(impl_blocks), Some(functions), Some(hir_types), Some(def_id)) = (
+                        self.impl_blocks,
+                        self.functions,
+                        self.hir_types,
+                        type_def_id,
+                    ) {
+                        let mut found_func = None;
+                        // Find impl blocks for this type
+                        'outer: for impl_block in impl_blocks.values() {
+                            // Check if this impl block is for the receiver type
+                            let impl_self_ty = &hir_types[impl_block.self_ty];
+                            if let rv_hir::Type::Named {
+                                def: Some(impl_def_id),
+                                ..
+                            } = impl_self_ty
+                            {
+                                if *impl_def_id == def_id {
+                                    // Search methods in this impl block
+                                    for &func_id in &impl_block.methods {
+                                        if let Some(func) = functions.get(&func_id) {
+                                            if func.name == *method {
+                                                found_func = Some(func);
+                                                break 'outer;
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
-                    found_func
-                } else {
-                    None
-                };
+                        found_func
+                    } else {
+                        None
+                    };
 
                 // If we found the method, type-check arguments and get return type
                 if let Some(method_func) = method_func {
                     // Type-check arguments against method parameters (skip first param which is self)
-                    let method_params: Vec<TyId> = method_func.parameters
+                    let method_params: Vec<TyId> = method_func
+                        .parameters
                         .iter()
                         .skip(1) // Skip self parameter
                         .map(|p| {
@@ -989,7 +1495,9 @@ impl<'a> TypeInference<'a> {
                                     format!("method argument {}", idx),
                                 );
                                 self.constraints.add_equality(arg_ty, expected_ty, source);
-                            } else if let Err(error) = Unifier::new(&mut self.ctx).unify(arg_ty, expected_ty) {
+                            } else if let Err(error) =
+                                Unifier::new(&mut self.ctx).unify(arg_ty, expected_ty)
+                            {
                                 self.errors.push(TypeError::Unification {
                                     error,
                                     expr: Some(*arg),
@@ -1030,10 +1538,19 @@ impl<'a> TypeInference<'a> {
 
                             for (field_name, field_expr) in fields {
                                 // Look up the declared field type in the struct definition
-                                let declared_ty = if let Some(field_def) = struct_def.fields.iter().find(|f| f.name == *field_name) {
+                                let declared_ty = if let Some(field_def) =
+                                    struct_def.fields.iter().find(|f| f.name == *field_name)
+                                {
                                     // Convert HIR TypeId to inference TyId
-                                    if let (Some(hir_types), Some(interner)) = (self.hir_types, self.interner) {
-                                        self.hir_type_to_ty_id(field_def.ty, hir_types, structs, interner)
+                                    if let (Some(hir_types), Some(interner)) =
+                                        (self.hir_types, self.interner)
+                                    {
+                                        self.hir_type_to_ty_id(
+                                            field_def.ty,
+                                            hir_types,
+                                            structs,
+                                            interner,
+                                        )
                                     } else {
                                         self.ctx.fresh_ty_var()
                                     }
@@ -1052,7 +1569,9 @@ impl<'a> TypeInference<'a> {
                                         format!("struct field '{field_name:?}'"),
                                     );
                                     self.constraints.add_equality(expr_ty, declared_ty, source);
-                                } else if let Err(error) = Unifier::new(&mut self.ctx).unify(expr_ty, declared_ty) {
+                                } else if let Err(error) =
+                                    Unifier::new(&mut self.ctx).unify(expr_ty, declared_ty)
+                                {
                                     self.errors.push(TypeError::Unification {
                                         error,
                                         expr: Some(*field_expr),
@@ -1071,14 +1590,14 @@ impl<'a> TypeInference<'a> {
                             })
                         } else {
                             panic!(
-                                "COMPILER BUG: Struct type {:?} has no definition in structs map. \
+                                "ICE: Struct type {:?} has no definition in structs map. \
                                  Name resolution should have linked all struct types to their definitions.",
                                 type_def_id
                             )
                         }
                     } else {
                         panic!(
-                            "COMPILER BUG: Struct construct has type_def_id {:?} but structs context is None. \
+                            "ICE: Struct construct has type_def_id {:?} but structs context is None. \
                              Type inference should be provided with struct definitions.",
                             type_def_id
                         )
@@ -1090,11 +1609,17 @@ impl<'a> TypeInference<'a> {
                 result_ty
             }
 
-            Expr::EnumVariant { variant, def, fields, .. } => {
-                // Infer variant field types (no expected types for now - could be improved)
-                for field_expr in fields {
-                    self.infer_expr(body, *field_expr, None);
-                }
+            Expr::EnumVariant {
+                variant,
+                def,
+                fields,
+                ..
+            } => {
+                // Infer variant field types
+                let field_tys: Vec<TyId> = fields
+                    .iter()
+                    .map(|field_expr| self.infer_expr(body, *field_expr, None))
+                    .collect();
 
                 // Return a Named type referencing the enum if we have the type definition
                 // Enums are nominal types, so we use Named with the TypeDefId
@@ -1103,7 +1628,7 @@ impl<'a> TypeInference<'a> {
                         .map(|i| i.resolve(variant))
                         .unwrap_or_else(|| "?".to_string());
                     panic!(
-                        "COMPILER BUG: Enum variant construct '{}' has no type definition. \
+                        "ICE: Enum variant construct '{}' has no type definition. \
                          Name resolution should have linked all enum variants to their type definitions.",
                         variant_name
                     )
@@ -1111,27 +1636,121 @@ impl<'a> TypeInference<'a> {
 
                 let enums = self.enums.unwrap_or_else(|| {
                     panic!(
-                        "COMPILER BUG: Type inference called without enums context. \
+                        "ICE: Type inference called without enums context. \
                          All compilation contexts should provide enum definitions."
                     )
                 });
 
                 let enum_def = enums.get(&type_def_id).unwrap_or_else(|| {
                     panic!(
-                        "COMPILER BUG: Enum type {:?} has no definition in enums map. \
+                        "ICE: Enum type {:?} has no definition in enums map. \
                          Name resolution should have linked all enum types to their definitions.",
                         type_def_id
                     )
                 });
 
+                // Build generic type args by matching field types against variant definition
+                // For Option::Some(42), we match the inferred type of 42 (i64) against T
+                // to get args = [i64]
+                //
+                // For unit variants like Option::None, we try to use the expected type's args
+                // (from type annotation) since there are no fields to infer from.
+                let expected_args: Option<Vec<TyId>> = expected.and_then(|exp_ty| {
+                    let resolved = self.ctx.follow_var(exp_ty);
+                    let ty = self.ctx.types.get(resolved);
+                    if let TyKind::Named { args, def, .. } = &ty.kind {
+                        // Only use if the expected type is the same enum
+                        if *def == type_def_id {
+                            Some(args.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                });
+
+                let args = if enum_def.generic_params.is_empty() {
+                    // No generic params, no args needed
+                    vec![]
+                } else {
+                    // Find the variant definition
+                    let variant_def = enum_def.variants.iter()
+                        .find(|v| v.name == *variant);
+
+                    if let Some(variant_def) = variant_def {
+                        // Create type args by matching variant field types to inferred types
+                        // For each generic param, find the corresponding inferred type
+                        let mut args = vec![];
+                        for (param_idx, param) in enum_def.generic_params.iter().enumerate() {
+                            // Look for this generic param in variant field types
+                            // and use the corresponding inferred type
+                            let inferred_ty = match &variant_def.fields {
+                                rv_hir::VariantFields::Unit => {
+                                    // Unit variant has no fields to infer from
+                                    // Use expected type's args if available, otherwise create type variable
+                                    expected_args.as_ref()
+                                        .and_then(|args| args.get(param_idx).copied())
+                                        .unwrap_or_else(|| self.ctx.fresh_ty_var())
+                                }
+                                rv_hir::VariantFields::Tuple(field_type_ids) => {
+                                    // Find which field position corresponds to this generic param
+                                    let mut found_ty = None;
+                                    if let Some(hir_types) = self.hir_types {
+                                        for (idx, field_ty_id) in field_type_ids.iter().enumerate() {
+                                            let field_ty = &hir_types[*field_ty_id];
+                                            if let rv_hir::Type::Generic { name, .. } = field_ty {
+                                                if *name == param.name && idx < field_tys.len() {
+                                                    found_ty = Some(field_tys[idx]);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    found_ty.unwrap_or_else(|| self.ctx.fresh_ty_var())
+                                }
+                                rv_hir::VariantFields::Struct(field_defs) => {
+                                    // Find which field corresponds to this generic param
+                                    let mut found_ty = None;
+                                    if let Some(hir_types) = self.hir_types {
+                                        for (idx, field_def) in field_defs.iter().enumerate() {
+                                            let field_ty = &hir_types[field_def.ty];
+                                            if let rv_hir::Type::Generic { name, .. } = field_ty {
+                                                if *name == param.name && idx < field_tys.len() {
+                                                    found_ty = Some(field_tys[idx]);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    found_ty.unwrap_or_else(|| self.ctx.fresh_ty_var())
+                                }
+                            };
+                            args.push(inferred_ty);
+                        }
+                        args
+                    } else {
+                        // Variant not found, use type variables for all params
+                        enum_def.generic_params.iter()
+                            .map(|_| self.ctx.fresh_ty_var())
+                            .collect()
+                    }
+                };
+
                 self.ctx.types.alloc(TyKind::Named {
                     name: enum_def.name,
                     def: type_def_id,
-                    args: vec![],
+                    args,
                 })
             }
 
-            Expr::Closure { params, return_type, body: closure_body, captures, .. } => {
+            Expr::Closure {
+                params,
+                return_type,
+                body: closure_body,
+                captures,
+                ..
+            } => {
                 // Push a new scope for the closure
                 self.push_scope();
 
@@ -1180,8 +1799,11 @@ impl<'a> TypeInference<'a> {
                             rv_span::FileId(0),
                             rv_span::Span::new(0, 0),
                         );
-                        self.constraints.add_equality(body_ty, expected_ret_ty, source);
-                    } else if let Err(error) = Unifier::new(&mut self.ctx).unify(body_ty, expected_ret_ty) {
+                        self.constraints
+                            .add_equality(body_ty, expected_ret_ty, source);
+                    } else if let Err(error) =
+                        Unifier::new(&mut self.ctx).unify(body_ty, expected_ret_ty)
+                    {
                         self.errors.push(TypeError::Unification {
                             error,
                             expr: Some(*closure_body),
@@ -1198,6 +1820,243 @@ impl<'a> TypeInference<'a> {
                     ret: Box::new(body_ty),
                 })
             }
+
+            Expr::PathCall { args, .. } => {
+                // Cross-module function call: infer argument types but return type is unknown
+                for arg in args {
+                    self.infer_expr(body, *arg, None);
+                }
+                // Return type is unknown for cross-module calls, use type variable
+                self.ctx.fresh_ty_var()
+            }
+
+            Expr::Assign { target, value, .. } => {
+                // Infer target and value types
+                self.infer_expr(body, *target, None);
+                self.infer_expr(body, *value, None);
+                // Assignment expressions evaluate to unit
+                self.ctx.types.unit()
+            }
+
+            Expr::CompoundAssign {
+                target, op, value, ..
+            } => {
+                // Infer target type
+                let target_ty = self.infer_expr(body, *target, None);
+                // Value should match target type
+                let value_ty = self.infer_expr(body, *value, Some(target_ty));
+                // Unify target and value types
+                if self.generate_mode {
+                    let source = ConstraintSource::new(
+                        rv_span::FileId(0),
+                        rv_span::Span::new(0, 0),
+                        format!("compound assignment {:?}", op),
+                    );
+                    self.constraints.add_equality(target_ty, value_ty, source);
+                } else if let Err(error) = Unifier::new(&mut self.ctx).unify(target_ty, value_ty) {
+                    self.errors.push(TypeError::Unification {
+                        error,
+                        expr: Some(expr_id),
+                    });
+                }
+                // Compound assignment evaluates to unit
+                self.ctx.types.unit()
+            }
+
+            Expr::WhileLoop {
+                condition,
+                body: loop_body,
+                ..
+            } => {
+                // Condition must be bool
+                let cond_ty = self.infer_expr(body, *condition, None);
+                let bool_ty = self.ctx.types.bool();
+                if self.generate_mode {
+                    let source = ConstraintSource::new(
+                        rv_span::FileId(0),
+                        rv_span::Span::new(0, 0),
+                        "while condition".to_string(),
+                    );
+                    self.constraints.add_equality(cond_ty, bool_ty, source);
+                } else if let Err(error) = Unifier::new(&mut self.ctx).unify(cond_ty, bool_ty) {
+                    self.errors.push(TypeError::Unification {
+                        error,
+                        expr: Some(*condition),
+                    });
+                }
+                // Infer body type
+                self.infer_expr(body, *loop_body, None);
+                // While loops evaluate to unit
+                self.ctx.types.unit()
+            }
+
+            Expr::Loop {
+                body: loop_body, ..
+            } => {
+                self.infer_expr(body, *loop_body, None);
+                // Infinite loops without break evaluate to Never, loops with break evaluate
+                // to the break value type. Currently returns Unit which is correct for
+                // statement-position loops. Full break-value propagation requires a loop
+                // result type variable that break expressions unify against.
+                self.ctx.types.unit()
+            }
+
+            Expr::Break { value, .. } => {
+                if let Some(val) = value {
+                    self.infer_expr(body, *val, None);
+                }
+                self.ctx.types.never()
+            }
+
+            Expr::Continue { .. } => self.ctx.types.never(),
+
+            Expr::Array { elements, span } => {
+                let elem_ty = if let Some(first) = elements.first() {
+                    let first_ty = self.infer_expr(body, *first, None);
+                    for elem in elements.iter().skip(1) {
+                        let ty = self.infer_expr(body, *elem, Some(first_ty));
+                        if self.generate_mode {
+                            let source = ConstraintSource::new(
+                                span.file,
+                                span.span,
+                                "array element".to_string(),
+                            );
+                            self.constraints.add_equality(first_ty, ty, source);
+                        } else if let Err(error) = Unifier::new(&mut self.ctx).unify(first_ty, ty) {
+                            self.errors.push(TypeError::Unification {
+                                error,
+                                expr: Some(*elem),
+                            });
+                        }
+                    }
+                    first_ty
+                } else {
+                    self.ctx.fresh_ty_var()
+                };
+                let size = elements.len();
+                self.ctx.types.alloc(TyKind::Array {
+                    element: Box::new(elem_ty),
+                    size,
+                })
+            }
+
+            Expr::Tuple { elements, .. } => {
+                let elem_tys: Vec<_> = elements
+                    .iter()
+                    .map(|elem| self.infer_expr(body, *elem, None))
+                    .collect();
+                self.ctx.types.alloc(TyKind::Tuple { elements: elem_tys })
+            }
+
+            Expr::Index { base, index, span } => {
+                let base_ty = self.infer_expr(body, *base, None);
+                let index_ty = self.infer_expr(body, *index, None);
+                let int_ty = self.ctx.types.int();
+                if self.generate_mode {
+                    let source =
+                        ConstraintSource::new(span.file, span.span, "array index".to_string());
+                    self.constraints.add_equality(index_ty, int_ty, source);
+                } else if let Err(error) = Unifier::new(&mut self.ctx).unify(index_ty, int_ty) {
+                    self.errors.push(TypeError::Unification {
+                        error,
+                        expr: Some(*index),
+                    });
+                }
+                // Extract element type from base if it resolves to an array
+                let resolved_base = self.ctx.follow_var(base_ty);
+                match &self.ctx.types.get(resolved_base).kind.clone() {
+                    TyKind::Array { element, .. } => **element,
+                    _ => self.ctx.fresh_ty_var(),
+                }
+            }
+
+            Expr::Cast {
+                expr: cast_expr,
+                ty,
+                ..
+            } => {
+                // Infer expression type
+                self.infer_expr(body, *cast_expr, None);
+                // Return the target type if we can resolve it, otherwise fresh var
+                if let (Some(hir_types), Some(structs), Some(interner)) =
+                    (self.hir_types, self.structs, self.interner)
+                {
+                    self.hir_type_to_ty_id(*ty, hir_types, structs, interner)
+                } else {
+                    self.ctx.fresh_ty_var()
+                }
+            }
+            Expr::UnsafeBlock { body: inner, .. } => {
+                self.unsafe_depth += 1;
+                let ty = self.infer_expr(body, *inner, expected);
+                self.unsafe_depth -= 1;
+                ty
+            }
+            Expr::Error { .. } => {
+                // Error expression — return a fresh type variable so
+                // inference can continue and report additional errors.
+                self.ctx.fresh_ty_var()
+            }
+
+            Expr::WhileLet { pattern: _, value, body: loop_body, .. } => {
+                // while let pattern = value { body }
+                self.infer_expr(body, *value, None);
+                self.infer_expr(body, *loop_body, None);
+                self.ctx.types.unit()
+            }
+
+            Expr::IfLet { pattern: _, value, then_branch, else_branch, .. } => {
+                // if let pattern = value { then } else { else }
+                self.infer_expr(body, *value, None);
+                let then_ty = self.infer_expr(body, *then_branch, expected);
+                if let Some(else_expr) = else_branch {
+                    let else_ty = self.infer_expr(body, *else_expr, expected);
+                    // Unify branches
+                    let mut unifier = Unifier::new(&mut self.ctx);
+                    let _ = unifier.unify(then_ty, else_ty);
+                    then_ty
+                } else {
+                    self.ctx.types.unit()
+                }
+            }
+
+            Expr::Range { start, end, .. } => {
+                // Range expressions: 1..10, 1..=10, ..10, 1.., ..
+                // Infer types of start and end if present
+                if let Some(s) = start {
+                    self.infer_expr(body, *s, None);
+                }
+                if let Some(e) = end {
+                    self.infer_expr(body, *e, None);
+                }
+                // Range type would be std::ops::Range<T> etc.
+                // For now, return a fresh type variable
+                self.ctx.fresh_ty_var()
+            }
+
+            Expr::Try { expr: inner, .. } => {
+                // Try operator: expr?
+                // The inner expression should be Result<T, E> or Option<T>
+                // The overall type is T (unwrapped success type)
+                self.infer_expr(body, *inner, None);
+                // Return fresh type variable for the unwrapped type
+                self.ctx.fresh_ty_var()
+            }
+
+            Expr::ForLoop { iterator, body: loop_body, .. } => {
+                // for pattern in iterator { body }
+                // Infer iterator type
+                self.infer_expr(body, *iterator, None);
+                // Infer body type (result is unit)
+                self.infer_expr(body, *loop_body, None);
+                self.ctx.types.unit()
+            }
+
+            Expr::Box { value, .. } => {
+                // Box::new(value) - infer type of inner value, return Box<T>
+                let inner_ty = self.infer_expr(body, *value, None);
+                self.ctx.types.boxed(inner_ty)
+            }
         };
 
         // Bidirectional unification: unify inferred type with expected type
@@ -1208,7 +2067,8 @@ impl<'a> TypeInference<'a> {
                     rv_span::Span::new(0, 0),
                     "expected type".to_string(),
                 );
-                self.constraints.add_equality(inferred_ty, expected_ty, source);
+                self.constraints
+                    .add_equality(inferred_ty, expected_ty, source);
             } else if let Err(error) = Unifier::new(&mut self.ctx).unify(inferred_ty, expected_ty) {
                 self.errors.push(TypeError::Unification {
                     error,
@@ -1226,8 +2086,15 @@ impl<'a> TypeInference<'a> {
     /// Infer type of a literal
     fn infer_literal(&mut self, kind: &LiteralKind) -> TyId {
         match kind {
-            LiteralKind::Integer(_) => self.ctx.types.int(),
-            LiteralKind::Float(_) => self.ctx.types.float(),
+            LiteralKind::Integer(_, Some((w, s))) => self.ctx.types.int_typed(*w, *s),
+            // Unsuffixed integer literal: create an inference variable that can unify
+            // with any integer type. Defaults to i32 when unconstrained (Rust semantics).
+            LiteralKind::Integer(_, None) => self.ctx.fresh_int_var(),
+            LiteralKind::Float(_, Some(w)) => self.ctx.types.float_typed(*w),
+            // Unsuffixed float literal: create an inference variable that can unify
+            // with any float type. Defaults to f64 when unconstrained (Rust semantics).
+            LiteralKind::Float(_, None) => self.ctx.fresh_float_var(),
+            LiteralKind::Char(_) => self.ctx.types.char(),
             LiteralKind::String(_) => self.ctx.types.string(),
             LiteralKind::Bool(_) => self.ctx.types.bool(),
             LiteralKind::Unit => self.ctx.types.unit(),
@@ -1239,7 +2106,13 @@ impl<'a> TypeInference<'a> {
         let stmt = &body.stmts[stmt_id];
 
         match stmt {
-            Stmt::Let { pattern, ty, initializer, mutable, .. } => {
+            Stmt::Let {
+                pattern,
+                ty,
+                initializer,
+                mutable,
+                ..
+            } => {
                 if let Some(init_expr) = initializer {
                     // If there's a type annotation, use it as expected type
                     let expected_ty = ty.and_then(|type_id| {
@@ -1255,9 +2128,24 @@ impl<'a> TypeInference<'a> {
                     // Infer initializer with expected type from annotation
                     let init_ty = self.infer_expr(body, *init_expr, expected_ty);
 
+                    // Generate lifetime outlives constraint for reference assignments:
+                    // If `let x: &'a T = &'b expr`, then 'b must outlive 'a
+                    if let (Some(expected), Some(init_lt)) =
+                        (expected_ty, self.ref_lifetime(init_ty))
+                    {
+                        if let Some(expected_lt) = self.ref_lifetime(expected) {
+                            self.add_lifetime_outlives(init_lt, expected_lt, Some(*init_expr));
+                        }
+                    }
+
                     // Record the type for the variable name in the current scope
                     let pat = &body.patterns[*pattern];
-                    if let rv_hir::Pattern::Binding { name, mutable: pat_mutable, .. } = pat {
+                    if let rv_hir::Pattern::Binding {
+                        name,
+                        mutable: pat_mutable,
+                        ..
+                    } = pat
+                    {
                         self.insert_var(*name, init_ty);
                         // Track variable mutability (from either let mut or pattern)
                         let is_mutable = *mutable || *pat_mutable;
@@ -1276,6 +2164,16 @@ impl<'a> TypeInference<'a> {
                     // Use function return type as expected type
                     let val_ty = self.infer_expr(body, *val_expr, self.current_function_return_ty);
 
+                    // Generate lifetime outlives constraint for returned references:
+                    // If returning &'a T where function returns &'b T, then 'a must outlive 'b
+                    if let Some(val_lt) = self.ref_lifetime(val_ty) {
+                        if let Some(expected_return_ty) = self.current_function_return_ty {
+                            if let Some(ret_lt) = self.ref_lifetime(expected_return_ty) {
+                                self.add_lifetime_outlives(val_lt, ret_lt, Some(*val_expr));
+                            }
+                        }
+                    }
+
                     // Unify with expected function return type
                     if let Some(expected_return_ty) = self.current_function_return_ty {
                         if self.generate_mode {
@@ -1283,7 +2181,8 @@ impl<'a> TypeInference<'a> {
                                 rv_span::FileId(0),
                                 rv_span::Span::new(0, 0),
                             );
-                            self.constraints.add_equality(val_ty, expected_return_ty, source);
+                            self.constraints
+                                .add_equality(val_ty, expected_return_ty, source);
                         } else {
                             let mut unifier = Unifier::new(&mut self.ctx);
                             if let Err(error) = unifier.unify(val_ty, expected_return_ty) {
@@ -1296,6 +2195,11 @@ impl<'a> TypeInference<'a> {
                     }
                 }
             }
+
+            Stmt::Box { value, .. } => {
+                // Box expression - infer the value type
+                self.infer_expr(body, *value, None);
+            }
         }
     }
 
@@ -1307,6 +2211,7 @@ impl<'a> TypeInference<'a> {
         InferenceResult {
             ctx: self.ctx,
             errors: self.errors,
+            lifetime_constraints: self.lifetime_constraints,
         }
     }
 }

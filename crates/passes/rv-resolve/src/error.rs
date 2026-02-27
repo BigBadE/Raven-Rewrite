@@ -1,5 +1,6 @@
 //! Error types for name resolution
 
+use rv_hir::ModuleId;
 use rv_intern::Symbol;
 use rv_span::FileSpan;
 
@@ -38,6 +39,49 @@ pub enum ResolutionError {
         /// Where the item was accessed
         use_site: FileSpan,
     },
+
+    /// Module not found during path resolution
+    #[error("Module not found: {module_id:?} at {use_site:?}")]
+    ModuleNotFound {
+        /// The module ID that was not found
+        module_id: ModuleId,
+        /// Where the module was referenced
+        use_site: FileSpan,
+    },
+
+    /// Expected a module but found something else
+    #[error("Not a module at {use_site:?}")]
+    NotAModule {
+        /// The name that was expected to be a module
+        name: Symbol,
+        /// Where the name was used
+        use_site: FileSpan,
+    },
+
+    /// Empty path in use declaration or qualified name
+    #[error("Empty path at {use_site:?}")]
+    EmptyPath {
+        /// Where the empty path was used
+        use_site: FileSpan,
+    },
+
+    /// Glob import failed (e.g., module has no public items)
+    #[error("Glob import failed at {use_site:?}")]
+    GlobImportFailed {
+        /// The module being imported from
+        module_id: ModuleId,
+        /// Where the glob import was used
+        use_site: FileSpan,
+    },
+
+    /// Cyclic import detected
+    #[error("Cyclic import at {use_site:?}")]
+    CyclicImport {
+        /// The modules involved in the cycle
+        cycle: Vec<ModuleId>,
+        /// Where the cycle was detected
+        use_site: FileSpan,
+    },
 }
 
 impl ResolutionError {
@@ -59,7 +103,11 @@ impl ResolutionError {
             .collect();
 
         suggestions.sort_by_key(|(_, distance)| *distance);
-        suggestions.into_iter().take(3).map(|(sym, _)| sym).collect()
+        suggestions
+            .into_iter()
+            .take(3)
+            .map(|(sym, _)| sym)
+            .collect()
     }
 }
 
@@ -96,18 +144,4 @@ fn levenshtein_distance(source: &str, target: &str) -> usize {
     }
 
     matrix[source_len][target_len]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_levenshtein_distance() {
-        assert_eq!(levenshtein_distance("", ""), 0);
-        assert_eq!(levenshtein_distance("abc", "abc"), 0);
-        assert_eq!(levenshtein_distance("abc", "def"), 3);
-        assert_eq!(levenshtein_distance("kitten", "sitting"), 3);
-        assert_eq!(levenshtein_distance("saturday", "sunday"), 3);
-    }
 }

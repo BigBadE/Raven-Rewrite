@@ -39,7 +39,11 @@
 mod checker;
 mod error;
 mod loans;
+mod nll;
+mod two_phase;
 
 pub use checker::BorrowChecker;
 pub use error::{BorrowError, BorrowResult};
 pub use loans::{BorrowKind, Loan, LoanSet};
+pub use nll::{LoanLifetime, NllContext, RegionId};
+pub use two_phase::{BorrowPhase, TwoPhaseContext, TwoPhaseBorrow, TwoPhaseBorrowId};

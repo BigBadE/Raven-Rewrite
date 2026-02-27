@@ -25,7 +25,22 @@ impl TestFixture {
         }
     }
 
-    /// Adds a file to the fixture
+    /// Adds a virtual file to the fixture (does not require disk presence)
+    #[must_use]
+    pub fn add_virtual_file(&mut self, path: &str, contents: &str) -> SourceFile {
+        // Use absolute path format for consistency
+        let absolute_path = if Path::new(path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            PathBuf::from("/virtual").join(path)
+        };
+
+        let source_file = self.db.register_virtual_file(absolute_path, contents.to_string());
+        self.files.push(source_file);
+        source_file
+    }
+
+    /// Adds a file to the fixture from disk
     ///
     /// # Errors
     ///

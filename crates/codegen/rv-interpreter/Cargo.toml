@@ -9,6 +9,7 @@ rv-hir.workspace = true
 rv-hir-lower.workspace = true
 rv-mir.workspace = true
 rv-mir-lower.workspace = true
+rv-const-eval.workspace = true
 rv-ty.workspace = true
 rv-intern = { path = "../../foundation/rv-intern" }
 rv-span = { path = "../../foundation/rv-span" }

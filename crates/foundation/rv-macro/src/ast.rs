@@ -46,6 +46,28 @@ pub enum BuiltinMacroKind {
     Assert,
     /// format! macro
     Format,
+    /// cfg! macro - evaluates cfg predicate at compile time
+    Cfg,
+    /// stringify! macro - converts tokens to string
+    Stringify,
+    /// concat! macro - concatenates string literals
+    Concat,
+    /// include! macro - includes file contents
+    Include,
+    /// compile_error! macro - emit compile error
+    CompileError,
+    /// env! macro - get environment variable
+    Env,
+    /// option_env! macro - get optional environment variable
+    OptionEnv,
+    /// line! macro - current line number
+    Line,
+    /// column! macro - current column number
+    Column,
+    /// file! macro - current file name
+    File,
+    /// module_path! macro - current module path
+    ModulePath,
 }
 
 /// A single macro rule (matcher => expander)
@@ -94,6 +116,8 @@ pub enum MacroExpander {
     Token(Token),
     /// Substitute metavariable ($x)
     Substitute(Symbol),
+    /// Metavar expression (${count(x)}, ${index()}, ${length()})
+    MetaVarExpr(MetaVarExpr),
     /// Sequence ($(...), $(...)+, $(...)?)
     Sequence {
         /// Expanders in the sequence
@@ -133,6 +157,14 @@ pub enum FragmentKind {
     Path,
     /// Token tree
     Tt,
+    /// Lifetime
+    Lifetime,
+    /// Literal
+    Literal,
+    /// Meta (for attributes)
+    Meta,
+    /// Visibility
+    Vis,
 }
 
 /// Sequence kind
@@ -234,4 +266,66 @@ pub enum Delimiter {
     Bracket,
     /// Braces {...}
     Brace,
+}
+
+/// Metavar expression (${...})
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetaVarExpr {
+    /// ${count(var)} - number of repetitions of var
+    Count(Symbol),
+    /// ${index()} - current index in repetition
+    Index,
+    /// ${length()} - total length of the repetition
+    Length,
+    /// ${ignore(var)} - captures var but doesn't expand it
+    Ignore(Symbol),
+}
+
+/// Hygiene context for macro expansion
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HygieneContext {
+    /// Expansion ID (unique per macro invocation)
+    pub expansion_id: u32,
+    /// Syntax context (for identifier resolution)
+    pub syntax_context: SyntaxContext,
+}
+
+impl HygieneContext {
+    /// Create a new hygiene context for a macro expansion
+    #[must_use]
+    pub fn new(expansion_id: u32) -> Self {
+        Self {
+            expansion_id,
+            syntax_context: SyntaxContext::Root,
+        }
+    }
+
+    /// Create a child context (for nested expansions)
+    #[must_use]
+    pub fn derive(&self) -> Self {
+        Self {
+            expansion_id: self.expansion_id,
+            syntax_context: self.syntax_context.derive(),
+        }
+    }
+}
+
+/// Syntax context for hygiene tracking
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SyntaxContext {
+    /// Root context (no hygiene)
+    Root,
+    /// Opaque context (hygienic identifiers)
+    Opaque(u32),
+}
+
+impl SyntaxContext {
+    /// Derive a new syntax context
+    #[must_use]
+    pub fn derive(&self) -> Self {
+        match self {
+            Self::Root => Self::Opaque(0),
+            Self::Opaque(id) => Self::Opaque(id + 1),
+        }
+    }
 }

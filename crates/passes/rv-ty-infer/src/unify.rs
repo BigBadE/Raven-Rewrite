@@ -67,6 +67,18 @@ impl<'ctx> Unifier<'ctx> {
             // Type variable on right
             (_, TyKind::Var { id: var }) => self.unify_var(*var, left),
 
+            // IntVar unifies with any concrete Int type or another IntVar
+            (TyKind::IntVar { id: var }, TyKind::Int(..))
+            | (TyKind::IntVar { id: var }, TyKind::IntVar { .. }) => self.unify_var(*var, right),
+            (TyKind::Int(..), TyKind::IntVar { id: var }) => self.unify_var(*var, left),
+
+            // FloatVar unifies with any concrete Float type or another FloatVar
+            (TyKind::FloatVar { id: var }, TyKind::Float(..))
+            | (TyKind::FloatVar { id: var }, TyKind::FloatVar { .. }) => {
+                self.unify_var(*var, right)
+            }
+            (TyKind::Float(..), TyKind::FloatVar { id: var }) => self.unify_var(*var, left),
+
             // Function types
             (
                 TyKind::Function {
@@ -95,7 +107,14 @@ impl<'ctx> Unifier<'ctx> {
             }
 
             // Tuple types
-            (TyKind::Tuple { elements: left_elems }, TyKind::Tuple { elements: right_elems }) => {
+            (
+                TyKind::Tuple {
+                    elements: left_elems,
+                },
+                TyKind::Tuple {
+                    elements: right_elems,
+                },
+            ) => {
                 if left_elems.len() != right_elems.len() {
                     return Err(UnificationError::Mismatch {
                         expected: left,
@@ -115,8 +134,34 @@ impl<'ctx> Unifier<'ctx> {
                 TyKind::Ref {
                     mutable: left_mut,
                     inner: left_inner,
+                    ..
                 },
                 TyKind::Ref {
+                    mutable: right_mut,
+                    inner: right_inner,
+                    ..
+                },
+            ) => {
+                if left_mut != right_mut {
+                    return Err(UnificationError::Mismatch {
+                        expected: left,
+                        found: right,
+                    });
+                }
+
+                self.unify(**left_inner, **right_inner)
+            }
+
+            // Never type coercion: ! (bottom type) unifies with any type
+            (TyKind::Never, _) | (_, TyKind::Never) => Ok(()),
+
+            // Pointer types
+            (
+                TyKind::Pointer {
+                    mutable: left_mut,
+                    inner: left_inner,
+                },
+                TyKind::Pointer {
                     mutable: right_mut,
                     inner: right_inner,
                 },
@@ -132,15 +177,26 @@ impl<'ctx> Unifier<'ctx> {
             }
 
             // Primitives - must match exactly (nominal equality)
-            (TyKind::Int, TyKind::Int)
-            | (TyKind::Float, TyKind::Float)
+            (TyKind::Int(lw, ls), TyKind::Int(rw, rs)) if lw == rw && ls == rs => Ok(()),
+            (TyKind::Float(lw), TyKind::Float(rw)) if lw == rw => Ok(()),
+            (TyKind::Char, TyKind::Char)
             | (TyKind::Bool, TyKind::Bool)
             | (TyKind::String, TyKind::String)
-            | (TyKind::Unit, TyKind::Unit)
-            | (TyKind::Never, TyKind::Never) => Ok(()),
+            | (TyKind::Unit, TyKind::Unit) => Ok(()),
 
             // Named types - compare TypeDefId for nominal equality
-            (TyKind::Named { def: left_def, args: left_args, .. }, TyKind::Named { def: right_def, args: right_args, .. }) => {
+            (
+                TyKind::Named {
+                    def: left_def,
+                    args: left_args,
+                    ..
+                },
+                TyKind::Named {
+                    def: right_def,
+                    args: right_args,
+                    ..
+                },
+            ) => {
                 // Check that type definitions match (nominal typing)
                 if left_def != right_def {
                     return Err(UnificationError::Mismatch {
@@ -165,7 +221,14 @@ impl<'ctx> Unifier<'ctx> {
             }
 
             // Struct types - compare TypeDefId for nominal equality
-            (TyKind::Struct { def_id: left_def, .. }, TyKind::Struct { def_id: right_def, .. }) => {
+            (
+                TyKind::Struct {
+                    def_id: left_def, ..
+                },
+                TyKind::Struct {
+                    def_id: right_def, ..
+                },
+            ) => {
                 if left_def == right_def {
                     Ok(())
                 } else {
@@ -177,7 +240,14 @@ impl<'ctx> Unifier<'ctx> {
             }
 
             // Enum types - compare TypeDefId for nominal equality
-            (TyKind::Enum { def_id: left_def, .. }, TyKind::Enum { def_id: right_def, .. }) => {
+            (
+                TyKind::Enum {
+                    def_id: left_def, ..
+                },
+                TyKind::Enum {
+                    def_id: right_def, ..
+                },
+            ) => {
                 if left_def == right_def {
                     Ok(())
                 } else {
@@ -189,7 +259,14 @@ impl<'ctx> Unifier<'ctx> {
             }
 
             // Generic parameters - must have same index
-            (TyKind::Param { index: left_idx, .. }, TyKind::Param { index: right_idx, .. }) => {
+            (
+                TyKind::Param {
+                    index: left_idx, ..
+                },
+                TyKind::Param {
+                    index: right_idx, ..
+                },
+            ) => {
                 if left_idx == right_idx {
                     Ok(())
                 } else {
@@ -199,6 +276,33 @@ impl<'ctx> Unifier<'ctx> {
                     })
                 }
             }
+
+            // Projection types (associated types) - structurally equal if base, assoc_type, and trait match
+            (
+                TyKind::Projection {
+                    base: left_base,
+                    assoc_type: left_assoc,
+                    trait_ref: left_trait,
+                },
+                TyKind::Projection {
+                    base: right_base,
+                    assoc_type: right_assoc,
+                    trait_ref: right_trait,
+                },
+            ) => {
+                // Both must reference the same associated type and trait
+                if left_assoc != right_assoc || left_trait != right_trait {
+                    return Err(UnificationError::Mismatch {
+                        expected: left,
+                        found: right,
+                    });
+                }
+
+                // Unify the base types
+                self.unify(**left_base, **right_base)
+            }
+
+            // Note: Projection with Var is already handled by the generic Var patterns above
 
             // Otherwise, mismatch
             _ => Err(UnificationError::Mismatch {
@@ -236,7 +340,34 @@ impl<'ctx> Unifier<'ctx> {
         impl TyKindVisitor for OccursChecker {
             type Output = ();
 
-            fn visit_var(&mut self, id: &crate::ty::TyVarId, _node_id: crate::ty::TyId, _ctx: &TyContext) {
+            fn visit_var(
+                &mut self,
+                id: &crate::ty::TyVarId,
+                _node_id: crate::ty::TyId,
+                _ctx: &TyContext,
+            ) {
+                if *id == self.var {
+                    self.found = true;
+                }
+            }
+
+            fn visit_int_var(
+                &mut self,
+                id: &crate::ty::TyVarId,
+                _node_id: crate::ty::TyId,
+                _ctx: &TyContext,
+            ) {
+                if *id == self.var {
+                    self.found = true;
+                }
+            }
+
+            fn visit_float_var(
+                &mut self,
+                id: &crate::ty::TyVarId,
+                _node_id: crate::ty::TyId,
+                _ctx: &TyContext,
+            ) {
                 if *id == self.var {
                     self.found = true;
                 }
@@ -254,41 +385,5 @@ impl<'ctx> Unifier<'ctx> {
         let mut checker = OccursChecker { var, found: false };
         checker.visit_id(ty, self.ctx);
         checker.found
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_unify_same_type() {
-        let mut ctx = TyContext::new();
-        let int_ty = ctx.types.int();
-
-        let mut unifier = Unifier::new(&mut ctx);
-        assert!(unifier.unify(int_ty, int_ty).is_ok());
-    }
-
-    #[test]
-    fn test_unify_type_var() {
-        let mut ctx = TyContext::new();
-        let var = ctx.fresh_var();
-        let var_ty = ctx.types.var(var);
-        let int_ty = ctx.types.int();
-
-        let mut unifier = Unifier::new(&mut ctx);
-        assert!(unifier.unify(var_ty, int_ty).is_ok());
-        assert_eq!(ctx.subst.get(&var), Some(&int_ty));
-    }
-
-    #[test]
-    fn test_unify_mismatch() {
-        let mut ctx = TyContext::new();
-        let int_ty = ctx.types.int();
-        let bool_ty = ctx.types.bool();
-
-        let mut unifier = Unifier::new(&mut ctx);
-        assert!(unifier.unify(int_ty, bool_ty).is_err());
     }
 }

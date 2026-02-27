@@ -53,6 +53,7 @@ impl Language for RavenLanguage {
             "source_file" => SyntaxKind::Root,
             "function_item" => SyntaxKind::Function,
             "struct_item" => SyntaxKind::Struct,
+            "enum_item" => SyntaxKind::Enum,
             "trait_item" => SyntaxKind::Trait,
             "impl_item" => SyntaxKind::Impl,
             "use_declaration" => SyntaxKind::Import,
@@ -73,6 +74,9 @@ impl Language for RavenLanguage {
             "type_parameters" => SyntaxKind::GenericParams,
             "parameters" => SyntaxKind::Parameters,
             "arguments" => SyntaxKind::Arguments,
+            "macro_invocation" => SyntaxKind::MacroInvocation,
+            "macro_definition" => SyntaxKind::MacroDefinition,
+            "lifetime" => SyntaxKind::Lifetime,
             _ => SyntaxKind::Unknown(node.kind().to_string()),
         };
 

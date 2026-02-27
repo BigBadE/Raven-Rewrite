@@ -1,22 +1,14 @@
-//! Magpie - Package manager for Raven
-//!
-//! A flexible package manager that supports multiple backends.
-
 #![allow(
     clippy::print_stdout,
     clippy::print_stderr,
     reason = "CLI tool needs to print to stdout/stderr"
 )]
 
-pub mod backend;
-pub mod backends;
-pub mod manifest;
-
-use anyhow::{anyhow, Context, Result};
-use backend::Backend;
-use backends::{CraneliftBackend, LLVMBackend, RavenBackend};
+use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
-use manifest::Manifest;
+use magpie::backend::Backend;
+use magpie::backends::{CraneliftBackend, LLVMBackend, RavenBackend};
+use magpie::manifest::Manifest;
 use std::env;
 use std::path::PathBuf;
 
@@ -104,7 +96,12 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Build => cmd_build(&cli)?,
         Command::Run { ref args } => cmd_run(&cli, args)?,
-        Command::Compile { ref file, ref output, ref args, .. } => cmd_compile(&cli, file, output.as_ref(), args)?,
+        Command::Compile {
+            ref file,
+            ref output,
+            ref args,
+            ..
+        } => cmd_compile(&cli, file, output.as_ref(), args)?,
         Command::Test => cmd_test(&cli)?,
         Command::Check => cmd_check(&cli)?,
         Command::Clean => cmd_clean(&cli)?,
@@ -226,7 +223,12 @@ fn cmd_clean(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-fn cmd_compile(cli: &Cli, file: &PathBuf, output_file: Option<&PathBuf>, args: &[String]) -> Result<()> {
+fn cmd_compile(
+    cli: &Cli,
+    file: &PathBuf,
+    output_file: Option<&PathBuf>,
+    args: &[String],
+) -> Result<()> {
     if !file.exists() {
         anyhow::bail!("File '{}' not found", file.display());
     }
@@ -253,6 +255,19 @@ fn cmd_compile(cli: &Cli, file: &PathBuf, output_file: Option<&PathBuf>, args: &
             anyhow::bail!("No functions found in source");
         }
 
+        // Run coherence checking
+        if let Err(errors) =
+            rv_ty::check_coherence(&hir.impl_blocks, &hir.traits, &hir.types, &hir.functions)
+        {
+            for error in &errors {
+                eprintln!("error[coherence]: {error}");
+            }
+            anyhow::bail!(
+                "Compilation aborted due to {} coherence error(s)",
+                errors.len()
+            );
+        }
+
         // Lower HIR to MIR with type inference
         use rv_ty::TypeInference;
         let mut type_inference = TypeInference::with_hir_context(
@@ -261,9 +276,10 @@ fn cmd_compile(cli: &Cli, file: &PathBuf, output_file: Option<&PathBuf>, args: &
             &hir.types,
             &hir.structs,
             &hir.enums,
-            &hir.traits,
             &hir.interner,
         );
+
+        type_inference.set_const_static_items(&hir.const_items, &hir.static_items);
 
         // ARCHITECTURE: Type inference is MANDATORY before MIR lowering
         // ALL non-generic functions must have types inferred here
@@ -273,6 +289,15 @@ fn cmd_compile(cli: &Cli, file: &PathBuf, output_file: Option<&PathBuf>, args: &
             }
         }
 
+        // Evaluate const and static items
+        let const_values = rv_const_eval::evaluate_const_items(&hir.const_items, &hir.interner);
+        let static_values = rv_const_eval::evaluate_static_items(
+            &hir.static_items,
+            &hir.const_items,
+            &const_values,
+            &hir.interner,
+        );
+
         // Lower non-generic functions to MIR (entry points)
         // ARCHITECTURE: No catch_unwind - let panics bubble up to expose bugs
         let mut mir_functions: Vec<_> = hir
@@ -280,7 +305,7 @@ fn cmd_compile(cli: &Cli, file: &PathBuf, output_file: Option<&PathBuf>, args: &
             .iter()
             .filter(|(_, func)| func.generics.is_empty())
             .map(|(_, func)| {
-                LoweringContext::lower_function(
+                let mir_result = LoweringContext::lower_function(
                     func,
                     type_inference.context_mut(),
                     &hir.structs,
@@ -290,7 +315,12 @@ fn cmd_compile(cli: &Cli, file: &PathBuf, output_file: Option<&PathBuf>, args: &
                     &hir.types,
                     &hir.traits,
                     &hir.interner,
-                )
+                    &hir.lang_items,
+                    &const_values,
+                    &static_values,
+                );
+                magpie::print_mir_diagnostics(&mir_result.diagnostics);
+                mir_result.function
             })
             .collect();
 
@@ -311,11 +341,18 @@ fn cmd_compile(cli: &Cli, file: &PathBuf, output_file: Option<&PathBuf>, args: &
         // ARCHITECTURE: No catch_unwind - let monomorphization failures bubble up
         use rv_mono::monomorphize_functions;
         let next_func_id = hir.functions.keys().map(|id| id.0).max().unwrap_or(0) + 1;
+        let bound_checker = rv_ty::BoundChecker::new(
+            hir.traits.clone(),
+            &hir.impl_blocks,
+            hir.types.clone(),
+            hir.structs.clone(),
+            hir.enums.clone(),
+        );
         let (mono_functions, instance_map) = monomorphize_functions(
             &hir,
-            type_inference.context(),
             collector.needed_instances(),
             next_func_id,
+            Some(&bound_checker),
         );
 
         // Add monomorphized functions to MIR functions list
@@ -323,16 +360,42 @@ fn cmd_compile(cli: &Cli, file: &PathBuf, output_file: Option<&PathBuf>, args: &
 
         // Remap function calls in all MIR functions to use monomorphized instance IDs
         use rv_mono::rewrite_calls_to_instances;
-        rewrite_calls_to_instances(&mut mir_functions, &instance_map);
+        rewrite_calls_to_instances(
+            &mut mir_functions,
+            &instance_map,
+            &hir.functions,
+            &hir.types,
+        );
+
+        // Run borrow checker on all MIR functions
+        let mut borrow_errors = false;
+        for mir_func in &mir_functions {
+            let func_name = hir
+                .functions
+                .get(&mir_func.id)
+                .map(|f| hir.interner.resolve(&f.name).to_string())
+                .unwrap_or_else(|| format!("{:?}", mir_func.id));
+            if !magpie::run_borrow_check(mir_func, &func_name) {
+                borrow_errors = true;
+            }
+        }
+        if borrow_errors {
+            anyhow::bail!("Borrow check failed");
+        }
 
         // Lower MIR to LIR (now all generics are monomorphized)
         let lir_functions = rv_lir::lower::lower_mir_to_lir(mir_functions, &hir);
+        let lir_externals = rv_lir::lower::lower_external_functions(
+            &hir.external_functions,
+            &hir.types,
+            &hir.interner,
+        );
 
         // Compile LIR to LLVM IR and generate object file
-        use rv_llvm_backend::{compile_to_native_with_externals, OptLevel};
+        use rv_llvm_backend::{OptLevel, compile_to_native_with_externals};
         compile_to_native_with_externals(
             &lir_functions,
-            &hir.external_functions,
+            &lir_externals,
             output,
             OptLevel::Default,
         )?;
@@ -435,7 +498,11 @@ path = "src/main.rs"
     std::fs::write(src_dir.join(main_file), main_content)
         .with_context(|| format!("Failed to write src/{main_file}"))?;
 
-    println!("Created {} project '{}'", if lib { "library" } else { "binary" }, name);
+    println!(
+        "Created {} project '{}'",
+        if lib { "library" } else { "binary" },
+        name
+    );
 
     Ok(())
 }

@@ -4,36 +4,185 @@
 //! generic functions for each unique type combination.
 
 use indexmap::IndexMap;
-use std::collections::HashMap;
 use rv_hir::FunctionId;
 use rv_hir_lower::LoweringContext;
 use rv_mir::{MirFunction, MirType};
 use rv_ty::{TyContext, TyId, TyKind};
+use std::collections::HashMap;
 
 /// Helper function to recursively convert MirType to TyId
-fn convert_mir_type_to_ty_id(mir_ty: &MirType, ty_ctx: &mut TyContext) -> TyId {
+///
+/// Takes HIR structs and enums maps to properly resolve Struct/Enum types
+/// to their full TyKind representations with TypeDefId and field names.
+fn convert_mir_type_to_ty_id(
+    mir_ty: &MirType,
+    ty_ctx: &mut TyContext,
+    structs: &HashMap<rv_hir::TypeDefId, rv_hir::StructDef>,
+    enums: &HashMap<rv_hir::TypeDefId, rv_hir::EnumDef>,
+) -> TyId {
     match mir_ty {
-        MirType::Int => ty_ctx.types.int(),
-        MirType::Float => ty_ctx.types.float(),
+        MirType::Int(w, s) => ty_ctx.types.int_typed(*w, *s),
+        MirType::Float(w) => ty_ctx.types.float_typed(*w),
+        MirType::Char => ty_ctx.types.char(),
         MirType::Bool => ty_ctx.types.bool(),
         MirType::Unit => ty_ctx.types.unit(),
         MirType::String => ty_ctx.types.string(),
-        MirType::Ref { inner, mutable } => {
+        MirType::Ref {
+            inner,
+            mutable,
+            lifetime,
+        } => {
             // Recursively convert the inner type
-            let inner_ty_id = convert_mir_type_to_ty_id(inner, ty_ctx);
+            let inner_ty_id = convert_mir_type_to_ty_id(inner, ty_ctx, structs, enums);
             // Create a reference type
             ty_ctx.types.alloc(TyKind::Ref {
                 inner: Box::new(inner_ty_id),
                 mutable: *mutable,
+                lifetime: *lifetime,
             })
         }
-        MirType::Named(_sym) => {
-            // For named types, we need the TypeDefId which we don't have here
-            // Let type inference resolve this from the HIR type
-            ty_ctx.fresh_ty_var()
+        MirType::Named(sym) => {
+            // Named types should have been resolved to Struct/Enum during MIR lowering.
+            // If one reaches monomorphization, it indicates a compiler bug.
+            panic!(
+                "ICE: Unresolved named type {:?} reached monomorphization. \
+                 MIR lowering should have resolved this to a concrete Struct or Enum type.",
+                sym
+            );
         }
-        _ => {
-            panic!("Unsupported MirType for generic substitution: {:?}", mir_ty);
+        MirType::Function { params, ret } => {
+            let param_tys: Vec<TyId> = params
+                .iter()
+                .map(|p| convert_mir_type_to_ty_id(p, ty_ctx, structs, enums))
+                .collect();
+            let ret_ty = convert_mir_type_to_ty_id(ret, ty_ctx, structs, enums);
+            ty_ctx.types.alloc(TyKind::Function {
+                params: param_tys,
+                ret: Box::new(ret_ty),
+            })
+        }
+        MirType::Struct { name, fields } => {
+            // Look up the struct definition by name to get TypeDefId and field names
+            let struct_def = structs
+                .iter()
+                .find(|(_, s)| s.name == *name)
+                .map(|(id, s)| (*id, s));
+
+            if let Some((def_id, s_def)) = struct_def {
+                // Build field types: use HIR field names paired with converted MIR field types
+                let ty_fields: Vec<(rv_intern::Symbol, TyId)> = s_def
+                    .fields
+                    .iter()
+                    .zip(fields.iter())
+                    .map(|(hir_field, mir_field_ty)| {
+                        let field_ty =
+                            convert_mir_type_to_ty_id(mir_field_ty, ty_ctx, structs, enums);
+                        (hir_field.name, field_ty)
+                    })
+                    .collect();
+                ty_ctx.types.alloc(TyKind::Struct {
+                    def_id,
+                    fields: ty_fields,
+                })
+            } else {
+                panic!(
+                    "ICE: Struct '{:?}' not found in HIR during monomorphization. \
+                     All struct types should be defined before monomorphization runs.",
+                    name
+                );
+            }
+        }
+        MirType::Tuple(elements) => {
+            let elem_tys: Vec<TyId> = elements
+                .iter()
+                .map(|e| convert_mir_type_to_ty_id(e, ty_ctx, structs, enums))
+                .collect();
+            ty_ctx.types.alloc(TyKind::Tuple { elements: elem_tys })
+        }
+        MirType::Array { element, size } => {
+            let elem_ty = convert_mir_type_to_ty_id(element, ty_ctx, structs, enums);
+            ty_ctx.types.alloc(TyKind::Array {
+                element: Box::new(elem_ty),
+                size: *size,
+            })
+        }
+        MirType::Slice { element } => {
+            let elem_ty = convert_mir_type_to_ty_id(element, ty_ctx, structs, enums);
+            ty_ctx.types.alloc(TyKind::Slice {
+                element: Box::new(elem_ty),
+            })
+        }
+        MirType::Enum { name, variants } => {
+            // Look up the enum definition by name to get TypeDefId
+            let enum_def = enums
+                .iter()
+                .find(|(_, e)| e.name == *name)
+                .map(|(id, _)| *id);
+
+            if let Some(def_id) = enum_def {
+                let ty_variants: Vec<(rv_intern::Symbol, rv_ty::VariantTy)> = variants
+                    .iter()
+                    .map(|v| {
+                        let variant_ty = if v.fields.is_empty() {
+                            rv_ty::VariantTy::Unit
+                        } else {
+                            let field_tys: Vec<TyId> = v
+                                .fields
+                                .iter()
+                                .map(|f| convert_mir_type_to_ty_id(f, ty_ctx, structs, enums))
+                                .collect();
+                            rv_ty::VariantTy::Tuple(field_tys)
+                        };
+                        (v.name, variant_ty)
+                    })
+                    .collect();
+                ty_ctx.types.alloc(TyKind::Enum {
+                    def_id,
+                    variants: ty_variants,
+                })
+            } else {
+                panic!(
+                    "ICE: Enum '{:?}' not found in HIR during monomorphization. \
+                     All enum types should be defined before monomorphization runs.",
+                    name
+                );
+            }
+        }
+        MirType::Pointer { inner, mutable } => {
+            let inner_ty = convert_mir_type_to_ty_id(inner, ty_ctx, structs, enums);
+            ty_ctx.types.alloc(TyKind::Pointer {
+                inner: Box::new(inner_ty),
+                mutable: *mutable,
+            })
+        }
+        MirType::Never => ty_ctx.types.alloc(TyKind::Never),
+        MirType::DynTrait {
+            principal,
+            trait_id,
+        } => ty_ctx.types.alloc(TyKind::DynTrait {
+            principal: trait_id.unwrap_or(rv_hir::TraitId(u32::MAX)),
+            principal_name: *principal,
+        }),
+        MirType::ImplTrait { principal } => ty_ctx.types.alloc(TyKind::ImplTrait {
+            principal: *principal,
+        }),
+        MirType::FunctionPointer { params, ret, abi } => {
+            let param_tys: Vec<TyId> = params
+                .iter()
+                .map(|p| convert_mir_type_to_ty_id(p, ty_ctx, structs, enums))
+                .collect();
+            let ret_ty = convert_mir_type_to_ty_id(ret, ty_ctx, structs, enums);
+            ty_ctx.types.alloc(TyKind::FunctionPointer {
+                params: param_tys,
+                ret: Box::new(ret_ty),
+                abi: abi.clone(),
+            })
+        }
+        MirType::Box { inner } => {
+            let inner_ty = convert_mir_type_to_ty_id(inner, ty_ctx, structs, enums);
+            ty_ctx.types.alloc(TyKind::Box {
+                inner: Box::new(inner_ty),
+            })
         }
     }
 }
@@ -42,19 +191,14 @@ fn convert_mir_type_to_ty_id(mir_ty: &MirType, ty_ctx: &mut TyContext) -> TyId {
 pub struct MonoContext {
     /// Map from (FunctionId, type arguments) to monomorphized MirFunction
     instances: IndexMap<(FunctionId, Vec<MirType>), MirFunction>,
-
-    /// Type context for type operations
-    #[allow(dead_code, reason = "Will be used for future generic support")]
-    ty_ctx: TyContext,
 }
 
 impl MonoContext {
     /// Create a new monomorphization context
     #[must_use]
-    pub fn new(ty_ctx: TyContext) -> Self {
+    pub fn new() -> Self {
         Self {
             instances: IndexMap::new(),
-            ty_ctx,
         }
     }
 
@@ -113,170 +257,38 @@ impl MonoCollector {
         }
     }
 
-    /// Collect generic instantiations from a MIR function
+    /// Collect generic instantiations from a MIR function.
     ///
-    /// Takes HIR context to look up function signatures for type matching
+    /// Takes HIR context to look up function signatures for type matching.
     pub fn collect_from_mir(
         &mut self,
         mir: &MirFunction,
         hir_functions: &HashMap<FunctionId, rv_hir::Function>,
         hir_types: &la_arena::Arena<rv_hir::Type>,
     ) {
-        use rv_mir::{Operand, RValue, Statement, Terminator};
+        use rv_mir::{RValue, Statement, Terminator};
 
-
-        // Walk all basic blocks
         for bb in &mir.basic_blocks {
-            // Check statements for function calls in RValue::Call
             for stmt in &bb.statements {
                 if let Statement::Assign { rvalue, .. } = stmt {
                     if let RValue::Call { func, args, .. } = rvalue {
-                        // Extract argument types from operands
-                        let arg_types: Vec<MirType> = args.iter().map(|operand| {
-                            match operand {
-                                Operand::Copy(place) | Operand::Move(place) => {
-                                    // Find the local type
-                                    mir.locals.iter()
-                                        .find(|local| local.id == place.local)
-                                        .map(|local| local.ty.clone())
-                                        .expect("Failed to find local type for monomorphization - internal compiler error")
-                                }
-                                Operand::Constant(constant) => {
-                                    // Infer type from constant
-                                    use rv_hir::LiteralKind;
-                                    match &constant.kind {
-                                        LiteralKind::Integer(_) => MirType::Int,
-                                        LiteralKind::Float(_) => MirType::Float,
-                                        LiteralKind::Bool(_) => MirType::Bool,
-                                        LiteralKind::String(_) => MirType::String,
-                                        LiteralKind::Unit => MirType::Unit,
-                                    }
-                                }
-                            }
-                        }).collect();
-
-                        // Match argument types against parameter types to infer generic parameters
-                        let type_args = self.infer_generic_args(*func, &arg_types, hir_functions, hir_types);
+                        let arg_types = extract_arg_types(args, &mir.locals);
+                        let type_args = infer_generic_args_for_call(
+                            *func,
+                            &arg_types,
+                            hir_functions,
+                            hir_types,
+                        );
                         self.needed_instances.push((*func, type_args));
                     }
                 }
             }
 
-            // Check terminator for Call
             if let Terminator::Call { func, args, .. } = &bb.terminator {
-                // Extract argument types
-                let arg_types: Vec<MirType> = args.iter().map(|operand| {
-                    match operand {
-                        Operand::Copy(place) | Operand::Move(place) => {
-                            mir.locals.iter()
-                                .find(|local| local.id == place.local)
-                                .map(|local| local.ty.clone())
-                                .expect("Failed to find local type for monomorphization in terminator - internal compiler error")
-                        }
-                        Operand::Constant(constant) => {
-                            use rv_hir::LiteralKind;
-                            match &constant.kind {
-                                LiteralKind::Integer(_) => MirType::Int,
-                                LiteralKind::Float(_) => MirType::Float,
-                                LiteralKind::Bool(_) => MirType::Bool,
-                                LiteralKind::String(_) => MirType::String,
-                                LiteralKind::Unit => MirType::Unit,
-                            }
-                        }
-                    }
-                }).collect();
-
-                // Match argument types against parameter types to infer generic parameters
-                let type_args = self.infer_generic_args(*func, &arg_types, hir_functions, hir_types);
+                let arg_types = extract_arg_types(args, &mir.locals);
+                let type_args =
+                    infer_generic_args_for_call(*func, &arg_types, hir_functions, hir_types);
                 self.needed_instances.push((*func, type_args));
-            }
-        }
-    }
-
-    /// Infer generic type arguments by matching argument types against parameter type patterns
-    ///
-    /// For example, if we have:
-    /// - Function: `fn foo<T>(x: &T)`
-    /// - Call argument type: `&i64`
-    /// - Infer: T = i64
-    fn infer_generic_args(
-        &self,
-        func_id: FunctionId,
-        arg_types: &[MirType],
-        hir_functions: &HashMap<FunctionId, rv_hir::Function>,
-        hir_types: &la_arena::Arena<rv_hir::Type>,
-    ) -> Vec<MirType> {
-        // Look up the called function
-        let Some(hir_func) = hir_functions.get(&func_id) else {
-            // Function not found in HIR - return empty type args
-            return vec![];
-        };
-
-        // If not generic, return empty vec
-        if hir_func.generics.is_empty() {
-            return vec![];
-        }
-
-
-        // Initialize substitutions for each generic parameter
-        let mut substitutions: HashMap<rv_intern::Symbol, MirType> = HashMap::new();
-
-        // Match each argument type against its corresponding parameter type
-        for (arg_idx, arg_type) in arg_types.iter().enumerate() {
-            if let Some(param) = hir_func.parameters.get(arg_idx) {
-                let param_hir_type = &hir_types[param.ty];
-                self.match_type(arg_type, param_hir_type, hir_types, &mut substitutions);
-            } else {
-            }
-        }
-
-
-        // Convert substitutions to ordered Vec based on generic parameter order
-        let result: Vec<_> = hir_func.generics.iter()
-            .map(|gen_param| {
-                substitutions.get(&gen_param.name)
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        MirType::Unit
-                    })
-            })
-            .collect();
-
-        result
-    }
-
-    /// Match an argument type against a parameter type pattern, collecting generic substitutions
-    fn match_type(
-        &self,
-        arg_type: &MirType,
-        param_type: &rv_hir::Type,
-        hir_types: &la_arena::Arena<rv_hir::Type>,
-        substitutions: &mut HashMap<rv_intern::Symbol, MirType>,
-    ) {
-        match param_type {
-            // Generic parameter - record the substitution
-            rv_hir::Type::Generic { name, .. } => {
-                substitutions.insert(*name, arg_type.clone());
-            }
-
-            // Reference type - match recursively on inner type
-            rv_hir::Type::Reference { inner, .. } => {
-                // Extract inner type from argument if it's a reference
-                if let MirType::Ref { inner: arg_inner, .. } = arg_type {
-                    let param_inner_type = &hir_types[**inner];
-                    self.match_type(arg_inner, param_inner_type, hir_types, substitutions);
-                } else {
-                }
-                // If argument is not a reference, can't match - skip
-            }
-
-            // Named type - exact match expected (not generic)
-            rv_hir::Type::Named { .. } => {
-                // No generic parameters to extract
-            }
-
-            // Other types - no generic parameters
-            _ => {
             }
         }
     }
@@ -296,18 +308,21 @@ impl Default for MonoCollector {
 
 /// Monomorphize all needed function instances
 ///
-/// Takes HIR lowering context and ty context, and generates specialized MIR functions
+/// Takes HIR lowering context and generates specialized MIR functions
 /// for each (FunctionId, type_args) pair collected
 ///
 /// Returns: (Vec<MirFunction>, HashMap mapping (template_id, types) -> instance_id)
 pub fn monomorphize_functions(
     hir_ctx: &LoweringContext,
-    _ty_ctx: &TyContext,
     needed_instances: &[(FunctionId, Vec<MirType>)],
     mut next_func_id: u32,
-) -> (Vec<MirFunction>, HashMap<(FunctionId, Vec<MirType>), FunctionId>) {
-    use std::collections::{HashMap, HashSet};
+    bound_checker: Option<&rv_ty::BoundChecker>,
+) -> (
+    Vec<MirFunction>,
+    HashMap<(FunctionId, Vec<MirType>), FunctionId>,
+) {
     use rv_intern::Symbol;
+    use std::collections::{HashMap, HashSet};
 
     let mut generated = Vec::new();
     let mut seen = HashSet::new();
@@ -342,6 +357,78 @@ pub fn monomorphize_functions(
                 }
             }
 
+            // Check trait bounds on generic parameters
+            if let Some(bound_checker) = &bound_checker {
+                for generic_param in &hir_func.generics {
+                    if generic_param.bounds.is_empty() {
+                        continue;
+                    }
+                    if let Some(concrete_ty) = type_subst.get(&generic_param.name) {
+                        // Extract TypeDefId from the concrete MirType
+                        let type_def_id = match concrete_ty {
+                            MirType::Struct { name, .. } => hir_ctx
+                                .structs
+                                .iter()
+                                .find(|(_, s)| s.name == *name)
+                                .map(|(id, _)| *id),
+                            MirType::Enum { name, .. } => hir_ctx
+                                .enums
+                                .iter()
+                                .find(|(_, e)| e.name == *name)
+                                .map(|(id, _)| *id),
+                            _ => None,
+                        };
+                        if let Some(type_def_id) = type_def_id {
+                            let errors =
+                                bound_checker.check_generic_bounds(type_def_id, generic_param);
+                            if !errors.is_empty() {
+                                let param_name = hir_ctx.interner.resolve(&generic_param.name);
+                                for error in &errors {
+                                    match error {
+                                        rv_ty::BoundError::UnsatisfiedBound {
+                                            trait_id, ..
+                                        } => {
+                                            let trait_name = hir_ctx
+                                                .traits
+                                                .get(trait_id)
+                                                .map(|t| {
+                                                    hir_ctx.interner.resolve(&t.name).to_string()
+                                                })
+                                                .unwrap_or_else(|| format!("{:?}", trait_id));
+                                            panic!(
+                                                "Bound check error: type '{}' does not satisfy \
+                                                 trait bound '{}' required by generic parameter '{}'",
+                                                hir_ctx.interner.resolve(&match concrete_ty {
+                                                    MirType::Struct { name, .. }
+                                                    | MirType::Enum { name, .. } => *name,
+                                                    _ => generic_param.name,
+                                                }),
+                                                trait_name,
+                                                param_name
+                                            );
+                                        }
+                                        rv_ty::BoundError::UnsizedType { .. } => {
+                                            panic!(
+                                                "Bound check error: type substituted for generic \
+                                                 parameter '{}' is not Sized. Use `?Sized` bound \
+                                                 to allow unsized types.",
+                                                param_name
+                                            );
+                                        }
+                                        _ => {
+                                            panic!(
+                                                "Bound check error: {:?} for generic parameter '{}'",
+                                                error, param_name
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // ARCHITECTURE: Run type inference with concrete type substitutions
             // Create a fresh type context for this monomorphized instance
             let mut ty_ctx_clone = TyContext::new();
@@ -356,7 +443,12 @@ pub fn monomorphize_functions(
                     rv_hir::Type::Generic { name, .. } => {
                         if let Some(mir_ty) = type_subst.get(name) {
                             // Convert MirType to TyId for concrete substitution
-                            convert_mir_type_to_ty_id(&mir_ty, &mut ty_ctx_clone)
+                            convert_mir_type_to_ty_id(
+                                &mir_ty,
+                                &mut ty_ctx_clone,
+                                &hir_ctx.structs,
+                                &hir_ctx.enums,
+                            )
                         } else {
                             // Generic parameter has no substitution - let type inference handle it
                             ty_ctx_clone.fresh_ty_var()
@@ -370,7 +462,12 @@ pub fn monomorphize_functions(
                             rv_hir::Type::Generic { name, .. } => {
                                 if let Some(mir_ty) = type_subst.get(name) {
                                     // Convert MirType to TyId for concrete substitution
-                                    convert_mir_type_to_ty_id(&mir_ty, &mut ty_ctx_clone)
+                                    convert_mir_type_to_ty_id(
+                                        &mir_ty,
+                                        &mut ty_ctx_clone,
+                                        &hir_ctx.structs,
+                                        &hir_ctx.enums,
+                                    )
                                 } else {
                                     // Generic parameter has no substitution - let type inference handle it
                                     ty_ctx_clone.fresh_ty_var()
@@ -384,12 +481,12 @@ pub fn monomorphize_functions(
                         ty_ctx_clone.types.alloc(rv_ty::TyKind::Ref {
                             inner: Box::new(inner_ty_id),
                             mutable: *mutable,
+                            lifetime: None,
                         })
                     }
                     // Named type (e.g., struct name) - will be inferred
                     _ => ty_ctx_clone.fresh_ty_var(),
                 };
-
 
                 // Store by DefId
                 let local_id = rv_hir::LocalId(param_idx as u32);
@@ -409,7 +506,6 @@ pub fn monomorphize_functions(
                 &hir_ctx.types,
                 &hir_ctx.structs,
                 &hir_ctx.enums,
-                &hir_ctx.traits,
                 &hir_ctx.interner,
                 ty_ctx_clone,
             );
@@ -417,10 +513,20 @@ pub fn monomorphize_functions(
             let inference_result = type_inference.finish();
             let mut ty_ctx_with_inference = inference_result.ctx;
 
+            // Evaluate const and static items
+            let const_values =
+                rv_const_eval::evaluate_const_items(&hir_ctx.const_items, &hir_ctx.interner);
+            let static_values = rv_const_eval::evaluate_static_items(
+                &hir_ctx.static_items,
+                &hir_ctx.const_items,
+                &const_values,
+                &hir_ctx.interner,
+            );
+
             // Lower to MIR with type substitution and unique instance ID
             // The type_subst map handles generic parameter substitution (T -> Int, etc.)
             // The ty_ctx_with_inference has expression types from inference above
-            let mir_func = rv_mir_lower::LoweringContext::lower_function_with_subst(
+            let mir_result = rv_mir_lower::LoweringContext::lower_function_with_subst(
                 hir_func,
                 &mut ty_ctx_with_inference,
                 &hir_ctx.structs,
@@ -432,56 +538,139 @@ pub fn monomorphize_functions(
                 &type_subst,
                 instance_id,
                 &hir_ctx.interner,
+                &hir_ctx.lang_items,
+                &const_values,
+                &static_values,
             );
-            generated.push(mir_func);
+            generated.push(mir_result.function);
         }
     }
 
     (generated, instance_map)
 }
 
-/// Rewrite function calls in MIR to use monomorphized instance IDs
+/// Infer generic type arguments by matching call argument types against function parameter types.
+///
+/// This is the canonical way to compute the instance map key for a given call site.
+/// Both `MonoCollector::collect_from_mir` and `rewrite_calls_to_instances` must use
+/// this same logic so keys are consistent.
+fn infer_generic_args_for_call(
+    func_id: FunctionId,
+    arg_types: &[MirType],
+    hir_functions: &HashMap<FunctionId, rv_hir::Function>,
+    hir_types: &la_arena::Arena<rv_hir::Type>,
+) -> Vec<MirType> {
+    let Some(hir_func) = hir_functions.get(&func_id) else {
+        return vec![];
+    };
+
+    if hir_func.generics.is_empty() {
+        return vec![];
+    }
+
+    let mut substitutions: HashMap<rv_intern::Symbol, MirType> = HashMap::new();
+
+    for (arg_idx, arg_type) in arg_types.iter().enumerate() {
+        if let Some(param) = hir_func.parameters.get(arg_idx) {
+            let param_hir_type = &hir_types[param.ty];
+            match_type_for_generics(arg_type, param_hir_type, hir_types, &mut substitutions);
+        }
+    }
+
+    hir_func
+        .generics
+        .iter()
+        .map(|gen_param| {
+            substitutions
+                .get(&gen_param.name)
+                .cloned()
+                .unwrap_or(MirType::Unit)
+        })
+        .collect()
+}
+
+/// Match an argument type against a parameter type pattern, collecting generic substitutions.
+fn match_type_for_generics(
+    arg_type: &MirType,
+    param_type: &rv_hir::Type,
+    hir_types: &la_arena::Arena<rv_hir::Type>,
+    substitutions: &mut HashMap<rv_intern::Symbol, MirType>,
+) {
+    match param_type {
+        rv_hir::Type::Generic { name, .. } => {
+            substitutions.insert(*name, arg_type.clone());
+        }
+        rv_hir::Type::Reference { inner, .. } => {
+            if let MirType::Ref {
+                inner: arg_inner, ..
+            } = arg_type
+            {
+                let param_inner_type = &hir_types[**inner];
+                match_type_for_generics(arg_inner, param_inner_type, hir_types, substitutions);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Extract argument types from a list of MIR operands using the function's locals.
+fn extract_arg_types(args: &[rv_mir::Operand], locals: &[rv_mir::Local]) -> Vec<MirType> {
+    args.iter()
+        .map(|operand| match operand {
+            rv_mir::Operand::Copy(place) | rv_mir::Operand::Move(place) => locals
+                .iter()
+                .find(|local| local.id == place.local)
+                .map(|local| local.ty.clone())
+                .unwrap_or(MirType::Unit),
+            rv_mir::Operand::Constant(constant) => {
+                use rv_hir::LiteralKind;
+                match &constant.kind {
+                    LiteralKind::Integer(_, Some((w, s))) => MirType::Int(*w, *s),
+                    LiteralKind::Integer(_, None) => {
+                        MirType::Int(rv_hir::IntWidth::I32, rv_hir::Signedness::Signed)
+                    }
+                    LiteralKind::Float(_, Some(w)) => MirType::Float(*w),
+                    LiteralKind::Float(_, None) => MirType::Float(rv_hir::FloatWidth::F64),
+                    LiteralKind::Char(_) => MirType::Char,
+                    LiteralKind::Bool(_) => MirType::Bool,
+                    LiteralKind::String(_) => MirType::String,
+                    LiteralKind::Unit => MirType::Unit,
+                }
+            }
+        })
+        .collect()
+}
+
+/// Rewrite function calls in MIR to use monomorphized instance IDs.
 ///
 /// After monomorphization, we have new FunctionIds for specialized versions of generic functions.
 /// This function updates all Call sites in the given MIR functions to use the new instance IDs
 /// instead of the original template IDs.
+///
+/// Requires HIR context to correctly infer generic type arguments from call argument types,
+/// ensuring the lookup key matches the key format used during monomorphization.
 pub fn rewrite_calls_to_instances(
     mir_funcs: &mut [MirFunction],
     instance_map: &HashMap<(FunctionId, Vec<MirType>), FunctionId>,
+    hir_functions: &HashMap<FunctionId, rv_hir::Function>,
+    hir_types: &la_arena::Arena<rv_hir::Type>,
 ) {
-    use rv_mir::{Statement, Terminator, RValue, Operand};
+    use rv_mir::{RValue, Statement, Terminator};
 
     for mir_func in mir_funcs {
-        // Rewrite calls in basic blocks
         for bb in &mut mir_func.basic_blocks {
             // Rewrite calls in statements
             for stmt in &mut bb.statements {
                 if let Statement::Assign { rvalue, .. } = stmt {
                     if let RValue::Call { func, args } = rvalue {
-                        // Extract argument types to look up in instance_map
-                        let arg_types: Vec<MirType> = args.iter().map(|operand| {
-                            match operand {
-                                Operand::Copy(place) | Operand::Move(place) => {
-                                    mir_func.locals.iter()
-                                        .find(|local| local.id == place.local)
-                                        .map(|local| local.ty.clone())
-                                        .unwrap_or(MirType::Unit)
-                                }
-                                Operand::Constant(constant) => {
-                                    use rv_hir::LiteralKind;
-                                    match &constant.kind {
-                                        LiteralKind::Integer(_) => MirType::Int,
-                                        LiteralKind::Float(_) => MirType::Float,
-                                        LiteralKind::Bool(_) => MirType::Bool,
-                                        LiteralKind::String(_) => MirType::String,
-                                        LiteralKind::Unit => MirType::Unit,
-                                    }
-                                }
-                            }
-                        }).collect();
-
-                        // Look up the monomorphized instance
-                        if let Some(&instance_id) = instance_map.get(&(*func, arg_types)) {
+                        let arg_types = extract_arg_types(args, &mir_func.locals);
+                        let type_args = infer_generic_args_for_call(
+                            *func,
+                            &arg_types,
+                            hir_functions,
+                            hir_types,
+                        );
+                        if let Some(&instance_id) = instance_map.get(&(*func, type_args)) {
                             *func = instance_id;
                         }
                     }
@@ -490,30 +679,10 @@ pub fn rewrite_calls_to_instances(
 
             // Rewrite calls in terminators
             if let Terminator::Call { func, args, .. } = &mut bb.terminator {
-                // Extract argument types
-                let arg_types: Vec<MirType> = args.iter().map(|operand| {
-                    match operand {
-                        Operand::Copy(place) | Operand::Move(place) => {
-                            mir_func.locals.iter()
-                                .find(|local| local.id == place.local)
-                                .map(|local| local.ty.clone())
-                                .unwrap_or(MirType::Unit)
-                        }
-                        Operand::Constant(constant) => {
-                            use rv_hir::LiteralKind;
-                            match &constant.kind {
-                                LiteralKind::Integer(_) => MirType::Int,
-                                LiteralKind::Float(_) => MirType::Float,
-                                LiteralKind::Bool(_) => MirType::Bool,
-                                LiteralKind::String(_) => MirType::String,
-                                LiteralKind::Unit => MirType::Unit,
-                            }
-                        }
-                    }
-                }).collect();
-
-                // Look up the monomorphized instance
-                if let Some(&instance_id) = instance_map.get(&(*func, arg_types)) {
+                let arg_types = extract_arg_types(args, &mir_func.locals);
+                let type_args =
+                    infer_generic_args_for_call(*func, &arg_types, hir_functions, hir_types);
+                if let Some(&instance_id) = instance_map.get(&(*func, type_args)) {
                     *func = instance_id;
                 }
             }

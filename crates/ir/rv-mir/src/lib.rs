@@ -13,6 +13,17 @@ use rv_intern::Symbol;
 use rv_span::FileSpan;
 use serde::{Deserialize, Serialize};
 
+/// Compiler intrinsic identifier.
+///
+/// This is a simplified version that stores the intrinsic name as a Symbol.
+/// The full intrinsic implementation is in rv-intrinsics (currently inaccessible
+/// due to permission issues).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Intrinsic {
+    /// The name of the intrinsic (e.g., "size_of", "transmute")
+    pub name: Symbol,
+}
+
 /// A MIR function representation
 #[derive(Debug, Clone, PartialEq)]
 pub struct MirFunction {
@@ -26,6 +37,19 @@ pub struct MirFunction {
     pub entry_block: BasicBlockId,
     /// Number of parameters (first N locals are parameters)
     pub param_count: usize,
+    /// Return type of the function
+    pub return_type: MirType,
+}
+
+impl MirFunction {
+    /// Get the MIR type of a local variable by its ID.
+    #[must_use]
+    pub fn get_local_type(&self, local: LocalId) -> Option<MirType> {
+        self.locals
+            .iter()
+            .find(|l| l.id == local)
+            .map(|l| l.ty.clone())
+    }
 }
 
 /// Local variable declaration
@@ -39,15 +63,19 @@ pub struct Local {
     pub ty: MirType,
     /// Is this a mutable binding
     pub mutable: bool,
+    /// Source span for error reporting (e.g., borrow checker diagnostics)
+    pub span: FileSpan,
 }
 
 /// Simplified type information for MIR
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MirType {
-    /// Integer type
-    Int,
-    /// Float type
-    Float,
+    /// Integer type with width and signedness
+    Int(rv_hir::IntWidth, rv_hir::Signedness),
+    /// Float type with width
+    Float(rv_hir::FloatWidth),
+    /// Character type
+    Char,
     /// Boolean type
     Bool,
     /// Unit type
@@ -90,14 +118,85 @@ pub enum MirType {
         mutable: bool,
         /// Inner type
         inner: Box<MirType>,
+        /// Lifetime (None = inferred)
+        lifetime: Option<rv_span::LifetimeId>,
     },
-    /// Function type
+    /// Function type (for closures and trait objects)
     Function {
         /// Parameter types
         params: Vec<MirType>,
         /// Return type
         ret: Box<MirType>,
     },
+    /// Function pointer type: fn(T, U) -> V
+    FunctionPointer {
+        /// Parameter types
+        params: Vec<MirType>,
+        /// Return type
+        ret: Box<MirType>,
+        /// ABI (None = Rust, Some("C") = extern "C", etc.)
+        abi: Option<String>,
+    },
+    /// Raw pointer type (*const T or *mut T)
+    Pointer {
+        /// Is mutable (*mut vs *const)
+        mutable: bool,
+        /// Pointed-to type
+        inner: Box<MirType>,
+    },
+    /// Never type (!)
+    Never,
+    /// Box<T> - heap-allocated smart pointer
+    Box {
+        /// Inner type
+        inner: Box<MirType>,
+    },
+    /// Dynamic trait object (dyn Trait)
+    DynTrait {
+        /// Principal trait name
+        principal: Symbol,
+        /// Resolved trait ID (for vtable lookup)
+        trait_id: Option<rv_hir::TraitId>,
+    },
+    /// Impl trait (opaque type)
+    ImplTrait {
+        /// Principal trait name
+        principal: Symbol,
+    },
+}
+
+impl MirType {
+    /// Returns true if a reference/pointer to this type requires a fat pointer
+    /// (pointer + metadata). Fat pointer targets are unsized types: slices,
+    /// string slices, dynamic trait objects, and structs with unsized last fields.
+    #[must_use]
+    pub fn is_unsized(&self) -> bool {
+        match self {
+            MirType::Slice { .. } | MirType::DynTrait { .. } => true,
+            MirType::Struct { fields, .. } => {
+                // Struct is unsized if its last field is unsized
+                fields.last().map_or(false, |f| f.is_unsized())
+            }
+            _ => false,
+        }
+    }
+
+    /// Returns true if a reference to this type is a fat pointer (16 bytes).
+    /// Thin pointers are 8 bytes, fat pointers are 16 bytes (pointer + metadata).
+    #[must_use]
+    pub fn ref_is_fat_ptr(&self) -> bool {
+        self.is_unsized()
+    }
+
+    /// Returns true if this Box contains an unsized type.
+    /// Box<dyn Trait> requires special handling for vtable pointers.
+    #[must_use]
+    pub fn is_box_of_unsized(&self) -> bool {
+        match self {
+            MirType::Box { inner } => inner.is_unsized(),
+            _ => false,
+        }
+    }
 }
 
 /// MIR representation of enum variant
@@ -223,6 +322,52 @@ pub enum RValue {
         /// Fields/elements
         operands: Vec<Operand>,
     },
+    /// Extract the discriminant of an enum value as an integer
+    Discriminant(Place),
+    /// Type cast (as)
+    Cast {
+        /// Value to cast
+        operand: Operand,
+        /// Source type
+        from: MirType,
+        /// Target type
+        to: MirType,
+    },
+    /// Virtual method call through trait object vtable
+    VtableCall {
+        /// Receiver (the dyn Trait reference)
+        receiver: Operand,
+        /// Index into the vtable
+        vtable_index: usize,
+        /// Arguments (excluding receiver)
+        args: Vec<Operand>,
+        /// Trait ID for looking up concrete impl
+        trait_id: rv_hir::TraitId,
+        /// Method name (for interpreter dispatch)
+        method_name: Symbol,
+    },
+    /// Box allocation (heap allocation via exchange_malloc)
+    BoxNew {
+        /// Value to place in the box
+        operand: Operand,
+        /// Type of the boxed value
+        inner_ty: MirType,
+    },
+    /// Box deallocation (implicit when Box goes out of scope)
+    /// This is lowered from Drop terminator for Box types
+    BoxFree {
+        /// The box to deallocate
+        place: Place,
+    },
+    /// Compiler intrinsic call
+    Intrinsic {
+        /// The intrinsic being called
+        intrinsic: Intrinsic,
+        /// Arguments to the intrinsic
+        args: Vec<Operand>,
+        /// Type arguments (for generic intrinsics like size_of<T>)
+        type_args: Vec<MirType>,
+    },
 }
 
 /// Aggregate kind
@@ -230,10 +375,15 @@ pub enum RValue {
 pub enum AggregateKind {
     /// Tuple
     Tuple,
-    /// Struct
-    Struct,
+    /// Struct with its name
+    Struct {
+        /// Struct name
+        name: Symbol,
+    },
     /// Enum variant
     Enum {
+        /// Enum name
+        name: Symbol,
         /// Variant index
         variant_idx: usize,
     },
@@ -274,11 +424,15 @@ pub enum Terminator {
         targets: IndexMap<u128, BasicBlockId>,
         /// Default/otherwise target
         otherwise: BasicBlockId,
+        /// Source location
+        span: rv_span::FileSpan,
     },
     /// Return from function
     Return {
         /// Return value
         value: Option<Operand>,
+        /// Source location
+        span: rv_span::FileSpan,
     },
     /// Call a function and potentially unwind
     Call {
@@ -290,9 +444,57 @@ pub enum Terminator {
         destination: Place,
         /// Target block after successful call
         target: BasicBlockId,
+        /// Source location
+        span: rv_span::FileSpan,
+    },
+    /// Drop the value at a place, then continue to target block
+    Drop {
+        /// Place whose value should be dropped
+        place: Place,
+        /// Optional drop flag to check before dropping (for conditional drops)
+        /// If Some(flag_place), only drop if the flag is true
+        drop_flag: Option<Place>,
+        /// Block to jump to after drop completes
+        target: BasicBlockId,
+        /// Source location
+        span: rv_span::FileSpan,
     },
     /// Code that will never be reached
     Unreachable,
+    /// Assert a condition, panic if false
+    /// Used for bounds checks, overflow checks, etc.
+    Assert {
+        /// Condition that must be true
+        cond: Operand,
+        /// Whether to panic when cond is true (for `assert!(!cond)`) or false (normal assert)
+        expected: bool,
+        /// Message to display on failure
+        msg: AssertMessage,
+        /// Block to continue to if assertion passes
+        target: BasicBlockId,
+        /// Source location
+        span: rv_span::FileSpan,
+    },
+}
+
+/// Message to display when an assertion fails
+#[derive(Debug, Clone, PartialEq)]
+pub enum AssertMessage {
+    /// Index out of bounds: (index_value, length)
+    BoundsCheck {
+        /// The index that was out of bounds
+        index: Operand,
+        /// The length of the array/slice
+        len: Operand,
+    },
+    /// Overflow in arithmetic operation
+    Overflow(BinaryOp),
+    /// Division by zero
+    DivisionByZero,
+    /// Remainder by zero
+    RemainderByZero,
+    /// Explicit panic message
+    Panic(String),
 }
 
 /// Binary operators (MIR version)
@@ -320,6 +522,10 @@ pub enum BinaryOp {
     Gt,
     /// Greater than or equal
     Ge,
+    /// Logical AND (&&) - short-circuit semantics
+    And,
+    /// Logical OR (||) - short-circuit semantics
+    Or,
     /// Bitwise AND
     BitAnd,
     /// Bitwise OR
@@ -346,8 +552,10 @@ impl From<HirBinaryOp> for BinaryOp {
             HirBinaryOp::Le => Self::Le,
             HirBinaryOp::Gt => Self::Gt,
             HirBinaryOp::Ge => Self::Ge,
-            HirBinaryOp::And | HirBinaryOp::BitAnd => Self::BitAnd,
-            HirBinaryOp::Or | HirBinaryOp::BitOr => Self::BitOr,
+            HirBinaryOp::And => Self::And,
+            HirBinaryOp::Or => Self::Or,
+            HirBinaryOp::BitAnd => Self::BitAnd,
+            HirBinaryOp::BitOr => Self::BitOr,
             HirBinaryOp::BitXor => Self::BitXor,
             HirBinaryOp::Shl => Self::Shl,
             HirBinaryOp::Shr => Self::Shr,
@@ -369,8 +577,11 @@ impl From<HirUnaryOp> for UnaryOp {
         match op {
             HirUnaryOp::Neg => Self::Neg,
             HirUnaryOp::Not | HirUnaryOp::BitNot => Self::Not,
-            HirUnaryOp::Deref => Self::Not, // Deref is handled via Place
-            HirUnaryOp::Ref | HirUnaryOp::RefMut => Self::Not, // Ref is RValue::Ref
+            HirUnaryOp::Deref | HirUnaryOp::Ref | HirUnaryOp::RefMut => {
+                panic!(
+                    "ICE: Deref/Ref/RefMut are handled via Place projections and RValue::Ref, not UnaryOp"
+                )
+            }
         }
     }
 }
@@ -389,7 +600,10 @@ impl MirBuilder {
         let entry_block = BasicBlock {
             id: 0,
             statements: Vec::new(),
-            terminator: Terminator::Return { value: None },
+            terminator: Terminator::Return {
+                value: None,
+                span: rv_span::FileSpan::new(rv_span::FileId(0), rv_span::Span::new(0, 0)),
+            },
         };
 
         Self {
@@ -399,6 +613,7 @@ impl MirBuilder {
                 locals: Vec::new(),
                 entry_block: 0,
                 param_count: 0,
+                return_type: MirType::Unit,
             },
             current_block: Some(0),
             next_local: 0,
@@ -408,6 +623,11 @@ impl MirBuilder {
     /// Sets the number of parameters for this function
     pub fn set_param_count(&mut self, count: usize) {
         self.function.param_count = count;
+    }
+
+    /// Sets the return type for this function
+    pub fn set_return_type(&mut self, ty: MirType) {
+        self.function.return_type = ty;
     }
 
     /// Creates a new basic block and returns its ID
@@ -427,7 +647,13 @@ impl MirBuilder {
     }
 
     /// Allocates a new local variable
-    pub fn new_local(&mut self, name: Option<Symbol>, ty: MirType, mutable: bool) -> LocalId {
+    pub fn new_local(
+        &mut self,
+        name: Option<Symbol>,
+        ty: MirType,
+        mutable: bool,
+        span: FileSpan,
+    ) -> LocalId {
         let id = LocalId(self.next_local);
         self.next_local += 1;
         self.function.locals.push(Local {
@@ -435,6 +661,7 @@ impl MirBuilder {
             name,
             ty,
             mutable,
+            span,
         });
         id
     }
@@ -463,5 +690,15 @@ impl MirBuilder {
     #[must_use]
     pub fn locals(&self) -> &[Local] {
         &self.function.locals
+    }
+
+    /// Get the MIR type of a local variable by its ID.
+    #[must_use]
+    pub fn get_local_type(&self, local: LocalId) -> Option<MirType> {
+        self.function
+            .locals
+            .iter()
+            .find(|l| l.id == local)
+            .map(|l| l.ty.clone())
     }
 }

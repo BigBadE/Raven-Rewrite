@@ -1,0 +1,10 @@
+[package]
+name = "const-eval"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[[bin]]
+name = "const-eval"
+path = "src/main.rs"

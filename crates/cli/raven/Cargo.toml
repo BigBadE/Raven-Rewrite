@@ -13,7 +13,15 @@ rv-syntax = { path = "../../foundation/rv-syntax" }
 rv-hir.workspace = true
 rv-hir-lower.workspace = true
 rv-mir.workspace = true
+rv-mir-lower.workspace = true
+rv-lir.workspace = true
+rv-ty.workspace = true
+rv-mono.workspace = true
+rv-borrow-check.workspace = true
+rv-const-eval.workspace = true
+rv-span.workspace = true
 rv-intern = { path = "../../foundation/rv-intern" }
+rv-database = { path = "../../foundation/rv-database" }
 rv-interpreter = { path = "../../codegen/rv-interpreter" }
 rv-cranelift = { path = "../../codegen/rv-cranelift" }
 rv-llvm-backend = { path = "../../codegen/rv-llvm-backend" }

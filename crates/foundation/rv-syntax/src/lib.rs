@@ -69,6 +69,12 @@ pub enum SyntaxKind {
     Parameters,
     /// Argument list
     Arguments,
+    /// Macro invocation (e.g., println!(...))
+    MacroInvocation,
+    /// Macro definition (macro_rules!)
+    MacroDefinition,
+    /// Lifetime (e.g., `'a`)
+    Lifetime,
     /// Unknown/language-specific node
     Unknown(String),
 }
@@ -98,6 +104,9 @@ impl fmt::Display for SyntaxKind {
             Self::GenericParams => write!(formatter, "generic_params"),
             Self::Parameters => write!(formatter, "parameters"),
             Self::Arguments => write!(formatter, "arguments"),
+            Self::MacroInvocation => write!(formatter, "macro_invocation"),
+            Self::MacroDefinition => write!(formatter, "macro_definition"),
+            Self::Lifetime => write!(formatter, "lifetime"),
             Self::Unknown(name) => write!(formatter, "unknown({name})"),
         }
     }

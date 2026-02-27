@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 rv-hir = { workspace = true }
 rv-lir = { workspace = true }
+rv-mir = { workspace = true }
 rv-intern = { workspace = true }
 rv-span = { workspace = true }
 
@@ -19,8 +20,8 @@ thiserror = { workspace = true }
 [build-dependencies]
 # Dependencies for downloading LLVM and manual linking
 anyhow = { workspace = true }
-cc = "1.0"
 reqwest = { version = "0.12", features = ["blocking"] }
 zip = "2.1"
+cc = "1.0"
 
 [dev-dependencies]

@@ -41,6 +41,7 @@
 
 pub mod ast;
 pub mod builtins;
+pub mod derive;
 pub mod error;
 pub mod expand;
 
@@ -49,5 +50,6 @@ pub use ast::{
     BuiltinMacroKind, Delimiter, FragmentKind, LiteralKind, MacroDef, MacroExpander, MacroId,
     MacroKind, MacroMatcher, MacroRule, SequenceKind, Token, TokenStream,
 };
+pub use derive::{DeriveMacro, DeriveGenerator, DeriveInput, DeriveInputKind};
 pub use error::MacroExpansionError;
 pub use expand::MacroExpansionContext;

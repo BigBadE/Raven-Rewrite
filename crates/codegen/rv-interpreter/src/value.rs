@@ -41,6 +41,8 @@ pub enum Value {
     },
     /// Array value
     Array(Vec<Self>),
+    /// Raw pointer value (simulated address)
+    Pointer(usize),
 }
 
 impl Value {
@@ -139,6 +141,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, "]")
             }
+            Self::Pointer(addr) => write!(f, "0x{addr:x}"),
         }
     }
 }

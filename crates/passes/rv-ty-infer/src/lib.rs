@@ -12,15 +12,21 @@
 )]
 
 pub mod bounds;
+pub mod coerce;
+pub mod coherence;
 pub mod constraint;
 pub mod context;
+pub mod drop_analysis;
 pub mod infer;
 pub mod module_context;
 pub mod solver;
 pub mod ty;
 pub mod unify;
+pub mod variance;
 
 pub use bounds::{BoundChecker, BoundError};
+pub use coerce::{try_coerce, Coercer, CoercionResult};
+pub use coherence::{check_coherence, CoherenceChecker, CoherenceError};
 pub use constraint::{Constraint, ConstraintSource, Constraints};
 pub use context::{NormalizeError, NormalizedTy, TyContext};
 pub use infer::{InferenceResult, TypeError, TypeInference};
@@ -28,6 +34,8 @@ pub use module_context::{FunctionSignature, ModuleTypeContext};
 pub use solver::{solve_constraints, ConstraintSolver, SolverResult};
 pub use ty::{StructLayout, Ty, TyId, TyKind, VariantTy};
 pub use unify::{UnificationError, Unifier};
+pub use variance::{is_subtype, TypeVariances, Variance, VarianceCalculator};
+pub use drop_analysis::{DropAnalyzer, DropField, DropOp, DropRequirement};
 
 /// Generate constraints for a function
 ///
@@ -49,7 +57,6 @@ pub fn generate_constraints_for_function(
     hir_types: &la_arena::Arena<rv_hir::Type>,
     structs: &std::collections::HashMap<rv_hir::TypeDefId, rv_hir::StructDef>,
     enums: &std::collections::HashMap<rv_hir::TypeDefId, rv_hir::EnumDef>,
-    traits: &std::collections::HashMap<rv_hir::TraitId, rv_hir::TraitDef>,
     interner: &rv_intern::Interner,
 ) -> Constraints {
     let mut inference = TypeInference::with_hir_context(
@@ -58,7 +65,6 @@ pub fn generate_constraints_for_function(
         hir_types,
         structs,
         enums,
-        traits,
         interner,
     );
 

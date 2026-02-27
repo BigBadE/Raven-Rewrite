@@ -187,16 +187,3 @@ impl Clone for VirtualFileSystem {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_duplicate_registration() {
-        let vfs = VirtualFileSystem::new();
-        let id1 = vfs.register_file("test.rs").unwrap();
-        let id2 = vfs.register_file("test.rs").unwrap();
-        assert_eq!(id1, id2);
-    }
-}

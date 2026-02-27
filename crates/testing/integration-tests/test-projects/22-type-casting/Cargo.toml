@@ -1,0 +1,10 @@
+[package]
+name = "type-casting"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[[bin]]
+name = "type-casting"
+path = "src/main.rs"

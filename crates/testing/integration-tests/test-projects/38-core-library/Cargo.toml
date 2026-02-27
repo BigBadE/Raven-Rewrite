@@ -1,0 +1,7 @@
+[package]
+name = "core-library-test"
+version = "0.1.0"
+
+[[bin]]
+name = "core-library-test"
+path = "src/main.rs"

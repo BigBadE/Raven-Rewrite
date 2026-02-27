@@ -10,6 +10,7 @@ rv-vfs = { path = "../../foundation/rv-vfs" }
 rv-intern = { path = "../../foundation/rv-intern" }
 rv-span = { path = "../../foundation/rv-span" }
 rv-syntax.workspace = true
+rv-database = { path = "../../foundation/rv-database" }
 
 # Parser
 rv-parser.workspace = true
@@ -25,7 +26,9 @@ rv-mir-lower.workspace = true
 
 # Passes
 rv-ty.workspace = true
+rv-const-eval.workspace = true
 rv-mono.workspace = true
+rv-resolve = { path = "../../passes/rv-resolve" }
 
 # Error handling
 anyhow.workspace = true
@@ -34,6 +37,9 @@ thiserror.workspace = true
 # Utilities
 la-arena.workspace = true
 rustc-hash.workspace = true
+
+[dev-dependencies]
+tempfile = "3.10"
 
 [lints]
 workspace = true
