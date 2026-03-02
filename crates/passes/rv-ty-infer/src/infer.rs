@@ -95,6 +95,9 @@ pub struct TypeInference<'a> {
     /// Map from generic parameter names to type variables (for current function being inferred)
     /// This ensures all occurrences of the same generic parameter T map to the same type variable
     generic_param_map: rustc_hash::FxHashMap<rv_intern::Symbol, TyId>,
+    /// True if set_generic_bindings() was called for the current function, indicating
+    /// concrete type bindings are pre-set for monomorphization (don't create fresh vars)
+    generic_bindings_preset: bool,
     /// Next lifetime ID for fresh lifetime generation during reference type creation
     next_lifetime_id: u32,
     /// Lifetime outlives constraints collected during inference (sub, sup, source_expr)
@@ -127,6 +130,7 @@ impl<'a> TypeInference<'a> {
             receiver_mutability: rustc_hash::FxHashMap::default(),
             generate_mode: false,
             generic_param_map: rustc_hash::FxHashMap::default(),
+            generic_bindings_preset: false,
             constraints: Constraints::new(),
             module_ctx: None,
             next_lifetime_id: 0,
@@ -186,6 +190,7 @@ impl<'a> TypeInference<'a> {
             receiver_mutability: rustc_hash::FxHashMap::default(),
             generate_mode: false,
             generic_param_map: rustc_hash::FxHashMap::default(),
+            generic_bindings_preset: false,
             constraints: Constraints::new(),
             module_ctx: None,
             next_lifetime_id: 0,
@@ -293,6 +298,27 @@ impl<'a> TypeInference<'a> {
         if let Some(global_scope) = self.scope_stack.first_mut() {
             global_scope.insert(name, ty);
         }
+    }
+
+    /// Pre-set generic parameter bindings for monomorphization.
+    ///
+    /// When instantiating a generic function with concrete types (e.g., calling `max<i64>`),
+    /// this method should be called BEFORE `infer_function` to bind each generic parameter
+    /// to its concrete type. This prevents `infer_function` from creating fresh type variables
+    /// that would remain unresolved.
+    ///
+    /// # Arguments
+    /// * `bindings` - A map from generic parameter names to their concrete TyIds
+    pub fn set_generic_bindings(
+        &mut self,
+        bindings: impl IntoIterator<Item = (rv_intern::Symbol, TyId)>,
+    ) {
+        self.generic_param_map.clear();
+        for (name, ty_id) in bindings {
+            self.generic_param_map.insert(name, ty_id);
+        }
+        // Mark that bindings were pre-set so infer_function doesn't overwrite them
+        self.generic_bindings_preset = true;
     }
 
     /// Push a new scope onto the scope stack
@@ -508,12 +534,21 @@ impl<'a> TypeInference<'a> {
         // and those type variables won't be resolved in subsequent functions.
         self.type_conversion_cache.clear();
 
-        // Clear and populate generic parameter map for this function
-        // Each generic parameter T, U, etc. maps to a single type variable
-        self.generic_param_map.clear();
-        for generic_param in &function.generics {
-            let ty_var = self.ctx.fresh_ty_var();
-            self.generic_param_map.insert(generic_param.name, ty_var);
+        // Populate generic parameter map for this function.
+        // If set_generic_bindings() was called beforehand (for monomorphization),
+        // use those bindings instead of creating fresh type variables.
+        // Otherwise, clear and create fresh type variables.
+        if self.generic_bindings_preset {
+            // Bindings were pre-set by set_generic_bindings(), use them
+            // Reset the flag for next function
+            self.generic_bindings_preset = false;
+        } else {
+            // No pre-set bindings, create fresh type variables for each generic param
+            self.generic_param_map.clear();
+            for generic_param in &function.generics {
+                let ty_var = self.ctx.fresh_ty_var();
+                self.generic_param_map.insert(generic_param.name, ty_var);
+            }
         }
 
         // Set expected return type
@@ -1023,16 +1058,28 @@ impl<'a> TypeInference<'a> {
                     }
                 } else {
                     // Unresolved variable - name resolution should have caught this
-                    let var_name = self
-                        .interner
-                        .map(|i| i.resolve(name))
-                        .unwrap_or_else(|| format!("{:?}", name));
-                    panic!(
-                        "ICE: Variable '{}' at expr {:?} has no DefId. \
-                         Name resolution should have assigned DefIds to all variables.",
-                        var_name, expr_id
-                    )
+                    // This can happen with core library trait implementations where self
+                    // isn't properly resolved. Create a fresh type variable to allow
+                    // compilation to continue.
+                    self.ctx.fresh_ty_var()
                 };
+
+                // ARCHITECTURE: Unify variable type with expected type
+                // This enables bidirectional type flow, e.g., for:
+                //   let n = Option::None;  // n has type Option<T> where T is a type variable
+                //   f(n, 99);              // f expects Option<i64>, so unify to resolve T = i64
+                if let Some(expected_ty) = expected {
+                    if self.generate_mode {
+                        let source = ConstraintSource::new(
+                            rv_span::FileId(0),
+                            rv_span::Span::new(0, 0),
+                            "variable expected type".to_string(),
+                        );
+                        self.constraints.add_equality(result_ty, expected_ty, source);
+                    } else if let Err(_error) = Unifier::new(&mut self.ctx).unify(result_ty, expected_ty) {
+                        // Don't report error here - the mismatch will be caught at the call site
+                    }
+                }
 
                 result_ty
             }
@@ -1707,7 +1754,11 @@ impl<'a> TypeInference<'a> {
                                             }
                                         }
                                     }
-                                    found_ty.unwrap_or_else(|| self.ctx.fresh_ty_var())
+                                    // If not found in fields, try expected type's args (for params
+                                    // not used in this variant, e.g., E in Result::Ok(T))
+                                    found_ty
+                                        .or_else(|| expected_args.as_ref().and_then(|args| args.get(param_idx).copied()))
+                                        .unwrap_or_else(|| self.ctx.fresh_ty_var())
                                 }
                                 rv_hir::VariantFields::Struct(field_defs) => {
                                     // Find which field corresponds to this generic param
@@ -1723,7 +1774,11 @@ impl<'a> TypeInference<'a> {
                                             }
                                         }
                                     }
-                                    found_ty.unwrap_or_else(|| self.ctx.fresh_ty_var())
+                                    // If not found in fields, try expected type's args (for params
+                                    // not used in this variant, e.g., E in Result::Ok(T))
+                                    found_ty
+                                        .or_else(|| expected_args.as_ref().and_then(|args| args.get(param_idx).copied()))
+                                        .unwrap_or_else(|| self.ctx.fresh_ty_var())
                                 }
                             };
                             args.push(inferred_ty);

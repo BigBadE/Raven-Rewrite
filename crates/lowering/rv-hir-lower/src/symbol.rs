@@ -32,8 +32,12 @@ pub enum SymbolKind {
     Struct,
     /// Enum definition
     Enum,
+    /// Enum variant (like Some, None, Ok, Err)
+    EnumVariant,
     /// Trait definition
     Trait,
+    /// Type (generic - can be struct, enum, or alias)
+    Type,
     /// Type alias
     TypeAlias,
     /// Const definition

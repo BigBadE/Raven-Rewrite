@@ -68,6 +68,12 @@ All 9 phases of the PLAN.md roadmap are complete:
 - Follow the crate structure defined in PLAN.md
 - Do not create tests or documentation unless explicitly asked
 - All workspace configuration goes in root `Cargo.toml`
+- **CRITICAL: Use the REAL Rust `core` library - NO custom/minimal reimplementations**
+  - Raven must compile the actual Rust `core` crate, not a custom subset
+  - Never create "raven-core" or similar minimal reimplementations
+  - The goal is full Rust compatibility, which requires supporting real `core`
+  - This means implementing all necessary lang items, intrinsics, and compiler magic
+  - If `core` doesn't compile, fix the compiler - don't create workarounds
 - **IMPORTANT: All backends (Interpreter, Cranelift, LLVM) are ALWAYS enabled by default**
   - NO feature gates on backends
   - NO `#[cfg(feature = "llvm")]` or similar

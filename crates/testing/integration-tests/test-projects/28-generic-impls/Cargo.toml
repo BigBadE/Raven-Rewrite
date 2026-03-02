@@ -1,3 +1,5 @@
+[workspace]
+
 [package]
 name = "test-28-generic-impls"
 version = "0.1.0"

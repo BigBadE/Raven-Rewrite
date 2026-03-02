@@ -67,12 +67,14 @@ impl LLVMBackend {
         );
         root_type_inference.set_const_static_items(&root_hir.const_items, &root_hir.static_items);
 
+        // Skip core library functions - they are only needed for HIR, not MIR.
         let mut mir_functions: Vec<rv_mir::MirFunction> = Vec::new();
         for (_, func) in root_hir
             .functions
             .iter()
             .filter(|(_, func)| func.generics.is_empty())
             .filter(|(func_id, _)| !root_hir.default_method_bodies.contains(func_id))
+            .filter(|(_, func)| !func.is_core_library)
         {
             root_type_inference.context_mut().clear_expr_types();
             root_type_inference.infer_function(func);
@@ -123,8 +125,12 @@ impl LLVMBackend {
             );
             mod_type_inference.set_const_static_items(&mod_hir.const_items, &mod_hir.static_items);
 
+            // Skip core library functions - they are only needed for HIR, not MIR.
             for (func_id, func) in &mod_hir.functions {
-                if func.generics.is_empty() && !mod_hir.default_method_bodies.contains(func_id) {
+                if func.generics.is_empty()
+                    && !mod_hir.default_method_bodies.contains(func_id)
+                    && !func.is_core_library
+                {
                     mod_type_inference.context_mut().clear_expr_types();
                     mod_type_inference.infer_function(func);
                     let mir_result = LoweringContext::lower_function(
@@ -218,12 +224,14 @@ impl LLVMBackend {
         // Infer and lower each non-generic function to MIR.
         // Inference and lowering must be interleaved because ExprIds are local
         // to each function body and would collide in the shared TyContext.
+        // Skip core library functions - they are only needed for HIR, not MIR.
         let mut mir_functions: Vec<rv_mir::MirFunction> = Vec::new();
         for (_, func) in hir
             .functions
             .iter()
             .filter(|(_, func)| func.generics.is_empty())
             .filter(|(func_id, _)| !hir.default_method_bodies.contains(func_id))
+            .filter(|(_, func)| !func.is_core_library)
         {
             type_inference.context_mut().clear_expr_types();
             type_inference.infer_function(func);
@@ -423,12 +431,14 @@ impl Backend for LLVMBackend {
             root_type_inference
                 .set_const_static_items(&root_hir.const_items, &root_hir.static_items);
 
+            // Skip core library functions - they are only needed for HIR, not MIR.
             let mut mir_functions: Vec<rv_mir::MirFunction> = Vec::new();
             for (_, func) in root_hir
                 .functions
                 .iter()
                 .filter(|(_, func)| func.generics.is_empty())
                 .filter(|(func_id, _)| !root_hir.default_method_bodies.contains(func_id))
+                .filter(|(_, func)| !func.is_core_library)
             {
                 root_type_inference.context_mut().clear_expr_types();
                 root_type_inference.infer_function(func);
@@ -479,8 +489,11 @@ impl Backend for LLVMBackend {
                 mod_type_inference
                     .set_const_static_items(&mod_hir.const_items, &mod_hir.static_items);
 
+                // Skip core library functions - they are only needed for HIR, not MIR.
                 for (func_id, func) in &mod_hir.functions {
-                    if func.generics.is_empty() && !mod_hir.default_method_bodies.contains(func_id)
+                    if func.generics.is_empty()
+                        && !mod_hir.default_method_bodies.contains(func_id)
+                        && !func.is_core_library
                     {
                         mod_type_inference.context_mut().clear_expr_types();
                         mod_type_inference.infer_function(func);
@@ -562,12 +575,14 @@ impl Backend for LLVMBackend {
             );
             type_inference.set_const_static_items(&hir.const_items, &hir.static_items);
 
+            // Skip core library functions - they are only needed for HIR, not MIR.
             let mut mir_functions: Vec<rv_mir::MirFunction> = Vec::new();
             for (_, func) in hir
                 .functions
                 .iter()
                 .filter(|(_, func)| func.generics.is_empty())
                 .filter(|(func_id, _)| !hir.default_method_bodies.contains(func_id))
+                .filter(|(_, func)| !func.is_core_library)
             {
                 type_inference.context_mut().clear_expr_types();
                 type_inference.infer_function(func);

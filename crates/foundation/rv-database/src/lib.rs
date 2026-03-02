@@ -76,6 +76,7 @@ pub fn lower_to_hir(db: &dyn RavenDb, file: SourceFile) -> Arc<HirFileData> {
     }
 }
 
+
 #[salsa::tracked]
 pub fn file_functions(db: &dyn RavenDb, file: SourceFile) -> Arc<Vec<FunctionId>> {
     let hir = lower_to_hir(db, file);
@@ -187,6 +188,21 @@ pub fn lower_function_to_mir(
     function: FunctionId,
 ) -> Arc<rv_mir::MirFunction> {
     let func_hir = function_hir(db, file, function);
+
+    // ARCHITECTURE: Generic functions cannot be lowered to MIR directly.
+    // They must be monomorphized at call sites with concrete type arguments.
+    // The interpreter handles this via on-demand monomorphization in call_function.
+    if !func_hir.generics.is_empty() {
+        let hir_data = lower_to_hir(db, file);
+        let func_name = hir_data.interner.resolve(&func_hir.name);
+        panic!(
+            "ICE: Cannot lower generic function '{}' to MIR directly. \
+             Generic functions must be monomorphized at call sites with concrete types. \
+             Use lower_function_with_subst for monomorphized instances.",
+            func_name
+        );
+    }
+
     let inference = infer_function_types(db, file, function);
     let hir_data = lower_to_hir(db, file);
 

@@ -1,5 +1,6 @@
 //! HIR → MIR lowering
 
+use indexmap::IndexMap;
 use la_arena::Arena;
 use rustc_hash::FxHashMap;
 use rv_const_eval::ConstValue;
@@ -196,7 +197,13 @@ impl<'ctx> LoweringContext<'ctx> {
         static_values: &'ctx HashMap<StaticId, ConstValue>,
     ) -> MirLoweringResult {
         let mut builder = MirBuilder::new(function.id);
-        builder.set_param_count(function.parameters.len());
+        // Count self param if present, plus regular params
+        let total_params = if function.self_param.is_some() {
+            function.parameters.len() + 1
+        } else {
+            function.parameters.len()
+        };
+        builder.set_param_count(total_params);
         let mut ctx = Self::new(
             builder,
             ty_ctx,
@@ -212,16 +219,85 @@ impl<'ctx> LoweringContext<'ctx> {
             static_values,
         );
 
-        // Register function parameters FIRST so they get LocalId(0), LocalId(1), etc.
-        // This matches the interpreter's expectation for parameter locals
-        for (param_idx, param) in function.parameters.iter().enumerate() {
+        // Track the next parameter index for regular parameters
+        let mut next_param_idx: u32 = 0;
+
+        // Register self parameter FIRST if this is a method
+        if let Some(self_param) = &function.self_param {
+            // The self parameter should be at LocalId(0)
+            let self_local_id = rv_hir::LocalId(0);
+            let def_id = rv_hir::DefId::Local {
+                func: function.id,
+                local: self_local_id,
+            };
+
+            // Get the type for self from type inference
+            let self_ty = if let Some(ty_id) = ctx.ty_ctx.get_def_type(def_id) {
+                match ctx.ty_ctx.normalize(ty_id) {
+                    Ok(normalized_ty) => ctx.lower_type(normalized_ty),
+                    Err(_) => {
+                        // Fallback: construct the self type based on self_param kind
+                        // This can happen for core library methods where type inference
+                        // doesn't have full context
+                        match self_param {
+                            rv_hir::SelfParam::Value => MirType::Unit, // Placeholder, will be fixed by caller
+                            rv_hir::SelfParam::Ref => MirType::Ref {
+                                inner: Box::new(MirType::Unit),
+                                mutable: false,
+                                lifetime: None,
+                            },
+                            rv_hir::SelfParam::MutRef => MirType::Ref {
+                                inner: Box::new(MirType::Unit),
+                                mutable: true,
+                                lifetime: None,
+                            },
+                        }
+                    }
+                }
+            } else {
+                // No type info available - use placeholder
+                match self_param {
+                    rv_hir::SelfParam::Value => MirType::Unit,
+                    rv_hir::SelfParam::Ref => MirType::Ref {
+                        inner: Box::new(MirType::Unit),
+                        mutable: false,
+                        lifetime: None,
+                    },
+                    rv_hir::SelfParam::MutRef => MirType::Ref {
+                        inner: Box::new(MirType::Unit),
+                        mutable: true,
+                        lifetime: None,
+                    },
+                }
+            };
+
+            let self_name = ctx.interner.intern("self");
+            let self_local = ctx
+                .builder
+                .new_local(Some(self_name), self_ty, false, function.span);
+            ctx.var_locals.insert(self_name, self_local);
+            next_param_idx = 1;
+        }
+
+        // Register function parameters after self (if any)
+        // They get LocalId(1), LocalId(2), etc. if self exists, otherwise LocalId(0), LocalId(1), etc.
+        // Skip the "self" parameter if it's also in the parameters list (it was already handled above)
+        let self_name = ctx.interner.intern("self");
+        let mut non_self_param_count: u32 = 0;
+        for param in function.parameters.iter() {
+            // Skip "self" parameter - it's already handled above via function.self_param
+            if function.self_param.is_some() && param.name == self_name {
+                continue;
+            }
+
             // ARCHITECTURE: Use DefId for type lookup (not Symbol name)
             // This eliminates HashMap<Symbol, TyId> dependency
-            let local_id = rv_hir::LocalId(param_idx as u32);
+            let local_id = rv_hir::LocalId(next_param_idx + non_self_param_count);
             let def_id = rv_hir::DefId::Local {
                 func: function.id,
                 local: local_id,
             };
+            non_self_param_count += 1;
 
             // ARCHITECTURE: STRICT - No fallbacks, DefId lookup only
             let ty_id = ctx.ty_ctx.get_def_type(def_id).unwrap_or_else(|| {
@@ -320,7 +396,13 @@ impl<'ctx> LoweringContext<'ctx> {
         // Delegate to lower_function then set cross_module_functions
         // We need to duplicate the setup since lower_function consumes ctx
         let mut builder = MirBuilder::new(function.id);
-        builder.set_param_count(function.parameters.len());
+        // Count self param if present, plus regular params
+        let total_params = if function.self_param.is_some() {
+            function.parameters.len() + 1
+        } else {
+            function.parameters.len()
+        };
+        builder.set_param_count(total_params);
         let mut ctx = Self::new(
             builder,
             ty_ctx,
@@ -337,13 +419,74 @@ impl<'ctx> LoweringContext<'ctx> {
         );
         ctx.cross_module_functions = Some(cross_module_functions);
 
-        // Register function parameters
-        for (param_idx, param) in function.parameters.iter().enumerate() {
-            let local_id = rv_hir::LocalId(param_idx as u32);
+        // Track the next parameter index for regular parameters
+        let mut next_param_idx: u32 = 0;
+
+        // Register self parameter FIRST if this is a method
+        if let Some(self_param) = &function.self_param {
+            let self_local_id = rv_hir::LocalId(0);
+            let def_id = rv_hir::DefId::Local {
+                func: function.id,
+                local: self_local_id,
+            };
+
+            let self_ty = if let Some(ty_id) = ctx.ty_ctx.get_def_type(def_id) {
+                match ctx.ty_ctx.normalize(ty_id) {
+                    Ok(normalized_ty) => ctx.lower_type(normalized_ty),
+                    Err(_) => match self_param {
+                        rv_hir::SelfParam::Value => MirType::Unit,
+                        rv_hir::SelfParam::Ref => MirType::Ref {
+                            inner: Box::new(MirType::Unit),
+                            mutable: false,
+                            lifetime: None,
+                        },
+                        rv_hir::SelfParam::MutRef => MirType::Ref {
+                            inner: Box::new(MirType::Unit),
+                            mutable: true,
+                            lifetime: None,
+                        },
+                    },
+                }
+            } else {
+                match self_param {
+                    rv_hir::SelfParam::Value => MirType::Unit,
+                    rv_hir::SelfParam::Ref => MirType::Ref {
+                        inner: Box::new(MirType::Unit),
+                        mutable: false,
+                        lifetime: None,
+                    },
+                    rv_hir::SelfParam::MutRef => MirType::Ref {
+                        inner: Box::new(MirType::Unit),
+                        mutable: true,
+                        lifetime: None,
+                    },
+                }
+            };
+
+            let self_name = ctx.interner.intern("self");
+            let self_local = ctx
+                .builder
+                .new_local(Some(self_name), self_ty, false, function.span);
+            ctx.var_locals.insert(self_name, self_local);
+            next_param_idx = 1;
+        }
+
+        // Register function parameters after self (if any)
+        // Skip the "self" parameter if it's also in the parameters list (it was already handled above)
+        let self_name = ctx.interner.intern("self");
+        let mut non_self_param_count: u32 = 0;
+        for param in function.parameters.iter() {
+            // Skip "self" parameter - it's already handled above via function.self_param
+            if function.self_param.is_some() && param.name == self_name {
+                continue;
+            }
+
+            let local_id = rv_hir::LocalId(next_param_idx + non_self_param_count);
             let def_id = rv_hir::DefId::Local {
                 func: function.id,
                 local: local_id,
             };
+            non_self_param_count += 1;
 
             let ty_id = ctx.ty_ctx.get_def_type(def_id).unwrap_or_else(|| {
                 panic!(
@@ -421,7 +564,13 @@ impl<'ctx> LoweringContext<'ctx> {
         static_values: &'ctx HashMap<StaticId, ConstValue>,
     ) -> MirLoweringResult {
         let mut builder = MirBuilder::new(instance_id);
-        builder.set_param_count(function.parameters.len());
+        // Count self param if present, plus regular params
+        let total_params = if function.self_param.is_some() {
+            function.parameters.len() + 1
+        } else {
+            function.parameters.len()
+        };
+        builder.set_param_count(total_params);
         let mut ctx = Self::new(
             builder,
             ty_ctx,
@@ -437,8 +586,68 @@ impl<'ctx> LoweringContext<'ctx> {
             static_values,
         );
 
+        // Track the next parameter index for regular parameters
+        let mut next_param_idx: u32 = 0;
+
+        // Register self parameter FIRST if this is a method
+        if let Some(self_param) = &function.self_param {
+            let self_local_id = rv_hir::LocalId(0);
+            let def_id = rv_hir::DefId::Local {
+                func: function.id,
+                local: self_local_id,
+            };
+
+            let self_ty = if let Some(ty_id) = ctx.ty_ctx.get_def_type(def_id) {
+                match ctx.ty_ctx.normalize(ty_id) {
+                    Ok(normalized_ty) => ctx.lower_type(normalized_ty),
+                    Err(_) => match self_param {
+                        rv_hir::SelfParam::Value => MirType::Unit,
+                        rv_hir::SelfParam::Ref => MirType::Ref {
+                            inner: Box::new(MirType::Unit),
+                            mutable: false,
+                            lifetime: None,
+                        },
+                        rv_hir::SelfParam::MutRef => MirType::Ref {
+                            inner: Box::new(MirType::Unit),
+                            mutable: true,
+                            lifetime: None,
+                        },
+                    },
+                }
+            } else {
+                match self_param {
+                    rv_hir::SelfParam::Value => MirType::Unit,
+                    rv_hir::SelfParam::Ref => MirType::Ref {
+                        inner: Box::new(MirType::Unit),
+                        mutable: false,
+                        lifetime: None,
+                    },
+                    rv_hir::SelfParam::MutRef => MirType::Ref {
+                        inner: Box::new(MirType::Unit),
+                        mutable: true,
+                        lifetime: None,
+                    },
+                }
+            };
+
+            let self_name = ctx.interner.intern("self");
+            let self_local = ctx
+                .builder
+                .new_local(Some(self_name), self_ty, false, function.span);
+            ctx.var_locals.insert(self_name, self_local);
+            next_param_idx = 1;
+        }
+
         // ARCHITECTURE: Register parameters with types from DefId lookup + substitution
-        for (param_idx, param) in function.parameters.iter().enumerate() {
+        // Skip the "self" parameter if it's also in the parameters list (it was already handled above)
+        let self_name = ctx.interner.intern("self");
+        let mut non_self_param_count: u32 = 0;
+        for param in function.parameters.iter() {
+            // Skip "self" parameter - it's already handled above via function.self_param
+            if function.self_param.is_some() && param.name == self_name {
+                continue;
+            }
+
             // Get the HIR type to check if it's a generic parameter
             let hir_ty = &hir_types[param.ty];
 
@@ -458,7 +667,7 @@ impl<'ctx> LoweringContext<'ctx> {
                 }
                 // Non-generic type - use DefId lookup
                 _ => {
-                    let local_id = rv_hir::LocalId(param_idx as u32);
+                    let local_id = rv_hir::LocalId(next_param_idx + non_self_param_count);
                     let def_id = rv_hir::DefId::Local {
                         func: function.id,
                         local: local_id,
@@ -466,9 +675,9 @@ impl<'ctx> LoweringContext<'ctx> {
 
                     let ty_id = ctx.ty_ctx.get_def_type(def_id).unwrap_or_else(|| {
                         panic!(
-                            "ICE: Parameter '{:?}' (index {}, DefId={:?}) has no inferred type. \
+                            "ICE: Parameter '{:?}' (DefId={:?}) has no inferred type. \
                                  Type inference should have assigned a type to all parameters.",
-                            param.name, param_idx, def_id
+                            param.name, def_id
                         )
                     });
 
@@ -483,6 +692,7 @@ impl<'ctx> LoweringContext<'ctx> {
                     ctx.lower_type(normalized_ty)
                 }
             };
+            non_self_param_count += 1;
 
             let param_local = ctx
                 .builder
@@ -2138,29 +2348,169 @@ impl<'ctx> LoweringContext<'ctx> {
             }
 
             Expr::ForLoop { pattern, iterator, body: loop_body, label: _, span } => {
-                // For loops desugar to:
+                // For loops with range expressions desugar to:
                 // {
-                //     let mut iter = IntoIterator::into_iter(iterator);
-                //     loop {
-                //         match Iterator::next(&mut iter) {
-                //             Some(pattern) => loop_body,
-                //             None => break,
-                //         }
+                //     let mut i = start;
+                //     while i < end {
+                //         body;
+                //         i = i + 1;
                 //     }
                 // }
-                // For now, just lower iterator and body, return unit
-                // TODO: Implement proper for loop desugaring with Iterator trait
-                let _ = (pattern, iterator, loop_body); // Silence unused warnings
-                let _iter_local = self.lower_expr(body, *iterator);
-                let _body_local = self.lower_expr(body, *loop_body);
-                self.builder.add_statement(Statement::Assign {
-                    place: Place::from_local(result_local),
-                    rvalue: RValue::Use(Operand::Constant(Constant {
-                        kind: LiteralKind::Unit,
-                        ty: MirType::Unit,
-                    })),
-                    span: *span,
-                });
+                // For general iterators, we'd use the Iterator trait, but for now
+                // we only support range-based for loops.
+
+                // Check if the iterator is a range expression
+                let iterator_expr = &body.exprs[*iterator];
+                if let Expr::Range { start: Some(start_expr), end: Some(end_expr), inclusive, span: range_span } = iterator_expr {
+                    let start_expr = *start_expr;
+                    let end_expr = *end_expr;
+                    let inclusive = *inclusive;
+                    let range_span = *range_span;
+
+                    // Get the loop variable name from the pattern
+                    let pattern_ref = &body.patterns[*pattern];
+                    let (var_name, _mutable) = match pattern_ref {
+                        Pattern::Binding { name, mutable, .. } => (*name, *mutable),
+                        Pattern::Wildcard { .. } => {
+                            // For wildcard patterns, use a synthetic name
+                            (self.interner.intern("_for_var"), false)
+                        }
+                        _ => {
+                            // For other patterns, fall back to stub behavior
+                            let _body_local = self.lower_expr(body, *loop_body);
+                            self.builder.add_statement(Statement::Assign {
+                                place: Place::from_local(result_local),
+                                rvalue: RValue::Use(Operand::Constant(Constant {
+                                    kind: LiteralKind::Unit,
+                                    ty: MirType::Unit,
+                                })),
+                                span: *span,
+                            });
+                            return result_local;
+                        }
+                    };
+
+                    // Lower the start and end expressions
+                    let start_local = self.lower_expr(body, start_expr);
+                    let end_local = self.lower_expr(body, end_expr);
+
+                    // Determine the type of the loop variable (from the range bounds)
+                    let iter_ty = self.get_local_type(start_local);
+
+                    // Create local for the loop variable (mutable counter)
+                    let loop_var_local = self.builder.new_local(Some(var_name), iter_ty.clone(), true, range_span);
+
+                    // Initialize: loop_var = start
+                    self.builder.add_statement(Statement::Assign {
+                        place: Place::from_local(loop_var_local),
+                        rvalue: RValue::Use(Operand::Copy(Place::from_local(start_local))),
+                        span: range_span,
+                    });
+
+                    // Create blocks for the while loop structure
+                    let cond_block = self.builder.new_block();
+                    let body_block = self.builder.new_block();
+                    let exit_block = self.builder.new_block();
+
+                    // Jump to condition block
+                    self.builder.set_terminator(Terminator::Goto(cond_block));
+
+                    // Switch to condition block
+                    self.builder.set_current_block(cond_block);
+
+                    // Create local for condition result
+                    let cond_local = self.builder.new_local(None, MirType::Bool, false, range_span);
+
+                    // Condition: loop_var < end (or loop_var <= end for inclusive)
+                    let comparison_op = if inclusive { BinaryOp::Le } else { BinaryOp::Lt };
+                    self.builder.add_statement(Statement::Assign {
+                        place: Place::from_local(cond_local),
+                        rvalue: RValue::BinaryOp {
+                            op: comparison_op,
+                            left: Operand::Copy(Place::from_local(loop_var_local)),
+                            right: Operand::Copy(Place::from_local(end_local)),
+                        },
+                        span: range_span,
+                    });
+
+                    // Branch based on condition: if true (1) go to body, else go to exit
+                    let mut targets = IndexMap::new();
+                    targets.insert(1, body_block); // true = 1 means enter loop
+                    self.builder.set_terminator(Terminator::SwitchInt {
+                        discriminant: Operand::Copy(Place::from_local(cond_local)),
+                        targets,
+                        otherwise: exit_block,
+                        span: range_span,
+                    });
+
+                    // Switch to body block
+                    self.builder.set_current_block(body_block);
+
+                    // Register the loop variable for name resolution in the body
+                    self.var_locals.insert(var_name, loop_var_local);
+
+                    // Lower the loop body
+                    let _body_result = self.lower_expr(body, *loop_body);
+
+                    // Remove the loop variable from scope (optional, but keeps scope clean)
+                    self.var_locals.remove(&var_name);
+
+                    // Increment: loop_var = loop_var + 1
+                    let one_local = self.builder.new_local(None, iter_ty.clone(), false, range_span);
+                    self.builder.add_statement(Statement::Assign {
+                        place: Place::from_local(one_local),
+                        rvalue: RValue::Use(Operand::Constant(Constant {
+                            kind: LiteralKind::Integer(1, None),
+                            ty: iter_ty.clone(),
+                        })),
+                        span: range_span,
+                    });
+
+                    let incremented_local = self.builder.new_local(None, iter_ty.clone(), false, range_span);
+                    self.builder.add_statement(Statement::Assign {
+                        place: Place::from_local(incremented_local),
+                        rvalue: RValue::BinaryOp {
+                            op: BinaryOp::Add,
+                            left: Operand::Copy(Place::from_local(loop_var_local)),
+                            right: Operand::Copy(Place::from_local(one_local)),
+                        },
+                        span: range_span,
+                    });
+
+                    self.builder.add_statement(Statement::Assign {
+                        place: Place::from_local(loop_var_local),
+                        rvalue: RValue::Use(Operand::Copy(Place::from_local(incremented_local))),
+                        span: range_span,
+                    });
+
+                    // Jump back to condition
+                    self.builder.set_terminator(Terminator::Goto(cond_block));
+
+                    // Switch to exit block
+                    self.builder.set_current_block(exit_block);
+
+                    // Result is unit
+                    self.builder.add_statement(Statement::Assign {
+                        place: Place::from_local(result_local),
+                        rvalue: RValue::Use(Operand::Constant(Constant {
+                            kind: LiteralKind::Unit,
+                            ty: MirType::Unit,
+                        })),
+                        span: *span,
+                    });
+                } else {
+                    // Non-range iterator - fall back to stub
+                    // TODO: Implement full iterator protocol
+                    let _body_local = self.lower_expr(body, *loop_body);
+                    self.builder.add_statement(Statement::Assign {
+                        place: Place::from_local(result_local),
+                        rvalue: RValue::Use(Operand::Constant(Constant {
+                            kind: LiteralKind::Unit,
+                            ty: MirType::Unit,
+                        })),
+                        span: *span,
+                    });
+                }
             }
 
             Expr::Box { value, span } => {

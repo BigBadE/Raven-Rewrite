@@ -130,12 +130,14 @@ impl RavenBackend {
         // Infer and lower each non-generic root function to MIR.
         // Inference and lowering must be interleaved because ExprIds are local
         // to each function body and would collide in the shared TyContext.
+        // Skip core library functions - they are only needed for HIR, not MIR.
         let mut all_mir_functions = std::collections::HashMap::new();
         for (func_id, func) in root_hir
             .functions
             .iter()
             .filter(|(_, func)| func.generics.is_empty())
             .filter(|(func_id, _)| !root_hir.default_method_bodies.contains(func_id))
+            .filter(|(_, func)| !func.is_core_library)
         {
             type_inference.context_mut().clear_expr_types();
             type_inference.infer_function(func);
@@ -189,11 +191,13 @@ impl RavenBackend {
             // Infer and lower each non-generic module function to MIR.
             // Inference and lowering must be interleaved because ExprIds are local
             // to each function body and would collide in the shared TyContext.
+            // Skip core library functions - they are only needed for HIR, not MIR.
             for (func_id, func) in mod_hir
                 .functions
                 .iter()
                 .filter(|(_, func)| func.generics.is_empty())
                 .filter(|(func_id, _)| !mod_hir.default_method_bodies.contains(func_id))
+                .filter(|(_, func)| !func.is_core_library)
             {
                 mod_type_inference.context_mut().clear_expr_types();
                 mod_type_inference.infer_function(func);

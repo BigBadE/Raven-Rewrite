@@ -94,11 +94,13 @@ impl CraneliftBackend {
             let mut mir_functions = Vec::new();
             let mut target_mir_func_id = None;
 
+            // Skip core library functions - they are only needed for HIR, not MIR.
             for (_func_id, hir_func) in hir_ctx
                 .functions
                 .iter()
                 .filter(|(_, func)| func.generics.is_empty())
                 .filter(|(func_id, _)| !hir_ctx.default_method_bodies.contains(func_id))
+                .filter(|(_, func)| !func.is_core_library)
             {
                 type_inference.context_mut().clear_expr_types();
                 type_inference.infer_function(hir_func);
@@ -242,11 +244,13 @@ impl CraneliftBackend {
         // Infer and lower each non-generic root function to MIR.
         // Inference and lowering must be interleaved because ExprIds are local
         // to each function body and would collide in the shared TyContext.
+        // Skip core library functions - they are only needed for HIR, not MIR.
         for (_, func) in root_hir
             .functions
             .iter()
             .filter(|(_, func)| func.generics.is_empty())
             .filter(|(func_id, _)| !root_hir.default_method_bodies.contains(func_id))
+            .filter(|(_, func)| !func.is_core_library)
         {
             root_type_inference.context_mut().clear_expr_types();
             root_type_inference.infer_function(func);
@@ -302,11 +306,13 @@ impl CraneliftBackend {
             // Infer and lower each non-generic module function to MIR.
             // Inference and lowering must be interleaved because ExprIds are local
             // to each function body and would collide in the shared TyContext.
+            // Skip core library functions - they are only needed for HIR, not MIR.
             for (_, func) in mod_hir
                 .functions
                 .iter()
                 .filter(|(_, func)| func.generics.is_empty())
                 .filter(|(func_id, _)| !mod_hir.default_method_bodies.contains(func_id))
+                .filter(|(_, func)| !func.is_core_library)
             {
                 mod_type_inference.context_mut().clear_expr_types();
                 mod_type_inference.infer_function(func);

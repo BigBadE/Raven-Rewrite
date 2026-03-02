@@ -10,8 +10,8 @@ use rustc_hash::FxHashMap;
 use rv_hir::{FunctionId, LiteralKind};
 use rv_hir_lower::LoweringContext as HirContext;
 use rv_mir::{
-    AggregateKind, AssertMessage, BinaryOp, Constant, LocalId, MirFunction, MirType, Operand,
-    Place, PlaceElem, RValue, Statement, Terminator, UnaryOp,
+    AggregateKind, AssertMessage, BinaryOp, Constant, LocalId, MirFunction, MirType, MirVariant,
+    Operand, Place, PlaceElem, RValue, Statement, Terminator, UnaryOp,
 };
 use rv_ty::TyContext;
 use std::collections::HashMap;
@@ -89,6 +89,159 @@ fn convert_mir_type_to_ty_id(mir_ty: &MirType, ty_ctx: &mut TyContext) -> rv_ty:
         // The caller is responsible for constructing full TyKind::Struct with
         // TypeDefId and field names when HIR context is available.
         _ => ty_ctx.fresh_ty_var(),
+    }
+}
+
+/// Extract generic bindings by matching HIR type with MIR type.
+///
+/// For example, if HIR type is `Option<T>` and MIR type is `Option<i64>`,
+/// this will add binding T -> i64 to the bindings list.
+fn extract_generic_binding(
+    hir_ty: &rv_hir::Type,
+    mir_ty: &MirType,
+    hir_types: &la_arena::Arena<rv_hir::Type>,
+    generic_names: &std::collections::HashSet<rv_intern::Symbol>,
+    bindings: &mut Vec<(rv_intern::Symbol, rv_ty::TyId)>,
+    ty_ctx: &mut TyContext,
+) {
+    match hir_ty {
+        // Direct generic parameter: T
+        rv_hir::Type::Generic { name, .. } => {
+            if generic_names.contains(name) {
+                let concrete_ty = convert_mir_type_to_ty_id(mir_ty, ty_ctx);
+                // Only add if not already bound
+                if !bindings.iter().any(|(n, _)| n == name) {
+                    bindings.push((*name, concrete_ty));
+                }
+            }
+        }
+        // Named type with generic args: Option<T>, Result<T, E>, Vec<T>, etc.
+        rv_hir::Type::Named { args, .. } => {
+            // For enums like Option<T>, the generic args are embedded in variant fields.
+            // For Option<i64>, the MIR type is Enum { variants: [None, Some(i64)] }
+            // We need to extract i64 from the Some variant.
+            match mir_ty {
+                MirType::Enum { variants, .. } => {
+                    // Find variants with fields (like Some(T))
+                    // Match each HIR generic arg against the variant's field type
+                    for (arg_idx, hir_arg_id) in args.iter().enumerate() {
+                        let hir_arg = &hir_types[*hir_arg_id];
+                        // Look for a variant that has fields at this position
+                        for variant in variants {
+                            if let Some(field_ty) = variant.fields.get(arg_idx) {
+                                extract_generic_binding(hir_arg, field_ty, hir_types, generic_names, bindings, ty_ctx);
+                                break; // Found a match, move to next arg
+                            }
+                        }
+                    }
+                }
+                MirType::Struct { fields, .. } => {
+                    // For structs, fields are in order
+                    for (hir_arg_id, mir_field) in args.iter().zip(fields.iter()) {
+                        let hir_arg = &hir_types[*hir_arg_id];
+                        extract_generic_binding(hir_arg, mir_field, hir_types, generic_names, bindings, ty_ctx);
+                    }
+                }
+                // Fallback for other MIR types
+                _ => {}
+            }
+        }
+        // Reference type: &T or &mut T
+        rv_hir::Type::Reference { inner, .. } => {
+            if let MirType::Ref { inner: mir_inner, .. } = mir_ty {
+                let inner_hir = &hir_types[**inner];
+                extract_generic_binding(inner_hir, mir_inner, hir_types, generic_names, bindings, ty_ctx);
+            }
+        }
+        // Tuple type: (T, U)
+        rv_hir::Type::Tuple { elements, .. } => {
+            if let MirType::Tuple(mir_elements) = mir_ty {
+                for (hir_elem_id, mir_elem) in elements.iter().zip(mir_elements.iter()) {
+                    let hir_elem = &hir_types[*hir_elem_id];
+                    extract_generic_binding(hir_elem, mir_elem, hir_types, generic_names, bindings, ty_ctx);
+                }
+            }
+        }
+        // Array type: [T; N]
+        rv_hir::Type::Array { element, .. } => {
+            if let MirType::Array { element: mir_element, .. } = mir_ty {
+                let elem_hir = &hir_types[**element];
+                extract_generic_binding(elem_hir, mir_element, hir_types, generic_names, bindings, ty_ctx);
+            }
+        }
+        // Other types don't contain generics to extract
+        _ => {}
+    }
+}
+
+/// Extract generic bindings from HIR type and MIR type, returning MirType mappings.
+///
+/// Similar to `extract_generic_binding` but outputs HashMap<Symbol, MirType> directly
+/// for use with `lower_function_with_subst`.
+fn extract_generic_binding_to_mir(
+    hir_ty: &rv_hir::Type,
+    mir_ty: &MirType,
+    hir_types: &la_arena::Arena<rv_hir::Type>,
+    generic_names: &std::collections::HashSet<rv_intern::Symbol>,
+    bindings: &mut std::collections::HashMap<rv_intern::Symbol, MirType>,
+) {
+    match hir_ty {
+        // Direct generic parameter: T
+        rv_hir::Type::Generic { name, .. } => {
+            if generic_names.contains(name) && !bindings.contains_key(name) {
+                bindings.insert(*name, mir_ty.clone());
+            }
+        }
+        // Named type with generic args: Option<T>, Result<T, E>, Vec<T>, etc.
+        rv_hir::Type::Named { args, .. } => {
+            match mir_ty {
+                MirType::Enum { variants, .. } => {
+                    // Find variants with fields (like Some(T))
+                    for (arg_idx, hir_arg_id) in args.iter().enumerate() {
+                        let hir_arg = &hir_types[*hir_arg_id];
+                        // Look for a variant that has fields at this position
+                        for variant in variants {
+                            if let Some(field_ty) = variant.fields.get(arg_idx) {
+                                extract_generic_binding_to_mir(hir_arg, field_ty, hir_types, generic_names, bindings);
+                                break;
+                            }
+                        }
+                    }
+                }
+                MirType::Struct { fields, .. } => {
+                    for (hir_arg_id, mir_field) in args.iter().zip(fields.iter()) {
+                        let hir_arg = &hir_types[*hir_arg_id];
+                        extract_generic_binding_to_mir(hir_arg, mir_field, hir_types, generic_names, bindings);
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Reference type: &T or &mut T
+        rv_hir::Type::Reference { inner, .. } => {
+            if let MirType::Ref { inner: mir_inner, .. } = mir_ty {
+                let inner_hir = &hir_types[**inner];
+                extract_generic_binding_to_mir(inner_hir, mir_inner, hir_types, generic_names, bindings);
+            }
+        }
+        // Tuple type: (T, U)
+        rv_hir::Type::Tuple { elements, .. } => {
+            if let MirType::Tuple(mir_elements) = mir_ty {
+                for (hir_elem_id, mir_elem) in elements.iter().zip(mir_elements.iter()) {
+                    let hir_elem = &hir_types[*hir_elem_id];
+                    extract_generic_binding_to_mir(hir_elem, mir_elem, hir_types, generic_names, bindings);
+                }
+            }
+        }
+        // Array type: [T; N]
+        rv_hir::Type::Array { element, .. } => {
+            if let MirType::Array { element: mir_element, .. } = mir_ty {
+                let elem_hir = &hir_types[**element];
+                extract_generic_binding_to_mir(elem_hir, mir_element, hir_types, generic_names, bindings);
+            }
+        }
+        // Other types don't contain generics to extract
+        _ => {}
     }
 }
 
@@ -1692,6 +1845,16 @@ impl<'ctx> Interpreter<'ctx> {
             InterpreterError::InvalidOperation(format!("Function {:?} not found", func_id))
         })?;
 
+        // Skip core library functions - they cannot be lowered to MIR
+        // Core library functions (from Rust's core crate) are only used for
+        // trait definitions and type signatures, not for direct execution.
+        if hir_func.is_core_library {
+            return Err(InterpreterError::InvalidOperation(format!(
+                "Cannot execute core library function '{}'",
+                hir_ctx.interner.resolve(&hir_func.name)
+            )));
+        }
+
         // Infer MIR types from argument values for monomorphization
         let type_args: Vec<MirType> = args
             .iter()
@@ -1770,6 +1933,35 @@ impl<'ctx> Interpreter<'ctx> {
                 }
             }
 
+            // For generic functions, build generic bindings BEFORE creating TypeInference
+            // so the TyIds are in the same context
+            let generic_bindings: Vec<(rv_intern::Symbol, rv_ty::TyId)> =
+                if !hir_func.generics.is_empty() {
+                    let mut bindings = Vec::new();
+                    // Collect all generic parameter names from the function signature
+                    let generic_names: std::collections::HashSet<_> =
+                        hir_func.generics.iter().map(|p| p.name).collect();
+
+                    // Match generic parameters to argument types
+                    for (param_idx, param) in hir_func.parameters.iter().enumerate() {
+                        let hir_ty = &hir_ctx.types[param.ty];
+                        if let Some(mir_ty) = type_args.get(param_idx) {
+                            // Extract generic bindings from the parameter type and argument
+                            extract_generic_binding(
+                                hir_ty,
+                                mir_ty,
+                                &hir_ctx.types,
+                                &generic_names,
+                                &mut bindings,
+                                &mut ty_ctx_clone,
+                            );
+                        }
+                    }
+                    bindings
+                } else {
+                    Vec::new()
+                };
+
             // ARCHITECTURE FIX: Must run type inference before MIR lowering
             // This matches the pattern used in rv-mono/src/lib.rs
             use rv_ty::TypeInference;
@@ -1782,6 +1974,12 @@ impl<'ctx> Interpreter<'ctx> {
                 &hir_ctx.interner,
                 ty_ctx_clone,
             );
+
+            // Set generic bindings before inference
+            if !generic_bindings.is_empty() {
+                type_inference.set_generic_bindings(generic_bindings);
+            }
+
             type_inference.infer_function(hir_func);
             let inference_result = type_inference.finish();
             let mut ty_ctx_with_inference = inference_result.ctx;
@@ -1797,20 +1995,63 @@ impl<'ctx> Interpreter<'ctx> {
             );
 
             // Now lower with inferred types
-            let mir_result = rv_mir_lower::LoweringContext::lower_function(
-                hir_func,
-                &mut ty_ctx_with_inference,
-                &hir_ctx.structs,
-                &hir_ctx.enums,
-                &hir_ctx.impl_blocks,
-                &hir_ctx.functions,
-                &hir_ctx.types,
-                &hir_ctx.traits,
-                &hir_ctx.interner,
-                &hir_ctx.lang_items,
-                &const_values,
-                &static_values,
-            );
+            // For generic functions, use lower_function_with_subst which handles type substitution
+            let mir_result = if !hir_func.generics.is_empty() {
+                // Build type_subst map from generic parameter names to MirTypes
+                // We need to extract generic bindings from complex types like Option<T>
+                let mut type_subst: std::collections::HashMap<rv_intern::Symbol, MirType> =
+                    std::collections::HashMap::new();
+
+                // First, try to extract from complex types (Option<T>, Result<T, E>, etc.)
+                let generic_names: std::collections::HashSet<_> =
+                    hir_func.generics.iter().map(|p| p.name).collect();
+
+                for (param_idx, param) in hir_func.parameters.iter().enumerate() {
+                    let hir_ty = &hir_ctx.types[param.ty];
+                    if let Some(mir_ty) = type_args.get(param_idx) {
+                        // Extract bindings recursively from HIR type and MIR type
+                        extract_generic_binding_to_mir(
+                            hir_ty,
+                            mir_ty,
+                            &hir_ctx.types,
+                            &generic_names,
+                            &mut type_subst,
+                        );
+                    }
+                }
+
+                rv_mir_lower::LoweringContext::lower_function_with_subst(
+                    hir_func,
+                    &mut ty_ctx_with_inference,
+                    &hir_ctx.structs,
+                    &hir_ctx.enums,
+                    &hir_ctx.impl_blocks,
+                    &hir_ctx.functions,
+                    &hir_ctx.types,
+                    &hir_ctx.traits,
+                    &type_subst,
+                    func_id, // instance_id is the same as func_id for now
+                    &hir_ctx.interner,
+                    &hir_ctx.lang_items,
+                    &const_values,
+                    &static_values,
+                )
+            } else {
+                rv_mir_lower::LoweringContext::lower_function(
+                    hir_func,
+                    &mut ty_ctx_with_inference,
+                    &hir_ctx.structs,
+                    &hir_ctx.enums,
+                    &hir_ctx.impl_blocks,
+                    &hir_ctx.functions,
+                    &hir_ctx.types,
+                    &hir_ctx.traits,
+                    &hir_ctx.interner,
+                    &hir_ctx.lang_items,
+                    &const_values,
+                    &static_values,
+                )
+            };
 
             self.mono_cache
                 .insert(cache_key.clone(), mir_result.function);
@@ -1853,7 +2094,25 @@ impl<'ctx> Interpreter<'ctx> {
                 name: *name,
                 fields: fields.iter().map(Self::value_to_mir_type).collect(),
             },
-            Value::Enum { name, .. } => MirType::Named(*name),
+            Value::Enum { name, fields, .. } => {
+                // Convert enum value to MirType::Enum with variant information
+                // This allows extract_generic_binding to find concrete types
+                // from enum fields (e.g., Option::Some(55) -> T = i64)
+                let field_types: Vec<MirType> = fields.iter().map(Self::value_to_mir_type).collect();
+
+                // Create a simple single-variant representation with the field types
+                // This allows extract_generic_binding to extract types from args
+                let variant = MirVariant {
+                    name: *name,
+                    fields: field_types,
+                };
+
+                MirType::Enum {
+                    name: *name,
+                    // Just one variant with the actual field types
+                    variants: vec![variant],
+                }
+            }
             Value::Pointer(_) => MirType::Pointer {
                 mutable: false,
                 inner: Box::new(MirType::Unit),

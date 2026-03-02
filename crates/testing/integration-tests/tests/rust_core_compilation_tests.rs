@@ -9,7 +9,29 @@ use rv_syntax::Language;
 use std::collections::HashMap;
 use std::path::Path;
 
-const RUST_SRC_PATH: &str = "/tmp/rust-src/library/core/src";
+/// Get the Rust source path from rustup sysroot
+fn get_rust_src_path() -> Option<std::path::PathBuf> {
+    // Try to get sysroot from rustc
+    let output = std::process::Command::new("rustc")
+        .arg("--print")
+        .arg("sysroot")
+        .output()
+        .ok()?;
+
+    let sysroot = String::from_utf8(output.stdout).ok()?;
+    let sysroot = sysroot.trim();
+
+    let path = std::path::Path::new(sysroot)
+        .join("lib/rustlib/src/rust/library/core/src");
+
+    if path.exists() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+const RUST_SRC_PATH: &str = "/home/ethan/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src";
 
 /// Result of attempting to compile a core library file
 #[derive(Debug)]

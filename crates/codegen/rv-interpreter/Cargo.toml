@@ -12,6 +12,7 @@ rv-mir-lower.workspace = true
 rv-const-eval.workspace = true
 rv-ty.workspace = true
 rv-intern = { path = "../../foundation/rv-intern" }
+la-arena = "0.3"
 rv-span = { path = "../../foundation/rv-span" }
 rustc-hash.workspace = true
 thiserror.workspace = true

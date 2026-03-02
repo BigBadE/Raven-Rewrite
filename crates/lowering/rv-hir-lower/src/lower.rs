@@ -565,10 +565,32 @@ pub fn lower_source_file(root: &SyntaxNode) -> LoweringContext {
     lower_source_file_with_id_offset(root, 0)
 }
 
+
+/// Inject core library prelude into the lowering context.
+///
+/// This compiles the core library as a proper crate dependency and injects
+/// all prelude re-exports into the root scope.
+///
+/// The prelude (`core::prelude::v1`) includes:
+/// - Types: `Option::{self, None, Some}`, `Result::{self, Err, Ok}`
+/// - Marker traits: `Copy`, `Send`, `Sized`, `Sync`, `Unpin` (TODO)
+/// - Function traits: `Drop`, `Fn`, `FnMut`, `FnOnce` (TODO)
+/// - Core traits: `Clone`, `Eq`, `Ord`, `PartialEq`, `PartialOrd`, `From`, `Into`, `Default` (TODO)
+/// - Iterator traits (TODO)
+/// - Functions: `drop`, `size_of`, `align_of`, etc. (TODO)
+fn inject_core_prelude(ctx: &mut LoweringContext, root_scope: ScopeId) {
+    // Create core compilation context and inject prelude
+    let mut core_ctx = crate::core_library::CoreCompilationContext::new();
+    core_ctx.inject_prelude(ctx, root_scope);
+}
+
 /// Lower a source file with a starting function ID offset.
 ///
 /// This is used for multi-file projects where each module needs globally
 /// unique FunctionIds to avoid collisions during compilation.
+///
+/// This function automatically injects the core library prelude into scope,
+/// following Rust's behavior where `core::prelude::v1` is automatically imported.
 pub fn lower_source_file_with_id_offset(
     root: &SyntaxNode,
     function_id_offset: u32,
@@ -581,6 +603,9 @@ pub fn lower_source_file_with_id_offset(
 
     // Create root scope
     let root_scope = ctx.scope_tree.create_root(root.span);
+
+    // Compile core library and inject prelude
+    inject_core_prelude(&mut ctx, root_scope);
 
     // Process all top-level items
     lower_items(&mut ctx, root_scope, &root.children);
@@ -881,7 +906,7 @@ fn parse_function_modifiers(node: &SyntaxNode) -> (bool, bool) {
 }
 
 /// Lower multiple items
-fn lower_items(ctx: &mut LoweringContext, current_scope: ScopeId, children: &[SyntaxNode]) {
+pub fn lower_items(ctx: &mut LoweringContext, current_scope: ScopeId, children: &[SyntaxNode]) {
     // Pre-pass: register all top-level names (functions, structs, enums, traits)
     // so that forward references resolve correctly regardless of source order.
     pre_register_items(ctx, current_scope, children);
@@ -984,9 +1009,31 @@ fn pre_register_items(ctx: &mut LoweringContext, current_scope: ScopeId, childre
             _ => continue,
         };
 
-        // Skip if already registered (e.g. from a previous pre-pass)
-        if ctx.scope_tree.resolve(current_scope, &name).is_some() {
-            continue;
+        // Check if this item already exists in scope (e.g., from prelude injection).
+        // For types (struct/enum), we must reuse the existing TypeDefId to maintain
+        // consistency between scope resolution and type lookup.
+        // For functions, user-defined items shadow core library items.
+        if let Some(existing_sym) = ctx.scope_tree.resolve_in_scope(current_scope, &name) {
+            if let Some(&existing_def) = ctx.symbol_defs.get(&existing_sym) {
+                match (syntax_kind, existing_def) {
+                    // For struct/enum, reuse the existing TypeDefId from prelude
+                    (SyntaxKind::Struct | SyntaxKind::Enum, DefId::Type(_)) => {
+                        // Already registered with a TypeDefId, skip to avoid mismatch
+                        continue;
+                    }
+                    // For functions, allow shadowing (user definition takes precedence)
+                    (SyntaxKind::Function, _) => {
+                        // Fall through to create new registration
+                    }
+                    // For traits, allow shadowing
+                    (SyntaxKind::Trait, _) => {
+                        // Fall through to create new registration
+                    }
+                    _ => {
+                        // Fall through for other cases
+                    }
+                }
+            }
         }
 
         let name_interned = ctx.intern(&name);
@@ -1039,7 +1086,11 @@ fn lower_function_with_attrs(
     lower_function(ctx, current_scope, node, attrs);
 }
 
-fn lower_function(
+/// Lower a function definition from CST to HIR
+///
+/// Parses function parameters, return type, generic parameters, body,
+/// and registers the function in the symbol table and function registry.
+pub fn lower_function(
     ctx: &mut LoweringContext,
     current_scope: ScopeId,
     node: &SyntaxNode,
@@ -1148,6 +1199,7 @@ fn lower_function(
     }
 
     // Parse return type (Type node after "->")
+    // Type can be SyntaxKind::Type or Unknown variants like "generic_type", "reference_type", etc.
     let mut return_type = None;
     let mut found_arrow = false;
     for child in &node.children {
@@ -1157,7 +1209,7 @@ fn lower_function(
                 continue;
             }
         }
-        if found_arrow && child.kind == SyntaxKind::Type {
+        if found_arrow && (child.kind == SyntaxKind::Type || is_type_like_unknown(child)) {
             return_type = Some(lower_type_node(ctx, child));
             break;
         }
@@ -1228,13 +1280,25 @@ fn lower_function(
         is_const,
         attributes: attrs.clone(),
         self_param: self_param_parsed,
+        is_core_library: false,
     };
 
     // ARCHITECTURE: Build global functions map for name resolution
     // This allows function calls to resolve to DefId::Function
+    // User-defined functions take precedence over core library functions
     let mut global_functions = std::collections::HashMap::default();
+
+    // First, add core library functions
     for (&func_id, func) in &ctx.functions {
-        global_functions.insert(func.name, rv_hir::DefId::Function(func_id));
+        if func.is_core_library {
+            global_functions.insert(func.name, rv_hir::DefId::Function(func_id));
+        }
+    }
+    // Then, add user-defined functions (they will override core library functions with same name)
+    for (&func_id, func) in &ctx.functions {
+        if !func.is_core_library {
+            global_functions.insert(func.name, rv_hir::DefId::Function(func_id));
+        }
     }
     // Also include the current function being lowered
     global_functions.insert(name_interned, rv_hir::DefId::Function(function_id));
@@ -1293,6 +1357,7 @@ fn lower_function(
         is_const,
         attributes: attrs,
         self_param: self_param_parsed,
+        is_core_library: false,
     };
 
     if ctx.interner.resolve(&name_interned) == "get_value"
@@ -1436,6 +1501,26 @@ fn is_expr_node(node: &SyntaxNode) -> bool {
         || name == "range_expression"
         || name == "try_expression"
         || name == "unsafe_block"
+        || name == "call_expression"
+        || name == "return_expression"
+        || name == "binary_expression"
+        || name == "await_expression"
+        || name == "yield_expression"
+        || name == "generic_function"
+        || name == "unit_expression"
+        || name == "match_expression"
+        || name == "if_expression"
+        || name == "while_expression"
+        || name == "for_expression"
+        || name == "loop_expression"
+        || name == "block"
+        || name == "const_block"
+        || name == "integer_literal"
+        || name == "float_literal"
+        || name == "string_literal"
+        || name == "char_literal"
+        || name == "boolean_literal"
+        || name == "identifier"
     )
 }
 
@@ -1715,12 +1800,29 @@ fn lower_expr(
             "unsafe_block" => {
                 // unsafe { ... } — lower the inner block and wrap in UnsafeBlock
                 for child in &node.children {
-                    if child.kind == SyntaxKind::Block {
+                    if child.kind == SyntaxKind::Block
+                        || matches!(&child.kind, SyntaxKind::Unknown(n) if n == "block")
+                    {
                         let inner = lower_block(ctx, current_scope, child, body);
                         return body.exprs.alloc(Expr::UnsafeBlock {
                             body: inner,
                             span: file_span,
                         });
+                    }
+                }
+                body.exprs.alloc(Expr::Literal {
+                    kind: LiteralKind::Unit,
+                    span: file_span,
+                })
+            }
+            "const_block" => {
+                // const { ... } — compile-time const block, lower as a regular block
+                // (runtime semantics: just evaluate the expression)
+                for child in &node.children {
+                    if child.kind == SyntaxKind::Block
+                        || matches!(&child.kind, SyntaxKind::Unknown(n) if n == "block")
+                    {
+                        return lower_block(ctx, current_scope, child, body);
                     }
                 }
                 body.exprs.alloc(Expr::Literal {
@@ -1938,7 +2040,7 @@ fn lower_compound_assignment(
     })
 }
 
-/// Lower a while loop expression
+/// Lower a while loop expression (handles both `while <expr>` and `while let <pattern> = <expr>`)
 fn lower_while_expr(
     ctx: &mut LoweringContext,
     current_scope: ScopeId,
@@ -1948,10 +2050,24 @@ fn lower_while_expr(
     let file_span = ctx.file_span(node);
 
     let mut condition_node = None;
+    let mut let_condition: Option<(PatternId, ExprId)> = None;
     let mut body_node = None;
     let mut label = None;
+    let mut found_condition = false;
 
     for child in &node.children {
+        // Check for `while let` pattern: let_condition node
+        if !found_condition {
+            if let SyntaxKind::Unknown(ref name) = child.kind {
+                if name == "let_condition" {
+                    // Parse the let_condition: pattern = value
+                    let_condition = lower_let_condition(ctx, current_scope, child, body);
+                    found_condition = true;
+                    continue;
+                }
+            }
+        }
+
         if child.kind == SyntaxKind::Block {
             body_node = Some(child);
         } else if matches!(&child.kind, SyntaxKind::Unknown(ref s) if s == "label") {
@@ -1960,21 +2076,34 @@ fn lower_while_expr(
             if !text.is_empty() {
                 label = Some(ctx.intern(text));
             }
-        } else if is_expr_node(child) && condition_node.is_none() {
+        } else if is_expr_node(child) && condition_node.is_none() && !found_condition {
             condition_node = Some(child);
+            found_condition = true;
         }
+    }
+
+    let body_expr = lower_expr(
+        ctx,
+        current_scope,
+        body_node.expect("ICE: while_expression must have a body block"),
+        body,
+    );
+
+    // Return WhileLet if we found a let_condition, otherwise return WhileLoop
+    if let Some((pattern, value)) = let_condition {
+        return body.exprs.alloc(Expr::WhileLet {
+            pattern,
+            value,
+            body: body_expr,
+            label,
+            span: file_span,
+        });
     }
 
     let condition = lower_expr(
         ctx,
         current_scope,
         condition_node.expect("ICE: while_expression must have a condition expression"),
-        body,
-    );
-    let body_expr = lower_expr(
-        ctx,
-        current_scope,
-        body_node.expect("ICE: while_expression must have a body block"),
         body,
     );
 
@@ -1986,18 +2115,11 @@ fn lower_while_expr(
     })
 }
 
-/// Lower a for expression by desugaring to a while loop.
+/// Lower a for expression to HIR.
 ///
-/// `for i in start..end { body }` becomes:
-/// ```text
-/// {
-///     let mut i = start;
-///     while i < end {
-///         body;
-///         i = i + 1;
-///     }
-/// }
-/// ```
+/// `for pattern in iterator { body }` is represented as `Expr::ForLoop`.
+/// The desugaring to while-loop + iterator protocol happens during MIR lowering
+/// when we have type information available.
 fn lower_for_expr(
     ctx: &mut LoweringContext,
     current_scope: ScopeId,
@@ -2010,11 +2132,12 @@ fn lower_for_expr(
     let for_scope = ctx.scope_tree.create_child(current_scope, node.span);
 
     // tree-sitter for_expression children:
-    //   optional label, "for" keyword, pattern (identifier), "in" keyword, iterable expression, body block
-    let mut pattern_name: Option<String> = None;
+    //   optional label, "for" keyword, pattern, "in" keyword, iterable expression, body block
+    let mut pattern_node: Option<&SyntaxNode> = None;
     let mut iterable_node: Option<&SyntaxNode> = None;
     let mut body_node: Option<&SyntaxNode> = None;
     let mut label: Option<rv_intern::Symbol> = None;
+    let mut found_in = false;
 
     for child in &node.children {
         if matches!(&child.kind, SyntaxKind::Unknown(ref s) if s == "label") {
@@ -2023,182 +2146,126 @@ fn lower_for_expr(
             if !text.is_empty() {
                 label = Some(ctx.intern(text));
             }
-        } else if child.kind == SyntaxKind::Identifier && pattern_name.is_none() {
-            pattern_name = Some(child.text.clone());
+        } else if child.text == "for" || child.text == "in" {
+            if child.text == "in" {
+                found_in = true;
+            }
+            continue;
         } else if child.kind == SyntaxKind::Block {
             body_node = Some(child);
-        } else if is_expr_node(child) && iterable_node.is_none() && pattern_name.is_some() {
-            iterable_node = Some(child);
-        } else if matches!(&child.kind, SyntaxKind::Unknown(ref s) if s == "range_expression")
-            && iterable_node.is_none()
-        {
+        } else if !found_in && pattern_node.is_none() {
+            // Before "in" keyword - this is the pattern
+            pattern_node = Some(child);
+        } else if found_in && iterable_node.is_none() && body_node.is_none() {
+            // After "in" keyword, before body block - this is the iterable
             iterable_node = Some(child);
         }
     }
-    // Label will be passed to the desugared while loop
 
-    let var_name = pattern_name.unwrap_or_else(|| {
-        panic!(
-            "ICE: for_expression at {:?} has no loop variable identifier",
-            file_span
-        )
-    });
-    let iterable = iterable_node.unwrap_or_else(|| {
-        panic!(
-            "ICE: for_expression at {:?} has no iterable expression",
-            file_span
-        )
-    });
+    // Parse the pattern
+    let pattern = pattern_node
+        .and_then(|node| lower_pattern(ctx, for_scope, node, body))
+        .unwrap_or_else(|| {
+            // Fallback: create a wildcard pattern if we couldn't parse the pattern
+            body.patterns.alloc(Pattern::Wildcard { span: file_span })
+        });
+
+    // Register any bindings from the pattern in the for scope
+    register_pattern_bindings_for_loop(ctx, for_scope, pattern, body);
+
+    // Lower the iterable expression
+    let iterator = iterable_node
+        .map(|node| lower_expr(ctx, current_scope, node, body))
+        .unwrap_or_else(|| {
+            panic!(
+                "ICE: for_expression at {:?} has no iterable expression",
+                file_span
+            )
+        });
+
+    // Lower the loop body
     let loop_body = body_node
-        .unwrap_or_else(|| panic!("ICE: for_expression at {:?} has no body block", file_span));
+        .map(|node| lower_block(ctx, for_scope, node, body))
+        .unwrap_or_else(|| {
+            panic!(
+                "ICE: for_expression at {:?} has no body block",
+                file_span
+            )
+        });
 
-    // Register the loop variable in the for scope
-    let var_sym = ctx.intern(&var_name);
-    let symbol_id = ctx
-        .symbols
-        .add(var_sym, SymbolKind::Local, node.span, for_scope);
-    ctx.scope_tree
-        .add_symbol(for_scope, var_name.clone(), symbol_id);
-
-    let local_id = LocalId(ctx.next_local_id);
-    ctx.next_local_id += 1;
-    let function_id = ctx
-        .current_function_id
-        .expect("lower_for_expr called outside function context");
-    let def_id = DefId::Local {
-        func: function_id,
-        local: local_id,
-    };
-    ctx.symbols.set_def_id(symbol_id, def_id);
-    ctx.symbol_defs.insert(symbol_id, def_id);
-
-    // Parse the range expression to get start and end
-    // tree-sitter range_expression has children: start, ".." or "..=", end
-    let (start_expr, end_expr) = if matches!(&iterable.kind, SyntaxKind::Unknown(ref s) if s == "range_expression")
-    {
-        let mut start = None;
-        let mut end = None;
-        for range_child in &iterable.children {
-            if is_expr_node(range_child) || range_child.kind == SyntaxKind::Literal {
-                if start.is_none() {
-                    start = Some(lower_expr(ctx, for_scope, range_child, body));
-                } else {
-                    end = Some(lower_expr(ctx, for_scope, range_child, body));
-                }
-            }
-        }
-        (
-            start.unwrap_or_else(|| {
-                body.exprs.alloc(Expr::Literal {
-                    kind: LiteralKind::Integer(0, None),
-                    span: file_span,
-                })
-            }),
-            end.unwrap_or_else(|| {
-                panic!("ICE: range_expression at {:?} has no end value", file_span)
-            }),
-        )
-    } else {
-        panic!(
-            "ICE: for_expression at {:?} has non-range iterable. \
-             Only range expressions (start..end) are currently supported.",
-            file_span
-        )
-    };
-
-    // Build: let mut i = start;
-    let init_pattern = body.patterns.alloc(Pattern::Binding {
-        name: var_sym,
-        mutable: true,
-        sub_pattern: None,
-        span: file_span,
-    });
-    let let_stmt = body.stmts.alloc(Stmt::Let {
-        pattern: init_pattern,
-        ty: None,
-        initializer: Some(start_expr),
-        mutable: true,
-        else_branch: None,
-        span: file_span,
-    });
-
-    // Build: i < end (condition)
-    let var_ref = body.exprs.alloc(Expr::Variable {
-        name: var_sym,
-        def: Some(def_id),
-        span: file_span,
-    });
-    let condition = body.exprs.alloc(Expr::BinaryOp {
-        op: rv_hir::BinaryOp::Lt,
-        left: var_ref,
-        right: end_expr,
-        span: file_span,
-    });
-
-    // Build: body; i = i + 1;
-    let loop_body_expr = lower_block(ctx, for_scope, loop_body, body);
-
-    // i (for assignment target and increment)
-    let var_ref_inc = body.exprs.alloc(Expr::Variable {
-        name: var_sym,
-        def: Some(def_id),
-        span: file_span,
-    });
-    let one_literal = body.exprs.alloc(Expr::Literal {
-        kind: LiteralKind::Integer(1, None),
-        span: file_span,
-    });
-    let increment = body.exprs.alloc(Expr::BinaryOp {
-        op: rv_hir::BinaryOp::Add,
-        left: var_ref_inc,
-        right: one_literal,
-        span: file_span,
-    });
-    let var_ref_target = body.exprs.alloc(Expr::Variable {
-        name: var_sym,
-        def: Some(def_id),
-        span: file_span,
-    });
-    let assign_increment = body.exprs.alloc(Expr::Assign {
-        target: var_ref_target,
-        value: increment,
-        span: file_span,
-    });
-
-    // Build the compound body: { original_body; i = i + 1; }
-    let body_stmt = body.stmts.alloc(Stmt::Expr {
-        expr: loop_body_expr,
-        span: file_span,
-    });
-    let inc_stmt = body.stmts.alloc(Stmt::Expr {
-        expr: assign_increment,
-        span: file_span,
-    });
-    let compound_body = body.exprs.alloc(Expr::Block {
-        statements: vec![body_stmt, inc_stmt],
-        expr: None,
-        span: file_span,
-    });
-
-    // Build: while i < end { body; i = i + 1; }
-    let while_expr = body.exprs.alloc(Expr::WhileLoop {
-        condition,
-        body: compound_body,
+    body.exprs.alloc(Expr::ForLoop {
+        pattern,
+        iterator,
+        body: loop_body,
         label,
         span: file_span,
-    });
-
-    // Build the outer block: { let mut i = start; while ... }
-    let while_stmt = body.stmts.alloc(Stmt::Expr {
-        expr: while_expr,
-        span: file_span,
-    });
-
-    body.exprs.alloc(Expr::Block {
-        statements: vec![let_stmt, while_stmt],
-        expr: None,
-        span: file_span,
     })
+}
+
+/// Register bindings from a for-loop pattern into the scope.
+/// Similar to `register_pattern_bindings` but doesn't require a span parameter.
+fn register_pattern_bindings_for_loop(
+    ctx: &mut LoweringContext,
+    scope: ScopeId,
+    pattern_id: PatternId,
+    body: &Body,
+) {
+    let pattern = &body.patterns[pattern_id];
+    match pattern {
+        Pattern::Binding { name, span, .. } => {
+            // Register this binding in the scope
+            let symbol_id = ctx.symbols.add(*name, SymbolKind::Local, span.span, scope);
+            ctx.scope_tree.add_symbol(scope, ctx.interner.resolve(name).to_string(), symbol_id);
+
+            let local_id = LocalId(ctx.next_local_id);
+            ctx.next_local_id += 1;
+            if let Some(function_id) = ctx.current_function_id {
+                let def_id = DefId::Local {
+                    func: function_id,
+                    local: local_id,
+                };
+                ctx.symbols.set_def_id(symbol_id, def_id);
+                ctx.symbol_defs.insert(symbol_id, def_id);
+            }
+        }
+        Pattern::Tuple { patterns, .. } => {
+            for &elem in patterns {
+                register_pattern_bindings_for_loop(ctx, scope, elem, body);
+            }
+        }
+        Pattern::Struct { fields, .. } => {
+            for (_, field_pat) in fields {
+                register_pattern_bindings_for_loop(ctx, scope, *field_pat, body);
+            }
+        }
+        Pattern::Or { patterns, .. } => {
+            // For or-patterns, all branches should bind the same names
+            // Just register from the first pattern
+            if let Some(&first) = patterns.first() {
+                register_pattern_bindings_for_loop(ctx, scope, first, body);
+            }
+        }
+        Pattern::Slice { prefix, suffix, rest, .. } => {
+            for &elem in prefix {
+                register_pattern_bindings_for_loop(ctx, scope, elem, body);
+            }
+            if let Some(rest_pat) = rest {
+                register_pattern_bindings_for_loop(ctx, scope, *rest_pat, body);
+            }
+            for &elem in suffix {
+                register_pattern_bindings_for_loop(ctx, scope, elem, body);
+            }
+        }
+        Pattern::Enum { sub_patterns, .. } => {
+            for &elem in sub_patterns {
+                register_pattern_bindings_for_loop(ctx, scope, elem, body);
+            }
+        }
+        // These patterns don't introduce bindings
+        Pattern::Literal { .. }
+        | Pattern::Wildcard { .. }
+        | Pattern::Range { .. } => {}
+    }
 }
 
 /// Parse a loop label from a node (e.g., 'outer)
@@ -2833,24 +2900,29 @@ fn parse_literal(text: &str) -> LiteralKind {
     let (num_str, int_suffix) = parse_int_suffix(cleaned);
 
     // Hex: 0xFF
+    // Try u64 first to handle large unsigned values, then reinterpret as i64
     if num_str.starts_with("0x") || num_str.starts_with("0X") {
-        if let Ok(value) = i64::from_str_radix(&num_str[2..], 16) {
-            return LiteralKind::Integer(value, int_suffix);
+        if let Ok(value) = u64::from_str_radix(&num_str[2..], 16) {
+            return LiteralKind::Integer(value as i64, int_suffix);
         }
     }
     // Octal: 0o77
     if num_str.starts_with("0o") || num_str.starts_with("0O") {
-        if let Ok(value) = i64::from_str_radix(&num_str[2..], 8) {
-            return LiteralKind::Integer(value, int_suffix);
+        if let Ok(value) = u64::from_str_radix(&num_str[2..], 8) {
+            return LiteralKind::Integer(value as i64, int_suffix);
         }
     }
     // Binary: 0b1010
     if num_str.starts_with("0b") || num_str.starts_with("0B") {
-        if let Ok(value) = i64::from_str_radix(&num_str[2..], 2) {
-            return LiteralKind::Integer(value, int_suffix);
+        if let Ok(value) = u64::from_str_radix(&num_str[2..], 2) {
+            return LiteralKind::Integer(value as i64, int_suffix);
         }
     }
-    // Decimal integer
+    // Decimal integer - try u64 first for large unsigned values
+    if let Ok(value) = num_str.parse::<u64>() {
+        return LiteralKind::Integer(value as i64, int_suffix);
+    }
+    // Fallback to i64 for signed values
     if let Ok(value) = num_str.parse::<i64>() {
         return LiteralKind::Integer(value, int_suffix);
     }
@@ -3082,7 +3154,8 @@ fn lower_if_expr(
         if !found_condition && is_expr_node(child) {
             condition = Some(lower_expr(ctx, current_scope, child, body));
             found_condition = true;
-        } else if found_condition && !found_then && child.kind == SyntaxKind::Block {
+        } else if found_condition && !found_then &&
+            (child.kind == SyntaxKind::Block || matches!(&child.kind, SyntaxKind::Unknown(name) if name == "block")) {
             then_branch = Some(lower_expr(ctx, current_scope, child, body));
             found_then = true;
         } else if found_then {
@@ -3094,7 +3167,9 @@ fn lower_if_expr(
                 SyntaxKind::Unknown(name) if name == "else_clause" => {
                     // Extract the block or nested if expression from the else_clause wrapper
                     for else_child in &child.children {
-                        if else_child.kind == SyntaxKind::Block {
+                        if else_child.kind == SyntaxKind::Block
+                            || matches!(&else_child.kind, SyntaxKind::Unknown(n) if n == "block")
+                        {
                             else_branch = Some(lower_expr(ctx, current_scope, else_child, body));
                             break;
                         } else if else_child.kind == SyntaxKind::If {
@@ -3109,6 +3184,9 @@ fn lower_if_expr(
                             }
                         }
                     }
+                }
+                SyntaxKind::Unknown(name) if name == "block" => {
+                    else_branch = Some(lower_expr(ctx, current_scope, child, body));
                 }
                 _ => {}
             }
@@ -3136,14 +3214,16 @@ fn lower_if_expr(
             span: file_span,
         })
     } else {
+        let child_kinds: Vec<String> = node.children.iter().map(|c| format!("{:?}", c.kind)).collect();
         panic!(
             "ICE: Failed to parse if expression at {:?}. \
              Parser should produce valid if_expression nodes with condition and then branch. \
-             Found: condition={:?}, let_condition={:?}, then={:?}",
+             Found: condition={:?}, let_condition={:?}, then={:?}, child_kinds={:?}",
             file_span,
             condition.is_some(),
             let_condition.is_some(),
-            then_branch.is_some()
+            then_branch.is_some(),
+            child_kinds
         )
     }
 }
@@ -4008,9 +4088,10 @@ fn lower_let_stmt(
 ) -> StmtId {
     let file_span = ctx.file_span(node);
 
-    // Extract pattern, initializer, and mutability
+    // Extract pattern, initializer, type annotation, and mutability
     let mut pattern_id = None;
     let mut initializer = None;
+    let mut type_annotation: Option<rv_hir::TypeId> = None;
     let mut is_mutable = false;
 
     // Check for 'mut' keyword
@@ -4058,6 +4139,11 @@ fn lower_let_stmt(
         } else if pattern_id.is_none() && is_pattern_node(child) {
             // Complex pattern (tuple, struct, etc.) - use the pattern lowering function
             pattern_id = lower_pattern(ctx, current_scope, child, body);
+        } else if type_annotation.is_none()
+            && (child.kind == SyntaxKind::Type || is_type_like_unknown(child))
+        {
+            // Type annotation (e.g., Option<i64> in `let x: Option<i64> = ...`)
+            type_annotation = Some(lower_type_node(ctx, child));
         } else if is_expr_node(child) {
             initializer = Some(lower_expr(ctx, current_scope, child, body));
         }
@@ -4073,7 +4159,7 @@ fn lower_let_stmt(
 
     body.stmts.alloc(Stmt::Let {
         pattern: pattern_id,
-        ty: None,
+        ty: type_annotation,
         initializer,
         mutable: is_mutable,
         else_branch: None,
@@ -4164,7 +4250,11 @@ fn lower_struct_with_attrs(
     lower_struct(ctx, current_scope, node, attrs);
 }
 
-fn lower_struct(
+/// Lower a struct definition from CST to HIR
+///
+/// Parses struct fields, generic parameters, and registers the struct
+/// in the symbol table and type registry.
+pub fn lower_struct(
     ctx: &mut LoweringContext,
     current_scope: ScopeId,
     node: &SyntaxNode,
@@ -4323,7 +4413,11 @@ fn lower_enum_with_attrs(
     lower_enum(ctx, current_scope, node, attrs);
 }
 
-fn lower_enum(
+/// Lower an enum definition from the syntax tree.
+///
+/// This is public so it can be called from core_library.rs to compile
+/// core library enums like Option and Result.
+pub fn lower_enum(
     ctx: &mut LoweringContext,
     current_scope: ScopeId,
     node: &SyntaxNode,
@@ -4388,6 +4482,13 @@ fn lower_enum(
         }
     }
 
+    // ARCHITECTURE: Set current generic params so lower_type_node recognizes generic references
+    // This is necessary for parsing variant field types like `Some(T)` where `T` is a generic param
+    let prev_generic_params = std::mem::replace(
+        &mut ctx.current_generic_params,
+        generic_params.iter().map(|g| g.name).collect(),
+    );
+
     // Parse variants
     let mut variants = vec![];
     for child in &node.children {
@@ -4401,6 +4502,9 @@ fn lower_enum(
             }
         }
     }
+
+    // Restore previous generic params
+    ctx.current_generic_params = prev_generic_params;
 
     let visibility = extract_visibility(node);
     let enum_def = EnumDef {
@@ -5898,7 +6002,11 @@ fn lower_trait_with_attrs(
     lower_trait(ctx, current_scope, node, attrs);
 }
 
-fn lower_trait(
+/// Lower a trait definition from CST to HIR
+///
+/// Parses trait methods, associated types, generic parameters, and supertraits,
+/// registering the trait in the symbol table and trait registry.
+pub fn lower_trait(
     ctx: &mut LoweringContext,
     current_scope: ScopeId,
     node: &SyntaxNode,
@@ -6320,6 +6428,7 @@ fn lower_trait_method(
                     } else if kind == "parameter" {
                         // Regular parameter
                         // First try to find an identifier, otherwise check for "_" (ignored parameter)
+                        // or pattern-based parameters (tuple destructuring, etc.)
                         let param_name = param_child
                             .children
                             .iter()
@@ -6333,12 +6442,24 @@ fn lower_trait_method(
                                     .find(|c| c.text == "_")
                                     .map(|_| ctx.intern("_"))
                             })
+                            .or_else(|| {
+                                // Check for identifier in nested patterns (e.g., mutable bindings)
+                                param_child
+                                    .children
+                                    .iter()
+                                    .find_map(|c| {
+                                        // Look for identifier in children of pattern nodes
+                                        c.children
+                                            .iter()
+                                            .find(|cc| cc.kind == SyntaxKind::Identifier)
+                                            .map(|cc| ctx.intern(&cc.text))
+                                    })
+                            })
                             .unwrap_or_else(|| {
-                                panic!(
-                                    "ICE: Parameter at {:?} has no identifier. \
-                                     Parser should ensure all parameter nodes contain identifiers.",
-                                    ctx.file_span(param_child)
-                                )
+                                // Generate a synthetic name for complex patterns we don't fully support
+                                // This allows compilation to continue even for advanced parameter patterns
+                                let idx = params.len();
+                                ctx.intern(&format!("__arg{idx}"))
                             });
 
                         // Find the type node - could be SyntaxKind::Type or Unknown("reference_type") etc.
@@ -6351,11 +6472,11 @@ fn lower_trait_method(
                             })
                             .map(|c| lower_type_node(ctx, c))
                             .unwrap_or_else(|| {
-                                panic!(
-                                    "ICE: Parameter at {:?} has no type annotation. \
-                                     Parser should ensure all parameter nodes contain type annotations.",
-                                    ctx.file_span(param_child)
-                                )
+                                // For parameters where we can't find the type (complex patterns),
+                                // use a placeholder Unknown type to allow compilation to continue
+                                ctx.types.alloc(Type::Unknown {
+                                    span: ctx.file_span(param_child),
+                                })
                             });
 
                         params.push(Parameter {

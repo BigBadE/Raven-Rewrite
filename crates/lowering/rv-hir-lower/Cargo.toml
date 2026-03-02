@@ -11,10 +11,8 @@ rv-intern.workspace = true
 rv-span.workspace = true
 rv-syntax.workspace = true
 rv-macro.workspace = true
-lang-raven = { path = "../../language-support/lang-raven" }
-
-[dev-dependencies]
 rv-parser = { path = "../../parser/rv-parser" }
+lang-raven = { path = "../../language-support/lang-raven" }
 
 [lints]
 workspace = true

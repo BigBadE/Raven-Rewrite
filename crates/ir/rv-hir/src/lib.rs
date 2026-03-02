@@ -399,6 +399,8 @@ pub struct Function {
     pub attributes: Vec<Attribute>,
     /// Self parameter (if this is a method)
     pub self_param: Option<SelfParam>,
+    /// Whether this function is from the core library (should not be lowered to MIR directly)
+    pub is_core_library: bool,
 }
 
 /// External function declaration (from extern blocks)

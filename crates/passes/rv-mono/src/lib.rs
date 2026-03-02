@@ -342,6 +342,13 @@ pub fn monomorphize_functions(
                 continue;
             }
 
+            // Skip core library functions - they cannot be lowered to MIR
+            // Core library functions have incomplete type information and are only
+            // used for trait definitions and type signatures.
+            if hir_func.is_core_library {
+                continue;
+            }
+
             // Generate a unique FunctionId for this monomorphized instance
             let instance_id = FunctionId(next_func_id);
             next_func_id += 1;
