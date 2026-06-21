@@ -834,6 +834,113 @@ pub fn preserv_session() -> Result<Session, String> {
     Ok(s)
 }
 
+/// **Machine adequacy.** Type-safety says the machine never *goes wrong*; adequacy says it
+/// computes the *right* answer — the value a declarative big-step semantics assigns. We give
+/// an environment-style big-step relation `Eval env e v` (no rule for `op`/`handle`, matching
+/// the typed fragment) and the reflexive-transitive closure `Steps` of `step`, then prove:
+///
+///  * `sim : Eval env e v -> (k : Kont) -> Steps (seval e env k) (sret v k)` — forward
+///    simulation: whatever the big-step semantics evaluates `e` to, the machine drives
+///    `seval e env k` to `sret v k`, feeding the value to the same continuation. Induction on
+///    the evaluation derivation, with the result curried over the continuation `k` so each
+///    sub-evaluation's IH applies under the frame the machine pushes; single transitions are
+///    prepended with `sstep`, sub-runs joined with transitivity `strans`.
+///  * `adequacy : Eval enil e v -> Steps (load e) (sdone v)` — for a closed term, the loaded
+///    machine steps all the way to the final answer the semantics predicts.
+pub const ADEQUACY: &str = r#"
+    -- Declarative big-step evaluation for the pure fragment (environment semantics: closures
+    -- + de Bruijn lookup, exactly as the machine). No rule for op/handle.
+    inductive Eval : Env -> Tm -> Val -> Prop
+      | evar : (env : Env) -> (n : Nat) -> Eval env (Tm.var n) (lookupEnv n env)
+      | elit : (env : Env) -> (n : Nat) -> Eval env (Tm.lit n) (Val.vnat n)
+      | elam : (env : Env) -> (b : Tm) -> Eval env (Tm.lam b) (Val.vclos env b)
+      | eapp : (env : Env) -> (f : Tm) -> (a : Tm) -> (cenv : Env) -> (body : Tm) -> (va : Val) -> (v : Val)
+                 -> Eval env f (Val.vclos cenv body) -> Eval env a va -> Eval (Env.econs va cenv) body v
+                 -> Eval env (Tm.app f a) v
+      | eadd : (env : Env) -> (x : Tm) -> (y : Tm) -> (m : Nat) -> (n : Nat)
+                 -> Eval env x (Val.vnat m) -> Eval env y (Val.vnat n)
+                 -> Eval env (Tm.add x y) (Val.vnat (addN(m)(n)))
+      | eif0 : (env : Env) -> (c : Tm) -> (t : Tm) -> (e : Tm) -> (v : Val)
+                 -> Eval env c (Val.vnat Nat.zero) -> Eval env t v -> Eval env (Tm.ifz c t e) v
+      | eifS : (env : Env) -> (c : Tm) -> (t : Tm) -> (e : Tm) -> (m : Nat) -> (v : Val)
+                 -> Eval env c (Val.vnat (Nat.succ m)) -> Eval env e v -> Eval env (Tm.ifz c t e) v
+
+    -- Reflexive-transitive closure of `step`, with transitivity and a single-step injector.
+    inductive Steps : State -> State -> Prop
+      | srefl : (s : State) -> Steps s s
+      | sstep : (s : State) -> (s2 : State) -> Steps (step s) s2 -> Steps s s2
+    def strans (a : State) (b : State) (c : State) (hab : Steps a b) : Steps b c -> Steps a c :=
+      match hab {
+        | Steps.srefl(s) => fun (hbc : Steps s c) => hbc
+        | Steps.sstep(s, s2, hs) => fun (hbc : Steps s2 c) => Steps.sstep s c (hs.rec hbc)
+      }
+    def step1 (s : State) : Steps s (step s) := Steps.sstep s (step s) (Steps.srefl (step s))
+
+    -- FORWARD SIMULATION (induction on the evaluation derivation; curried over the
+    -- continuation so the IH lands under the pushed frame).
+    def sim (env : Env) (e : Tm) (v : Val) (h : Eval env e v)
+      : (k : Kont) -> Steps (State.seval e env k) (State.sret v k) :=
+      match h {
+        | Eval.evar(env1, n) => fun (k : Kont) => step1 (State.seval (Tm.var n) env1 k)
+        | Eval.elit(env1, n) => fun (k : Kont) => step1 (State.seval (Tm.lit n) env1 k)
+        | Eval.elam(env1, b) => fun (k : Kont) => step1 (State.seval (Tm.lam b) env1 k)
+        | Eval.eapp(env1, f, a, cenv, body, va, v1, hf, ha, hbody) => fun (k : Kont) =>
+            Steps.sstep (State.seval (Tm.app f a) env1 k) (State.sret v1 k)
+              (strans (State.seval f env1 (Kont.kapp1 env1 a k))
+                      (State.sret (Val.vclos cenv body) (Kont.kapp1 env1 a k)) (State.sret v1 k)
+                (hf.rec (Kont.kapp1 env1 a k))
+                (Steps.sstep (State.sret (Val.vclos cenv body) (Kont.kapp1 env1 a k)) (State.sret v1 k)
+                  (strans (State.seval a env1 (Kont.kapp2 (Val.vclos cenv body) k))
+                          (State.sret va (Kont.kapp2 (Val.vclos cenv body) k)) (State.sret v1 k)
+                    (ha.rec (Kont.kapp2 (Val.vclos cenv body) k))
+                    (Steps.sstep (State.sret va (Kont.kapp2 (Val.vclos cenv body) k)) (State.sret v1 k)
+                      (hbody.rec k)))))
+        | Eval.eadd(env1, x, y, m, n, hx, hy) => fun (k : Kont) =>
+            Steps.sstep (State.seval (Tm.add x y) env1 k) (State.sret (Val.vnat (addN(m)(n))) k)
+              (strans (State.seval x env1 (Kont.kadd1 env1 y k))
+                      (State.sret (Val.vnat m) (Kont.kadd1 env1 y k))
+                      (State.sret (Val.vnat (addN(m)(n))) k)
+                (hx.rec (Kont.kadd1 env1 y k))
+                (Steps.sstep (State.sret (Val.vnat m) (Kont.kadd1 env1 y k))
+                             (State.sret (Val.vnat (addN(m)(n))) k)
+                  (strans (State.seval y env1 (Kont.kadd2 m k))
+                          (State.sret (Val.vnat n) (Kont.kadd2 m k))
+                          (State.sret (Val.vnat (addN(m)(n))) k)
+                    (hy.rec (Kont.kadd2 m k))
+                    (Steps.sstep (State.sret (Val.vnat n) (Kont.kadd2 m k))
+                                 (State.sret (Val.vnat (addN(m)(n))) k)
+                      (Steps.srefl (State.sret (Val.vnat (addN(m)(n))) k))))))
+        | Eval.eif0(env1, c, t, e2, v1, hc, ht) => fun (k : Kont) =>
+            Steps.sstep (State.seval (Tm.ifz c t e2) env1 k) (State.sret v1 k)
+              (strans (State.seval c env1 (Kont.kifz env1 t e2 k))
+                      (State.sret (Val.vnat Nat.zero) (Kont.kifz env1 t e2 k)) (State.sret v1 k)
+                (hc.rec (Kont.kifz env1 t e2 k))
+                (Steps.sstep (State.sret (Val.vnat Nat.zero) (Kont.kifz env1 t e2 k)) (State.sret v1 k)
+                  (ht.rec k)))
+        | Eval.eifS(env1, c, t, e2, m, v1, hc, he) => fun (k : Kont) =>
+            Steps.sstep (State.seval (Tm.ifz c t e2) env1 k) (State.sret v1 k)
+              (strans (State.seval c env1 (Kont.kifz env1 t e2 k))
+                      (State.sret (Val.vnat (Nat.succ m)) (Kont.kifz env1 t e2 k)) (State.sret v1 k)
+                (hc.rec (Kont.kifz env1 t e2 k))
+                (Steps.sstep (State.sret (Val.vnat (Nat.succ m)) (Kont.kifz env1 t e2 k)) (State.sret v1 k)
+                  (he.rec k)))
+      }
+
+    -- ADEQUACY: a closed big-step evaluation is realised by the loaded machine, which steps
+    -- all the way to the final answer `sdone v`.
+    def adequacy (e : Tm) (v : Val) (h : Eval Env.enil e v) : Steps (load e) (State.sdone v) :=
+      strans (load e) (State.sret v Kont.kdone) (State.sdone v)
+        (sim Env.enil e v h Kont.kdone)
+        (step1 (State.sret v Kont.kdone))
+"#;
+
+/// The machine session plus the [`ADEQUACY`] big-step semantics and forward-simulation proof.
+pub fn adequacy_session() -> Result<Session, String> {
+    let mut s = session()?;
+    s.run(ADEQUACY)?;
+    Ok(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -903,6 +1010,17 @@ mod tests {
         let s = preserv_session().expect("CEK machine type-safety should kernel-check");
         for n in ["preservation", "notStuck", "runPreserv", "neverStuck", "answerWellTyped"] {
             assert!(s.k.env().contains(n), "missing safety theorem: {n}");
+        }
+    }
+
+    #[test]
+    fn adequacy_kernel_checks() {
+        // The big-step semantics, the forward-simulation lemma, and the closed-term adequacy
+        // corollary (the machine computes the value the declarative semantics assigns) are
+        // verified by the kernel.
+        let s = adequacy_session().expect("CEK adequacy should kernel-check");
+        for n in ["Eval", "Steps", "strans", "sim", "adequacy"] {
+            assert!(s.k.env().contains(n), "missing adequacy item: {n}");
         }
     }
 
