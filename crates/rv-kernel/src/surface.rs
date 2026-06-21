@@ -813,6 +813,111 @@ impl Parser {
         Ok(ps)
     }
 
+    /// Parse a Rust-like `enum` (data or indexed relation) and desugar it to an inductive.
+    fn enum_command(&mut self) -> Result<Command, String> {
+        self.expect(&Tok::KwEnum)?;
+        let name = self.ident()?;
+        let levels = self.level_decl()?;
+        // Optional index binders `(i0: T0, i1: T1, ...)` — these are the inductive's indices.
+        let mut indices: Vec<(String, Expr)> = Vec::new();
+        if self.eat(&Tok::LParen) {
+            if !self.at(&Tok::RParen) {
+                loop {
+                    let iname = self.ident()?;
+                    self.expect(&Tok::Colon)?;
+                    let ity = self.expr()?;
+                    indices.push((iname, ity));
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.expect(&Tok::RParen)?;
+        }
+        // Optional result sort `-> Prop` / `-> Type`; defaults to `Type` (data) or, when there
+        // are indices, `Prop` (a relation).
+        let result_sort = if self.eat(&Tok::Arrow) {
+            self.expr()?
+        } else if indices.is_empty() {
+            Expr::Type(0)
+        } else {
+            Expr::Prop
+        };
+        // The type former: `T0 -> T1 -> ... -> Sort`.
+        let result = indices
+            .iter()
+            .rev()
+            .fold(result_sort, |acc, (_, ity)| Expr::Arrow(Box::new(ity.clone()), Box::new(acc)));
+
+        self.expect(&Tok::LBrace)?;
+        let mut ctors = Vec::new();
+        while !self.at(&Tok::RBrace) {
+            let cname = self.ident()?;
+            // Fields: `[name :] Ty`, comma-separated. Named fields may be referenced by later
+            // fields, the `where` clauses, and the conclusion (dependent constructors).
+            let mut fields: Vec<(Option<String>, Expr)> = Vec::new();
+            if self.eat(&Tok::LParen) {
+                if !self.at(&Tok::RParen) {
+                    loop {
+                        // Look ahead for `ident :` (a named field) vs a bare type.
+                        let named = matches!(self.peek(), Some(Tok::Ident(_)))
+                            && matches!(self.toks.get(self.pos + 1), Some(Tok::Colon));
+                        if named {
+                            let fname = self.ident()?;
+                            self.expect(&Tok::Colon)?;
+                            fields.push((Some(fname), self.expr()?));
+                        } else {
+                            fields.push((None, self.expr()?));
+                        }
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&Tok::RParen)?;
+            }
+            // Optional `where i == e, ...` pinning the conclusion's indices.
+            let mut pinned: Vec<(String, Expr)> = Vec::new();
+            if self.eat(&Tok::KwWhere) {
+                loop {
+                    let iname = self.ident()?;
+                    self.expect(&Tok::EqEq)?;
+                    pinned.push((iname, self.app()?));
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+            }
+            // Build the constructor type: bind the unpinned indices (in header order), then the
+            // fields, concluding `Name idx0' … idxN'` (pinned indices use their `where` value).
+            let pin = |nm: &str| pinned.iter().find(|(k, _)| k == nm).map(|(_, e)| e.clone());
+            let mut concl = Expr::Var(name.clone(), None);
+            for (iname, _) in &indices {
+                let arg = pin(iname).unwrap_or_else(|| Expr::Var(iname.clone(), None));
+                concl = Expr::App(Box::new(concl), Box::new(arg));
+            }
+            // Binders, outermost-first: unpinned indices, then fields.
+            let mut binders: Vec<(Option<String>, Expr)> = Vec::new();
+            for (iname, ity) in &indices {
+                if pin(iname).is_none() {
+                    binders.push((Some(iname.clone()), ity.clone()));
+                }
+            }
+            binders.extend(fields);
+            let cty = binders.into_iter().rev().fold(concl, |acc, (nm, ty)| match nm {
+                Some(n) => Expr::Pi(
+                    Box::new(Binder { names: vec![n], ty, implicit: false }),
+                    Box::new(acc),
+                ),
+                None => Expr::Arrow(Box::new(ty), Box::new(acc)),
+            });
+            ctors.push((cname, cty));
+            let _ = self.eat(&Tok::Comma) || self.eat(&Tok::Semi); // optional separator
+        }
+        self.expect(&Tok::RBrace)?;
+        Ok(Command::Inductive { name, levels, params: Vec::new(), result, ctors })
+    }
+
     fn command(&mut self) -> Result<Command, String> {
         match self.peek().cloned() {
             Some(Tok::KwDef) => {
@@ -851,40 +956,13 @@ impl Parser {
                 }
                 Ok(Command::Inductive { name, levels, params, result, ctors })
             }
-            // Rust-like data declaration: `enum Name { V1, V2(T1, T2), ... }` desugars to a
-            // (non-indexed, `Type`-valued) inductive. Each variant's tuple fields become the
-            // constructor's argument types (`V2(T1, T2)` -> `T1 -> T2 -> Name`).
-            Some(Tok::KwEnum) => {
-                self.bump();
-                let name = self.ident()?;
-                let levels = self.level_decl()?;
-                self.expect(&Tok::LBrace)?;
-                let self_ref = Expr::Var(name.clone(), None);
-                let mut ctors = Vec::new();
-                while !self.at(&Tok::RBrace) {
-                    let cname = self.ident()?;
-                    let mut fields = Vec::new();
-                    if self.eat(&Tok::LParen) {
-                        if !self.at(&Tok::RParen) {
-                            loop {
-                                fields.push(self.expr()?);
-                                if !self.eat(&Tok::Comma) {
-                                    break;
-                                }
-                            }
-                        }
-                        self.expect(&Tok::RParen)?;
-                    }
-                    // ctor type: field0 -> field1 -> ... -> Name
-                    let cty = fields.into_iter().rev().fold(self_ref.clone(), |acc, f| {
-                        Expr::Arrow(Box::new(f), Box::new(acc))
-                    });
-                    ctors.push((cname, cty));
-                    self.eat(&Tok::Comma); // optional separator/trailing comma
-                }
-                self.expect(&Tok::RBrace)?;
-                Ok(Command::Inductive { name, levels, params: Vec::new(), result: Expr::Type(0), ctors })
-            }
+            // Rust-like data / relation declaration. Two forms:
+            //   data:     `enum Name { V1, V2(T1, T2), ... }`  (Type-valued, positional fields)
+            //   relation: `enum R(i0: T0, ...) -> Prop { C(f: T, ...) where i == e, ...; ... }`
+            // The index binders become the inductive's indices; each variant's *unpinned*
+            // indices + fields become the constructor's parameters, and its `where` clauses pin
+            // the indices in the conclusion `R e0 e1 …`.
+            Some(Tok::KwEnum) => self.enum_command(),
             Some(Tok::KwCheck) => {
                 self.bump();
                 Ok(Command::Check(self.expr()?))

@@ -1,0 +1,23 @@
+// Indexed relations in Rust-like Raven (`rvc --verify`).
+//
+// A relation is an `enum` parameterized by its indices; each variant pins the conclusion's
+// indices with a `where` clause. A proof by induction over a derivation is a `match` whose
+// recursive field carries the induction hypothesis (`.rec`).
+
+enum Nat { Zero, Succ(Nat) }
+
+// `Plus(a, b, c)` is evidence that a + b == c.
+enum Plus(a: Nat, b: Nat, c: Nat) -> Prop {
+    PZero(m: Nat)
+        where a == Nat::Zero, b == m, c == m;
+    PSucc(k: Nat, m: Nat, r: Nat, h: Plus(k, m, r))
+        where a == Nat::Succ(k), b == m, c == Nat::Succ(r);
+}
+
+// Induction over a derivation: rebuild it, using the IH (`h.rec`) on the recursive sub-proof.
+fn plus_copy(a: Nat, b: Nat, c: Nat, d: Plus(a, b, c)) -> Plus(a, b, c) {
+    match d {
+      | Plus::PZero(m)             => Plus::PZero(m)
+      | Plus::PSucc(k, m, r, h)    => Plus::PSucc(k, m, r, h.rec)
+    }
+}
