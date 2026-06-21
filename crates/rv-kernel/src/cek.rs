@@ -537,11 +537,14 @@ pub fn safety_session() -> Result<Session, String> {
     Ok(s)
 }
 
-/// **Environment-typing inversion.** `envConsInv` inverts an environment typed at a
-/// non-empty context into a typed head + typed tail (the same VE/TC equations technique as
-/// the value canonical forms), with the supporting no-confusion / injectivity facts for the
-/// `inje`/`injc` injections and the `Ctx` constructors. This is the inversion the
-/// environment-lookup lemma (and the `var` case of preservation) is built from.
+/// **Environment-typing inversion + the lookup lemma.** `envConsInv` inverts an environment
+/// typed at a non-empty context into a typed head + typed tail (the same VE/TC equations
+/// technique as the value canonical forms), with the supporting no-confusion / injectivity
+/// facts for the `inje`/`injc` injections and the `Ctx` constructors. `envLookup` then proves
+/// `HasTyE env G -> Lookup G n A -> HasTyV (lookupEnv n env) A` by induction on the lookup
+/// derivation, using the **convoy pattern** to thread the (environment-abstracted) induction
+/// hypothesis through the inner `econs`-inversion. This is the inversion + lookup the `var`
+/// case of preservation is built from.
 pub const SAFETY_LOOKUP: &str = r#"
     def unInje (w : VE) (d : Env) : Env := match w { | VE.injv(x) => d | VE.inje(y) => y }
     def inje_inj (a : Env) (b : Env) (h : Eq.{1} VE (VE.inje a) (VE.inje b)) : Eq.{1} Env a b :=
@@ -581,6 +584,35 @@ pub const SAFETY_LOOKUP: &str = r#"
       }
     def envConsInv (env : Env) (A : Ty) (G : Ctx) (h : HasTyE env (Ctx.ccons A G)) : EnvConsInv env A G :=
       heInv (VE.inje env) (TC.injc (Ctx.ccons A G)) h env A G (Eq.refl.{1} VE (VE.inje env)) (Eq.refl.{1} TC (TC.injc (Ctx.ccons A G)))
+
+    -- Environment lookup respects typing: if `env : G` and `Lookup G n A`, then the n-th
+    -- value `lookupEnv n env` has type `A`. Proved by *induction on the lookup derivation*
+    -- (the `match` exposes `hl.rec` as the induction hypothesis on the tail). The result type
+    -- is the *curried* `(env) -> HasTyE env G -> HasTyV (lookupEnv n env) A`, so the IH lands
+    -- already abstracted over the environment — essential, since the recursion descends into
+    -- the tail environment, which is not a `Lookup` index. The `there` step needs the *convoy
+    -- pattern*: the inner `envConsInv` match abstracts the index `G2`, but the IH's type still
+    -- mentions `G2`, so the match returns a function still expecting the IH (specialised to the
+    -- branch's `G3`), and we feed it `hl.rec` only after the match has refined the environment.
+    def envLookup (G : Ctx) (n : Nat) (A : Ty) (l : Lookup G n A)
+      : (env : Env) -> HasTyE env G -> HasTyV (lookupEnv n env) A :=
+      match l {
+        | Lookup.here(G2, A2) =>
+            fun (env : Env) (he : HasTyE env (Ctx.ccons A2 G2)) =>
+              match (envConsInv env A2 G2 he) {
+                | EnvConsInv.mkE(v, A3, rest, G3, hv, hrest) => hv
+              }
+        | Lookup.there(G2, A2, B2, n2, hl) =>
+            fun (env : Env) (he : HasTyE env (Ctx.ccons B2 G2)) =>
+              let cvy : (ih2 : (e : Env) -> HasTyE e G2 -> HasTyV (lookupEnv n2 e) A2)
+                          -> HasTyV (lookupEnv (Nat.succ n2) env) A2 :=
+                match (envConsInv env B2 G2 he) {
+                  | EnvConsInv.mkE(v, A3, rest, G3, hv, hrest) =>
+                      fun (ih2 : (e : Env) -> HasTyE e G3 -> HasTyV (lookupEnv n2 e) A2) =>
+                        ih2 rest hrest
+                }
+              in cvy (hl.rec)
+      }
 
 "#;
 
@@ -655,7 +687,7 @@ mod tests {
         // a closure with a well-typed env+body) and the environment-typing inversion are
         // verified — the inversion infrastructure the preservation proof is built from.
         let s = lookup_session().expect("inversion infrastructure should kernel-check");
-        for n in ["canonNat", "canonArr", "envConsInv", "injv_inj", "ve_nc"] {
+        for n in ["canonNat", "canonArr", "envConsInv", "envLookup", "injv_inj", "ve_nc"] {
             assert!(s.k.env().contains(n), "missing lemma: {n}");
         }
     }
