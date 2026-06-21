@@ -255,11 +255,73 @@ pub const MACHINE: &str = r#"
       }
 "#;
 
+/// **The machine-checked metatheory of the driver.** `step` is a *total function*, so
+/// determinism is free; the content here is that the driver halts correctly:
+///
+///  * `step_final` — a **final** state (`sdone`/`sstuck`) is a fixed point of `step`.
+///  * `run_final_fix` — starting from a final state, `run` returns it unchanged for **any**
+///    fuel: once the machine answers, more steps never change the answer.
+///
+/// The non-final cases of `step_final` are discharged by deriving `False` from the
+/// impossible hypothesis `isFinal s = true` (when `isFinal s` computes to `false`).
+pub const META: &str = r#"
+    -- Bool no-confusion: `false ≠ true`.
+    def isFalseProp (b : Bool) : Prop := Bool.rec.{1} (fun (_ : Bool) => Prop) True False b
+    def ff_ne_tt (h : Eq.{1} Bool Bool.false Bool.true) : False :=
+      Eq.rec.{1, 0} Bool Bool.false
+        (fun (b : Bool) (_ : Eq.{1} Bool Bool.false b) => isFalseProp b)
+        True.intro Bool.true h
+
+    -- A final state is a fixed point of `step`. For `seval`/`sret`, `isFinal s` computes to
+    -- `false`, so the hypothesis is absurd and the goal follows by `False.rec`.
+    fn step_final(s: State)
+      -> (Eq.{1} Bool (isFinal s) Bool.true -> Eq.{1} State (step s) s) {
+        match s {
+          | State.sdone(v) => fun (h : Eq.{1} Bool (isFinal (State.sdone v)) Bool.true) =>
+              Eq.refl.{1} State (State.sdone v)
+          | State.sstuck => fun (h : Eq.{1} Bool (isFinal State.sstuck) Bool.true) =>
+              Eq.refl.{1} State State.sstuck
+          | State.seval(t, k) => fun (h : Eq.{1} Bool (isFinal (State.seval t k)) Bool.true) =>
+              False.rec.{0}
+                (fun (_ : False) => Eq.{1} State (step (State.seval t k)) (State.seval t k))
+                (ff_ne_tt h)
+          | State.sret(v, k) => fun (h : Eq.{1} Bool (isFinal (State.sret v k)) Bool.true) =>
+              False.rec.{0}
+                (fun (_ : False) => Eq.{1} State (step (State.sret v k)) (State.sret v k))
+                (ff_ne_tt h)
+        }
+    }
+
+    -- Running a final state for any amount of fuel leaves it unchanged. `run (succ k) s`
+    -- unfolds to `match isFinal s { true => s | false => run k (step s) }`; rewriting
+    -- `isFinal s` to `true` (the hypothesis) collapses it to `s`.
+    fn run_final_fix(n: Nat)
+      -> ((s : State) -> Eq.{1} Bool (isFinal s) Bool.true -> Eq.{1} State (run n s) s) {
+        match n {
+          | Nat.zero => fun (s : State) (h : Eq.{1} Bool (isFinal s) Bool.true) =>
+              Eq.refl.{1} State s
+          | Nat.succ(k) => fun (s : State) (h : Eq.{1} Bool (isFinal s) Bool.true) =>
+              Eq.subst.{1} Bool
+                (fun (b : Bool) =>
+                   Eq.{1} State (match b { | Bool.true => s | Bool.false => run(k)(step(s)) }) s)
+                Bool.true (isFinal s) (Eq.symm.{1} Bool (isFinal s) Bool.true h)
+                (Eq.refl.{1} State s)
+        }
+    }
+"#;
+
 /// The base session: the prelude + the machine, kernel-checked and ready to *run*.
 pub fn session() -> Result<Session, String> {
     let mut s = Session::new();
     s.run(PRELUDE)?;
     s.run(MACHINE)?;
+    Ok(s)
+}
+
+/// The machine session plus the [`META`] driver metatheory (the fixed-point theorems).
+pub fn meta_session() -> Result<Session, String> {
+    let mut s = session()?;
+    s.run(META)?;
     Ok(s)
 }
 
@@ -291,5 +353,13 @@ mod tests {
         let prog = "Tm.app (Tm.lam (Tm.add (Tm.var Nat.zero) (Tm.lit (Nat.succ Nat.zero)))) \
                     (Tm.lit (Nat.succ (Nat.succ Nat.zero)))";
         assert_eq!(eval(prog, 20), "3");
+    }
+
+    #[test]
+    fn driver_metatheory_kernel_checks() {
+        // The fixed-point theorems (step_final, run_final_fix) are verified by the kernel.
+        let s = meta_session().expect("driver metatheory should kernel-check");
+        assert!(s.k.env().contains("step_final"));
+        assert!(s.k.env().contains("run_final_fix"));
     }
 }
