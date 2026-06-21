@@ -649,6 +649,8 @@ pub fn lookup_session() -> Result<Session, String> {
 ///  * `neverStuck : HasTyS s B -> (run n s = sstuck -> False)` — **type safety**: a well-typed
 ///    program, run for any fuel, never reaches the stuck state. Effects make this sharp:
 ///    `op`/`handle` are deliberately untypable, so a well-typed program is effect-free.
+///  * `answerWellTyped : HasTyS s B -> (run n s = sdone v) -> HasTyV v B` — the positive
+///    direction: when a well-typed program does halt with an answer, the answer has its type.
 pub const SAFETY_PRESERV: &str = r#"
     -- Preservation, `seval` half: recurse on the term-typing derivation. Each arm refines the
     -- term, `step` fires the matching transition, and the (convoyed) env/continuation typings
@@ -786,6 +788,42 @@ pub const SAFETY_PRESERV: &str = r#"
     def neverStuck (n : Nat) (s : State) (B : Ty) (h : HasTyS s B)
       : Eq.{1} State (run(n)(s)) State.sstuck -> False :=
       notStuck (run(n)(s)) B (runPreserv B n s h)
+
+    -- No-confusion + injectivity for `sdone`, used to invert a state proved equal to `sdone v`.
+    def isDoneP (s : State) : Prop :=
+      match s { | State.sdone(v) => True | State.sstuck => False
+               | State.seval(t, e, k) => False | State.sret(v, k) => False }
+    def sdoneArg (s : State) (d : Val) : Val :=
+      match s { | State.sdone(v) => v | State.sstuck => d
+               | State.seval(t, e, k) => d | State.sret(v, k) => d }
+    def sdone_inj (a : Val) (b : Val) (h : Eq.{1} State (State.sdone a) (State.sdone b)) : Eq.{1} Val a b :=
+      congrArg.{1, 1} State Val (fun (s : State) => sdoneArg s a) (State.sdone a) (State.sdone b) h
+
+    -- Invert a typed state that is provably `sdone v`: the value carries the state's type.
+    def hsDone (s : State) (B : Ty) (h : HasTyS s B)
+      : (v : Val) -> Eq.{1} State s (State.sdone v) -> HasTyV v B :=
+      match h {
+        | HasTyS.stseval(t, env, G, k, A, Bb, he, ht, hk) =>
+            fun (v : Val) (e : Eq.{1} State (State.seval t env k) (State.sdone v)) =>
+              False.rec.{0} (fun (_ : False) => HasTyV v Bb)
+                (Eq.subst.{1} State isDoneP (State.sdone v) (State.seval t env k)
+                  (Eq.symm.{1} State (State.seval t env k) (State.sdone v) e) True.intro)
+        | HasTyS.stsret(v2, k, A, Bb, hv, hk) =>
+            fun (v : Val) (e : Eq.{1} State (State.sret v2 k) (State.sdone v)) =>
+              False.rec.{0} (fun (_ : False) => HasTyV v Bb)
+                (Eq.subst.{1} State isDoneP (State.sdone v) (State.sret v2 k)
+                  (Eq.symm.{1} State (State.sret v2 k) (State.sdone v) e) True.intro)
+        | HasTyS.stsdone(v2, Bb, hv) =>
+            fun (v : Val) (e : Eq.{1} State (State.sdone v2) (State.sdone v)) =>
+              Eq.subst.{1} Val (fun (w : Val) => HasTyV w Bb) v2 v (sdone_inj v2 v e) hv
+      }
+
+    -- CAPSTONE: if a well-typed program runs (with some fuel) to a final answer `v`, then `v`
+    -- has the program's type. (Type safety, the positive direction: not just "never stuck",
+    -- but "the answer is well-typed".)
+    def answerWellTyped (n : Nat) (s : State) (B : Ty) (v : Val)
+      (h : HasTyS s B) (e : Eq.{1} State (run(n)(s)) (State.sdone v)) : HasTyV v B :=
+      hsDone (run(n)(s)) B (runPreserv B n s h) v e
 "#;
 
 /// The lookup session plus the [`SAFETY_PRESERV`] proofs: preservation, progress, and the
@@ -863,7 +901,7 @@ mod tests {
         // Preservation, progress (notStuck), driver preservation, and the run-level safety
         // corollary (neverStuck) for the CEK machine are all verified by the kernel.
         let s = preserv_session().expect("CEK machine type-safety should kernel-check");
-        for n in ["preservation", "notStuck", "runPreserv", "neverStuck"] {
+        for n in ["preservation", "notStuck", "runPreserv", "neverStuck", "answerWellTyped"] {
             assert!(s.k.env().contains(n), "missing safety theorem: {n}");
         }
     }
