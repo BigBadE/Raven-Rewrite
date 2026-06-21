@@ -454,11 +454,147 @@ pub const SAFETY: &str = r#"
       | stsdone : (v : Val) -> (B : Ty) -> HasTyV v B -> HasTyS (State.sdone v) B
 "#;
 
+/// **Inversion infrastructure** for value typing. Because `HasTyV`/`HasTyE` share the
+/// `HasTyVE` inductive through the `VE`/`TC` injections, a plain `match` on a value-typing
+/// proof cannot refine the underlying value (its index is `injv v`, not `v`). So the
+/// canonical-forms lemmas use the standard inversion-via-equalities trick — generalise the
+/// indices, then recover the value with `injv`-injectivity and rule out the impossible
+/// constructors with no-confusion. The results are packaged in `NatInv`/`ClosInv`, whose
+/// indices are the value *directly*, so the preservation proof can `match` them cleanly.
+pub const SAFETY_INV: &str = r#"
+    def congrArg.{u, v} (A : Sort u) (B : Sort v) (f : A -> B) (a : A) (b : A) (h : Eq.{u} A a b)
+      : Eq.{v} B (f a) (f b) := Eq.subst.{u} A (fun (x : A) => Eq.{v} B (f a) (f x)) a b h (Eq.refl.{v} B (f a))
+
+    -- No-confusion: the VE / TC injections and the Ty constructors are distinct.
+    def veIsV (w : VE) : Prop := match w { | VE.injv(x) => True | VE.inje(y) => False }
+    def ve_nc (e : Env) (v : Val) (h : Eq.{1} VE (VE.inje e) (VE.injv v)) : False :=
+      Eq.subst.{1} VE veIsV (VE.injv v) (VE.inje e) (Eq.symm.{1} VE (VE.inje e) (VE.injv v) h) True.intro
+    def tyIsNat (t : Ty) : Prop := match t { | Ty.tnat => True | Ty.tarr(a, b) => False }
+    def ty_nc (a : Ty) (b : Ty) (h : Eq.{1} Ty (Ty.tarr a b) Ty.tnat) : False :=
+      Eq.subst.{1} Ty tyIsNat Ty.tnat (Ty.tarr a b) (Eq.symm.{1} Ty (Ty.tarr a b) Ty.tnat h) True.intro
+
+    -- Injectivity of the injections and of `tarr`, via projection + congrArg.
+    def unInjv (w : VE) (d : Val) : Val := match w { | VE.injv(x) => x | VE.inje(y) => d }
+    def injv_inj (a : Val) (b : Val) (h : Eq.{1} VE (VE.injv a) (VE.injv b)) : Eq.{1} Val a b :=
+      congrArg.{1, 1} VE Val (fun (w : VE) => unInjv w a) (VE.injv a) (VE.injv b) h
+    def unInjt (w : TC) (d : Ty) : Ty := match w { | TC.injt(x) => x | TC.injc(y) => d }
+    def injt_inj (a : Ty) (b : Ty) (h : Eq.{1} TC (TC.injt a) (TC.injt b)) : Eq.{1} Ty a b :=
+      congrArg.{1, 1} TC Ty (fun (w : TC) => unInjt w a) (TC.injt a) (TC.injt b) h
+    def tarrDom (t : Ty) (d : Ty) : Ty := match t { | Ty.tnat => d | Ty.tarr(a, b) => a }
+    def tarrCod (t : Ty) (d : Ty) : Ty := match t { | Ty.tnat => d | Ty.tarr(a, b) => b }
+    def tarr_inj_dom (a : Ty) (b : Ty) (c : Ty) (d : Ty) (h : Eq.{1} Ty (Ty.tarr a b) (Ty.tarr c d)) : Eq.{1} Ty a c :=
+      congrArg.{1, 1} Ty Ty (fun (t : Ty) => tarrDom t a) (Ty.tarr a b) (Ty.tarr c d) h
+    def tarr_inj_cod (a : Ty) (b : Ty) (c : Ty) (d : Ty) (h : Eq.{1} Ty (Ty.tarr a b) (Ty.tarr c d)) : Eq.{1} Ty b d :=
+      congrArg.{1, 1} Ty Ty (fun (t : Ty) => tarrCod t b) (Ty.tarr a b) (Ty.tarr c d) h
+
+    -- Canonical-form packages (indexed by the value directly).
+    inductive NatInv : Val -> Prop | mkN : (n : Nat) -> NatInv (Val.vnat n)
+    inductive ClosInv : Val -> Ty -> Ty -> Prop
+      | mkC : (cenv : Env) -> (G : Ctx) -> (body : Tm) -> (C : Ty) -> (D : Ty)
+                -> HasTyE cenv G -> HasTy (Ctx.ccons C G) body D -> ClosInv (Val.vclos cenv body) C D
+
+    -- A well-typed value of type `tnat` is a `vnat`.
+    def hvNat (ve : VE) (tc : TC) (h : HasTyVE ve tc)
+      : (v : Val) -> Eq.{1} VE ve (VE.injv v) -> Eq.{1} TC tc (TC.injt Ty.tnat) -> NatInv v :=
+      match h {
+        | HasTyVE.vtnat(n) => fun (v : Val) (ev : Eq.{1} VE (VE.injv (Val.vnat n)) (VE.injv v)) (et : Eq.{1} TC (TC.injt Ty.tnat) (TC.injt Ty.tnat)) =>
+            Eq.subst.{1} Val NatInv (Val.vnat n) v (injv_inj (Val.vnat n) v ev) (NatInv.mkN n)
+        | HasTyVE.vtclos(env, G, b, A, B, he, hb) => fun (v : Val) (ev : Eq.{1} VE (VE.injv (Val.vclos env b)) (VE.injv v)) (et : Eq.{1} TC (TC.injt (Ty.tarr A B)) (TC.injt Ty.tnat)) =>
+            False.rec.{0} (fun (_ : False) => NatInv v) (ty_nc A B (injt_inj (Ty.tarr A B) Ty.tnat et))
+        | HasTyVE.etnil => fun (v : Val) (ev : Eq.{1} VE (VE.inje Env.enil) (VE.injv v)) (et : Eq.{1} TC (TC.injc Ctx.cnil) (TC.injt Ty.tnat)) =>
+            False.rec.{0} (fun (_ : False) => NatInv v) (ve_nc Env.enil v ev)
+        | HasTyVE.etcons(v2, A2, rest, G2, hv2, he2) => fun (v : Val) (ev : Eq.{1} VE (VE.inje (Env.econs v2 rest)) (VE.injv v)) (et : Eq.{1} TC (TC.injc (Ctx.ccons A2 G2)) (TC.injt Ty.tnat)) =>
+            False.rec.{0} (fun (_ : False) => NatInv v) (ve_nc (Env.econs v2 rest) v ev)
+      }
+    def canonNat (v : Val) (h : HasTyV v Ty.tnat) : NatInv v :=
+      hvNat (VE.injv v) (TC.injt Ty.tnat) h v (Eq.refl.{1} VE (VE.injv v)) (Eq.refl.{1} TC (TC.injt Ty.tnat))
+
+    -- A well-typed value of type `tarr C D` is a closure with a well-typed env and body.
+    def hvArr (ve : VE) (tc : TC) (h : HasTyVE ve tc)
+      : (v : Val) -> (C : Ty) -> (D : Ty) -> Eq.{1} VE ve (VE.injv v) -> Eq.{1} TC tc (TC.injt (Ty.tarr C D)) -> ClosInv v C D :=
+      match h {
+        | HasTyVE.vtnat(n) => fun (v : Val) (C : Ty) (D : Ty) (ev : Eq.{1} VE (VE.injv (Val.vnat n)) (VE.injv v)) (et : Eq.{1} TC (TC.injt Ty.tnat) (TC.injt (Ty.tarr C D))) =>
+            False.rec.{0} (fun (_ : False) => ClosInv v C D) (ty_nc C D (Eq.symm.{1} Ty Ty.tnat (Ty.tarr C D) (injt_inj Ty.tnat (Ty.tarr C D) et)))
+        | HasTyVE.vtclos(env, G, b, A, B, he, hb) => fun (v : Val) (C : Ty) (D : Ty) (ev : Eq.{1} VE (VE.injv (Val.vclos env b)) (VE.injv v)) (et : Eq.{1} TC (TC.injt (Ty.tarr A B)) (TC.injt (Ty.tarr C D))) =>
+            Eq.subst.{1} Val (fun (w : Val) => ClosInv w C D) (Val.vclos env b) v (injv_inj (Val.vclos env b) v ev)
+              (Eq.subst.{1} Ty (fun (cc : Ty) => ClosInv (Val.vclos env b) cc D) A C (tarr_inj_dom A B C D (injt_inj (Ty.tarr A B) (Ty.tarr C D) et))
+                (Eq.subst.{1} Ty (fun (dd : Ty) => ClosInv (Val.vclos env b) A dd) B D (tarr_inj_cod A B C D (injt_inj (Ty.tarr A B) (Ty.tarr C D) et))
+                  (ClosInv.mkC env G b A B he hb)))
+        | HasTyVE.etnil => fun (v : Val) (C : Ty) (D : Ty) (ev : Eq.{1} VE (VE.inje Env.enil) (VE.injv v)) (et : Eq.{1} TC (TC.injc Ctx.cnil) (TC.injt (Ty.tarr C D))) =>
+            False.rec.{0} (fun (_ : False) => ClosInv v C D) (ve_nc Env.enil v ev)
+        | HasTyVE.etcons(v2, A2, rest, G2, hv2, he2) => fun (v : Val) (C : Ty) (D : Ty) (ev : Eq.{1} VE (VE.inje (Env.econs v2 rest)) (VE.injv v)) (et : Eq.{1} TC (TC.injc (Ctx.ccons A2 G2)) (TC.injt (Ty.tarr C D))) =>
+            False.rec.{0} (fun (_ : False) => ClosInv v C D) (ve_nc (Env.econs v2 rest) v ev)
+      }
+    def canonArr (v : Val) (C : Ty) (D : Ty) (h : HasTyV v (Ty.tarr C D)) : ClosInv v C D :=
+      hvArr (VE.injv v) (TC.injt (Ty.tarr C D)) h v C D (Eq.refl.{1} VE (VE.injv v)) (Eq.refl.{1} TC (TC.injt (Ty.tarr C D)))
+"#;
+
 /// The machine session plus the [`SAFETY`] type system (relations only; the metatheory
 /// proofs are layered on top in further sessions).
 pub fn safety_session() -> Result<Session, String> {
     let mut s = session()?;
     s.run(SAFETY)?;
+    Ok(s)
+}
+
+/// **Environment-typing inversion.** `envConsInv` inverts an environment typed at a
+/// non-empty context into a typed head + typed tail (the same VE/TC equations technique as
+/// the value canonical forms), with the supporting no-confusion / injectivity facts for the
+/// `inje`/`injc` injections and the `Ctx` constructors. This is the inversion the
+/// environment-lookup lemma (and the `var` case of preservation) is built from.
+pub const SAFETY_LOOKUP: &str = r#"
+    def unInje (w : VE) (d : Env) : Env := match w { | VE.injv(x) => d | VE.inje(y) => y }
+    def inje_inj (a : Env) (b : Env) (h : Eq.{1} VE (VE.inje a) (VE.inje b)) : Eq.{1} Env a b :=
+      congrArg.{1, 1} VE Env (fun (w : VE) => unInje w a) (VE.inje a) (VE.inje b) h
+    def unInjc (w : TC) (d : Ctx) : Ctx := match w { | TC.injt(x) => d | TC.injc(y) => y }
+    def injc_inj (a : Ctx) (b : Ctx) (h : Eq.{1} TC (TC.injc a) (TC.injc b)) : Eq.{1} Ctx a b :=
+      congrArg.{1, 1} TC Ctx (fun (w : TC) => unInjc w a) (TC.injc a) (TC.injc b) h
+    def ctxIsCons (c : Ctx) : Prop := match c { | Ctx.cnil => False | Ctx.ccons(A, G) => True }
+    def ctx_nc (A : Ty) (G : Ctx) (h : Eq.{1} Ctx (Ctx.ccons A G) Ctx.cnil) : False :=
+      Eq.subst.{1} Ctx ctxIsCons (Ctx.ccons A G) Ctx.cnil h True.intro
+    def cconsHd (c : Ctx) (d : Ty) : Ty := match c { | Ctx.cnil => d | Ctx.ccons(A, G) => A }
+    def cconsTl (c : Ctx) (d : Ctx) : Ctx := match c { | Ctx.cnil => d | Ctx.ccons(A, G) => G }
+    def ccons_inj_hd (A : Ty) (G : Ctx) (A2 : Ty) (G2 : Ctx) (h : Eq.{1} Ctx (Ctx.ccons A G) (Ctx.ccons A2 G2)) : Eq.{1} Ty A A2 :=
+      congrArg.{1, 1} Ctx Ty (fun (c : Ctx) => cconsHd c A) (Ctx.ccons A G) (Ctx.ccons A2 G2) h
+    def ccons_inj_tl (A : Ty) (G : Ctx) (A2 : Ty) (G2 : Ctx) (h : Eq.{1} Ctx (Ctx.ccons A G) (Ctx.ccons A2 G2)) : Eq.{1} Ctx G G2 :=
+      congrArg.{1, 1} Ctx Ctx (fun (c : Ctx) => cconsTl c G) (Ctx.ccons A G) (Ctx.ccons A2 G2) h
+
+    -- Invert an environment typed at a non-empty context: it is an `econs` of a typed head
+    -- and a typed tail.
+    inductive EnvConsInv : Env -> Ty -> Ctx -> Prop
+      | mkE : (v : Val) -> (A : Ty) -> (rest : Env) -> (G : Ctx)
+                -> HasTyV v A -> HasTyE rest G -> EnvConsInv (Env.econs v rest) A G
+    def heInv (ve : VE) (tc : TC) (h : HasTyVE ve tc)
+      : (env : Env) -> (A : Ty) -> (G : Ctx) -> Eq.{1} VE ve (VE.inje env) -> Eq.{1} TC tc (TC.injc (Ctx.ccons A G)) -> EnvConsInv env A G :=
+      match h {
+        | HasTyVE.vtnat(n) => fun (env : Env) (A : Ty) (G : Ctx) (ev : Eq.{1} VE (VE.injv (Val.vnat n)) (VE.inje env)) (et : Eq.{1} TC (TC.injt Ty.tnat) (TC.injc (Ctx.ccons A G))) =>
+            False.rec.{0} (fun (_ : False) => EnvConsInv env A G) (ve_nc env (Val.vnat n) (Eq.symm.{1} VE (VE.injv (Val.vnat n)) (VE.inje env) ev))
+        | HasTyVE.vtclos(env2, G2, b, A2, B2, he, hb) => fun (env : Env) (A : Ty) (G : Ctx) (ev : Eq.{1} VE (VE.injv (Val.vclos env2 b)) (VE.inje env)) (et : Eq.{1} TC (TC.injt (Ty.tarr A2 B2)) (TC.injc (Ctx.ccons A G))) =>
+            False.rec.{0} (fun (_ : False) => EnvConsInv env A G) (ve_nc env (Val.vclos env2 b) (Eq.symm.{1} VE (VE.injv (Val.vclos env2 b)) (VE.inje env) ev))
+        | HasTyVE.etnil => fun (env : Env) (A : Ty) (G : Ctx) (ev : Eq.{1} VE (VE.inje Env.enil) (VE.inje env)) (et : Eq.{1} TC (TC.injc Ctx.cnil) (TC.injc (Ctx.ccons A G))) =>
+            False.rec.{0} (fun (_ : False) => EnvConsInv env A G) (ctx_nc A G (Eq.symm.{1} Ctx Ctx.cnil (Ctx.ccons A G) (injc_inj Ctx.cnil (Ctx.ccons A G) et)))
+        | HasTyVE.etcons(v2, A2, rest2, G2, hv2, he2) => fun (env : Env) (A : Ty) (G : Ctx) (ev : Eq.{1} VE (VE.inje (Env.econs v2 rest2)) (VE.inje env)) (et : Eq.{1} TC (TC.injc (Ctx.ccons A2 G2)) (TC.injc (Ctx.ccons A G))) =>
+            Eq.subst.{1} Env (fun (e : Env) => EnvConsInv e A G) (Env.econs v2 rest2) env (inje_inj (Env.econs v2 rest2) env ev)
+              (Eq.subst.{1} Ty (fun (aa : Ty) => EnvConsInv (Env.econs v2 rest2) aa G) A2 A (ccons_inj_hd A2 G2 A G (injc_inj (Ctx.ccons A2 G2) (Ctx.ccons A G) et))
+                (Eq.subst.{1} Ctx (fun (gg : Ctx) => EnvConsInv (Env.econs v2 rest2) A2 gg) G2 G (ccons_inj_tl A2 G2 A G (injc_inj (Ctx.ccons A2 G2) (Ctx.ccons A G) et))
+                  (EnvConsInv.mkE v2 A2 rest2 G2 hv2 he2)))
+      }
+    def envConsInv (env : Env) (A : Ty) (G : Ctx) (h : HasTyE env (Ctx.ccons A G)) : EnvConsInv env A G :=
+      heInv (VE.inje env) (TC.injc (Ctx.ccons A G)) h env A G (Eq.refl.{1} VE (VE.inje env)) (Eq.refl.{1} TC (TC.injc (Ctx.ccons A G)))
+
+"#;
+
+/// The safety session plus the [`SAFETY_INV`] inversion infrastructure (canonical forms).
+pub fn inv_session() -> Result<Session, String> {
+    let mut s = safety_session()?;
+    s.run(SAFETY_INV)?;
+    Ok(s)
+}
+
+/// The inversion session plus the [`SAFETY_LOOKUP`] environment-typing inversion.
+pub fn lookup_session() -> Result<Session, String> {
+    let mut s = inv_session()?;
+    s.run(SAFETY_LOOKUP)?;
     Ok(s)
 }
 
@@ -510,6 +646,17 @@ mod tests {
         let s = safety_session().expect("machine type system should kernel-check");
         for n in ["HasTy", "HasTyVE", "HasTyV", "HasTyE", "HasTyK", "HasTyS"] {
             assert!(s.k.env().contains(n), "missing relation: {n}");
+        }
+    }
+
+    #[test]
+    fn canonical_forms_and_inversions_kernel_check() {
+        // The value canonical forms (a well-typed `tnat` value is a `vnat`; a `tarr` value is
+        // a closure with a well-typed env+body) and the environment-typing inversion are
+        // verified — the inversion infrastructure the preservation proof is built from.
+        let s = lookup_session().expect("inversion infrastructure should kernel-check");
+        for n in ["canonNat", "canonArr", "envConsInv", "injv_inj", "ve_nc"] {
+            assert!(s.k.env().contains(n), "missing lemma: {n}");
         }
     }
 
