@@ -34,11 +34,13 @@
 //!    conditional), the de Bruijn `shift`/`subst`, the defunctionalised continuation
 //!    `Kont`, the machine `State`, the single-transition `step : State → State`, and the
 //!    fuelled driver `run`.
-//!  * **Effects** (in [`EFFECTS`]) — `Tm.op`/`Tm.handle`: the continuation grows a
-//!    handler frame, and performing an operation unwinds the stack to the nearest handler.
+//!  * **Effects** — `Tm.op`/`Tm.handle` (in [`MACHINE`]): `handle` pushes a handler frame
+//!    onto the continuation, and performing an operation (`op`) **unwinds** the stack to
+//!    the nearest handler, discarding the delimited continuation in between (the
+//!    exception/abort fragment of algebraic effects — no first-class resumption, which
+//!    would require continuation values and so a mutual `Tm`/`Kont`).
 //!
-//! The headline correctness property is in [`META`]; the computational tests pin
-//! behaviour.
+//! The computational tests (`tests/cek_demo.rs`) pin the machine's behaviour end to end.
 
 use crate::verify::Session;
 
@@ -81,7 +83,9 @@ pub const PRELUDE: &str = r#"
         }
     }
 
-    -- The focused core language (de Bruijn variables; only `lam` binds).
+    -- The focused core language (de Bruijn variables; only `lam` binds). The last two
+    -- constructors are the **algebraic effects** layer: `op` performs an operation with a
+    -- payload, and `handle body h` runs `body` under the handler function `h`.
     inductive Tm : Type
       | var : Nat -> Tm
       | lit : Nat -> Tm
@@ -89,6 +93,8 @@ pub const PRELUDE: &str = r#"
       | app : Tm -> Tm -> Tm
       | add : Tm -> Tm -> Tm
       | ifz : Tm -> Tm -> Tm -> Tm    -- ifz s then else  (branch on whether s evaluates to zero)
+      | op  : Tm -> Tm                -- perform an operation carrying the payload term
+      | handle : Tm -> Tm -> Tm       -- handle body with handler `h : payload -> result`
 "#;
 
 /// The machine: de Bruijn substitution, the continuation stack, the state, the transition.
@@ -103,6 +109,8 @@ pub const MACHINE: &str = r#"
           | Tm.app(f, a) => fun (c : Nat) => Tm.app(shift(f)(c), shift(a)(c))
           | Tm.add(x, y) => fun (c : Nat) => Tm.add(shift(x)(c), shift(y)(c))
           | Tm.ifz(s, th, el) => fun (c : Nat) => Tm.ifz(shift(s)(c), shift(th)(c), shift(el)(c))
+          | Tm.op(a) => fun (c : Nat) => Tm.op(shift(a)(c))
+          | Tm.handle(b, h) => fun (c : Nat) => Tm.handle(shift(b)(c), shift(h)(c))
         }
     }
 
@@ -120,6 +128,8 @@ pub const MACHINE: &str = r#"
           | Tm.app(f, a) => fun (j : Nat) (v : Tm) => Tm.app(subst(f)(j)(v), subst(a)(j)(v))
           | Tm.add(x, y) => fun (j : Nat) (v : Tm) => Tm.add(subst(x)(j)(v), subst(y)(j)(v))
           | Tm.ifz(s, th, el) => fun (j : Nat) (v : Tm) => Tm.ifz(subst(s)(j)(v), subst(th)(j)(v), subst(el)(j)(v))
+          | Tm.op(a) => fun (j : Nat) (v : Tm) => Tm.op(subst(a)(j)(v))
+          | Tm.handle(b, h) => fun (j : Nat) (v : Tm) => Tm.handle(subst(b)(j)(v), subst(h)(j)(v))
         }
     }
     -- β: open a λ-body with an argument (substitute it for the bound variable 0).
@@ -130,11 +140,14 @@ pub const MACHINE: &str = r#"
         match t {
           | Tm.var(n) => Bool.false | Tm.lit(n) => Bool.true | Tm.lam(b) => Bool.true
           | Tm.app(f, a) => Bool.false | Tm.add(x, y) => Bool.false | Tm.ifz(s, th, el) => Bool.false
+          | Tm.op(a) => Bool.false | Tm.handle(b, h) => Bool.false
         }
     }
 
     -- The continuation: a defunctionalised "rest of the computation" stack. Each frame is
-    -- one pending elimination, remembering the sub-terms not yet evaluated.
+    -- one pending elimination, remembering the sub-terms not yet evaluated. The last two
+    -- frames belong to the effects layer: `kop` marks "perform the op once the payload is a
+    -- value", and `khandle` is an installed handler waiting while its body runs.
     inductive Kont : Type
       | kdone : Kont
       | kapp1 : Tm -> Kont -> Kont        -- evaluating the function; argument term still to run
@@ -142,6 +155,8 @@ pub const MACHINE: &str = r#"
       | kadd1 : Tm -> Kont -> Kont        -- evaluating the left summand; right term still to run
       | kadd2 : Nat -> Kont -> Kont       -- left summand computed; evaluating the right
       | kifz  : Tm -> Tm -> Kont -> Kont  -- evaluating the scrutinee; both branches pending
+      | kop   : Kont -> Kont              -- payload of a performed operation is being evaluated
+      | khandle : Tm -> Kont -> Kont      -- a handler `h` installed around the running body
 
     -- A machine state: "evaluate C with K", "return value V to K", a final answer, or stuck.
     inductive State : Type
@@ -155,8 +170,26 @@ pub const MACHINE: &str = r#"
                  | State.seval(t, k) => Bool.false | State.sret(v, k) => Bool.false }
     }
 
+    -- UNWIND: an operation has been performed with payload `v`; walk down the continuation
+    -- to the nearest installed handler, discarding the (delimited) frames in between, and
+    -- apply that handler to the payload. No handler on the stack ⇒ an unhandled effect ⇒
+    -- stuck. Recurses on the continuation (an ordinary, non-mutual inductive).
+    fn unwind(k: Kont) -> (Tm -> State) {
+        match k {
+          | Kont.kdone            => fun (v : Tm) => State.sstuck
+          | Kont.khandle(h, k2)   => fun (v : Tm) => State.seval (Tm.app h v) k2
+          | Kont.kop(k2)          => fun (v : Tm) => unwind(k2)(v)
+          | Kont.kapp1(a, k2)     => fun (v : Tm) => unwind(k2)(v)
+          | Kont.kapp2(f, k2)     => fun (v : Tm) => unwind(k2)(v)
+          | Kont.kadd1(y, k2)     => fun (v : Tm) => unwind(k2)(v)
+          | Kont.kadd2(m, k2)     => fun (v : Tm) => unwind(k2)(v)
+          | Kont.kifz(t2, e2, k2) => fun (v : Tm) => unwind(k2)(v)
+        }
+    }
+
     -- THE TRANSITION. One clause per (control shape) and per (continuation frame); a total
-    -- function and a *single* step — no search, no recursion.
+    -- function and a *single* step — no search. (Inner mismatches fall through to `sstuck`,
+    -- the states the type checker rules out.)
     fn step(s: State) -> State {
         match s {
           | State.seval(t, k) =>
@@ -167,6 +200,8 @@ pub const MACHINE: &str = r#"
                 | Tm.app(f, a)      => State.seval f (Kont.kapp1 a k)
                 | Tm.add(x, y)      => State.seval x (Kont.kadd1 y k)
                 | Tm.ifz(c, t2, e2) => State.seval c (Kont.kifz t2 e2 k)
+                | Tm.op(a)          => State.seval a (Kont.kop k)
+                | Tm.handle(b, h)   => State.seval b (Kont.khandle h k)
               }
           | State.sret(v, k) =>
               match k {
@@ -175,27 +210,25 @@ pub const MACHINE: &str = r#"
                 | Kont.kapp2(vf, k2) =>
                     match vf {
                       | Tm.lam(b) => State.seval (open b v) k2
-                      | Tm.var(n) => State.sstuck | Tm.lit(n) => State.sstuck
-                      | Tm.app(f, a) => State.sstuck | Tm.add(x, y) => State.sstuck | Tm.ifz(c, t2, e2) => State.sstuck
+                      | _ => State.sstuck
                     }
                 | Kont.kadd1(y, k2) =>
                     match v {
                       | Tm.lit(m) => State.seval y (Kont.kadd2 m k2)
-                      | Tm.var(n) => State.sstuck | Tm.lam(b) => State.sstuck
-                      | Tm.app(f, a) => State.sstuck | Tm.add(x, y2) => State.sstuck | Tm.ifz(c, t2, e2) => State.sstuck
+                      | _ => State.sstuck
                     }
                 | Kont.kadd2(m, k2) =>
                     match v {
                       | Tm.lit(n) => State.sret (Tm.lit (addN(m)(n))) k2
-                      | Tm.var(n) => State.sstuck | Tm.lam(b) => State.sstuck
-                      | Tm.app(f, a) => State.sstuck | Tm.add(x, y2) => State.sstuck | Tm.ifz(c, t2, e2) => State.sstuck
+                      | _ => State.sstuck
                     }
                 | Kont.kifz(t2, e2, k2) =>
                     match v {
                       | Tm.lit(n) => match n { | Nat.zero => State.seval t2 k2 | Nat.succ(m) => State.seval e2 k2 }
-                      | Tm.var(n) => State.sstuck | Tm.lam(b) => State.sstuck
-                      | Tm.app(f, a) => State.sstuck | Tm.add(x, y2) => State.sstuck | Tm.ifz(c, t3, e3) => State.sstuck
+                      | _ => State.sstuck
                     }
+                | Kont.kop(k2) => unwind(k2)(v)              -- payload evaluated: perform the effect
+                | Kont.khandle(h, k2) => State.sret v k2     -- body finished normally: discard the handler
               }
           | State.sdone(v) => State.sdone v
           | State.sstuck => State.sstuck
@@ -215,12 +248,7 @@ pub const MACHINE: &str = r#"
     def load (t : Tm) : State := State.seval t Kont.kdone
     def evalNat (fuel : Nat) (t : Tm) : Nat :=
       match run(fuel)(load(t)) {
-        | State.sdone(v) =>
-            match v {
-              | Tm.lit(n) => n
-              | Tm.var(n) => Nat.zero | Tm.lam(b) => Nat.zero
-              | Tm.app(f, a) => Nat.zero | Tm.add(x, y) => Nat.zero | Tm.ifz(c, t2, e2) => Nat.zero
-            }
+        | State.sdone(v) => match v { | Tm.lit(n) => n | _ => Nat.zero }
         | State.sret(v, k) => Nat.zero
         | State.seval(t2, k) => Nat.zero
         | State.sstuck => Nat.zero
