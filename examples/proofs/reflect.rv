@@ -1,0 +1,67 @@
+// Proof by reflection in Rust-like Raven — the kernel-surface `reflect.rs` reprover. A
+// `Decidable p` is informative (lives in `Type`): it carries either a proof of `p` or a
+// refutation, so it can be *eliminated to compute a `Bool`*. `of_decide_eq_true` is the
+// reflection linchpin — when the decision procedure computes `true`, the certificate
+// `decide p d == true` reconstructs an actual proof of `p`. `decEqBool` is a complete,
+// verified decision procedure for boolean equality. (`rvc --verify`.)
+
+enum Bool { BFalse, BTrue }
+
+// `Decidable p` : `IsTrue` holds a proof, `IsFalse` a refutation. (`p` is the family
+// parameter, threaded as the leading constructor argument by the surface.)
+enum Decidable(p: Prop) -> Type {
+    IsFalse(np: p -> False);
+    IsTrue(hp: p);
+}
+
+// Eliminate a decision to a Bool (large elimination: `Decidable` is in `Type`).
+fn decide(p: Prop, d: Decidable(p)) -> Bool {
+    match d {
+      | Decidable::IsFalse(pp, np) => Bool::BFalse
+      | Decidable::IsTrue(pp, hp)  => Bool::BTrue
+    }
+}
+
+// Bool no-confusion: `false` and `true` are distinct.
+fn is_false_b(b: Bool) -> Prop { match b { | Bool::BFalse => True | Bool::BTrue => False } }
+fn is_true_b(b: Bool) -> Prop  { match b { | Bool::BFalse => False | Bool::BTrue => True } }
+fn ff_ne_tt(h: Bool::BFalse == Bool::BTrue) -> False {
+    subst(Bool, is_false_b, Bool::BFalse, Bool::BTrue, h, True::intro)
+}
+fn tt_ne_ff(h: Bool::BTrue == Bool::BFalse) -> False {
+    subst(Bool, is_true_b, Bool::BTrue, Bool::BFalse, h, True::intro)
+}
+
+// The reflection linchpin: a `true` decision certificate yields a proof of `p`. (The
+// equation `decide p d == true` mentions `d`, so it is convoyed through the match.)
+fn of_decide_eq_true(p: Prop, d: Decidable(p), h: decide(p, d) == Bool::BTrue) -> p {
+    let go : (he: decide(p, d) == Bool::BTrue) -> p :=
+        match d {
+          | Decidable::IsFalse(pp, np) => fun (he: Bool::BFalse == Bool::BTrue) =>
+              False::rec(fun (z: False) => pp, ff_ne_tt(he))
+          | Decidable::IsTrue(pp, hp) => fun (he: Bool::BTrue == Bool::BTrue) => hp
+        }
+    in go(h)
+}
+
+// A complete, verified reflective decision procedure: decidable boolean equality.
+fn dec_eq_bool(a: Bool, b: Bool) -> Decidable(a == b) {
+    match a {
+      | Bool::BFalse =>
+          match b {
+            | Bool::BFalse => Decidable::IsTrue(Bool::BFalse == Bool::BFalse, Eq::refl(Bool, Bool::BFalse))
+            | Bool::BTrue  => Decidable::IsFalse(Bool::BFalse == Bool::BTrue, ff_ne_tt)
+          }
+      | Bool::BTrue =>
+          match b {
+            | Bool::BFalse => Decidable::IsFalse(Bool::BTrue == Bool::BFalse, tt_ne_ff)
+            | Bool::BTrue  => Decidable::IsTrue(Bool::BTrue == Bool::BTrue, Eq::refl(Bool, Bool::BTrue))
+          }
+    }
+}
+
+// Reflection in action: prove `true == true` by *computing* the decision and reading off the
+// certificate — no hand-written equality proof.
+def reflected : Bool::BTrue == Bool::BTrue :=
+    of_decide_eq_true(Bool::BTrue == Bool::BTrue, dec_eq_bool(Bool::BTrue, Bool::BTrue),
+                      Eq::refl(Bool, Bool::BTrue))

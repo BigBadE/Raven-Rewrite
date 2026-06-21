@@ -115,6 +115,11 @@ fn stlc() {
 }
 
 #[test]
+fn reflect() {
+    check("reflect.rv");
+}
+
+#[test]
 fn mutual_trees() {
     check("mutual_trees.rv");
     // It also computes: a forest of two leaves has size 2.
