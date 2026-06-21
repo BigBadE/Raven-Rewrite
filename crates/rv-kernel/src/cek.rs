@@ -941,6 +941,91 @@ pub fn adequacy_session() -> Result<Session, String> {
     Ok(s)
 }
 
+/// **The verified pipeline — connecting the source island to the machine.** A small first-order
+/// source language `Src` (variables, literals, addition, conditional, and a `let` binder) is
+/// given a big-step semantics `EvalSrc` and a compiler `compile : Src -> Tm` into the CEK term
+/// language. `let` is compiled the classic way, as an immediately-applied lambda (β-redex):
+/// `let x = e1 in e2 ↦ (λ e2) e1`. We then prove:
+///
+///  * `compileCorrect : EvalSrc env e v -> Eval env (compile e) v` — compiler correctness: the
+///    compiled term evaluates (in the CEK big-step relation) to the value the source assigns.
+///    Induction on the source-evaluation derivation; the `let` case is exactly the `app`/`lam`
+///    rule of the target semantics.
+///  * `pipeline : EvalSrc enil e v -> Steps (load (compile e)) (sdone v)` — composing compiler
+///    correctness with [`ADEQUACY`]: a closed source program that evaluates to `v` compiles to
+///    a CEK term that the machine actually runs, from the loaded state, all the way to `sdone v`.
+///
+/// This is the end-to-end thread: **source semantics → compile → machine execution**, every
+/// arrow kernel-checked.
+pub const PIPELINE: &str = r#"
+    -- A first-order source language (de Bruijn). Values are machine values (only `vnat`
+    -- ever arises here, since the language is first-order).
+    inductive Src : Type
+      | svar : Nat -> Src
+      | slit : Nat -> Src
+      | sadd : Src -> Src -> Src
+      | sifz : Src -> Src -> Src -> Src
+      | slet : Src -> Src -> Src        -- let x = e1 in e2   (e2 under the new binder)
+
+    -- Big-step semantics of the source (environment style, matching the machine).
+    inductive EvalSrc : Env -> Src -> Val -> Prop
+      | sevar : (env : Env) -> (n : Nat) -> EvalSrc env (Src.svar n) (lookupEnv n env)
+      | selit : (env : Env) -> (n : Nat) -> EvalSrc env (Src.slit n) (Val.vnat n)
+      | seadd : (env : Env) -> (x : Src) -> (y : Src) -> (m : Nat) -> (n : Nat)
+                  -> EvalSrc env x (Val.vnat m) -> EvalSrc env y (Val.vnat n)
+                  -> EvalSrc env (Src.sadd x y) (Val.vnat (addN(m)(n)))
+      | seif0 : (env : Env) -> (c : Src) -> (t : Src) -> (e : Src) -> (v : Val)
+                  -> EvalSrc env c (Val.vnat Nat.zero) -> EvalSrc env t v
+                  -> EvalSrc env (Src.sifz c t e) v
+      | seifS : (env : Env) -> (c : Src) -> (t : Src) -> (e : Src) -> (m : Nat) -> (v : Val)
+                  -> EvalSrc env c (Val.vnat (Nat.succ m)) -> EvalSrc env e v
+                  -> EvalSrc env (Src.sifz c t e) v
+      | selet : (env : Env) -> (e1 : Src) -> (e2 : Src) -> (v1 : Val) -> (v : Val)
+                  -> EvalSrc env e1 v1 -> EvalSrc (Env.econs v1 env) e2 v
+                  -> EvalSrc env (Src.slet e1 e2) v
+
+    -- The compiler into the CEK term language. `let` becomes an immediately-applied lambda.
+    fn compile(s: Src) -> Tm {
+        match s {
+          | Src.svar(n)        => Tm.var n
+          | Src.slit(n)        => Tm.lit n
+          | Src.sadd(x, y)     => Tm.add (compile(x)) (compile(y))
+          | Src.sifz(c, t, e)  => Tm.ifz (compile(c)) (compile(t)) (compile(e))
+          | Src.slet(e1, e2)   => Tm.app (Tm.lam (compile(e2))) (compile(e1))
+        }
+    }
+
+    -- COMPILER CORRECTNESS (induction on the source-evaluation derivation).
+    def compileCorrect (env : Env) (e : Src) (v : Val) (h : EvalSrc env e v)
+      : Eval env (compile(e)) v :=
+      match h {
+        | EvalSrc.sevar(env1, n) => Eval.evar env1 n
+        | EvalSrc.selit(env1, n) => Eval.elit env1 n
+        | EvalSrc.seadd(env1, x, y, m, n, hx, hy) =>
+            Eval.eadd env1 (compile(x)) (compile(y)) m n hx.rec hy.rec
+        | EvalSrc.seif0(env1, c, t, e2, v1, hc, ht) =>
+            Eval.eif0 env1 (compile(c)) (compile(t)) (compile(e2)) v1 hc.rec ht.rec
+        | EvalSrc.seifS(env1, c, t, e2, m, v1, hc, he) =>
+            Eval.eifS env1 (compile(c)) (compile(t)) (compile(e2)) m v1 hc.rec he.rec
+        | EvalSrc.selet(env1, e1, e2, v1, v2, h1, h2) =>
+            Eval.eapp env1 (Tm.lam (compile(e2))) (compile(e1)) env1 (compile(e2)) v1 v2
+              (Eval.elam env1 (compile(e2))) h1.rec h2.rec
+      }
+
+    -- THE VERIFIED PIPELINE: source big-step ⟹ the machine runs the compiled code to the answer.
+    def pipeline (e : Src) (v : Val) (h : EvalSrc Env.enil e v)
+      : Steps (load (compile(e))) (State.sdone v) :=
+      adequacy (compile(e)) v (compileCorrect Env.enil e v h)
+"#;
+
+/// The adequacy session plus the [`PIPELINE`]: the source language, its compiler into the CEK
+/// machine, compiler correctness, and the end-to-end pipeline theorem.
+pub fn pipeline_session() -> Result<Session, String> {
+    let mut s = adequacy_session()?;
+    s.run(PIPELINE)?;
+    Ok(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1022,6 +1107,32 @@ mod tests {
         for n in ["Eval", "Steps", "strans", "sim", "adequacy"] {
             assert!(s.k.env().contains(n), "missing adequacy item: {n}");
         }
+    }
+
+    #[test]
+    fn pipeline_kernel_checks() {
+        // The source language, its compiler into the CEK machine, compiler correctness, and the
+        // end-to-end pipeline theorem (source big-step ⟹ the machine runs the compiled code to
+        // the answer) are verified by the kernel.
+        let s = pipeline_session().expect("the verified pipeline should kernel-check");
+        for n in ["Src", "EvalSrc", "compile", "compileCorrect", "pipeline"] {
+            assert!(s.k.env().contains(n), "missing pipeline item: {n}");
+        }
+    }
+
+    #[test]
+    fn compiled_source_runs_on_the_machine() {
+        // Operational end-to-end: compile `let x = 2 in x + 3` and actually run it on the CEK
+        // machine, reading back 5. (Complements the `pipeline` proof with a concrete execution.)
+        let mut s = pipeline_session().unwrap();
+        s.run("def prog : Src := Src.slet (Src.slit (Nat.succ (Nat.succ Nat.zero))) \
+                 (Src.sadd (Src.svar Nat.zero) (Src.slit (Nat.succ (Nat.succ (Nat.succ Nat.zero)))))")
+            .unwrap();
+        s.run("def fuel : Nat := Nat.succ (Nat.succ (Nat.succ (Nat.succ (Nat.succ (Nat.succ \
+                 (Nat.succ (Nat.succ (Nat.succ (Nat.succ (Nat.succ (Nat.succ Nat.zero)))))))))))")
+            .unwrap();
+        s.run("def answer : Nat := evalNat fuel (compile(prog))").unwrap();
+        assert_eq!(s.run_entry("answer").unwrap(), "5");
     }
 
     #[test]
