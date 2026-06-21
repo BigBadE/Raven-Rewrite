@@ -105,6 +105,11 @@ fn cek_machine() {
 }
 
 #[test]
+fn typed_arith() {
+    check("typed_arith.rv");
+}
+
+#[test]
 fn mutual_trees() {
     check("mutual_trees.rv");
     // It also computes: a forest of two leaves has size 2.

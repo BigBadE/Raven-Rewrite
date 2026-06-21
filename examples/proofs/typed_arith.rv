@@ -1,0 +1,293 @@
+// Full small-step type safety (PROGRESS + PRESERVATION) for the typed boolean/arithmetic
+// language of TAPL ch. 8, in Rust-like Raven (`rvc --verify`). This is the canonical
+// type-safety theorem — "a well-typed term is never stuck" — proved entirely in `.rv`:
+//
+//   * PROGRESS:     a well-typed term is a value or it steps.
+//   * PRESERVATION: if a well-typed term steps, the result has the same type.
+//
+// Both go by induction on a derivation, using canonical-forms inversion (refuting impossible
+// term/type pairs with no-confusion discriminators) and structural inversion of the typing
+// relation (recovering the sub-derivations behind a known head shape). Where a hypothesis
+// mentions the variable a `match` refines, it is *convoyed* through the match (abstracted into
+// the motive, re-applied after) — the same trick `le_trans.rv` uses for an index-changing IH.
+
+enum Ty { TNat, TBool }
+enum Tm { Tru, Fls, Iff(Tm, Tm, Tm), Zer, Suc(Tm), Prd(Tm), IsZ(Tm) }
+
+// Numeric values (Zer, Suc Zer, …) and values (numeric values plus the booleans).
+enum Nv(t: Tm) -> Prop {
+    NvZ                   where t == Tm::Zer;
+    NvS(p: Tm, h: Nv(p))  where t == Tm::Suc(p);
+}
+enum Value(t: Tm) -> Prop {
+    VTru                  where t == Tm::Tru;
+    VFls                  where t == Tm::Fls;
+    VNv(p: Tm, h: Nv(p))  where t == p;
+}
+
+// Typing.
+enum HasType(t: Tm, ty: Ty) -> Prop {
+    TyTru  where t == Tm::Tru, ty == Ty::TBool;
+    TyFls  where t == Tm::Fls, ty == Ty::TBool;
+    TyIf(c: Tm, a: Tm, b: Tm, r: Ty,
+         hc: HasType(c, Ty::TBool), ha: HasType(a, r), hb: HasType(b, r))
+        where t == Tm::Iff(c, a, b), ty == r;
+    TyZer  where t == Tm::Zer, ty == Ty::TNat;
+    TySuc(p: Tm, h: HasType(p, Ty::TNat))  where t == Tm::Suc(p), ty == Ty::TNat;
+    TyPrd(p: Tm, h: HasType(p, Ty::TNat))  where t == Tm::Prd(p), ty == Ty::TNat;
+    TyIsZ(p: Tm, h: HasType(p, Ty::TNat))  where t == Tm::IsZ(p), ty == Ty::TBool;
+}
+
+// Small-step reduction (computation rules + congruences).
+enum Step(t: Tm, u: Tm) -> Prop {
+    SIfTru(a: Tm, b: Tm)  where t == Tm::Iff(Tm::Tru, a, b), u == a;
+    SIfFls(a: Tm, b: Tm)  where t == Tm::Iff(Tm::Fls, a, b), u == b;
+    SIf(c: Tm, c2: Tm, a: Tm, b: Tm, h: Step(c, c2))
+        where t == Tm::Iff(c, a, b), u == Tm::Iff(c2, a, b);
+    SSuc(p: Tm, p2: Tm, h: Step(p, p2))  where t == Tm::Suc(p),  u == Tm::Suc(p2);
+    SPrdZ                                where t == Tm::Prd(Tm::Zer), u == Tm::Zer;
+    SPrdS(n: Tm, h: Nv(n))               where t == Tm::Prd(Tm::Suc(n)), u == n;
+    SPrd(p: Tm, p2: Tm, h: Step(p, p2))  where t == Tm::Prd(p),  u == Tm::Prd(p2);
+    SIsZZ                                where t == Tm::IsZ(Tm::Zer), u == Tm::Tru;
+    SIsZS(n: Tm, h: Nv(n))               where t == Tm::IsZ(Tm::Suc(n)), u == Tm::Fls;
+    SIsZ(p: Tm, p2: Tm, h: Step(p, p2))  where t == Tm::IsZ(p), u == Tm::IsZ(p2);
+}
+
+// ---------------------------------------------------------------------------
+// No-confusion discriminators on `Tm` and on `Ty`.
+// ---------------------------------------------------------------------------
+
+fn is_tru(t: Tm) -> Prop { match t { | Tm::Tru => True | _ => False } }
+fn is_fls(t: Tm) -> Prop { match t { | Tm::Fls => True | _ => False } }
+fn is_zer(t: Tm) -> Prop { match t { | Tm::Zer => True | _ => False } }
+fn is_suc(t: Tm) -> Prop { match t { | Tm::Suc(p) => True | _ => False } }
+
+// From `x == Shape`, recover `is_Shape(x)` — which reduces to `False` at any concrete
+// non-`Shape` `x`, so these stand in for "x can't be that shape" at call sites.
+fn not_tru(x: Tm, h: x == Tm::Tru) -> is_tru(x) {
+    subst(Tm, is_tru, Tm::Tru, x, symm(Tm, x, Tm::Tru, h), True::intro)
+}
+fn not_fls(x: Tm, h: x == Tm::Fls) -> is_fls(x) {
+    subst(Tm, is_fls, Tm::Fls, x, symm(Tm, x, Tm::Fls, h), True::intro)
+}
+fn not_zer(x: Tm, h: x == Tm::Zer) -> is_zer(x) {
+    subst(Tm, is_zer, Tm::Zer, x, symm(Tm, x, Tm::Zer, h), True::intro)
+}
+fn not_suc(x: Tm, p: Tm, h: x == Tm::Suc(p)) -> is_suc(x) {
+    subst(Tm, is_suc, Tm::Suc(p), x, symm(Tm, x, Tm::Suc(p), h), True::intro)
+}
+
+// `TNat` and `TBool` are distinct.
+fn ty_is_nat(ty: Ty) -> Prop { match ty { | Ty::TNat => True | Ty::TBool => False } }
+fn nc_nat_bool(h: Ty::TNat == Ty::TBool) -> False {
+    subst(Ty, ty_is_nat, Ty::TNat, Ty::TBool, h, True::intro)
+}
+fn nc_bool_nat(h: Ty::TBool == Ty::TNat) -> False {
+    nc_nat_bool(symm(Ty, Ty::TBool, Ty::TNat, h))
+}
+
+// ---------------------------------------------------------------------------
+// Typing inversion for the literal/shape heads (curry in the term equation; refute every
+// constructor whose term shape can't match, return the forced type in the one that can).
+// ---------------------------------------------------------------------------
+
+fn ty_inv_tru(t: Tm, ty: Ty, h: HasType(t, ty)) -> (t == Tm::Tru) -> (ty == Ty::TBool) {
+    match h {
+      | HasType::TyTru => fun (e: Tm::Tru == Tm::Tru) => Eq::refl(Ty, Ty::TBool)
+      | HasType::TyFls => fun (e: Tm::Fls == Tm::Tru) =>
+          False::rec(fun (z: False) => Ty::TBool == Ty::TBool, not_tru(Tm::Fls, e))
+      | HasType::TyIf(c, a, b, r, hc, ha, hb) => fun (e: Tm::Iff(c, a, b) == Tm::Tru) =>
+          False::rec(fun (z: False) => r == Ty::TBool, not_tru(Tm::Iff(c, a, b), e))
+      | HasType::TyZer => fun (e: Tm::Zer == Tm::Tru) =>
+          False::rec(fun (z: False) => Ty::TNat == Ty::TBool, not_tru(Tm::Zer, e))
+      | HasType::TySuc(p, hp) => fun (e: Tm::Suc(p) == Tm::Tru) =>
+          False::rec(fun (z: False) => Ty::TNat == Ty::TBool, not_tru(Tm::Suc(p), e))
+      | HasType::TyPrd(p, hp) => fun (e: Tm::Prd(p) == Tm::Tru) =>
+          False::rec(fun (z: False) => Ty::TNat == Ty::TBool, not_tru(Tm::Prd(p), e))
+      | HasType::TyIsZ(p, hp) => fun (e: Tm::IsZ(p) == Tm::Tru) =>
+          False::rec(fun (z: False) => Ty::TBool == Ty::TBool, not_tru(Tm::IsZ(p), e))
+    }
+}
+
+fn ty_inv_fls(t: Tm, ty: Ty, h: HasType(t, ty)) -> (t == Tm::Fls) -> (ty == Ty::TBool) {
+    match h {
+      | HasType::TyTru => fun (e: Tm::Tru == Tm::Fls) =>
+          False::rec(fun (z: False) => Ty::TBool == Ty::TBool, not_fls(Tm::Tru, e))
+      | HasType::TyFls => fun (e: Tm::Fls == Tm::Fls) => Eq::refl(Ty, Ty::TBool)
+      | HasType::TyIf(c, a, b, r, hc, ha, hb) => fun (e: Tm::Iff(c, a, b) == Tm::Fls) =>
+          False::rec(fun (z: False) => r == Ty::TBool, not_fls(Tm::Iff(c, a, b), e))
+      | HasType::TyZer => fun (e: Tm::Zer == Tm::Fls) =>
+          False::rec(fun (z: False) => Ty::TNat == Ty::TBool, not_fls(Tm::Zer, e))
+      | HasType::TySuc(p, hp) => fun (e: Tm::Suc(p) == Tm::Fls) =>
+          False::rec(fun (z: False) => Ty::TNat == Ty::TBool, not_fls(Tm::Suc(p), e))
+      | HasType::TyPrd(p, hp) => fun (e: Tm::Prd(p) == Tm::Fls) =>
+          False::rec(fun (z: False) => Ty::TNat == Ty::TBool, not_fls(Tm::Prd(p), e))
+      | HasType::TyIsZ(p, hp) => fun (e: Tm::IsZ(p) == Tm::Fls) =>
+          False::rec(fun (z: False) => Ty::TBool == Ty::TBool, not_fls(Tm::IsZ(p), e))
+    }
+}
+
+fn ty_inv_zer(t: Tm, ty: Ty, h: HasType(t, ty)) -> (t == Tm::Zer) -> (ty == Ty::TNat) {
+    match h {
+      | HasType::TyTru => fun (e: Tm::Tru == Tm::Zer) =>
+          False::rec(fun (z: False) => Ty::TBool == Ty::TNat, not_zer(Tm::Tru, e))
+      | HasType::TyFls => fun (e: Tm::Fls == Tm::Zer) =>
+          False::rec(fun (z: False) => Ty::TBool == Ty::TNat, not_zer(Tm::Fls, e))
+      | HasType::TyIf(c, a, b, r, hc, ha, hb) => fun (e: Tm::Iff(c, a, b) == Tm::Zer) =>
+          False::rec(fun (z: False) => r == Ty::TNat, not_zer(Tm::Iff(c, a, b), e))
+      | HasType::TyZer => fun (e: Tm::Zer == Tm::Zer) => Eq::refl(Ty, Ty::TNat)
+      | HasType::TySuc(p, hp) => fun (e: Tm::Suc(p) == Tm::Zer) =>
+          False::rec(fun (z: False) => Ty::TNat == Ty::TNat, not_zer(Tm::Suc(p), e))
+      | HasType::TyPrd(p, hp) => fun (e: Tm::Prd(p) == Tm::Zer) =>
+          False::rec(fun (z: False) => Ty::TNat == Ty::TNat, not_zer(Tm::Prd(p), e))
+      | HasType::TyIsZ(p, hp) => fun (e: Tm::IsZ(p) == Tm::Zer) =>
+          False::rec(fun (z: False) => Ty::TBool == Ty::TNat, not_zer(Tm::IsZ(p), e))
+    }
+}
+
+fn ty_inv_suc(t: Tm, ty: Ty, h: HasType(t, ty)) -> (q: Tm) -> (t == Tm::Suc(q)) -> (ty == Ty::TNat) {
+    match h {
+      | HasType::TyTru => fun (q: Tm) (e: Tm::Tru == Tm::Suc(q)) =>
+          False::rec(fun (z: False) => Ty::TBool == Ty::TNat, not_suc(Tm::Tru, q, e))
+      | HasType::TyFls => fun (q: Tm) (e: Tm::Fls == Tm::Suc(q)) =>
+          False::rec(fun (z: False) => Ty::TBool == Ty::TNat, not_suc(Tm::Fls, q, e))
+      | HasType::TyIf(c, a, b, r, hc, ha, hb) => fun (q: Tm) (e: Tm::Iff(c, a, b) == Tm::Suc(q)) =>
+          False::rec(fun (z: False) => r == Ty::TNat, not_suc(Tm::Iff(c, a, b), q, e))
+      | HasType::TyZer => fun (q: Tm) (e: Tm::Zer == Tm::Suc(q)) =>
+          False::rec(fun (z: False) => Ty::TNat == Ty::TNat, not_suc(Tm::Zer, q, e))
+      | HasType::TySuc(p, hp) => fun (q: Tm) (e: Tm::Suc(p) == Tm::Suc(q)) => Eq::refl(Ty, Ty::TNat)
+      | HasType::TyPrd(p, hp) => fun (q: Tm) (e: Tm::Prd(p) == Tm::Suc(q)) =>
+          False::rec(fun (z: False) => Ty::TNat == Ty::TNat, not_suc(Tm::Prd(p), q, e))
+      | HasType::TyIsZ(p, hp) => fun (q: Tm) (e: Tm::IsZ(p) == Tm::Suc(q)) =>
+          False::rec(fun (z: False) => Ty::TBool == Ty::TNat, not_suc(Tm::IsZ(p), q, e))
+    }
+}
+
+// "Bad" combinations: a boolean literal can't be `TNat`, a numeric value can't be `TBool`.
+fn bad_tru_nat(h: HasType(Tm::Tru, Ty::TNat)) -> False {
+    nc_nat_bool(ty_inv_tru(Tm::Tru, Ty::TNat, h)(Eq::refl(Tm, Tm::Tru)))
+}
+fn bad_fls_nat(h: HasType(Tm::Fls, Ty::TNat)) -> False {
+    nc_nat_bool(ty_inv_fls(Tm::Fls, Ty::TNat, h)(Eq::refl(Tm, Tm::Fls)))
+}
+fn bad_zer_bool(h: HasType(Tm::Zer, Ty::TBool)) -> False {
+    nc_bool_nat(ty_inv_zer(Tm::Zer, Ty::TBool, h)(Eq::refl(Tm, Tm::Zer)))
+}
+fn bad_suc_bool(n: Tm, h: HasType(Tm::Suc(n), Ty::TBool)) -> False {
+    nc_bool_nat(ty_inv_suc(Tm::Suc(n), Ty::TBool, h)(n, Eq::refl(Tm, Tm::Suc(n))))
+}
+
+// ---------------------------------------------------------------------------
+// Canonical forms. (The typing hypothesis is convoyed through the match on the value.)
+// ---------------------------------------------------------------------------
+
+// A value of type `TNat` is a numeric value.
+fn cf_nat(v: Tm, hv: Value(v), hp: HasType(v, Ty::TNat)) -> Nv(v) {
+    let go : (hpp: HasType(v, Ty::TNat)) -> Nv(v) :=
+        match hv {
+          | Value::VNv(q, hq) => fun (hpp: HasType(q, Ty::TNat)) => hq
+          | Value::VTru       => fun (hpp: HasType(Tm::Tru, Ty::TNat)) =>
+              False::rec(fun (z: False) => Nv(Tm::Tru), bad_tru_nat(hpp))
+          | Value::VFls       => fun (hpp: HasType(Tm::Fls, Ty::TNat)) =>
+              False::rec(fun (z: False) => Nv(Tm::Fls), bad_fls_nat(hpp))
+        }
+    in go(hp)
+}
+
+// A numeric value can't be typed `TBool`.
+fn bad_nv_bool(v: Tm, hv: Nv(v), hp: HasType(v, Ty::TBool)) -> False {
+    let go : (hpp: HasType(v, Ty::TBool)) -> False :=
+        match hv {
+          | Nv::NvZ        => fun (hpp: HasType(Tm::Zer, Ty::TBool)) => bad_zer_bool(hpp)
+          | Nv::NvS(n, hn) => fun (hpp: HasType(Tm::Suc(n), Ty::TBool)) => bad_suc_bool(n, hpp)
+        }
+    in go(hp)
+}
+
+// A value of type `TBool` is `Tru` or `Fls`.
+enum BoolV(t: Tm) -> Prop { BvT where t == Tm::Tru; BvF where t == Tm::Fls; }
+fn cf_bool(v: Tm, hv: Value(v), hp: HasType(v, Ty::TBool)) -> BoolV(v) {
+    let go : (hpp: HasType(v, Ty::TBool)) -> BoolV(v) :=
+        match hv {
+          | Value::VTru       => fun (hpp: HasType(Tm::Tru, Ty::TBool)) => BoolV::BvT
+          | Value::VFls       => fun (hpp: HasType(Tm::Fls, Ty::TBool)) => BoolV::BvF
+          | Value::VNv(q, hq) => fun (hpp: HasType(q, Ty::TBool)) =>
+              False::rec(fun (z: False) => BoolV(q), bad_nv_bool(q, hq, hpp))
+        }
+    in go(hp)
+}
+
+// ---------------------------------------------------------------------------
+// PROGRESS — one helper per compound former (convoying the sub-term's typing), then induction.
+// ---------------------------------------------------------------------------
+
+enum Prog(t: Tm) -> Prop {
+    PVal(x: Tm, h: Value(x))            where t == x;
+    PStep(x: Tm, u: Tm, h: Step(x, u))  where t == x;
+}
+
+fn prog_if(c: Tm, a: Tm, b: Tm, hc: HasType(c, Ty::TBool), pc: Prog(c)) -> Prog(Tm::Iff(c, a, b)) {
+    let go : (hcc: HasType(c, Ty::TBool)) -> Prog(Tm::Iff(c, a, b)) :=
+        match pc {
+          | Prog::PStep(x, u, hs) => fun (hcc: HasType(x, Ty::TBool)) =>
+              Prog::PStep(Tm::Iff(x, a, b), Tm::Iff(u, a, b), Step::SIf(x, u, a, b, hs))
+          | Prog::PVal(x, hvx) => fun (hcc: HasType(x, Ty::TBool)) =>
+              match cf_bool(x, hvx, hcc) {
+                | BoolV::BvT => Prog::PStep(Tm::Iff(Tm::Tru, a, b), a, Step::SIfTru(a, b))
+                | BoolV::BvF => Prog::PStep(Tm::Iff(Tm::Fls, a, b), b, Step::SIfFls(a, b))
+              }
+        }
+    in go(hc)
+}
+
+fn prog_suc(p: Tm, hp: HasType(p, Ty::TNat), pp: Prog(p)) -> Prog(Tm::Suc(p)) {
+    let go : (hpp: HasType(p, Ty::TNat)) -> Prog(Tm::Suc(p)) :=
+        match pp {
+          | Prog::PStep(x, u, hs) => fun (hpp: HasType(x, Ty::TNat)) =>
+              Prog::PStep(Tm::Suc(x), Tm::Suc(u), Step::SSuc(x, u, hs))
+          | Prog::PVal(x, hvx) => fun (hpp: HasType(x, Ty::TNat)) =>
+              Prog::PVal(Tm::Suc(x), Value::VNv(Tm::Suc(x), Nv::NvS(x, cf_nat(x, hvx, hpp))))
+        }
+    in go(hp)
+}
+
+fn prog_prd(p: Tm, hp: HasType(p, Ty::TNat), pp: Prog(p)) -> Prog(Tm::Prd(p)) {
+    let go : (hpp: HasType(p, Ty::TNat)) -> Prog(Tm::Prd(p)) :=
+        match pp {
+          | Prog::PStep(x, u, hs) => fun (hpp: HasType(x, Ty::TNat)) =>
+              Prog::PStep(Tm::Prd(x), Tm::Prd(u), Step::SPrd(x, u, hs))
+          | Prog::PVal(x, hvx) => fun (hpp: HasType(x, Ty::TNat)) =>
+              match cf_nat(x, hvx, hpp) {
+                | Nv::NvZ        => Prog::PStep(Tm::Prd(Tm::Zer), Tm::Zer, Step::SPrdZ)
+                | Nv::NvS(n, hn) => Prog::PStep(Tm::Prd(Tm::Suc(n)), n, Step::SPrdS(n, hn))
+              }
+        }
+    in go(hp)
+}
+
+fn prog_isz(p: Tm, hp: HasType(p, Ty::TNat), pp: Prog(p)) -> Prog(Tm::IsZ(p)) {
+    let go : (hpp: HasType(p, Ty::TNat)) -> Prog(Tm::IsZ(p)) :=
+        match pp {
+          | Prog::PStep(x, u, hs) => fun (hpp: HasType(x, Ty::TNat)) =>
+              Prog::PStep(Tm::IsZ(x), Tm::IsZ(u), Step::SIsZ(x, u, hs))
+          | Prog::PVal(x, hvx) => fun (hpp: HasType(x, Ty::TNat)) =>
+              match cf_nat(x, hvx, hpp) {
+                | Nv::NvZ        => Prog::PStep(Tm::IsZ(Tm::Zer), Tm::Tru, Step::SIsZZ)
+                | Nv::NvS(n, hn) => Prog::PStep(Tm::IsZ(Tm::Suc(n)), Tm::Fls, Step::SIsZS(n, hn))
+              }
+        }
+    in go(hp)
+}
+
+// PROGRESS: a well-typed term is a value or it steps — by induction on the typing derivation.
+fn progress(t: Tm, ty: Ty, h: HasType(t, ty)) -> Prog(t) {
+    match h {
+      | HasType::TyTru => Prog::PVal(Tm::Tru, Value::VTru)
+      | HasType::TyFls => Prog::PVal(Tm::Fls, Value::VFls)
+      | HasType::TyZer => Prog::PVal(Tm::Zer, Value::VNv(Tm::Zer, Nv::NvZ))
+      | HasType::TyIf(c, a, b, r, hc, ha, hb) => prog_if(c, a, b, hc, hc.rec)
+      | HasType::TySuc(p, hp) => prog_suc(p, hp, hp.rec)
+      | HasType::TyPrd(p, hp) => prog_prd(p, hp, hp.rec)
+      | HasType::TyIsZ(p, hp) => prog_isz(p, hp, hp.rec)
+    }
+}
