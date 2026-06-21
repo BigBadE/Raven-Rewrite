@@ -25,6 +25,11 @@ fn indexed_relation() {
 }
 
 #[test]
+fn compiler_correctness() {
+    check("compiler_correctness.rv");
+}
+
+#[test]
 fn mutual_trees() {
     check("mutual_trees.rv");
     // It also computes: a forest of two leaves has size 2.

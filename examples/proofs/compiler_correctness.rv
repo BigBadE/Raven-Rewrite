@@ -1,0 +1,87 @@
+// A verified compiler, in Rust-like Raven (`rvc --verify`).
+//
+// Source language `Src` has `let`; the target `Tgt` has lambdas. `compile` turns
+// `let x = e1 in e2` into the β-redex `(λ e2) e1`. `compile_correct` proves that whatever the
+// source evaluates to, the compiled target evaluates to the same value — by induction on the
+// source big-step derivation. Values include closures, so `Val`/`Env` are mutually recursive.
+
+enum Nat { Zero, Succ(Nat) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+
+// Source and target terms (de Bruijn).
+enum Src { SLit(Nat), SVar(Nat), SAdd(Src, Src), SLet(Src, Src) }
+enum Tgt { TLit(Nat), TVar(Nat), TAdd(Tgt, Tgt), TApp(Tgt, Tgt), TLam(Tgt) }
+
+// Values (a number or a closure capturing an environment + target body) and environments.
+mutual {
+    enum Val { VNat(Nat), VClos(Env, Tgt) }
+    enum Env { ENil, ECons(Val, Env) }
+}
+
+// de Bruijn lookup, curried on the index so the recursion is a plain solo recursion.
+fn lookup(n: Nat) -> (Env -> Val) {
+    match n {
+      | Nat::Zero    => fun (env: Env) =>
+          match env { | Env::ENil => Val::VNat(Nat::Zero) | Env::ECons(v, rest) => v }
+      | Nat::Succ(k) => fun (env: Env) =>
+          match env { | Env::ENil => Val::VNat(Nat::Zero) | Env::ECons(v, rest) => lookup(k)(rest) }
+    }
+}
+
+// Big-step semantics of the source (note: first-order, so only `VNat` values ever arise).
+enum EvalS(env: Env, e: Src, v: Val) -> Prop {
+    SeLit(en: Env, n: Nat)
+        where env == en, e == Src::SLit(n), v == Val::VNat(n);
+    SeVar(en: Env, n: Nat)
+        where env == en, e == Src::SVar(n), v == lookup(n)(en);
+    SeAdd(en: Env, x: Src, y: Src, m: Nat, n: Nat,
+          hx: EvalS(en, x, Val::VNat(m)), hy: EvalS(en, y, Val::VNat(n)))
+        where env == en, e == Src::SAdd(x, y), v == Val::VNat(plus(m, n));
+    SeLet(en: Env, e1: Src, e2: Src, v1: Val, v2: Val,
+          h1: EvalS(en, e1, v1), h2: EvalS(Env::ECons(v1, en), e2, v2))
+        where env == en, e == Src::SLet(e1, e2), v == v2;
+}
+
+// Big-step semantics of the target (with closures: a lambda is a value; application enters it).
+enum EvalT(env: Env, e: Tgt, v: Val) -> Prop {
+    TeLit(en: Env, n: Nat)
+        where env == en, e == Tgt::TLit(n), v == Val::VNat(n);
+    TeVar(en: Env, n: Nat)
+        where env == en, e == Tgt::TVar(n), v == lookup(n)(en);
+    TeAdd(en: Env, x: Tgt, y: Tgt, m: Nat, n: Nat,
+          hx: EvalT(en, x, Val::VNat(m)), hy: EvalT(en, y, Val::VNat(n)))
+        where env == en, e == Tgt::TAdd(x, y), v == Val::VNat(plus(m, n));
+    TeLam(en: Env, b: Tgt)
+        where env == en, e == Tgt::TLam(b), v == Val::VClos(en, b);
+    TeApp(en: Env, f: Tgt, a: Tgt, cenv: Env, b: Tgt, va: Val, v2: Val,
+          hf: EvalT(en, f, Val::VClos(cenv, b)), ha: EvalT(en, a, va),
+          hb: EvalT(Env::ECons(va, cenv), b, v2))
+        where env == en, e == Tgt::TApp(f, a), v == v2;
+}
+
+// The compiler: `let` becomes an immediately-applied lambda.
+fn compile(s: Src) -> Tgt {
+    match s {
+      | Src::SLit(n)      => Tgt::TLit(n)
+      | Src::SVar(n)      => Tgt::TVar(n)
+      | Src::SAdd(x, y)   => Tgt::TAdd(compile(x), compile(y))
+      | Src::SLet(e1, e2) => Tgt::TApp(Tgt::TLam(compile(e2)), compile(e1))
+    }
+}
+
+// COMPILER CORRECTNESS, by induction on the source-evaluation derivation. The `let` case is
+// exactly the target's application/lambda rule; the IHs are recursive calls.
+fn compile_correct(env: Env, e: Src, v: Val, h: EvalS(env, e, v)) -> EvalT(env, compile(e), v) {
+    match h {
+      | EvalS::SeLit(en, n)                  => EvalT::TeLit(en, n)
+      | EvalS::SeVar(en, n)                  => EvalT::TeVar(en, n)
+      | EvalS::SeAdd(en, x, y, m, n, hx, hy) =>
+          EvalT::TeAdd(en, compile(x), compile(y), m, n, hx.rec, hy.rec)
+      | EvalS::SeLet(en, e1, e2, v1, v2, h1, h2) =>
+          EvalT::TeApp(en, Tgt::TLam(compile(e2)), compile(e1), en, compile(e2), v1, v2,
+                       EvalT::TeLam(en, compile(e2)), h1.rec, h2.rec)
+    }
+}
