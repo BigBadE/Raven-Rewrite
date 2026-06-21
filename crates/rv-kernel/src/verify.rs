@@ -72,10 +72,12 @@ impl Session {
     /// group is recognised as a mutually-recursive bundle and compiled jointly — no
     /// `mutual { … }` block or hand-written recursor needed.
     pub fn run(&mut self, src: &str) -> Result<(), String> {
-        let cmds = surface::parse_program(src)?;
+        let cmds = surface::parse_program_spanned(src)?;
         let mut pending: Vec<Command> = Vec::new();
         let mut pending_group: Option<Vec<String>> = None;
-        for cmd in cmds {
+        let mut group_loc = String::new();
+        for (cmd, (line, col)) in cmds {
+            let loc = format!("{line}:{col}");
             if matches!(cmd, Command::Fn { .. }) {
                 if let Some(group) = self.recursion_group_of(&cmd)? {
                     // A member of a mutual group: buffer until the group is complete.
@@ -84,26 +86,28 @@ impl Session {
                             return Err("mutual function groups must be written contiguously".into());
                         }
                         pending_group = Some(group.clone());
+                        group_loc = loc.clone();
                     }
                     pending.push(cmd);
                     if pending.len() == group.len() {
                         let members = std::mem::take(&mut pending);
                         pending_group = None;
+                        let gl = group_loc.clone();
                         self.compile_bundle(members, &group).map_err(|e| {
-                            format!("in mutual fn group {{{}}}: {e}", group.join(", "))
+                            format!("{gl}: in mutual fn group {{{}}}: {e}", group.join(", "))
                         })?;
                     }
                     continue;
                 }
                 let label = cmd_label(&cmd);
-                self.run_solo_fn(cmd).map_err(|e| format!("in {label}: {e}"))?;
+                self.run_solo_fn(cmd).map_err(|e| format!("{loc}: in {label}: {e}"))?;
                 continue;
             }
             if !pending.is_empty() {
                 return Err("a mutual function group must be contiguous".into());
             }
             self.run_command(&cmd)
-                .map_err(|e| format!("in {}: {e}", cmd_label(&cmd)))?;
+                .map_err(|e| format!("{loc}: in {}: {e}", cmd_label(&cmd)))?;
         }
         if !pending.is_empty() {
             return Err("incomplete mutual function group (a sibling function is missing)".into());

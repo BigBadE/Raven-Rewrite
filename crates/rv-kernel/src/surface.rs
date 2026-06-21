@@ -313,10 +313,14 @@ impl Parser {
     fn new(toks: Vec<Tok>, spans: Vec<core::ops::Range<usize>>, src: &str) -> Self {
         Self { toks, spans, line_starts: line_starts(src), src_len: src.len(), pos: 0 }
     }
+    /// The 1-based `(line, col)` of the current token (or end-of-input).
+    fn here_lc(&self) -> (usize, usize) {
+        let off = self.spans.get(self.pos).map(|s| s.start).unwrap_or(self.src_len);
+        line_col(&self.line_starts, off)
+    }
     /// The `line:col` of the current token (or end-of-input), for error prefixes.
     fn here(&self) -> String {
-        let off = self.spans.get(self.pos).map(|s| s.start).unwrap_or(self.src_len);
-        let (l, c) = line_col(&self.line_starts, off);
+        let (l, c) = self.here_lc();
         format!("{l}:{c}")
     }
     /// Prefix a parse error with the current source position.
@@ -1022,11 +1026,22 @@ pub fn parse_expr(src: &str) -> Result<Expr, String> {
 
 /// Parse a whole program (a sequence of commands).
 pub fn parse_program(src: &str) -> Result<Vec<Command>, String> {
+    Ok(parse_program_spanned(src)?.into_iter().map(|(c, _)| c).collect())
+}
+
+/// Parse a whole program, pairing each command with the 1-based `(line, col)` where it
+/// begins. Used by the elaborator to prefix *semantic* errors (type mismatches, failed
+/// obligations) with a source position, not just the failing declaration's name. When one
+/// item desugars to several commands (e.g. a `structure`), they share its position.
+pub fn parse_program_spanned(src: &str) -> Result<Vec<(Command, (usize, usize))>, String> {
     let (toks, spans) = lex(src)?;
     let mut p = Parser::new(toks, spans, src);
     let mut cmds = Vec::new();
     while !p.at_eof() {
-        cmds.extend(p.item()?);
+        let pos = p.here_lc();
+        for c in p.item()? {
+            cmds.push((c, pos));
+        }
     }
     Ok(cmds)
 }

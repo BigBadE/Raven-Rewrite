@@ -23,3 +23,18 @@ fn error_pretty_prints_terms() {
     assert!(err.contains("Nat.succ Nat.zero"), "should pretty-print the term: {err}");
     assert!(!err.contains("Const("), "should not leak raw Debug: {err}");
 }
+
+#[test]
+fn semantic_errors_carry_the_declaration_position() {
+    let mut s = systemf::safety_session().unwrap();
+    // The bad `def` is on the third line; the type-mismatch error must be prefixed `3:`.
+    let err = s
+        .run(
+            "def fine1 : FTy := FTy.tnat\n\
+             def fine2 : FTy := FTy.tnat\n\
+             def bad : FTy := FExp.evar(Nat.zero)",
+        )
+        .unwrap_err();
+    assert!(err.starts_with("3:"), "want a 3:col position prefix, got: {err}");
+    assert!(err.contains("def 'bad'"), "should still name the def: {err}");
+}
