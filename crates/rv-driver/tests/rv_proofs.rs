@@ -120,6 +120,13 @@ fn reflect() {
 }
 
 #[test]
+fn stlc_preservation() {
+    // The autosubst substitution lemma (weakening + sub_lemma) — the hard core of STLC
+    // preservation, in Rust-like .rv. (Final inversion-based assembly is WIP.)
+    check("stlc_preservation.rv");
+}
+
+#[test]
 fn mutual_trees() {
     check("mutual_trees.rv");
     // It also computes: a forest of two leaves has size 2.
