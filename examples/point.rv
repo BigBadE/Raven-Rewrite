@@ -1,0 +1,12 @@
+// A struct, constructed and read by field access.
+// `rvc examples/point.rv --run` runs main() = Int(7).
+
+struct Point {
+  x: i64,
+  y: i64,
+}
+
+fn main() -> i64 {
+  let p: Point = Point { x: 3, y: 4 };
+  return p.x + p.y;
+}

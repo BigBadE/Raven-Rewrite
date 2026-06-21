@@ -1,0 +1,14 @@
+[package]
+name = "rv-coverage"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rv-coverage"
+path = "src/main.rs"
+
+[dependencies]
+rv-core.workspace = true
+rv-rustfe.workspace = true
+ra_ap_syntax = "0.0.337"

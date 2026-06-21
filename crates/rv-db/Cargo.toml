@@ -1,0 +1,19 @@
+[package]
+name = "rv-db"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+salsa = "0.27"
+
+rv-core.workspace = true
+rv-ir.workspace = true
+rv-logic.workspace = true
+rv-syntax.workspace = true
+rv-lower.workspace = true
+rv-infer.workspace = true
+rv-solve.workspace = true
+rv-codegen.workspace = true
+rv-vm.workspace = true
+rv-borrowck.workspace = true

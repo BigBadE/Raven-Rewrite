@@ -1,0 +1,8 @@
+[package]
+name = "rv-kernel"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+logos = "0.16.1"

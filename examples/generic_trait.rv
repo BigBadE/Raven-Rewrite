@@ -1,0 +1,23 @@
+// Generics (type-erased) + a method via an `impl` block (desugared to a function).
+// `rvc examples/generic_trait.rv --run` borrow-checks, verifies, and runs main() = Int(7).
+
+struct Point {
+  x: i64,
+  y: i64,
+}
+
+impl Point {
+  fn sum(self) -> i64 {
+    return self.x + self.y;
+  }
+}
+
+fn id<T>(x: T) -> T {
+  return x;
+}
+
+fn main() -> i64 {
+  let p: Point = Point { x: 3, y: 4 };
+  let n: i64 = id(1);
+  return p.sum();
+}

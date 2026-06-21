@@ -1,0 +1,9 @@
+// References: take a `&mut`, mutate through it, observe the change at the source.
+// `rvc examples/refs.rv --run` borrow-checks, verifies, and runs main() = Int(5).
+
+fn main() -> i64 {
+  let x: i64 = 1;
+  let r: &mut i64 = &mut x;
+  *r = 5;
+  return x;
+}

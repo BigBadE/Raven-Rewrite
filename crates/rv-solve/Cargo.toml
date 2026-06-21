@@ -1,0 +1,10 @@
+[package]
+name = "rv-solve"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rv-arena.workspace = true
+rv-core.workspace = true
+rv-logic.workspace = true

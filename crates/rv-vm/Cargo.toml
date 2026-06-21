@@ -1,0 +1,15 @@
+[package]
+name = "rv-vm"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rv-arena.workspace = true
+rv-codegen.workspace = true
+
+# Test-only: the VM unit tests build `IR<Lowerable>` programs by hand, then
+# compile + run them. This does NOT widen the runtime dependency graph.
+[dev-dependencies]
+rv-ir.workspace = true
+rv-core.workspace = true

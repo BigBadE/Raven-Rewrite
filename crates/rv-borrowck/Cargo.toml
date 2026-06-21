@@ -1,0 +1,12 @@
+[package]
+name = "rv-borrowck"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rv-arena.workspace = true
+rv-core.workspace = true
+rv-ir.workspace = true
+rv-logic.workspace = true
+rv-borrow.workspace = true

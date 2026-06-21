@@ -1,0 +1,16 @@
+enum Opt { None, Some(i64), }
+fn first(x: i64) -> Opt {
+  if x > 0 { return Opt::Some(x); }
+  return Opt::None;
+}
+fn unwrap_add(x: i64) -> Opt {
+  let v: i64 = first(x)?;
+  return Opt::Some(v + 1);
+}
+fn main() -> i64 {
+  let r: Opt = unwrap_add(5);
+  match r {
+    Opt::Some(n) => { return n; }
+    Opt::None => { return 0; }
+  }
+}

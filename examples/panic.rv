@@ -1,0 +1,9 @@
+fn checked(x: i64) -> i64 {
+  if x < 0 {
+    panic;
+  }
+  return x;
+}
+fn main() -> i64 {
+  return checked(7);
+}

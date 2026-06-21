@@ -1,0 +1,33 @@
+# raven-v3 — a from-scratch implementation of the Semantic IR v3 design.
+# Pipeline: parse -> lower -> infer/elaborate -> verify -> compile -> run.
+# Trust base = rv-core (the logic kernel). Everything else is checked/derived.
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+rust-version = "1.74"
+
+[workspace.dependencies]
+rv-arena   = { path = "crates/rv-arena" }
+rv-core    = { path = "crates/rv-core" }
+rv-kernel  = { path = "crates/rv-kernel" }
+rv-ir      = { path = "crates/rv-ir" }
+rv-logic   = { path = "crates/rv-logic" }
+rv-syntax  = { path = "crates/rv-syntax" }
+rv-lower   = { path = "crates/rv-lower" }
+rv-infer   = { path = "crates/rv-infer" }
+rv-solve   = { path = "crates/rv-solve" }
+rv-codegen = { path = "crates/rv-codegen" }
+rv-vm      = { path = "crates/rv-vm" }
+rv-borrow  = { path = "crates/rv-borrow" }
+rv-borrowck = { path = "crates/rv-borrowck" }
+rv-rustfe  = { path = "crates/rv-rustfe" }
+rv-db      = { path = "crates/rv-db" }
+rv-driver  = { path = "crates/rv-driver" }
+
+[profile.dev]
+opt-level = 0

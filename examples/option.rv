@@ -1,0 +1,15 @@
+// An Option-like enum, constructed and consumed by `match`.
+// `rvc examples/option.rv --run` verifies (exhaustive match) and runs main() = Int(42).
+
+enum Opt {
+  None,
+  Some(i64),
+}
+
+fn main() -> i64 {
+  let o: Opt = Opt::Some(42);
+  match o {
+    Opt::Some(x) => { return x; }
+    Opt::None => { return 0; }
+  }
+}

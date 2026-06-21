@@ -1,0 +1,166 @@
+//! Reduction and definitional equality — the computational heart of the kernel.
+//!
+//! Two services, both operating against an [`Env`]:
+//!
+//! * [`Reducer::whnf`] — weak-head normal form under the four reduction rules:
+//!   **β** (`(λ. b) a ↦ b[a]`), **δ** (unfold a definition), **ζ** (`let`), and
+//!   **ι** (a recursor applied to a constructor fires its computation rule). η is
+//!   handled in conversion, not here.
+//! * [`Reducer::is_def_eq`] — definitional (conversion) equality: are two terms equal
+//!   up to reduction and η? This is the relation the type-checker uses whenever it
+//!   must accept a value of an expected type.
+//!
+//! Soundness lives here as much as in the checker: if `whnf` reduced unsoundly or
+//! `is_def_eq` equated distinct types, ill-typed programs would slip through. The
+//! rules are the standard ones; we keep them total and structural.
+
+use crate::env::{Decl, Env, Recursor};
+use crate::level;
+use crate::term::Term;
+
+/// A reducer bound to an environment.
+pub struct Reducer<'e> {
+    pub env: &'e Env,
+}
+
+impl<'e> Reducer<'e> {
+    pub fn new(env: &'e Env) -> Self {
+        Self { env }
+    }
+
+    /// Reduce `t` to weak-head normal form: the outermost constructor is canonical
+    /// (a `Sort`/`Pi`/`Lam`, or a neutral term whose head is a variable, axiom,
+    /// constructor, or stuck recursor). Arguments are *not* recursively normalized.
+    pub fn whnf(&self, t: &Term) -> Term {
+        let (mut head, mut args) = t.unfold_apps();
+        loop {
+            match &head {
+                // ζ: unfold a `let`.
+                Term::Let(_, value, body) => {
+                    head = body.instantiate(value);
+                }
+                Term::Const(n, ls) => match self.env.get(n) {
+                    // δ: unfold a definition (instantiating its universe params).
+                    Some(Decl::Def { value, .. }) => {
+                        head = value.instantiate_levels(ls);
+                    }
+                    // ι: a recursor meeting its constructor.
+                    Some(Decl::Recursor(rec)) => match self.try_iota(rec, ls, &args) {
+                        Some(reduced) => {
+                            let (h, a) = reduced.unfold_apps();
+                            head = h;
+                            args = a;
+                        }
+                        None => break,
+                    },
+                    _ => break,
+                },
+                // β: a lambda meeting an argument.
+                Term::Lam(_, body) => {
+                    if args.is_empty() {
+                        break;
+                    }
+                    let arg = args.remove(0);
+                    head = body.instantiate(&arg);
+                }
+                // A substitution re-exposed an application spine: re-flatten.
+                Term::App(..) => {
+                    let (h, mut a) = head.unfold_apps();
+                    a.extend(args.drain(..));
+                    head = h;
+                    args = a;
+                }
+                // Sort, Var, Pi, or a stuck Const: weak-head normal.
+                _ => break,
+            }
+        }
+        Term::apps(head, args)
+    }
+
+    /// Try one ι-reduction of `rec` (carrying universe args `ls`) applied to `args`.
+    /// Returns the contracted term, or `None` if the recursor is stuck (too few
+    /// arguments, or the major premise is not a constructor application).
+    fn try_iota(&self, rec: &Recursor, ls: &[level::Level], args: &[Term]) -> Option<Term> {
+        let major_pos = rec.major_pos();
+        if args.len() <= major_pos {
+            return None; // not yet saturated up to the scrutinee
+        }
+        // Reduce the major premise and split off its constructor head.
+        let major = self.whnf(&args[major_pos]);
+        let (ctor_head, ctor_args) = major.unfold_apps();
+        let Term::Const(ctor_name, _) = &ctor_head else {
+            return None;
+        };
+        // It must be a constructor of *this* inductive, with a matching rule.
+        let rule = rec.rules.get(ctor_name)?;
+        match self.env.get(ctor_name) {
+            Some(Decl::Constructor(c)) if c.ind == rec.ind => {}
+            _ => return None,
+        }
+        // Constructor arguments are [inductive params…, fields…]; the recursor
+        // already knows the params, so we forward only the fields.
+        let fields = &ctor_args[rec.num_params..];
+        // [params…, motives…, minors…] — motives is `num_motives` wide (the group size
+        // for a mutual recursor, else 1).
+        let nh = rec.num_params + rec.num_motives;
+        let params_and_motives = &args[0..nh];
+        let minors = &args[nh..nh + rec.num_minors];
+
+        // rhs applied to [params…, motives…, minors…, fields…]; the rhs was built to
+        // re-invoke the (possibly sibling) recursor on recursive fields, so this is the
+        // whole step.
+        let mut applied = rule.rhs.instantiate_levels(ls);
+        for a in params_and_motives.iter().chain(minors).chain(fields) {
+            applied = Term::app(applied, a.clone());
+        }
+        // Any arguments beyond the major premise + indices were over-application;
+        // re-attach them.
+        for extra in &args[major_pos + 1..] {
+            applied = Term::app(applied, extra.clone());
+        }
+        Some(applied)
+    }
+
+    /// Definitional equality: are `a` and `b` interchangeable up to reduction and η?
+    pub fn is_def_eq(&self, a: &Term, b: &Term) -> bool {
+        let a = self.whnf(a);
+        let b = self.whnf(b);
+        // Fast path: syntactic identity after whnf.
+        if a == b {
+            return true;
+        }
+        match (&a, &b) {
+            (Term::Sort(l1), Term::Sort(l2)) => level::equiv(l1, l2),
+            (Term::Var(i), Term::Var(j)) => i == j,
+            (Term::Const(n1, l1), Term::Const(n2, l2)) => {
+                n1 == n2
+                    && l1.len() == l2.len()
+                    && l1.iter().zip(l2).all(|(x, y)| level::equiv(x, y))
+            }
+            (Term::Pi(_, d1, b1), Term::Pi(_, d2, b2)) => {
+                self.is_def_eq(d1, d2) && self.is_def_eq(b1, b2)
+            }
+            (Term::Lam(d1, b1), Term::Lam(d2, b2)) => {
+                self.is_def_eq(d1, d2) && self.is_def_eq(b1, b2)
+            }
+            // η: `λx. body ≡ f`  iff  `body ≡ f x` (with `f` shifted under the binder).
+            (Term::Lam(_, body), _) => {
+                let eta = Term::app(b.lift(1, 0), Term::Var(0));
+                self.is_def_eq(body, &eta)
+            }
+            (_, Term::Lam(_, body)) => {
+                let eta = Term::app(a.lift(1, 0), Term::Var(0));
+                self.is_def_eq(&eta, body)
+            }
+            // Neutral application spines: equal heads and pointwise-equal arguments.
+            (Term::App(..), Term::App(..)) => {
+                let (h1, a1) = a.unfold_apps();
+                let (h2, a2) = b.unfold_apps();
+                a1.len() == a2.len()
+                    && self.is_def_eq(&h1, &h2)
+                    && a1.iter().zip(&a2).all(|(x, y)| self.is_def_eq(x, y))
+            }
+            _ => false,
+        }
+    }
+}

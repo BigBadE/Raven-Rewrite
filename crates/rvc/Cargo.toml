@@ -1,0 +1,12 @@
+[package]
+name = "rvc"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rvc"
+path = "src/main.rs"
+
+[dependencies]
+rv-driver.workspace = true

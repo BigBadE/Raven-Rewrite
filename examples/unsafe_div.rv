@@ -1,0 +1,6 @@
+// No precondition guards `x`, so the division-by-zero obligation cannot be
+// proved (x could be 0). `rvc examples/unsafe_div.rv` reports NOT VERIFIED.
+
+fn bad(x: i64) -> i64 {
+  return 100 / x;
+}

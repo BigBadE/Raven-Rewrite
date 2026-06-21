@@ -1,0 +1,8 @@
+// The refinement precondition `x > 0` discharges the division-by-zero obligation
+// inside the body via linear arithmetic. `rvc examples/recip.rv` reports VERIFIED.
+
+fn recip(x: i64) -> i64
+  requires x > 0;
+{
+  return 100 / x;
+}
