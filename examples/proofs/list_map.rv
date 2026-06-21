@@ -1,0 +1,25 @@
+// `map` preserves length — a higher-order verified proof in Rust-like Raven (`rvc --verify`).
+// `map` takes a function argument, showing first-class functions work in proofs.
+
+enum Nat { Zero, Succ(Nat) }
+enum NatList { Nil, Cons(Nat, NatList) }
+
+fn length(xs: NatList) -> Nat {
+    match xs { | NatList::Nil => Nat::Zero | NatList::Cons(x, rest) => Nat::Succ(length(rest)) }
+}
+
+fn map(f: Nat -> Nat, xs: NatList) -> NatList {
+    match xs {
+      | NatList::Nil           => NatList::Nil
+      | NatList::Cons(x, rest) => NatList::Cons(f(x), map(f, rest))
+    }
+}
+
+// length is invariant under map, by induction on the list (`f` threads through unchanged).
+fn map_length(f: Nat -> Nat, xs: NatList) -> length(map(f, xs)) == length(xs) {
+    match xs {
+      | NatList::Nil           => Eq::refl(Nat, Nat::Zero)
+      | NatList::Cons(x, rest) =>
+          congr_arg(Nat, Nat, Nat::Succ, length(map(f, rest)), length(rest), map_length(f, rest))
+    }
+}

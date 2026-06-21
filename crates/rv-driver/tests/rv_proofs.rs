@@ -55,6 +55,16 @@ fn type_soundness() {
 }
 
 #[test]
+fn optimizer() {
+    check("optimizer.rv");
+}
+
+#[test]
+fn list_map() {
+    check("list_map.rv");
+}
+
+#[test]
 fn mutual_trees() {
     check("mutual_trees.rv");
     // It also computes: a forest of two leaves has size 2.
