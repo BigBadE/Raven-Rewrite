@@ -113,6 +113,17 @@ impl<'a> Infer<'a> {
         c
     }
 
+    /// The sort of a (just-built) `Π`/`→` type, computed with the kernel's `imax` rule —
+    /// crucially `imax _ 0 = 0`, so `(x : A) → Prop` is itself a `Prop` (impredicative
+    /// `Prop`). Falls back to `Type 0` if the type still has metavariables that prevent a
+    /// definite sort (the previous unconditional behaviour).
+    fn pi_sort(&self, t: &Term) -> Level {
+        let tz = self.metas.zonk(t).unwrap_or_else(|_| t.clone());
+        Checker::new(self.env)
+            .infer_sort(&mut self.local_ctx(), &tz)
+            .unwrap_or_else(|_| Level::succ(Level::Zero))
+    }
+
     fn lookup_local(&self, n: &str) -> Option<(usize, Term)> {
         let pos = self.locals.iter().rposition(|(x, _)| x == n)?;
         let idx = self.locals.len() - 1 - pos;
@@ -162,7 +173,8 @@ impl<'a> Infer<'a> {
             Expr::Lam(binder, body) => self.infer_lam(&binder.names, &binder.ty, body),
             Expr::Pi(binder, body) => {
                 let t = self.build_pi(&binder.names, &binder.ty, body)?;
-                Ok((t, Term::typ(0)))
+                let s = self.pi_sort(&t);
+                Ok((t, Term::Sort(s)))
             }
             Expr::Arrow(a, b) => {
                 let (at, _) = self.infer(a)?;
@@ -174,7 +186,9 @@ impl<'a> Infer<'a> {
                 let r = self.infer(b);
                 self.locals.pop();
                 let (bt, _) = r?;
-                Ok((Term::pi(at, bt), Term::typ(0)))
+                let t = Term::pi(at, bt);
+                let s = self.pi_sort(&t);
+                Ok((t, Term::Sort(s)))
             }
             Expr::EqOp(a, b) => {
                 let (ta, tya) = self.infer(a)?;
