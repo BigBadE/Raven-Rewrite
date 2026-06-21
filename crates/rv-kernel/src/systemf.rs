@@ -316,21 +316,28 @@ pub const SF_DYNAMICS: &str = r#"
 /// case uses the shifted context; `etapp` inverts the synthesized type to a `∀` (`all_inv`)
 /// and lands on `tsubst`; `eapp` inverts to an arrow and rewrites the domain (as in the STLC).
 pub const SF_SAFETY: &str = r#"
-    -- Congruences.
+    -- Generic congruences (subsume the per-constructor cong lemmas below).
+    def congrArg.{u, v} (A : Sort u) (B : Sort v) (f : A -> B) (a : A) (b : A) (h : Eq.{u} A a b)
+      : Eq.{v} B (f a) (f b) :=
+      Eq.subst.{u} A (fun (x : A) => Eq.{v} B (f a) (f x)) a b h (Eq.refl.{v} B (f a))
+    def congrArg2.{u, v, w} (A : Sort u) (B : Sort v) (C : Sort w) (f : A -> (B -> C))
+        (a : A) (a2 : A) (b : B) (b2 : B) (ha : Eq.{u} A a a2) (hb : Eq.{v} B b b2)
+      : Eq.{w} C (f a b) (f a2 b2) :=
+      Eq.subst.{v} B (fun (y : B) => Eq.{w} C (f a b) (f a2 y)) b b2 hb
+        (Eq.subst.{u} A (fun (x : A) => Eq.{w} C (f a b) (f x b)) a a2 ha (Eq.refl.{w} C (f a b)))
+
+    -- Congruences, now derived from the generic ones (same signatures, all call sites unchanged).
     def succ_cong (m : Nat) (n : Nat) (h : Eq.{1} Nat m n) : Eq.{1} Nat (Nat.succ m) (Nat.succ n) :=
-      Eq.subst.{1} Nat (fun (x : Nat) => Eq.{1} Nat (Nat.succ m) (Nat.succ x)) m n h (Eq.refl.{1} Nat (Nat.succ m))
+      congrArg.{1, 1} Nat Nat (fun (x : Nat) => Nat.succ x) m n h
     def tvar_cong (m : Nat) (n : Nat) (h : Eq.{1} Nat m n) : Eq.{1} FTy (FTy.tvar m) (FTy.tvar n) :=
-      Eq.subst.{1} Nat (fun (x : Nat) => Eq.{1} FTy (FTy.tvar m) (FTy.tvar x)) m n h (Eq.refl.{1} FTy (FTy.tvar m))
+      congrArg.{1, 1} Nat FTy (fun (x : Nat) => FTy.tvar x) m n h
     def tarrow_cong (xa : FTy) (ya : FTy) (xb : FTy) (yb : FTy)
         (ea : Eq.{1} FTy xa ya) (eb : Eq.{1} FTy xb yb)
         : Eq.{1} FTy (FTy.tarrow xa xb) (FTy.tarrow ya yb) :=
-      Eq.subst.{1} FTy (fun (c : FTy) => Eq.{1} FTy (FTy.tarrow xa xb) (FTy.tarrow ya c)) xb yb eb
-        (Eq.subst.{1} FTy (fun (d : FTy) => Eq.{1} FTy (FTy.tarrow xa xb) (FTy.tarrow d xb)) xa ya ea
-          (Eq.refl.{1} FTy (FTy.tarrow xa xb)))
+      congrArg2.{1, 1, 1} FTy FTy FTy (fun (m : FTy) => fun (n : FTy) => FTy.tarrow m n) xa ya xb yb ea eb
     def tall_cong (xa : FTy) (ya : FTy) (e : Eq.{1} FTy xa ya)
         : Eq.{1} FTy (FTy.tall xa) (FTy.tall ya) :=
-      Eq.subst.{1} FTy (fun (x : FTy) => Eq.{1} FTy (FTy.tall xa) (FTy.tall x)) xa ya e
-        (Eq.refl.{1} FTy (FTy.tall xa))
+      congrArg.{1, 1} FTy FTy (fun (x : FTy) => FTy.tall x) xa ya e
 
     -- Nat equality reflection.
     fn eqNat_sound(x: Nat) -> ((y : Nat) -> Eq.{1} Bool (eqNat(x)(y)) Bool.true -> Eq.{1} Nat x y) {
@@ -872,7 +879,7 @@ pub const SF_TYLEMMAS: &str = r#"
 
     -- congruence + the two shift-on-a-variable rewrites.
     def tshift_cong (a : FTy) (b : FTy) (c : Nat) (h : Eq.{1} FTy a b) : Eq.{1} FTy (tshift(a)(c)) (tshift(b)(c)) :=
-      Eq.subst.{1} FTy (fun (x : FTy) => Eq.{1} FTy (tshift(a)(c)) (tshift(x)(c))) a b h (Eq.refl.{1} FTy (tshift(a)(c)))
+      congrArg.{1, 1} FTy FTy (fun (x : FTy) => tshift(x)(c)) a b h
     def tshift_tvar_lt (n : Nat) (c : Nat) (h : Eq.{1} Bool (ltNat(n)(c)) Bool.true) : Eq.{1} FTy (tshift(FTy.tvar(n))(c)) (FTy.tvar n) :=
       Eq.subst.{1} Bool (fun (b : Bool) => Eq.{1} FTy (match b { | Bool.true => FTy.tvar(n) | Bool.false => FTy.tvar(Nat.succ(n)) }) (FTy.tvar n)) Bool.true (ltNat(n)(c)) (Eq.symm.{1} Bool (ltNat(n)(c)) Bool.true h) (Eq.refl.{1} FTy (FTy.tvar n))
     def tshift_tvar_ge (n : Nat) (c : Nat) (h : Eq.{1} Bool (ltNat(n)(c)) Bool.false) : Eq.{1} FTy (tshift(FTy.tvar(n))(c)) (FTy.tvar (Nat.succ n)) :=
@@ -1095,9 +1102,9 @@ pub const SF_TYLEMMAS: &str = r#"
     }
 
     def tsubst1_cong (T1 : FTy) (T2 : FTy) (j : Nat) (s : FTy) (h : Eq.{1} FTy T1 T2) : Eq.{1} FTy (tsubst(T1)(j)(s)) (tsubst(T2)(j)(s)) :=
-      Eq.subst.{1} FTy (fun (z : FTy) => Eq.{1} FTy (tsubst(T1)(j)(s)) (tsubst(z)(j)(s))) T1 T2 h (Eq.refl.{1} FTy (tsubst(T1)(j)(s)))
+      congrArg.{1, 1} FTy FTy (fun (z : FTy) => tsubst(z)(j)(s)) T1 T2 h
     def tsubst3_cong (T : FTy) (j : Nat) (x : FTy) (y : FTy) (h : Eq.{1} FTy x y) : Eq.{1} FTy (tsubst(T)(j)(x)) (tsubst(T)(j)(y)) :=
-      Eq.subst.{1} FTy (fun (z : FTy) => Eq.{1} FTy (tsubst(T)(j)(x)) (tsubst(T)(j)(z))) x y h (Eq.refl.{1} FTy (tsubst(T)(j)(x)))
+      congrArg.{1, 1} FTy FTy (fun (z : FTy) => tsubst(T)(j)(z)) x y h
 
     -- SHIFT-SUBST COMMUTE: for j ≤ c,  ↑c (t{s/j})  =  (↑(c+1) t){↑c s / j}.
     fn shift_subst_comm(t: FTy)
