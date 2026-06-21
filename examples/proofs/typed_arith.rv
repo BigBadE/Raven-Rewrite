@@ -291,3 +291,251 @@ fn progress(t: Tm, ty: Ty, h: HasType(t, ty)) -> Prog(t) {
       | HasType::TyIsZ(p, hp) => prog_isz(p, hp, hp.rec)
     }
 }
+
+// ---------------------------------------------------------------------------
+// PRESERVATION. Needs *structural* typing inversion — given a typing derivation for a known
+// head shape, recover the sub-derivations — which in turn needs constructor injectivity.
+// ---------------------------------------------------------------------------
+
+// Constructor projections, for injectivity via `congr_arg`.
+fn tm_pred(t: Tm) -> Tm { match t { | Tm::Suc(p) => p | _ => t } }
+fn prd_arg(t: Tm) -> Tm { match t { | Tm::Prd(p) => p | _ => t } }
+fn isz_arg(t: Tm) -> Tm { match t { | Tm::IsZ(p) => p | _ => t } }
+fn iff_c(t: Tm) -> Tm { match t { | Tm::Iff(c, a, b) => c | _ => t } }
+fn iff_a(t: Tm) -> Tm { match t { | Tm::Iff(c, a, b) => a | _ => t } }
+fn iff_b(t: Tm) -> Tm { match t { | Tm::Iff(c, a, b) => b | _ => t } }
+
+fn suc_inj(a: Tm, b: Tm, h: Tm::Suc(a) == Tm::Suc(b)) -> a == b {
+    congr_arg(Tm, Tm, tm_pred, Tm::Suc(a), Tm::Suc(b), h)
+}
+fn prd_inj(a: Tm, b: Tm, h: Tm::Prd(a) == Tm::Prd(b)) -> a == b {
+    congr_arg(Tm, Tm, prd_arg, Tm::Prd(a), Tm::Prd(b), h)
+}
+fn isz_inj(a: Tm, b: Tm, h: Tm::IsZ(a) == Tm::IsZ(b)) -> a == b {
+    congr_arg(Tm, Tm, isz_arg, Tm::IsZ(a), Tm::IsZ(b), h)
+}
+fn iff_inj_c(c: Tm, a: Tm, b: Tm, c2: Tm, a2: Tm, b2: Tm,
+             h: Tm::Iff(c, a, b) == Tm::Iff(c2, a2, b2)) -> c == c2 {
+    congr_arg(Tm, Tm, iff_c, Tm::Iff(c, a, b), Tm::Iff(c2, a2, b2), h)
+}
+fn iff_inj_a(c: Tm, a: Tm, b: Tm, c2: Tm, a2: Tm, b2: Tm,
+             h: Tm::Iff(c, a, b) == Tm::Iff(c2, a2, b2)) -> a == a2 {
+    congr_arg(Tm, Tm, iff_a, Tm::Iff(c, a, b), Tm::Iff(c2, a2, b2), h)
+}
+fn iff_inj_b(c: Tm, a: Tm, b: Tm, c2: Tm, a2: Tm, b2: Tm,
+             h: Tm::Iff(c, a, b) == Tm::Iff(c2, a2, b2)) -> b == b2 {
+    congr_arg(Tm, Tm, iff_b, Tm::Iff(c, a, b), Tm::Iff(c2, a2, b2), h)
+}
+
+fn is_iff(t: Tm) -> Prop { match t { | Tm::Iff(c, a, b) => True | _ => False } }
+fn not_iff(x: Tm, c: Tm, a: Tm, b: Tm, h: x == Tm::Iff(c, a, b)) -> is_iff(x) {
+    subst(Tm, is_iff, Tm::Iff(c, a, b), x, symm(Tm, x, Tm::Iff(c, a, b), h), True::intro)
+}
+fn is_prd(t: Tm) -> Prop { match t { | Tm::Prd(p) => True | _ => False } }
+fn not_prd(x: Tm, p: Tm, h: x == Tm::Prd(p)) -> is_prd(x) {
+    subst(Tm, is_prd, Tm::Prd(p), x, symm(Tm, x, Tm::Prd(p), h), True::intro)
+}
+fn is_isz(t: Tm) -> Prop { match t { | Tm::IsZ(p) => True | _ => False } }
+fn not_isz(x: Tm, p: Tm, h: x == Tm::IsZ(p)) -> is_isz(x) {
+    subst(Tm, is_isz, Tm::IsZ(p), x, symm(Tm, x, Tm::IsZ(p), h), True::intro)
+}
+
+// Structural inversion of `Suc`/`Prd`/`IsZ` typings: recover the argument's `TNat` typing and
+// the head's forced result type. (`p` is referenced unpinned in the field — fine alongside the
+// `where` that pins the result type, as in `le_trans.rv`'s `LeSuccInv`.)
+enum SucInv(p: Tm, ty: Ty) -> Prop { MkSucInv(h: HasType(p, Ty::TNat)) where ty == Ty::TNat; }
+enum PrdInv(p: Tm, ty: Ty) -> Prop { MkPrdInv(h: HasType(p, Ty::TNat)) where ty == Ty::TNat; }
+enum IsZInv(p: Tm, ty: Ty) -> Prop { MkIsZInv(h: HasType(p, Ty::TNat)) where ty == Ty::TBool; }
+
+fn inv_suc(t: Tm, ty: Ty, h: HasType(t, ty)) -> (p: Tm) -> (t == Tm::Suc(p)) -> SucInv(p, ty) {
+    match h {
+      | HasType::TyTru => fun (p: Tm) (e: Tm::Tru == Tm::Suc(p)) =>
+          False::rec(fun (z: False) => SucInv(p, Ty::TBool), not_suc(Tm::Tru, p, e))
+      | HasType::TyFls => fun (p: Tm) (e: Tm::Fls == Tm::Suc(p)) =>
+          False::rec(fun (z: False) => SucInv(p, Ty::TBool), not_suc(Tm::Fls, p, e))
+      | HasType::TyIf(c, a, b, r, hc, ha, hb) => fun (p: Tm) (e: Tm::Iff(c, a, b) == Tm::Suc(p)) =>
+          False::rec(fun (z: False) => SucInv(p, r), not_suc(Tm::Iff(c, a, b), p, e))
+      | HasType::TyZer => fun (p: Tm) (e: Tm::Zer == Tm::Suc(p)) =>
+          False::rec(fun (z: False) => SucInv(p, Ty::TNat), not_suc(Tm::Zer, p, e))
+      | HasType::TySuc(q, hq) => fun (p: Tm) (e: Tm::Suc(q) == Tm::Suc(p)) =>
+          SucInv::MkSucInv(p, subst(Tm, fun (x: Tm) => HasType(x, Ty::TNat), q, p, suc_inj(q, p, e), hq))
+      | HasType::TyPrd(q, hq) => fun (p: Tm) (e: Tm::Prd(q) == Tm::Suc(p)) =>
+          False::rec(fun (z: False) => SucInv(p, Ty::TNat), not_suc(Tm::Prd(q), p, e))
+      | HasType::TyIsZ(q, hq) => fun (p: Tm) (e: Tm::IsZ(q) == Tm::Suc(p)) =>
+          False::rec(fun (z: False) => SucInv(p, Ty::TBool), not_suc(Tm::IsZ(q), p, e))
+    }
+}
+
+fn inv_prd(t: Tm, ty: Ty, h: HasType(t, ty)) -> (p: Tm) -> (t == Tm::Prd(p)) -> PrdInv(p, ty) {
+    match h {
+      | HasType::TyTru => fun (p: Tm) (e: Tm::Tru == Tm::Prd(p)) =>
+          False::rec(fun (z: False) => PrdInv(p, Ty::TBool), not_prd(Tm::Tru, p, e))
+      | HasType::TyFls => fun (p: Tm) (e: Tm::Fls == Tm::Prd(p)) =>
+          False::rec(fun (z: False) => PrdInv(p, Ty::TBool), not_prd(Tm::Fls, p, e))
+      | HasType::TyIf(c, a, b, r, hc, ha, hb) => fun (p: Tm) (e: Tm::Iff(c, a, b) == Tm::Prd(p)) =>
+          False::rec(fun (z: False) => PrdInv(p, r), not_prd(Tm::Iff(c, a, b), p, e))
+      | HasType::TyZer => fun (p: Tm) (e: Tm::Zer == Tm::Prd(p)) =>
+          False::rec(fun (z: False) => PrdInv(p, Ty::TNat), not_prd(Tm::Zer, p, e))
+      | HasType::TySuc(q, hq) => fun (p: Tm) (e: Tm::Suc(q) == Tm::Prd(p)) =>
+          False::rec(fun (z: False) => PrdInv(p, Ty::TNat), not_prd(Tm::Suc(q), p, e))
+      | HasType::TyPrd(q, hq) => fun (p: Tm) (e: Tm::Prd(q) == Tm::Prd(p)) =>
+          PrdInv::MkPrdInv(p, subst(Tm, fun (x: Tm) => HasType(x, Ty::TNat), q, p, prd_inj(q, p, e), hq))
+      | HasType::TyIsZ(q, hq) => fun (p: Tm) (e: Tm::IsZ(q) == Tm::Prd(p)) =>
+          False::rec(fun (z: False) => PrdInv(p, Ty::TBool), not_prd(Tm::IsZ(q), p, e))
+    }
+}
+
+fn inv_isz(t: Tm, ty: Ty, h: HasType(t, ty)) -> (p: Tm) -> (t == Tm::IsZ(p)) -> IsZInv(p, ty) {
+    match h {
+      | HasType::TyTru => fun (p: Tm) (e: Tm::Tru == Tm::IsZ(p)) =>
+          False::rec(fun (z: False) => IsZInv(p, Ty::TBool), not_isz(Tm::Tru, p, e))
+      | HasType::TyFls => fun (p: Tm) (e: Tm::Fls == Tm::IsZ(p)) =>
+          False::rec(fun (z: False) => IsZInv(p, Ty::TBool), not_isz(Tm::Fls, p, e))
+      | HasType::TyIf(c, a, b, r, hc, ha, hb) => fun (p: Tm) (e: Tm::Iff(c, a, b) == Tm::IsZ(p)) =>
+          False::rec(fun (z: False) => IsZInv(p, r), not_isz(Tm::Iff(c, a, b), p, e))
+      | HasType::TyZer => fun (p: Tm) (e: Tm::Zer == Tm::IsZ(p)) =>
+          False::rec(fun (z: False) => IsZInv(p, Ty::TNat), not_isz(Tm::Zer, p, e))
+      | HasType::TySuc(q, hq) => fun (p: Tm) (e: Tm::Suc(q) == Tm::IsZ(p)) =>
+          False::rec(fun (z: False) => IsZInv(p, Ty::TNat), not_isz(Tm::Suc(q), p, e))
+      | HasType::TyPrd(q, hq) => fun (p: Tm) (e: Tm::Prd(q) == Tm::IsZ(p)) =>
+          False::rec(fun (z: False) => IsZInv(p, Ty::TNat), not_isz(Tm::Prd(q), p, e))
+      | HasType::TyIsZ(q, hq) => fun (p: Tm) (e: Tm::IsZ(q) == Tm::IsZ(p)) =>
+          IsZInv::MkIsZInv(p, subst(Tm, fun (x: Tm) => HasType(x, Ty::TNat), q, p, isz_inj(q, p, e), hq))
+    }
+}
+
+// Single-step "argument typing" helpers: from `Suc p : ty` (resp. `Prd p : ty`) recover
+// `p : ty`. (The inversion's bound index aligns with `p` because the goal `HasType(p, ty)`
+// mentions the scrutinee index `p`, which the match refines uniformly.)
+fn suc_arg_typing(p: Tm, ty: Ty, h: HasType(Tm::Suc(p), ty)) -> HasType(p, ty) {
+    match inv_suc(Tm::Suc(p), ty, h)(p, Eq::refl(Tm, Tm::Suc(p))) {
+      | SucInv::MkSucInv(px, hp) => hp
+    }
+}
+fn prd_arg_typing(p: Tm, ty: Ty, h: HasType(Tm::Prd(p), ty)) -> HasType(p, ty) {
+    match inv_prd(Tm::Prd(p), ty, h)(p, Eq::refl(Tm, Tm::Prd(p))) {
+      | PrdInv::MkPrdInv(px, hp) => hp
+    }
+}
+
+// `if`: three single-derivation inversions (condition `TBool`, both branches the result type).
+fn inv_if_c(t: Tm, ty: Ty, h: HasType(t, ty))
+    -> (c: Tm) -> (a: Tm) -> (b: Tm) -> (t == Tm::Iff(c, a, b)) -> HasType(c, Ty::TBool) {
+    match h {
+      | HasType::TyTru => fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::Tru == Tm::Iff(c, a, b)) =>
+          False::rec(fun (z: False) => HasType(c, Ty::TBool), not_iff(Tm::Tru, c, a, b, e))
+      | HasType::TyFls => fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::Fls == Tm::Iff(c, a, b)) =>
+          False::rec(fun (z: False) => HasType(c, Ty::TBool), not_iff(Tm::Fls, c, a, b, e))
+      | HasType::TyIf(c2, a2, b2, r, hc, ha, hb) =>
+          fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::Iff(c2, a2, b2) == Tm::Iff(c, a, b)) =>
+            subst(Tm, fun (x: Tm) => HasType(x, Ty::TBool), c2, c,
+                  iff_inj_c(c2, a2, b2, c, a, b, e), hc)
+      | HasType::TyZer => fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::Zer == Tm::Iff(c, a, b)) =>
+          False::rec(fun (z: False) => HasType(c, Ty::TBool), not_iff(Tm::Zer, c, a, b, e))
+      | HasType::TySuc(q, hq) => fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::Suc(q) == Tm::Iff(c, a, b)) =>
+          False::rec(fun (z: False) => HasType(c, Ty::TBool), not_iff(Tm::Suc(q), c, a, b, e))
+      | HasType::TyPrd(q, hq) => fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::Prd(q) == Tm::Iff(c, a, b)) =>
+          False::rec(fun (z: False) => HasType(c, Ty::TBool), not_iff(Tm::Prd(q), c, a, b, e))
+      | HasType::TyIsZ(q, hq) => fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::IsZ(q) == Tm::Iff(c, a, b)) =>
+          False::rec(fun (z: False) => HasType(c, Ty::TBool), not_iff(Tm::IsZ(q), c, a, b, e))
+    }
+}
+
+fn inv_if_a(t: Tm, ty: Ty, h: HasType(t, ty))
+    -> (c: Tm) -> (a: Tm) -> (b: Tm) -> (t == Tm::Iff(c, a, b)) -> HasType(a, ty) {
+    match h {
+      | HasType::TyTru => fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::Tru == Tm::Iff(c, a, b)) =>
+          False::rec(fun (z: False) => HasType(a, Ty::TBool), not_iff(Tm::Tru, c, a, b, e))
+      | HasType::TyFls => fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::Fls == Tm::Iff(c, a, b)) =>
+          False::rec(fun (z: False) => HasType(a, Ty::TBool), not_iff(Tm::Fls, c, a, b, e))
+      | HasType::TyIf(c2, a2, b2, r, hc, ha, hb) =>
+          fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::Iff(c2, a2, b2) == Tm::Iff(c, a, b)) =>
+            subst(Tm, fun (x: Tm) => HasType(x, r), a2, a,
+                  iff_inj_a(c2, a2, b2, c, a, b, e), ha)
+      | HasType::TyZer => fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::Zer == Tm::Iff(c, a, b)) =>
+          False::rec(fun (z: False) => HasType(a, Ty::TNat), not_iff(Tm::Zer, c, a, b, e))
+      | HasType::TySuc(q, hq) => fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::Suc(q) == Tm::Iff(c, a, b)) =>
+          False::rec(fun (z: False) => HasType(a, Ty::TNat), not_iff(Tm::Suc(q), c, a, b, e))
+      | HasType::TyPrd(q, hq) => fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::Prd(q) == Tm::Iff(c, a, b)) =>
+          False::rec(fun (z: False) => HasType(a, Ty::TNat), not_iff(Tm::Prd(q), c, a, b, e))
+      | HasType::TyIsZ(q, hq) => fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::IsZ(q) == Tm::Iff(c, a, b)) =>
+          False::rec(fun (z: False) => HasType(a, Ty::TBool), not_iff(Tm::IsZ(q), c, a, b, e))
+    }
+}
+
+fn inv_if_b(t: Tm, ty: Ty, h: HasType(t, ty))
+    -> (c: Tm) -> (a: Tm) -> (b: Tm) -> (t == Tm::Iff(c, a, b)) -> HasType(b, ty) {
+    match h {
+      | HasType::TyTru => fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::Tru == Tm::Iff(c, a, b)) =>
+          False::rec(fun (z: False) => HasType(b, Ty::TBool), not_iff(Tm::Tru, c, a, b, e))
+      | HasType::TyFls => fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::Fls == Tm::Iff(c, a, b)) =>
+          False::rec(fun (z: False) => HasType(b, Ty::TBool), not_iff(Tm::Fls, c, a, b, e))
+      | HasType::TyIf(c2, a2, b2, r, hc, ha, hb) =>
+          fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::Iff(c2, a2, b2) == Tm::Iff(c, a, b)) =>
+            subst(Tm, fun (x: Tm) => HasType(x, r), b2, b,
+                  iff_inj_b(c2, a2, b2, c, a, b, e), hb)
+      | HasType::TyZer => fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::Zer == Tm::Iff(c, a, b)) =>
+          False::rec(fun (z: False) => HasType(b, Ty::TNat), not_iff(Tm::Zer, c, a, b, e))
+      | HasType::TySuc(q, hq) => fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::Suc(q) == Tm::Iff(c, a, b)) =>
+          False::rec(fun (z: False) => HasType(b, Ty::TNat), not_iff(Tm::Suc(q), c, a, b, e))
+      | HasType::TyPrd(q, hq) => fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::Prd(q) == Tm::Iff(c, a, b)) =>
+          False::rec(fun (z: False) => HasType(b, Ty::TNat), not_iff(Tm::Prd(q), c, a, b, e))
+      | HasType::TyIsZ(q, hq) => fun (c: Tm) (a: Tm) (b: Tm) (e: Tm::IsZ(q) == Tm::Iff(c, a, b)) =>
+          False::rec(fun (z: False) => HasType(b, Ty::TBool), not_iff(Tm::IsZ(q), c, a, b, e))
+    }
+}
+
+// PRESERVATION: if `t : ty` and `t ⟶ u` then `u : ty`. By induction on the step derivation,
+// universally quantified over the type so the IH applies at the sub-term's (possibly different)
+// type. Each step inverts the typing of its redex to retype the contractum.
+fn preservation(t: Tm, u: Tm, hs: Step(t, u)) -> (ty: Ty) -> HasType(t, ty) -> HasType(u, ty) {
+    match hs {
+      | Step::SIfTru(a, b) => fun (ty: Ty) (htt: HasType(Tm::Iff(Tm::Tru, a, b), ty)) =>
+          inv_if_a(Tm::Iff(Tm::Tru, a, b), ty, htt)(Tm::Tru, a, b, Eq::refl(Tm, Tm::Iff(Tm::Tru, a, b)))
+      | Step::SIfFls(a, b) => fun (ty: Ty) (htt: HasType(Tm::Iff(Tm::Fls, a, b), ty)) =>
+          inv_if_b(Tm::Iff(Tm::Fls, a, b), ty, htt)(Tm::Fls, a, b, Eq::refl(Tm, Tm::Iff(Tm::Fls, a, b)))
+      | Step::SIf(c, c2, a, b, hstep) => fun (ty: Ty) (htt: HasType(Tm::Iff(c, a, b), ty)) =>
+          HasType::TyIf(c2, a, b, ty,
+            hstep.rec(Ty::TBool)(inv_if_c(Tm::Iff(c, a, b), ty, htt)(c, a, b, Eq::refl(Tm, Tm::Iff(c, a, b)))),
+            inv_if_a(Tm::Iff(c, a, b), ty, htt)(c, a, b, Eq::refl(Tm, Tm::Iff(c, a, b))),
+            inv_if_b(Tm::Iff(c, a, b), ty, htt)(c, a, b, Eq::refl(Tm, Tm::Iff(c, a, b))))
+      | Step::SSuc(p, p2, hstep) => fun (ty: Ty) (htt: HasType(Tm::Suc(p), ty)) =>
+          let cvy : (ih: (t2: Ty) -> HasType(p, t2) -> HasType(p2, t2)) -> HasType(Tm::Suc(p2), ty) :=
+            match inv_suc(Tm::Suc(p), ty, htt)(p, Eq::refl(Tm, Tm::Suc(p))) {
+              | SucInv::MkSucInv(px, hp) =>
+                  fun (ih: (t2: Ty) -> HasType(px, t2) -> HasType(p2, t2)) =>
+                    HasType::TySuc(p2, ih(Ty::TNat)(hp))
+            }
+          in cvy(hstep.rec)
+      | Step::SPrdZ => fun (ty: Ty) (htt: HasType(Tm::Prd(Tm::Zer), ty)) =>
+          // `pred 0 ⟶ 0`: the argument typing of `Prd Zer` is exactly `Zer : ty`.
+          prd_arg_typing(Tm::Zer, ty, htt)
+      | Step::SPrdS(n, hn) => fun (ty: Ty) (htt: HasType(Tm::Prd(Tm::Suc(n)), ty)) =>
+          // `pred (succ n) ⟶ n`: peel `Prd` then `Suc` to reach `n : ty`.
+          suc_arg_typing(n, ty, prd_arg_typing(Tm::Suc(n), ty, htt))
+      | Step::SPrd(p, p2, hstep) => fun (ty: Ty) (htt: HasType(Tm::Prd(p), ty)) =>
+          let cvy : (ih: (t2: Ty) -> HasType(p, t2) -> HasType(p2, t2)) -> HasType(Tm::Prd(p2), ty) :=
+            match inv_prd(Tm::Prd(p), ty, htt)(p, Eq::refl(Tm, Tm::Prd(p))) {
+              | PrdInv::MkPrdInv(px, hp) =>
+                  fun (ih: (t2: Ty) -> HasType(px, t2) -> HasType(p2, t2)) =>
+                    HasType::TyPrd(p2, ih(Ty::TNat)(hp))
+            }
+          in cvy(hstep.rec)
+      | Step::SIsZZ => fun (ty: Ty) (htt: HasType(Tm::IsZ(Tm::Zer), ty)) =>
+          match inv_isz(Tm::IsZ(Tm::Zer), ty, htt)(Tm::Zer, Eq::refl(Tm, Tm::IsZ(Tm::Zer))) {
+            | IsZInv::MkIsZInv(px, hp) => HasType::TyTru
+          }
+      | Step::SIsZS(n, hn) => fun (ty: Ty) (htt: HasType(Tm::IsZ(Tm::Suc(n)), ty)) =>
+          match inv_isz(Tm::IsZ(Tm::Suc(n)), ty, htt)(Tm::Suc(n), Eq::refl(Tm, Tm::IsZ(Tm::Suc(n)))) {
+            | IsZInv::MkIsZInv(px, hp) => HasType::TyFls
+          }
+      | Step::SIsZ(p, p2, hstep) => fun (ty: Ty) (htt: HasType(Tm::IsZ(p), ty)) =>
+          let cvy : (ih: (t2: Ty) -> HasType(p, t2) -> HasType(p2, t2)) -> HasType(Tm::IsZ(p2), ty) :=
+            match inv_isz(Tm::IsZ(p), ty, htt)(p, Eq::refl(Tm, Tm::IsZ(p))) {
+              | IsZInv::MkIsZInv(px, hp) =>
+                  fun (ih: (t2: Ty) -> HasType(px, t2) -> HasType(p2, t2)) =>
+                    HasType::TyIsZ(p2, ih(Ty::TNat)(hp))
+            }
+          in cvy(hstep.rec)
+    }
+}
