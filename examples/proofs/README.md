@@ -30,6 +30,9 @@ prelude, [`crates/rv-driver/prelude.rv`](../../crates/rv-driver/prelude.rv), whi
 | `type_soundness.rv`    | well-typed `e` ⟹ `eval e` well-typed | **canonical-forms inversion** (no-confusion) |
 | `le.rv`                | `<=` reflexive, `le_succ` | indexed relation |
 | `le_trans.rv`          | transitivity of `<=` | **inversion + convoy + index-changing recursion** |
+| `typed_arith.rv`       | **full type safety** (progress + preservation) for TAPL ch.8 typed arithmetic | indexed typing + small-step relations, canonical forms, structural typing inversion, injectivity, IH convoy |
+| `cek_machine.rv`       | the CEK abstract machine — **runs** `(λx. x+1) 2 ⟹ 3` | mutual `Val/Env/Kont`, fuelled driver |
+| `refinement.rv`        | `safe_pred(2)` — a precondition in the type | **refinement types** (`x: T where p`) with **auto-discharge** |
 
 Nothing here uses special proof syntax: it all reads as recursive Rust functions over `enum`s.
 The design is described in [`docs/raven-language.md`](../../docs/raven-language.md).
