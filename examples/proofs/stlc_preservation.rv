@@ -1,0 +1,178 @@
+// STLC preservation (the substitution lemma) in Rust-like Raven — the metatheory half of the
+// kernel-surface `stlc.rs`, built autosubst-style: typing is stable under any well-typed
+// *renaming* (weakening) and any well-typed *substitution*, and beta is the special case.
+// Self-contained (re-declares the language). `rvc --verify`.
+//
+// Part 1 of 2: renamings + the weakening (renaming-stability) lemma.
+
+enum Nat  { Zero, Succ(Nat) }
+enum Ty   { Base, Arrow(Ty, Ty) }
+enum Tm   { Var(Nat), Lam(Ty, Tm), App(Tm, Tm) }
+enum Ctx  { Nil, Cons(Ty, Ctx) }
+
+enum Lookup(g: Ctx, n: Nat, t: Ty) -> Prop {
+    Here(gg: Ctx, ty: Ty)
+        where g == Ctx::Cons(ty, gg), n == Nat::Zero, t == ty;
+    There(gg: Ctx, ty0: Ty, k: Nat, ty: Ty, h: Lookup(gg, k, ty))
+        where g == Ctx::Cons(ty0, gg), n == Nat::Succ(k), t == ty;
+}
+
+enum HasTy(g: Ctx, e: Tm, t: Ty) -> Prop {
+    TVar(gg: Ctx, n: Nat, ty: Ty, h: Lookup(gg, n, ty))
+        where g == gg, e == Tm::Var(n), t == ty;
+    TLam(gg: Ctx, a: Ty, body: Tm, b: Ty, h: HasTy(Ctx::Cons(a, gg), body, b))
+        where g == gg, e == Tm::Lam(a, body), t == Ty::Arrow(a, b);
+    TApp(gg: Ctx, f: Tm, arg: Tm, a: Ty, b: Ty,
+         hf: HasTy(gg, f, Ty::Arrow(a, b)), ha: HasTy(gg, arg, a))
+        where g == gg, e == Tm::App(f, arg), t == b;
+}
+
+// Context constructor injectivity (via `congr_arg` + projections).
+fn ctx_head(g: Ctx) -> Ty  { match g { | Ctx::Nil => Ty::Base | Ctx::Cons(a, gg) => a } }
+fn ctx_tail(g: Ctx) -> Ctx { match g { | Ctx::Nil => Ctx::Nil  | Ctx::Cons(a, gg) => gg } }
+fn cons_inj_head(a: Ty, g: Ctx, a2: Ty, g2: Ctx, h: Ctx::Cons(a, g) == Ctx::Cons(a2, g2)) -> a == a2 {
+    congr_arg(Ctx, Ty, ctx_head, Ctx::Cons(a, g), Ctx::Cons(a2, g2), h)
+}
+fn cons_inj_tail(a: Ty, g: Ctx, a2: Ty, g2: Ctx, h: Ctx::Cons(a, g) == Ctx::Cons(a2, g2)) -> g == g2 {
+    congr_arg(Ctx, Ctx, ctx_tail, Ctx::Cons(a, g), Ctx::Cons(a2, g2), h)
+}
+
+// Renamings.
+fn up_ren(r: Nat -> Nat) -> (Nat -> Nat) {
+    fun (n: Nat) => match n { | Nat::Zero => Nat::Zero | Nat::Succ(m) => Nat::Succ(r(m)) }
+}
+fn ren(t: Tm) -> ((Nat -> Nat) -> Tm) {
+    match t {
+      | Tm::Var(k)    => fun (r: Nat -> Nat) => Tm::Var(r(k))
+      | Tm::Lam(a, b) => fun (r: Nat -> Nat) => Tm::Lam(a, ren(b)(up_ren(r)))
+      | Tm::App(f, x) => fun (r: Nat -> Nat) => Tm::App(ren(f)(r), ren(x)(r))
+    }
+}
+
+// Inversion + reconstruction: from a lookup in `ctx` (proved equal to `Cons a g`) and a
+// renaming model `g → d`, build the corresponding lookup in `Cons a d` under `up_ren r`. This
+// is the variable-case heart of weakening. Inverts on a *variable* context with a curried
+// `ctx == Cons a g` equation (the `le_inv` discipline), using cons-injectivity to transport.
+fn lookup_weaken_cons(ctx: Ctx, n: Nat, t: Ty, hl: Lookup(ctx, n, t))
+    -> (a: Ty) -> (g: Ctx) -> (d: Ctx) -> (r: Nat -> Nat)
+    -> (ctx == Ctx::Cons(a, g))
+    -> ((m: Nat) -> (s: Ty) -> Lookup(g, m, s) -> Lookup(d, r(m), s))
+    -> Lookup(Ctx::Cons(a, d), up_ren(r)(n), t) {
+    match hl {
+      | Lookup::Here(gg, ty2) =>
+          fun (a: Ty) (g: Ctx) (d: Ctx) (r: Nat -> Nat) (e: Ctx::Cons(ty2, gg) == Ctx::Cons(a, g))
+              (rm: (m: Nat) -> (s: Ty) -> Lookup(g, m, s) -> Lookup(d, r(m), s)) =>
+            subst(Ty, fun (x: Ty) => Lookup(Ctx::Cons(x, d), Nat::Zero, ty2), ty2, a,
+                  cons_inj_head(ty2, gg, a, g, e), Lookup::Here(d, ty2))
+      | Lookup::There(gg, ty0, k, ty3, hk) =>
+          fun (a: Ty) (g: Ctx) (d: Ctx) (r: Nat -> Nat) (e: Ctx::Cons(ty0, gg) == Ctx::Cons(a, g))
+              (rm: (m: Nat) -> (s: Ty) -> Lookup(g, m, s) -> Lookup(d, r(m), s)) =>
+            Lookup::There(d, a, r(k), ty3,
+              rm(k)(ty3)(subst(Ctx, fun (x: Ctx) => Lookup(x, k, ty3), gg, g,
+                               cons_inj_tail(ty0, gg, a, g, e), hk)))
+    }
+}
+
+// `up_ren` preserves the renaming model under a new binder.
+fn up_ren_models(a: Ty, g: Ctx, d: Ctx, r: Nat -> Nat,
+    rm: (m: Nat) -> (s: Ty) -> Lookup(g, m, s) -> Lookup(d, r(m), s))
+    -> (n: Nat) -> (ty: Ty) -> Lookup(Ctx::Cons(a, g), n, ty) -> Lookup(Ctx::Cons(a, d), up_ren(r)(n), ty) {
+    fun (n: Nat) (ty: Ty) (hl: Lookup(Ctx::Cons(a, g), n, ty)) =>
+        lookup_weaken_cons(Ctx::Cons(a, g), n, ty, hl)(a, g, d, r, Eq::refl(Ctx, Ctx::Cons(a, g)), rm)
+}
+
+// WEAKENING (renaming stability): a well-typed term stays well-typed under any renaming
+// mapping the source context's lookups into the target context.
+fn ren_lemma(g: Ctx, t: Tm, ty: Ty, h: HasTy(g, t, ty))
+    -> (d: Ctx) -> (r: Nat -> Nat)
+    -> ((n: Nat) -> (s: Ty) -> Lookup(g, n, s) -> Lookup(d, r(n), s))
+    -> HasTy(d, ren(t)(r), ty) {
+    match h {
+      | HasTy::TVar(gg, n, t2, hl) =>
+          fun (d: Ctx) (r: Nat -> Nat) (rm: (n: Nat) -> (s: Ty) -> Lookup(gg, n, s) -> Lookup(d, r(n), s)) =>
+            HasTy::TVar(d, r(n), t2, rm(n)(t2)(hl))
+      | HasTy::TLam(gg, a, body, b, hb) =>
+          fun (d: Ctx) (r: Nat -> Nat) (rm: (n: Nat) -> (s: Ty) -> Lookup(gg, n, s) -> Lookup(d, r(n), s)) =>
+            HasTy::TLam(d, a, ren(body)(up_ren(r)), b,
+              hb.rec(Ctx::Cons(a, d))(up_ren(r))(up_ren_models(a, gg, d, r, rm)))
+      | HasTy::TApp(gg, f, arg, a, b, hf, ha) =>
+          fun (d: Ctx) (r: Nat -> Nat) (rm: (n: Nat) -> (s: Ty) -> Lookup(gg, n, s) -> Lookup(d, r(n), s)) =>
+            HasTy::TApp(d, ren(f)(r), ren(arg)(r), a, b, hf.rec(d)(r)(rm), ha.rec(d)(r)(rm))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Part 2 of 2: substitutions `Nat -> Tm`, the substitution lemma, and preservation.
+// ---------------------------------------------------------------------------
+
+fn shift1(n: Nat) -> Nat { Nat::Succ(n) }
+fn up_sub(s: Nat -> Tm) -> (Nat -> Tm) {
+    fun (n: Nat) => match n { | Nat::Zero => Tm::Var(Nat::Zero) | Nat::Succ(m) => ren(s(m))(shift1) }
+}
+fn sub(t: Tm) -> ((Nat -> Tm) -> Tm) {
+    match t {
+      | Tm::Var(k)    => fun (s: Nat -> Tm) => s(k)
+      | Tm::Lam(a, b) => fun (s: Nat -> Tm) => Tm::Lam(a, sub(b)(up_sub(s)))
+      | Tm::App(f, x) => fun (s: Nat -> Tm) => Tm::App(sub(f)(s), sub(x)(s))
+    }
+}
+
+// The shift renaming maps `d` into `Cons a d` (used to weaken a substitute under a binder).
+fn shift_models(a: Ty, d: Ctx)
+    -> (m: Nat) -> (s: Ty) -> Lookup(d, m, s) -> Lookup(Ctx::Cons(a, d), shift1(m), s) {
+    fun (m: Nat) (s: Ty) (hm: Lookup(d, m, s)) => Lookup::There(d, a, m, s, hm)
+}
+
+// Inversion + reconstruction for the substitution lemma's variable case: from a lookup in
+// `Cons a g` and a substitution model `g → d`, build the typing of `up_sub s` applied at the
+// index, in `Cons a d`. (Same `le_inv` discipline as `lookup_weaken_cons`; the `There` case
+// weakens the model's output by `ren_lemma` along the shift renaming.)
+fn lookup_sub_cons(ctx: Ctx, n: Nat, t: Ty, hl: Lookup(ctx, n, t))
+    -> (a: Ty) -> (g: Ctx) -> (d: Ctx) -> (s: Nat -> Tm)
+    -> (ctx == Ctx::Cons(a, g))
+    -> ((m: Nat) -> (ss: Ty) -> Lookup(g, m, ss) -> HasTy(d, s(m), ss))
+    -> HasTy(Ctx::Cons(a, d), up_sub(s)(n), t) {
+    match hl {
+      | Lookup::Here(gg, ty2) =>
+          fun (a: Ty) (g: Ctx) (d: Ctx) (s: Nat -> Tm) (e: Ctx::Cons(ty2, gg) == Ctx::Cons(a, g))
+              (sm: (m: Nat) -> (ss: Ty) -> Lookup(g, m, ss) -> HasTy(d, s(m), ss)) =>
+            HasTy::TVar(Ctx::Cons(a, d), Nat::Zero, ty2,
+              subst(Ty, fun (x: Ty) => Lookup(Ctx::Cons(x, d), Nat::Zero, ty2), ty2, a,
+                    cons_inj_head(ty2, gg, a, g, e), Lookup::Here(d, ty2)))
+      | Lookup::There(gg, ty0, k, ty3, hk) =>
+          fun (a: Ty) (g: Ctx) (d: Ctx) (s: Nat -> Tm) (e: Ctx::Cons(ty0, gg) == Ctx::Cons(a, g))
+              (sm: (m: Nat) -> (ss: Ty) -> Lookup(g, m, ss) -> HasTy(d, s(m), ss)) =>
+            ren_lemma(d, s(k), ty3,
+              sm(k)(ty3)(subst(Ctx, fun (x: Ctx) => Lookup(x, k, ty3), gg, g,
+                               cons_inj_tail(ty0, gg, a, g, e), hk)))
+              (Ctx::Cons(a, d))(shift1)(shift_models(a, d))
+    }
+}
+
+// `up_sub` preserves the substitution model under a new binder.
+fn up_models(a: Ty, g: Ctx, d: Ctx, s: Nat -> Tm,
+    sm: (m: Nat) -> (ss: Ty) -> Lookup(g, m, ss) -> HasTy(d, s(m), ss))
+    -> (n: Nat) -> (ty: Ty) -> Lookup(Ctx::Cons(a, g), n, ty) -> HasTy(Ctx::Cons(a, d), up_sub(s)(n), ty) {
+    fun (n: Nat) (ty: Ty) (hl: Lookup(Ctx::Cons(a, g), n, ty)) =>
+        lookup_sub_cons(Ctx::Cons(a, g), n, ty, hl)(a, g, d, s, Eq::refl(Ctx, Ctx::Cons(a, g)), sm)
+}
+
+// THE SUBSTITUTION LEMMA: typing is stable under any well-typed substitution.
+fn sub_lemma(g: Ctx, t: Tm, ty: Ty, h: HasTy(g, t, ty))
+    -> (d: Ctx) -> (s: Nat -> Tm)
+    -> ((n: Nat) -> (ss: Ty) -> Lookup(g, n, ss) -> HasTy(d, s(n), ss))
+    -> HasTy(d, sub(t)(s), ty) {
+    match h {
+      | HasTy::TVar(gg, n, t2, hl) =>
+          fun (d: Ctx) (s: Nat -> Tm) (sm: (n: Nat) -> (ss: Ty) -> Lookup(gg, n, ss) -> HasTy(d, s(n), ss)) =>
+            sm(n)(t2)(hl)
+      | HasTy::TLam(gg, a, body, b, hb) =>
+          fun (d: Ctx) (s: Nat -> Tm) (sm: (n: Nat) -> (ss: Ty) -> Lookup(gg, n, ss) -> HasTy(d, s(n), ss)) =>
+            HasTy::TLam(d, a, sub(body)(up_sub(s)), b,
+              hb.rec(Ctx::Cons(a, d))(up_sub(s))(up_models(a, gg, d, s, sm)))
+      | HasTy::TApp(gg, f, arg, a, b, hf, ha) =>
+          fun (d: Ctx) (s: Nat -> Tm) (sm: (n: Nat) -> (ss: Ty) -> Lookup(gg, n, ss) -> HasTy(d, s(n), ss)) =>
+            HasTy::TApp(d, sub(f)(s), sub(arg)(s), a, b, hf.rec(d)(s)(sm), ha.rec(d)(s)(sm))
+    }
+}
+
