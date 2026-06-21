@@ -1,4 +1,4 @@
-//! **Tier 4 — a CEK abstract machine (and, on top of it, algebraic effect handlers).**
+//! **Tier 4 — a CEK abstract machine with resumable algebraic effect handlers.**
 //!
 //! Where [`crate::stlc`] evaluates by *searching* a term for the next redex (a
 //! substitution-based small-step `step : Exp → OExp`), this module evaluates with an
@@ -12,29 +12,31 @@
 //! the **C**ontrol (the term in focus), the **E**nvironment (the values of the de Bruijn
 //! variables in scope), and the **K**ontinuation (a *defunctionalised* stack recording
 //! "what to do with the value once C is done"). Functions are **closures** — a body paired
-//! with the environment it captured — so there is **no substitution at all**: applying
-//! `(λ. b)` to `v` just extends the environment with `v` and continues with `b`. Each
-//! transition is `O(1)`: no redex search, no term traversal.
+//! with the environment it captured — so there is **no substitution at all**. Each
+//! transition is `O(1)`.
 //!
-//! This is the genuine CEK machine. An earlier version of this module was a *CK* machine
-//! (substitution instead of an environment) because the surface `match` compiler could not
-//! eliminate a member of a mutual inductive group — and closures force `Val`/`Env` to be
-//! mutual (a value may be a closure holding an environment; an environment is a list of
-//! values). That limitation is now lifted (`elab2::compile_match_mutual`), so the machine
-//! carries a real environment.
+//! ## Effects: handlers with first-class resumptions
 //!
-//! Everything here is verified Raven, kernel-checked, and **executable**: the tests run
-//! real programs through the machine and read the resulting number back out.
+//! `handle body h` runs `body` under the handler `h : payload → resume → result`. When
+//! `body` performs `op v`, the machine walks the continuation to the nearest handler and
+//! calls `h` with the payload `v` **and a resumption** — the continuation captured at the
+//! `op`, reified as a value `Val.vkont`. The handler may **resume** (apply the resumption
+//! to a value, continuing the suspended computation — `λp. λk. k p` makes `op` behave like
+//! a value-returning call) or **abort** (ignore the resumption, replacing the whole handled
+//! expression — `λp. λk. p`). Resuming re-installs the handler, i.e. **deep** handlers.
+//! This is full algebraic effects, not just exceptions.
 //!
-//!  * **Machine** — `Tm` (variables, literals, λ, application, addition, a zero-test
-//!    conditional), the mutually-inductive closures `Val`/`Env`, the defunctionalised
-//!    continuation `Kont`, the machine `State`, the single transition `step : State →
-//!    State`, and the fuelled driver `run`.
-//!  * **Effects** — `Tm.op`/`Tm.handle`: `handle` evaluates its handler to a closure and
-//!    pushes a handler frame; performing an `op` **unwinds** the stack to the nearest
-//!    handler and applies it to the payload, discarding the delimited continuation in
-//!    between (the exception/abort fragment of algebraic effects — no first-class
-//!    resumption, which would additionally need `Kont` reified as a `Val`).
+//! Reifying the resumption forces `Val`, `Env` and `Kont` into one **mutual** inductive
+//! group (a value may be a continuation; a continuation frame may hold a value). Matching on
+//! members of such a group — and the handler-search written as a *mutual function bundle*
+//! over the group — is exactly what `elab2::compile_match_mutual` and the bundle compiler
+//! make possible.
+//!
+//! Everything is verified Raven, kernel-checked, and **executable**: the tests run real
+//! programs through the machine and read the resulting number back out.
+//!
+//!  * **Machine** — `Tm`, the mutually-inductive `Val`/`Env`/`Kont`, the `State`, the
+//!    single transition `step`, and the fuelled driver `run`.
 //!  * **Metatheory** ([`META`]) — the driver's fixed-point theorems.
 
 use crate::verify::Session;
@@ -60,7 +62,7 @@ pub const PRELUDE: &str = r#"
 
     -- The focused core language (de Bruijn variables; only `lam` binds). The last two
     -- constructors are the **algebraic effects** layer: `op` performs an operation with a
-    -- payload, and `handle body h` runs `body` under the handler function `h`.
+    -- payload, and `handle body h` runs `body` under the handler `h : payload -> resume -> r`.
     inductive Tm : Type
       | var : Nat -> Tm
       | lit : Nat -> Tm
@@ -69,26 +71,38 @@ pub const PRELUDE: &str = r#"
       | add : Tm -> Tm -> Tm
       | ifz : Tm -> Tm -> Tm -> Tm    -- ifz s then else  (branch on whether s evaluates to zero)
       | op  : Tm -> Tm                -- perform an operation carrying the payload term
-      | handle : Tm -> Tm -> Tm       -- handle body with handler `h : payload -> result`
+      | handle : Tm -> Tm -> Tm       -- handle body with handler `h : payload -> resume -> r`
 "#;
 
-/// The machine: closures + environments, the continuation stack, the state, the transition.
+/// The machine: closures + environments + reified continuations, the state, the transition.
 pub const MACHINE: &str = r#"
-    -- Closures and environments are mutually inductive: a value may be a closure capturing
-    -- an environment, and an environment is a list of values. (Matching on a member of a
-    -- mutual group is what `elab2::compile_match_mutual` makes possible.)
+    -- Values, environments, and continuations are ONE mutual inductive group: a value may
+    -- be a closure (capturing an environment) or a reified continuation `vkont` (a
+    -- resumption); an environment is a list of values; a continuation frame may hold values
+    -- and other continuations.
     mutual {
       inductive Val : Type
         | vnat  : Nat -> Val
         | vclos : Env -> Tm -> Val      -- ⟨ captured env , λ-body ⟩
+        | vkont : Kont -> Val           -- a reified resumption (first-class continuation)
       inductive Env : Type
         | enil  : Env
         | econs : Val -> Env -> Env
+      inductive Kont : Type
+        | kdone : Kont
+        | kapp1 : Env -> Tm -> Kont -> Kont        -- evaluating the function; arg term + env pending
+        | kapp2 : Val -> Kont -> Kont              -- function value in hand; evaluating the argument
+        | kadd1 : Env -> Tm -> Kont -> Kont        -- evaluating the left summand; right term + env pending
+        | kadd2 : Nat -> Kont -> Kont              -- left summand computed; evaluating the right
+        | kifz  : Env -> Tm -> Tm -> Kont -> Kont  -- evaluating the scrutinee; both branches + env pending
+        | kop   : Kont -> Kont                     -- payload of a performed operation is being evaluated
+        | khEval : Tm -> Env -> Kont -> Kont       -- handler being evaluated; its body + env pending
+        | khandle : Val -> Kont -> Kont            -- an installed handler value around the running body
+        | kresume : Val -> Kont -> Kont            -- apply the returned function to this value, then continue
     }
 
-    -- Environment lookup by de Bruijn index. Out-of-scope indices return a dummy `vnat 0`;
-    -- on closed, well-scoped programs (everything the machine is run on) that never fires.
-    -- Recurses on the *index* (a plain `Nat`), so it is an ordinary solo recursion.
+    -- Environment lookup by de Bruijn index. Recurses on the *index* (a plain `Nat`), so it
+    -- is an ordinary solo recursion even though `Env` is a mutual member.
     fn lookupEnv(n: Nat) -> (Env -> Val) {
         match n {
           | Nat.zero => fun (e : Env) =>
@@ -98,21 +112,6 @@ pub const MACHINE: &str = r#"
         }
     }
 
-    -- The continuation: a defunctionalised "rest of the computation" stack. Each frame
-    -- remembers the environment for the sub-terms not yet run. The last three frames are
-    -- the effects layer: `kop` (payload being evaluated), `khEval` (a handler being
-    -- evaluated, with its body pending), and `khandle` (an installed handler value).
-    inductive Kont : Type
-      | kdone : Kont
-      | kapp1 : Env -> Tm -> Kont -> Kont        -- evaluating the function; arg term + env pending
-      | kapp2 : Val -> Kont -> Kont              -- function value in hand; evaluating the argument
-      | kadd1 : Env -> Tm -> Kont -> Kont        -- evaluating the left summand; right term + env pending
-      | kadd2 : Nat -> Kont -> Kont              -- left summand computed; evaluating the right
-      | kifz  : Env -> Tm -> Tm -> Kont -> Kont  -- evaluating the scrutinee; both branches + env pending
-      | kop   : Kont -> Kont                     -- payload of a performed operation is being evaluated
-      | khEval : Tm -> Env -> Kont -> Kont       -- handler being evaluated; its body + env pending
-      | khandle : Val -> Kont -> Kont            -- an installed handler value around the running body
-
     -- A machine state: "evaluate C under E with K", "return value V to K", a final answer,
     -- or stuck (a type error the checker rules out).
     inductive State : Type
@@ -121,34 +120,56 @@ pub const MACHINE: &str = r#"
       | sdone  : Val -> State
       | sstuck : State
 
+    -- HANDLER SEARCH. `walkKont` walks a continuation down to the nearest installed handler
+    -- and fires it: it runs the handler body with the payload bound and the *original*
+    -- continuation (passed as `ko`) reified as the resumption `vkont ko`; the handler then
+    -- runs with the continuation that was below the handler. No handler ⇒ stuck.
+    --
+    -- It must recurse structurally over `Kont` (a mutual member), so it is written as a
+    -- mutual-function bundle over the whole group; `walkVal`/`walkEnv` are the (unused)
+    -- sibling members the bundle requires. Each returns `Kont -> Val -> State`, i.e. it is
+    -- applied to the original continuation `ko` and the payload `pv`.
+    fn walkVal(x: Val) -> (Kont -> (Val -> State)) {
+        match x {
+          | Val.vnat(n)      => fun (ko : Kont) => fun (pv : Val) => State.sstuck
+          | Val.vclos(e, b)  => fun (ko : Kont) => fun (pv : Val) => State.sstuck
+          | Val.vkont(kk)    => fun (ko : Kont) => fun (pv : Val) => State.sstuck
+        }
+    }
+    fn walkEnv(x: Env) -> (Kont -> (Val -> State)) {
+        match x {
+          | Env.enil         => fun (ko : Kont) => fun (pv : Val) => State.sstuck
+          | Env.econs(v, r)  => fun (ko : Kont) => fun (pv : Val) => State.sstuck
+        }
+    }
+    fn walkKont(k: Kont) -> (Kont -> (Val -> State)) {
+        match k {
+          | Kont.kdone => fun (ko : Kont) => fun (pv : Val) => State.sstuck
+          | Kont.khandle(vh, k2) => fun (ko : Kont) => fun (pv : Val) =>
+              match vh {
+                | Val.vclos(hcenv, hb) => State.seval hb (Env.econs pv hcenv) (Kont.kresume (Val.vkont ko) k2)
+                | Val.vnat(n) => State.sstuck
+                | Val.vkont(kk) => State.sstuck
+              }
+          | Kont.kapp1(e, a, k2)     => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.kapp2(vf, k2)       => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.kadd1(e, y, k2)     => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.kadd2(m, k2)        => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.kifz(e, t2, e2, k2) => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.kop(k2)             => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.khEval(b, e, k2)    => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.kresume(rv, k2)     => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+        }
+    }
+
     fn isFinal(s: State) -> Bool {
         match s { | State.sdone(v) => Bool.true | State.sstuck => Bool.true
                  | State.seval(t, e, k) => Bool.false | State.sret(v, k) => Bool.false }
     }
 
-    -- UNWIND: an operation has been performed with payload `v`; walk the continuation to the
-    -- nearest installed handler, discarding the frames in between, and apply that handler
-    -- (a closure) to the payload. No handler ⇒ unhandled effect ⇒ stuck. Recurses on `Kont`.
-    fn unwind(k: Kont) -> (Val -> State) {
-        match k {
-          | Kont.kdone => fun (v : Val) => State.sstuck
-          | Kont.khandle(vh, k2) => fun (v : Val) =>
-              match vh {
-                | Val.vclos(cenv, hbody) => State.seval hbody (Env.econs v cenv) k2
-                | Val.vnat(n) => State.sstuck
-              }
-          | Kont.kop(k2)            => fun (v : Val) => unwind(k2)(v)
-          | Kont.khEval(b, e, k2)   => fun (v : Val) => unwind(k2)(v)
-          | Kont.kapp1(e, a, k2)    => fun (v : Val) => unwind(k2)(v)
-          | Kont.kapp2(vf, k2)      => fun (v : Val) => unwind(k2)(v)
-          | Kont.kadd1(e, y, k2)    => fun (v : Val) => unwind(k2)(v)
-          | Kont.kadd2(m, k2)       => fun (v : Val) => unwind(k2)(v)
-          | Kont.kifz(e, t2, e2, k2) => fun (v : Val) => unwind(k2)(v)
-        }
-    }
-
     -- THE TRANSITION. One clause per (control shape) and per (continuation frame); a total
-    -- function and a *single* step — no search, no substitution.
+    -- function and a *single* step — no search (the search lives in `walkKont`, invoked once
+    -- per performed operation), no substitution.
     fn step(s: State) -> State {
         match s {
           | State.seval(t, env, k) =>
@@ -169,26 +190,36 @@ pub const MACHINE: &str = r#"
                 | Kont.kapp2(vf, k2) =>
                     match vf {
                       | Val.vclos(cenv, body) => State.seval body (Env.econs v cenv) k2
+                      | Val.vkont(kr) => State.sret v kr            -- applying a resumption: jump to it
                       | Val.vnat(n) => State.sstuck
                     }
                 | Kont.kadd1(env, y, k2) =>
                     match v {
                       | Val.vnat(m) => State.seval y env (Kont.kadd2 m k2)
                       | Val.vclos(cenv, body) => State.sstuck
+                      | Val.vkont(kk) => State.sstuck
                     }
                 | Kont.kadd2(m, k2) =>
                     match v {
                       | Val.vnat(n) => State.sret (Val.vnat (addN(m)(n))) k2
                       | Val.vclos(cenv, body) => State.sstuck
+                      | Val.vkont(kk) => State.sstuck
                     }
                 | Kont.kifz(env, t2, e2, k2) =>
                     match v {
                       | Val.vnat(n) => match n { | Nat.zero => State.seval t2 env k2 | Nat.succ(m) => State.seval e2 env k2 }
                       | Val.vclos(cenv, body) => State.sstuck
+                      | Val.vkont(kk) => State.sstuck
                     }
-                | Kont.kop(k2) => unwind(k2)(v)                      -- payload evaluated: perform the effect
+                | Kont.kop(k2) => walkKont(k2)(k2)(v)                -- payload evaluated: find handler, resume = k2
                 | Kont.khEval(body, env2, k2) => State.seval body env2 (Kont.khandle v k2)  -- handler ready; run body
                 | Kont.khandle(vh, k2) => State.sret v k2            -- body finished normally: discard the handler
+                | Kont.kresume(rv, k2) =>
+                    match v {
+                      | Val.vclos(cenv, body) => State.seval body (Env.econs rv cenv) k2  -- apply (λresume. …) to the resumption
+                      | Val.vkont(kr) => State.sret rv kr
+                      | Val.vnat(n) => State.sstuck
+                    }
               }
           | State.sdone(v) => State.sdone v
           | State.sstuck => State.sstuck
@@ -209,7 +240,7 @@ pub const MACHINE: &str = r#"
     def load (t : Tm) : State := State.seval t Env.enil Kont.kdone
     def evalNat (fuel : Nat) (t : Tm) : Nat :=
       match run(fuel)(load(t)) {
-        | State.sdone(v) => match v { | Val.vnat(n) => n | Val.vclos(env, b) => Nat.zero }
+        | State.sdone(v) => match v { | Val.vnat(n) => n | Val.vclos(env, b) => Nat.zero | Val.vkont(k) => Nat.zero }
         | State.sret(v, k) => Nat.zero
         | State.seval(t2, e, k) => Nat.zero
         | State.sstuck => Nat.zero
@@ -250,9 +281,7 @@ pub const META: &str = r#"
         }
     }
 
-    -- Running a final state for any amount of fuel leaves it unchanged. `run (succ k) s`
-    -- unfolds to `match isFinal s { true => s | false => run k (step s) }`; rewriting
-    -- `isFinal s` to `true` (the hypothesis) collapses it to `s`.
+    -- Running a final state for any amount of fuel leaves it unchanged.
     fn run_final_fix(n: Nat)
       -> ((s : State) -> Eq.{1} Bool (isFinal s) Bool.true -> Eq.{1} State (run n s) s) {
         match n {

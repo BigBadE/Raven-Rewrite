@@ -76,47 +76,95 @@ fn conditional_takes_else_branch_on_nonzero() {
 // (Object-level numbers are kept small: each is a unary `Nat.succ` chain, and the kernel
 // evaluator recurses structurally over its full depth.)
 
+// Handlers take two arguments: `λ payload. λ resume. body` (de Bruijn: payload = var1,
+// resume = var0). `abort_*` ignore the resumption (the handler's value replaces the whole
+// handled expression); `resume_*` apply it (the `op` returns and the computation continues).
+
+/// `λp. λk. p`  — abort, yielding the payload.
+fn abort_payload() -> String {
+    "Tm.lam (Tm.lam (Tm.var (Nat.succ Nat.zero)))".into()
+}
+/// `λp. λk. p + c`  — abort, yielding payload + c.
+fn abort_plus(c: usize) -> String {
+    format!(
+        "Tm.lam (Tm.lam (Tm.add (Tm.var (Nat.succ Nat.zero)) (Tm.lit ({}))))",
+        nat(c)
+    )
+}
+/// `λp. λk. k p`  — resume, feeding the payload back so `op` returns it.
+fn resume_payload() -> String {
+    "Tm.lam (Tm.lam (Tm.app (Tm.var Nat.zero) (Tm.var (Nat.succ Nat.zero))))".into()
+}
+/// `λp. λk. k (p + c)`  — resume, so `op` returns payload + c.
+fn resume_plus(c: usize) -> String {
+    format!(
+        "Tm.lam (Tm.lam (Tm.app (Tm.var Nat.zero) (Tm.add (Tm.var (Nat.succ Nat.zero)) (Tm.lit ({})))))",
+        nat(c)
+    )
+}
+
 #[test]
 fn handler_receives_the_operation_payload() {
-    // handle (op 7) (λp. p + 2)  ==>  9
-    let h = format!("Tm.lam (Tm.add (Tm.var Nat.zero) (Tm.lit ({})))", nat(2));
-    let prog = format!("Tm.handle (Tm.op (Tm.lit ({}))) ({h})", nat(7));
+    // handle (op 7) (λp. λk. p + 2)  ==>  9   (abort: handler's value is the result)
+    let prog = format!("Tm.handle (Tm.op (Tm.lit ({}))) ({})", nat(7), abort_plus(2));
     assert_eq!(eval(&prog, 40), "9");
 }
 
 #[test]
-fn performing_an_op_discards_the_delimited_continuation() {
-    // handle ((op 5) + 9) (λp. p)  ==>  5
-    // The `+ 9` is part of the continuation between the op and the handler; performing the
-    // op throws it away (exception/abort-style handling), so the handler sees just 5.
-    let h = "Tm.lam (Tm.var Nat.zero)";
+fn aborting_discards_the_delimited_continuation() {
+    // handle ((op 5) + 9) (λp. λk. p)  ==>  5
+    // Ignoring the resumption throws away the `+ 9` between the op and the handler.
     let prog = format!(
-        "Tm.handle (Tm.add (Tm.op (Tm.lit ({}))) (Tm.lit ({}))) ({h})",
+        "Tm.handle (Tm.add (Tm.op (Tm.lit ({}))) (Tm.lit ({}))) ({})",
         nat(5),
-        nat(9)
+        nat(9),
+        abort_payload()
     );
     assert_eq!(eval(&prog, 40), "5");
 }
 
 #[test]
-fn nearest_handler_wins() {
-    // handle (handle (op 1) (λp. p + 3)) (λp. p + 5)  ==>  4   (the inner handler catches)
-    let inner_h = format!("Tm.lam (Tm.add (Tm.var Nat.zero) (Tm.lit ({})))", nat(3));
-    let outer_h = format!("Tm.lam (Tm.add (Tm.var Nat.zero) (Tm.lit ({})))", nat(5));
+fn resuming_continues_the_computation() {
+    // handle ((op 5) + 9) (λp. λk. k p)  ==>  14
+    // Resuming feeds the payload back so `op 5` returns 5, and `5 + 9` runs to completion.
+    // (Contrast `aborting_discards_…` above: same program, abort gives 5, resume gives 14.)
     let prog = format!(
-        "Tm.handle (Tm.handle (Tm.op (Tm.lit ({}))) ({inner_h})) ({outer_h})",
-        nat(1)
+        "Tm.handle (Tm.add (Tm.op (Tm.lit ({}))) (Tm.lit ({}))) ({})",
+        nat(5),
+        nat(9),
+        resume_payload()
+    );
+    assert_eq!(eval(&prog, 60), "14");
+}
+
+#[test]
+fn the_handler_transforms_the_resumed_value() {
+    // handle ((op 5) + 9) (λp. λk. k (p + 100))  ==>  114   — op returns 105, then + 9.
+    let prog = format!(
+        "Tm.handle (Tm.add (Tm.op (Tm.lit ({}))) (Tm.lit ({}))) ({})",
+        nat(5),
+        nat(9),
+        resume_plus(100)
+    );
+    assert_eq!(eval(&prog, 60), "114");
+}
+
+#[test]
+fn nearest_handler_wins() {
+    // handle (handle (op 1) (λp.λk. p + 3)) (λp.λk. p + 5)  ==>  4   (inner handler catches)
+    let prog = format!(
+        "Tm.handle (Tm.handle (Tm.op (Tm.lit ({}))) ({})) ({})",
+        nat(1),
+        abort_plus(3),
+        abort_plus(5)
     );
     assert_eq!(eval(&prog, 40), "4");
 }
 
 #[test]
 fn handler_is_transparent_when_no_op_is_performed() {
-    // handle 6 (λp. p + 1)  ==>  6   (body completes normally; the handler is popped)
-    let prog = format!(
-        "Tm.handle (Tm.lit ({})) (Tm.lam (Tm.add (Tm.var Nat.zero) (Tm.lit (Nat.succ Nat.zero))))",
-        nat(6)
-    );
+    // handle 6 (λp. λk. p + 1)  ==>  6   (body completes normally; the handler is popped)
+    let prog = format!("Tm.handle (Tm.lit ({})) ({})", nat(6), abort_plus(1));
     assert_eq!(eval(&prog, 20), "6");
 }
 
