@@ -1,0 +1,36 @@
+// Mutually-recursive data + functions in Rust-like Raven (`rvc --verify --run --entry example`).
+// `Tree` and `Forest` reference each other, so they're declared in one `mutual` block; their
+// size functions are mutually recursive too.
+
+enum Nat { Zero, Succ(Nat) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n {
+      | Nat::Zero    => m
+      | Nat::Succ(k) => Nat::Succ(plus(k, m))
+    }
+}
+
+mutual {
+    enum Tree   { Leaf(Nat), Branch(Forest) }
+    enum Forest { FNil, FCons(Tree, Forest) }
+}
+
+// Mutually-recursive size functions (auto-bundled because they're contiguous).
+fn tree_size(t: Tree) -> Nat {
+    match t {
+      | Tree::Leaf(n)   => Nat::Succ(Nat::Zero)
+      | Tree::Branch(f) => forest_size(f)
+    }
+}
+fn forest_size(f: Forest) -> Nat {
+    match f {
+      | Forest::FNil           => Nat::Zero
+      | Forest::FCons(t, rest) => plus(tree_size(t), forest_size(rest))
+    }
+}
+
+// A forest of two leaves; its size computes to 2.
+def example : Nat :=
+    forest_size(Forest::FCons(Tree::Leaf(Nat::Zero),
+                Forest::FCons(Tree::Leaf(Nat::Zero), Forest::FNil)))

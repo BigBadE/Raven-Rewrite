@@ -23,3 +23,14 @@ fn nat_arithmetic() {
 fn indexed_relation() {
     check("indexed_relation.rv");
 }
+
+#[test]
+fn mutual_trees() {
+    check("mutual_trees.rv");
+    // It also computes: a forest of two leaves has size 2.
+    let path = format!("{}/../../examples/proofs/mutual_trees.rv", env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(&path).unwrap();
+    let report = verify_rv(&src, Some("example")).unwrap();
+    let run = report.run.unwrap().unwrap();
+    assert!(run.contains("Succ") && run.contains("Zero"), "expected a size-2 Nat, got {run}");
+}

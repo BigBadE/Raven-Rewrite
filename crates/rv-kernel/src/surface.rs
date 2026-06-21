@@ -972,8 +972,8 @@ impl Parser {
                 self.expect(&Tok::LBrace)?;
                 let mut members = Vec::new();
                 while !self.at(&Tok::RBrace) {
-                    if !self.at(&Tok::KwInductive) {
-                        return Err("a `mutual` block may only contain `inductive` \
+                    if !self.at(&Tok::KwInductive) && !self.at(&Tok::KwEnum) {
+                        return Err("a `mutual` block may only contain `inductive`/`enum` \
                                     declarations"
                             .to_string());
                     }
