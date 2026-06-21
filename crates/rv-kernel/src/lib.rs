@@ -28,6 +28,7 @@
 //! way — the choice only bites at Phase-2 elimination, where it shows up as the
 //! large-elimination restriction on `Prop`-valued inductives.
 
+pub mod cek;
 pub mod check;
 pub mod effect;
 pub mod elab;
