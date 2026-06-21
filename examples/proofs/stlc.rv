@@ -1,0 +1,150 @@
+// The simply-typed λ-calculus (de Bruijn) in Rust-like Raven — the core of the kernel-surface
+// `stlc.rs`, rewritten in the traditional-developer syntax (`rvc --verify`). Variables, λ with
+// an annotated domain, and application; base + arrow types; a typing relation over de Bruijn
+// contexts; a small-step call-by-value reduction with real capture-avoiding substitution; and
+// the **progress** half of type safety (a closed well-typed term is a value or it steps).
+//
+// Preservation (the substitution lemma) is built on top of this in `stlc_preservation.rv`.
+
+enum Nat  { Zero, Succ(Nat) }
+enum Bool { BTrue, BFalse }
+enum Ty   { Base, Arrow(Ty, Ty) }
+enum Tm   { Var(Nat), Lam(Ty, Tm), App(Tm, Tm) }
+enum Ctx  { Nil, Cons(Ty, Ctx) }
+
+// ---------------------------------------------------------------------------
+// de Bruijn substitution. `tm_lift` shifts free variables ≥ a cutoff up by one (used when a
+// substituted term moves under a binder); `tm_subst j s t` replaces variable `j` by `s`.
+// ---------------------------------------------------------------------------
+
+// Curried on the structural argument (so a recursive call varies only the threaded
+// index/term, never a parameter that the surface's structural-recursion check pins).
+enum Cmp { CLt, CEq, CGt }
+fn cmp(a: Nat) -> (Nat -> Cmp) {
+    match a {
+      | Nat::Zero    => fun (b: Nat) => match b { | Nat::Zero => Cmp::CEq | Nat::Succ(y) => Cmp::CLt }
+      | Nat::Succ(x) => fun (b: Nat) => match b { | Nat::Zero => Cmp::CGt | Nat::Succ(y) => cmp(x)(y) }
+    }
+}
+fn pred(n: Nat) -> Nat { match n { | Nat::Zero => Nat::Zero | Nat::Succ(k) => k } }
+fn ltb(a: Nat, b: Nat) -> Bool {
+    match cmp(a)(b) { | Cmp::CLt => Bool::BTrue | Cmp::CEq => Bool::BFalse | Cmp::CGt => Bool::BFalse }
+}
+
+fn tm_lift(t: Tm) -> (Nat -> Tm) {
+    match t {
+      | Tm::Var(k)    => fun (c: Nat) =>
+          match ltb(k, c) { | Bool::BTrue => Tm::Var(k) | Bool::BFalse => Tm::Var(Nat::Succ(k)) }
+      | Tm::Lam(a, b) => fun (c: Nat) => Tm::Lam(a, tm_lift(b)(Nat::Succ(c)))
+      | Tm::App(f, x) => fun (c: Nat) => Tm::App(tm_lift(f)(c), tm_lift(x)(c))
+    }
+}
+fn tm_subst(t: Tm) -> (Nat -> (Tm -> Tm)) {
+    match t {
+      | Tm::Var(k)    => fun (j: Nat) (s: Tm) =>
+          match cmp(k)(j) { | Cmp::CEq => s | Cmp::CLt => Tm::Var(k) | Cmp::CGt => Tm::Var(pred(k)) }
+      | Tm::Lam(a, b) => fun (j: Nat) (s: Tm) => Tm::Lam(a, tm_subst(b)(Nat::Succ(j))(tm_lift(s)(Nat::Zero)))
+      | Tm::App(f, x) => fun (j: Nat) (s: Tm) => Tm::App(tm_subst(f)(j)(s), tm_subst(x)(j)(s))
+    }
+}
+fn tm_beta(body: Tm, arg: Tm) -> Tm { tm_subst(body)(Nat::Zero)(arg) }
+
+// ---------------------------------------------------------------------------
+// Typing, values, reduction.
+// ---------------------------------------------------------------------------
+
+// `Lookup G n T`: the n-th entry of context G is T.
+enum Lookup(g: Ctx, n: Nat, t: Ty) -> Prop {
+    Here(gg: Ctx, ty: Ty)
+        where g == Ctx::Cons(ty, gg), n == Nat::Zero, t == ty;
+    There(gg: Ctx, ty0: Ty, k: Nat, ty: Ty, h: Lookup(gg, k, ty))
+        where g == Ctx::Cons(ty0, gg), n == Nat::Succ(k), t == ty;
+}
+
+enum HasTy(g: Ctx, e: Tm, t: Ty) -> Prop {
+    TVar(gg: Ctx, n: Nat, ty: Ty, h: Lookup(gg, n, ty))
+        where g == gg, e == Tm::Var(n), t == ty;
+    TLam(gg: Ctx, a: Ty, body: Tm, b: Ty, h: HasTy(Ctx::Cons(a, gg), body, b))
+        where g == gg, e == Tm::Lam(a, body), t == Ty::Arrow(a, b);
+    TApp(gg: Ctx, f: Tm, arg: Tm, a: Ty, b: Ty,
+         hf: HasTy(gg, f, Ty::Arrow(a, b)), ha: HasTy(gg, arg, a))
+        where g == gg, e == Tm::App(f, arg), t == b;
+}
+
+// Values: λ-abstractions.
+enum Value(e: Tm) -> Prop {
+    VLam(a: Ty, body: Tm) where e == Tm::Lam(a, body);
+}
+
+// Call-by-value small step.
+enum Step(t: Tm, u: Tm) -> Prop {
+    SBeta(a: Ty, body: Tm, v: Tm, hv: Value(v))
+        where t == Tm::App(Tm::Lam(a, body), v), u == tm_beta(body, v);
+    SApp1(f: Tm, f2: Tm, x: Tm, h: Step(f, f2))
+        where t == Tm::App(f, x), u == Tm::App(f2, x);
+    SApp2(f: Tm, x: Tm, x2: Tm, hv: Value(f), h: Step(x, x2))
+        where t == Tm::App(f, x), u == Tm::App(f, x2);
+}
+
+// ---------------------------------------------------------------------------
+// Empty-context lookup is absurd (a closed variable can't be typed).
+// ---------------------------------------------------------------------------
+
+fn is_nil(g: Ctx) -> Prop { match g { | Ctx::Nil => True | Ctx::Cons(ty, gg) => False } }
+fn cons_ne_nil(ty: Ty, gg: Ctx, h: Ctx::Cons(ty, gg) == Ctx::Nil) -> False {
+    subst(Ctx, is_nil, Ctx::Nil, Ctx::Cons(ty, gg),
+          symm(Ctx, Ctx::Cons(ty, gg), Ctx::Nil, h), True::intro)
+}
+fn lookup_nil_absurd(g: Ctx, n: Nat, t: Ty, h: Lookup(g, n, t)) -> (g == Ctx::Nil) -> False {
+    match h {
+      | Lookup::Here(gg, ty) => fun (e: Ctx::Cons(ty, gg) == Ctx::Nil) => cons_ne_nil(ty, gg, e)
+      | Lookup::There(gg, ty0, k, ty, hk) => fun (e: Ctx::Cons(ty0, gg) == Ctx::Nil) =>
+          cons_ne_nil(ty0, gg, e)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PROGRESS.
+// ---------------------------------------------------------------------------
+
+enum Prog(e: Tm) -> Prop {
+    PVal(x: Tm, h: Value(x))            where e == x;
+    PStep(x: Tm, u: Tm, h: Step(x, u))  where e == x;
+}
+
+// The application case: given progress for the function and the argument, step or build a value.
+// A value of function type is a λ (here `Value` only has `VLam`, so canonical forms is direct).
+fn prog_app(f: Tm, arg: Tm, pf: Prog(f), parg: Prog(arg)) -> Prog(Tm::App(f, arg)) {
+    match pf {
+      | Prog::PStep(x, u, hs) => Prog::PStep(Tm::App(x, arg), Tm::App(u, arg), Step::SApp1(x, u, arg, hs))
+      | Prog::PVal(x, hvf) =>
+          match parg {
+            | Prog::PStep(y, w, hs2) =>
+                Prog::PStep(Tm::App(x, y), Tm::App(x, w), Step::SApp2(x, y, w, hvf, hs2))
+            | Prog::PVal(y, hvy) =>
+                match hvf {
+                  | Value::VLam(a2, body) =>
+                      Prog::PStep(Tm::App(Tm::Lam(a2, body), y), tm_beta(body, y),
+                                  Step::SBeta(a2, body, y, hvy))
+                }
+          }
+    }
+}
+
+// PROGRESS: a well-typed term in the empty context is a value or it steps. Stated over an
+// arbitrary context with a `G == Nil` hypothesis so the induction has a variable to refine.
+fn progress(g: Ctx, e: Tm, t: Ty, h: HasTy(g, e, t)) -> (g == Ctx::Nil) -> Prog(e) {
+    match h {
+      | HasTy::TVar(gg, n, ty, hl) => fun (gnil: gg == Ctx::Nil) =>
+          False::rec(fun (z: False) => Prog(Tm::Var(n)), lookup_nil_absurd(gg, n, ty, hl)(gnil))
+      | HasTy::TLam(gg, a, body, b, hb) => fun (gnil: gg == Ctx::Nil) =>
+          Prog::PVal(Tm::Lam(a, body), Value::VLam(a, body))
+      | HasTy::TApp(gg, f, arg, a, b, hf, ha) => fun (gnil: gg == Ctx::Nil) =>
+          prog_app(f, arg, hf.rec(gnil), ha.rec(gnil))
+    }
+}
+
+// A closed well-typed term is a value or it steps.
+fn progress_closed(e: Tm, t: Ty, h: HasTy(Ctx::Nil, e, t)) -> Prog(e) {
+    progress(Ctx::Nil, e, t, h)(Eq::refl(Ctx, Ctx::Nil))
+}

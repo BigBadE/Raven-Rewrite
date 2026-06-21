@@ -110,6 +110,11 @@ fn typed_arith() {
 }
 
 #[test]
+fn stlc() {
+    check("stlc.rv");
+}
+
+#[test]
 fn mutual_trees() {
     check("mutual_trees.rv");
     // It also computes: a forest of two leaves has size 2.
