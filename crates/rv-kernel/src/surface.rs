@@ -999,13 +999,15 @@ impl Parser {
                         self.expect(&Tok::Colon)?;
                         let pty = self.expr()?;
                         // A *refinement* `x: T where p` desugars to two parameters: the value
-                        // `x: T` and a proof obligation `_: p` (which may mention `x`). Callers
-                        // supply the proof; the kernel checks it.
+                        // `x: T` and a proof obligation `_: p` (which may mention `x`). The proof
+                        // binder is **implicit**, so the elaborator auto-inserts it at call sites
+                        // and tries to discharge it (a concrete `is_pos(2)` reduces to `True`,
+                        // filled by `True.intro`); only when that fails must the caller supply it.
                         if self.eat(&Tok::KwWhere) {
                             let pred = self.expr()?;
                             let pf = format!("{pname}__ref");
                             params.push(Binder { names: vec![pname], ty: pty, implicit: false });
-                            params.push(Binder { names: vec![pf], ty: pred, implicit: false });
+                            params.push(Binder { names: vec![pf], ty: pred, implicit: true });
                         } else {
                             params.push(Binder { names: vec![pname], ty: pty, implicit: false });
                         }

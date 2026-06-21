@@ -84,8 +84,12 @@ fn refinement() {
     check("refinement.rv");
     let path = format!("{}/../../examples/proofs/refinement.rv", env!("CARGO_MANIFEST_DIR"));
     let src = std::fs::read_to_string(&path).unwrap();
+    // `safe_pred(2)` auto-discharges `is_pos(2)` and runs to `pred 2 = 1` (one `Succ`).
     let run = verify_rv(&src, Some("example")).unwrap().run.unwrap().unwrap();
     assert_eq!(run.matches("Succ").count(), 1, "pred of 2 should be 1, got {run}");
+    // `only_one(1)` auto-discharges the equation `1 == 1` and runs to `pred 1 = 0`.
+    let run2 = verify_rv(&src, Some("also")).unwrap().run.unwrap().unwrap();
+    assert!(run2.contains("Zero") && run2.matches("Succ").count() == 0, "pred of 1 should be 0, got {run2}");
 }
 
 #[test]

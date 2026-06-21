@@ -61,6 +61,10 @@ pub struct Infer<'a> {
     /// Set once the first (innermost) span-annotated error has had its caret rendered, so
     /// outer `Spanned` wrappers don't re-annotate the same error.
     err_annotated: bool,
+    /// Auto-inserted refinement obligations that [`Self::try_discharge`] could not close:
+    /// metavariable id → the obligation type. If one is still unsolved at finalization we
+    /// report "unsatisfied refinement obligation: <p>" rather than a bare "?N" meta error.
+    obligations: HashMap<u32, Term>,
 }
 
 impl<'a> Infer<'a> {
@@ -81,6 +85,7 @@ impl<'a> Infer<'a> {
             fresh_counter: 0,
             src: None,
             err_annotated: false,
+            obligations: HashMap::new(),
         }
     }
 
@@ -366,11 +371,27 @@ impl<'a> Infer<'a> {
             };
             let dom = (**dom).clone();
             if mask.get(pos).copied().unwrap_or(false) {
-                // Implicit binder: insert a fresh metavariable carrying its declared
-                // domain type, so solving it can also fix the binder's universe level.
-                let m = self.metas.fresh_typed(self.depth(), dom.clone());
-                ty = cod.instantiate(&m);
-                term = Term::app(term, m);
+                // Implicit binder. First try to *auto-discharge* it as a proof obligation
+                // (a refinement `where p` whose `p` now reduces to a canonical proposition);
+                // if that succeeds we fill the proof directly. Otherwise insert a fresh
+                // metavariable carrying its declared domain type, so solving it can also fix
+                // the binder's universe level.
+                let arg = match self.try_discharge(&dom) {
+                    Some(proof) => proof,
+                    None => {
+                        let m = self.metas.fresh_typed(self.depth(), dom.clone());
+                        // Remember a *concrete* (meta-free) obligation we couldn't discharge,
+                        // so a later "unsolved meta" is reported as a refinement failure.
+                        if let (Term::Meta(id), Ok(z)) = (&m, self.metas.zonk(&dom)) {
+                            if !z.has_meta() {
+                                self.obligations.insert(*id, z);
+                            }
+                        }
+                        m
+                    }
+                };
+                ty = cod.instantiate(&arg);
+                term = Term::app(term, arg);
                 pos += 1;
                 continue;
             }
@@ -384,6 +405,41 @@ impl<'a> Infer<'a> {
             pos += 1;
         }
         Ok((term, ty))
+    }
+
+    /// Try to **auto-discharge** an implicit proof obligation `dom` (a refinement
+    /// `where p` whose predicate is now concrete). Returns a closed proof term when the
+    /// obligation reduces to something canonical, or `None` to fall back to a metavariable:
+    ///
+    /// * `True`           → `True.intro`;
+    /// * `Eq A a b` with `a ≡ b` (defeq) → `Eq.refl A a`.
+    ///
+    /// The kernel re-checks whatever we emit, so an over-eager guess can never make an
+    /// unsound program verify — at worst it would be rejected, which is why each arm only
+    /// fires once the obligation is fully determined and provably canonical.
+    fn try_discharge(&mut self, dom: &Term) -> Option<Term> {
+        let p = self.metas.zonk(dom).ok()?;
+        if p.has_meta() {
+            return None; // an underdetermined obligation can't be discharged yet
+        }
+        let w = self.force_whnf(&p);
+        let (head, args) = w.unfold_apps();
+        match &head {
+            // A decidable/`Prop`-valued predicate that reduced to `True`.
+            Term::Const(n, _) if *n == name("True") => {
+                Some(Term::cnst(name("True.intro"), vec![]))
+            }
+            // A reflexive equation precondition (`x where x == c` at a literal, etc.).
+            Term::Const(n, ls) if *n == name("Eq") && args.len() == 3 && ls.len() == 1 => {
+                let (ty_a, a, b) = (args[0].clone(), args[1].clone(), args[2].clone());
+                if Checker::new(self.env).def_eq(&a, &b) {
+                    Some(Term::apps(Term::cnst(name("Eq.refl"), ls.clone()), [ty_a, a]))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 
     /// The implicit mask for an application head, if it is a global with one.
@@ -1271,9 +1327,27 @@ impl<'a> Infer<'a> {
             .normalize_open(self.depth(), t)
     }
 
-    /// Zonk a term: substitute solved metas, error on unsolved.
+    /// Zonk a term: substitute solved metas, error on unsolved. First reports any
+    /// auto-inserted refinement obligation that was never discharged, with a precise
+    /// message naming the precondition (instead of the bare "could not infer ?N").
     pub fn finish(&self, t: &Term) -> Result<Term, String> {
+        self.check_obligations()?;
         self.metas.zonk(t)
+    }
+
+    /// Fail if any auto-inserted refinement obligation is still unsolved (the precondition
+    /// could not be auto-discharged and no proof was supplied).
+    fn check_obligations(&self) -> Result<(), String> {
+        for (id, ty) in &self.obligations {
+            if !self.metas.is_solved(*id) {
+                return Err(format!(
+                    "unsatisfied refinement obligation `{}`: the precondition could not be \
+                     discharged automatically",
+                    ty.pretty()
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// **Instance resolution.** After a body has elaborated, fill every still-unsolved

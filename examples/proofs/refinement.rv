@@ -1,8 +1,11 @@
 // Refinement types in Rust-like Raven (`rvc --verify --run --entry example`).
 //
 // A parameter `x: T where p` is a *refinement*: the function takes the value AND a proof of
-// `p` (which may mention `x`). The proof is supplied at the call site and checked by the
-// kernel — so a function can demand a precondition as part of its type.
+// `p` (which may mention `x`). The proof binder is implicit, and the elaborator tries to
+// **auto-discharge** it — when the obligation reduces to a canonical proposition (`True`, or
+// a reflexive equation) the proof is filled automatically, so the caller writes nothing.
+// When it can't be discharged (e.g. `safe_pred(0)`, where `is_pos(0)` reduces to `False`),
+// the call is rejected. This is "proofs as smarter types": the precondition lives in the type.
 
 enum Nat { Zero, Succ(Nat) }
 
@@ -18,5 +21,13 @@ fn safe_pred(n: Nat where is_pos(n)) -> Nat {
     pred(n)
 }
 
-// `is_pos(Succ Zero)` reduces to `True`, so the obligation is discharged by `True::intro`.
-def example : Nat := safe_pred(Nat::Succ(Nat::Succ(Nat::Zero)), True::intro)
+// `is_pos(Succ (Succ Zero))` reduces to `True`, so the obligation is discharged
+// automatically — no proof term at the call site.
+def example : Nat := safe_pred(Nat::Succ(Nat::Succ(Nat::Zero)))
+
+// A second refinement, this time an *equation* precondition `n where n == Succ Zero`. The
+// obligation `Succ Zero == Succ Zero` is reflexive, auto-discharged by `Eq.refl`.
+fn only_one(n: Nat where n == Nat::Succ(Nat::Zero)) -> Nat {
+    pred(n)
+}
+def also : Nat := only_one(Nat::Succ(Nat::Zero))
