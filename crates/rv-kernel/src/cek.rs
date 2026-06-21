@@ -630,6 +630,172 @@ pub fn lookup_session() -> Result<Session, String> {
     Ok(s)
 }
 
+/// **Machine type-safety: preservation + progress + the run-level safety corollary.**
+///
+///  * `preservation : HasTyS s B -> HasTyS (step s) B` — one transition preserves the state's
+///    answer type. Proved by case analysis on the *typing derivation* (not the term): for a
+///    running state (`seval`) we recurse on `HasTy`, for a returning state (`sret`) on `HasTyK`
+///    — each constructor refines the term/frame and hands over its premises directly, so no
+///    separate term/frame inversion is needed. Where `step` branches on a value (the `kapp2`,
+///    `kadd*`, `kifz` frames) the value canonical forms (`canonNat`/`canonArr`) refine it,
+///    discharging the stuck branches; the `var` case is closed by `envLookup`. Index-dependent
+///    hypotheses are threaded with the convoy pattern. There is *no* rule for the effect frames
+///    or for `op`/`handle`, so those simply never occur as arms.
+///  * `notStuck : HasTyS s B -> (s = sstuck -> False)` — the progress half: a well-typed state
+///    is never the stuck state (`sstuck` has no typing rule; no-confusion on `State`).
+///  * `runPreserv : HasTyS s B -> HasTyS (run n s) B` — typing is preserved across the whole
+///    fuelled driver (induction on fuel; structural case on the state so `run`'s `isFinal`
+///    guard reduces).
+///  * `neverStuck : HasTyS s B -> (run n s = sstuck -> False)` — **type safety**: a well-typed
+///    program, run for any fuel, never reaches the stuck state. Effects make this sharp:
+///    `op`/`handle` are deliberately untypable, so a well-typed program is effect-free.
+pub const SAFETY_PRESERV: &str = r#"
+    -- Preservation, `seval` half: recurse on the term-typing derivation. Each arm refines the
+    -- term, `step` fires the matching transition, and the (convoyed) env/continuation typings
+    -- rebuild the successor state's typing. op/handle have no HasTy rule, so they never appear.
+    def preservEval (G : Ctx) (t : Tm) (A : Ty) (env : Env) (k : Kont) (B : Ty)
+      (ht : HasTy G t A)
+      : HasTyE env G -> HasTyK k A B -> HasTyS (step (State.seval t env k)) B :=
+      match ht {
+        | HasTy.tvar(G1, n1, A1, lk) =>
+            fun (he : HasTyE env G1) (hk : HasTyK k A1 B) =>
+              HasTyS.stsret (lookupEnv n1 env) k A1 B (envLookup G1 n1 A1 lk env he) hk
+        | HasTy.tlit(G1, n1) =>
+            fun (he : HasTyE env G1) (hk : HasTyK k Ty.tnat B) =>
+              HasTyS.stsret (Val.vnat n1) k Ty.tnat B (HasTyVE.vtnat n1) hk
+        | HasTy.tlam(G1, A1, B1, b, hb) =>
+            fun (he : HasTyE env G1) (hk : HasTyK k (Ty.tarr A1 B1) B) =>
+              HasTyS.stsret (Val.vclos env b) k (Ty.tarr A1 B1) B
+                (HasTyVE.vtclos env G1 b A1 B1 he hb) hk
+        | HasTy.tapp(G1, f, a, C, D, hf, ha) =>
+            fun (he : HasTyE env G1) (hk : HasTyK k D B) =>
+              HasTyS.stseval f env G1 (Kont.kapp1 env a k) (Ty.tarr C D) B he hf
+                (HasTyK.ktapp1 env G1 a C D B k he ha hk)
+        | HasTy.tadd(G1, x, y, hx, hy) =>
+            fun (he : HasTyE env G1) (hk : HasTyK k Ty.tnat B) =>
+              HasTyS.stseval x env G1 (Kont.kadd1 env y k) Ty.tnat B he hx
+                (HasTyK.ktadd1 env G1 y B k he hy hk)
+        | HasTy.tifz(G1, c, t2, e2, A1, hc, ht2, he2) =>
+            fun (he : HasTyE env G1) (hk : HasTyK k A1 B) =>
+              HasTyS.stseval c env G1 (Kont.kifz env t2 e2 k) Ty.tnat B he hc
+                (HasTyK.ktifz env G1 t2 e2 A1 B k he ht2 he2 hk)
+      }
+
+    -- Preservation, `sret` half: recurse on the continuation-typing derivation. Frames that
+    -- inspect the returned value (kapp2 / kadd1 / kadd2 / kifz) use the canonical forms to
+    -- refine it; `kapp2` needs the convoy pattern twice (closure inversion abstracts both the
+    -- domain and codomain that the residual hypotheses still mention).
+    def preservRet (v : Val) (A : Ty) (k : Kont) (B : Ty) (hk : HasTyK k A B)
+      : HasTyV v A -> HasTyS (step (State.sret v k)) B :=
+      match hk {
+        | HasTyK.ktdone(A1) =>
+            fun (hv : HasTyV v A1) => HasTyS.stsdone v A1 hv
+        | HasTyK.ktapp1(env1, G1, a1, C1, D1, B1, k2, he, ha, hk2) =>
+            fun (hv : HasTyV v (Ty.tarr C1 D1)) =>
+              HasTyS.stseval a1 env1 G1 (Kont.kapp2 v k2) C1 B1 he ha
+                (HasTyK.ktapp2 v C1 D1 B1 k2 hv hk2)
+        | HasTyK.ktapp2(vf1, C1, D1, B1, k2, hvf, hk2) =>
+            fun (hv : HasTyV v C1) =>
+              let cvy : (hv2 : HasTyV v C1) -> (hk3 : HasTyK k2 D1 B1)
+                          -> HasTyS (step (State.sret v (Kont.kapp2 vf1 k2))) B1 :=
+                match (canonArr vf1 C1 D1 hvf) {
+                  | ClosInv.mkC(cenv, G3, body, C3, D3, hcenv, hbody) =>
+                      fun (hv2 : HasTyV v C3) (hk3 : HasTyK k2 D3 B1) =>
+                        HasTyS.stseval body (Env.econs v cenv) (Ctx.ccons C3 G3) k2 D3 B1
+                          (HasTyVE.etcons v C3 cenv G3 hv2 hcenv) hbody hk3
+                }
+              in cvy hv hk2
+        | HasTyK.ktadd1(env1, G1, y1, B1, k2, he, hy, hk2) =>
+            fun (hv : HasTyV v Ty.tnat) =>
+              match (canonNat v hv) {
+                | NatInv.mkN(m) =>
+                    HasTyS.stseval y1 env1 G1 (Kont.kadd2 m k2) Ty.tnat B1 he hy
+                      (HasTyK.ktadd2 m B1 k2 hk2)
+              }
+        | HasTyK.ktadd2(m1, B1, k2, hk2) =>
+            fun (hv : HasTyV v Ty.tnat) =>
+              match (canonNat v hv) {
+                | NatInv.mkN(n) =>
+                    HasTyS.stsret (Val.vnat (addN(m1)(n))) k2 Ty.tnat B1
+                      (HasTyVE.vtnat (addN(m1)(n))) hk2
+              }
+        | HasTyK.ktifz(env1, G1, t2, e2, A1, B1, k2, he, ht2, he2, hk2) =>
+            fun (hv : HasTyV v Ty.tnat) =>
+              match (canonNat v hv) {
+                | NatInv.mkN(n) =>
+                    match n {
+                      | Nat.zero => HasTyS.stseval t2 env1 G1 k2 A1 B1 he ht2 hk2
+                      | Nat.succ(m) => HasTyS.stseval e2 env1 G1 k2 A1 B1 he he2 hk2
+                    }
+              }
+      }
+
+    -- PRESERVATION: one machine step preserves the answer type. (sstuck never appears: it has
+    -- no typing rule, so it is not an arm of the HasTyS derivation we recurse on.)
+    def preservation (s : State) (B : Ty) (h : HasTyS s B) : HasTyS (step s) B :=
+      match h {
+        | HasTyS.stseval(t, env, G, k, A, Bb, he, ht, hk) =>
+            preservEval G t A env k Bb ht he hk
+        | HasTyS.stsret(v, k, A, Bb, hv, hk) =>
+            preservRet v A k Bb hk hv
+        | HasTyS.stsdone(v, Bb, hv) =>
+            HasTyS.stsdone v Bb hv
+      }
+
+    -- PROGRESS (the "not stuck" half): a well-typed state is never `sstuck`. `sstuck` has no
+    -- typing rule, so the typing derivation refines `s` to one of the three real shapes, each
+    -- distinct from `sstuck` by no-confusion on `State`.
+    def stIsStuck (s : State) : Prop :=
+      match s { | State.sstuck => True | State.seval(t, e, k) => False
+               | State.sret(v, k) => False | State.sdone(v) => False }
+    def notStuck (s : State) (B : Ty) (h : HasTyS s B) : Eq.{1} State s State.sstuck -> False :=
+      match h {
+        | HasTyS.stseval(t, env, G, k, A, Bb, he, ht, hk) =>
+            fun (e : Eq.{1} State (State.seval t env k) State.sstuck) =>
+              Eq.subst.{1} State stIsStuck State.sstuck (State.seval t env k)
+                (Eq.symm.{1} State (State.seval t env k) State.sstuck e) True.intro
+        | HasTyS.stsret(v, k, A, Bb, hv, hk) =>
+            fun (e : Eq.{1} State (State.sret v k) State.sstuck) =>
+              Eq.subst.{1} State stIsStuck State.sstuck (State.sret v k)
+                (Eq.symm.{1} State (State.sret v k) State.sstuck e) True.intro
+        | HasTyS.stsdone(v, Bb, hv) =>
+            fun (e : Eq.{1} State (State.sdone v) State.sstuck) =>
+              Eq.subst.{1} State stIsStuck State.sstuck (State.sdone v)
+                (Eq.symm.{1} State (State.sdone v) State.sstuck e) True.intro
+      }
+
+    -- Typing is preserved across the fuelled driver. Induction on the fuel; the step case does
+    -- a *structural* case on the state (so `run`'s `isFinal` guard reduces in each arm: final
+    -- states return themselves; running states take a `step` and appeal to preservation + the
+    -- induction hypothesis `k.rec` on the smaller fuel).
+    def runPreserv (B : Ty) (n : Nat) : (s : State) -> HasTyS s B -> HasTyS (run(n)(s)) B :=
+      match n {
+        | Nat.zero => fun (s : State) (h : HasTyS s B) => h
+        | Nat.succ(k) => fun (s : State) =>
+            match s {
+              | State.sdone(v) => fun (h : HasTyS (State.sdone v) B) => h
+              | State.sstuck => fun (h : HasTyS State.sstuck B) => h
+              | State.seval(t, e, kk) => fun (h : HasTyS (State.seval t e kk) B) =>
+                  k.rec (step (State.seval t e kk)) (preservation (State.seval t e kk) B h)
+              | State.sret(v, kk) => fun (h : HasTyS (State.sret v kk) B) =>
+                  k.rec (step (State.sret v kk)) (preservation (State.sret v kk) B h)
+            }
+      }
+
+    -- TYPE SAFETY: a well-typed program, run for any amount of fuel, never reaches `sstuck`.
+    def neverStuck (n : Nat) (s : State) (B : Ty) (h : HasTyS s B)
+      : Eq.{1} State (run(n)(s)) State.sstuck -> False :=
+      notStuck (run(n)(s)) B (runPreserv B n s h)
+"#;
+
+/// The lookup session plus the [`SAFETY_PRESERV`] proofs: preservation, progress, and the
+/// run-level type-safety corollary for the CEK machine.
+pub fn preserv_session() -> Result<Session, String> {
+    let mut s = lookup_session()?;
+    s.run(SAFETY_PRESERV)?;
+    Ok(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -689,6 +855,16 @@ mod tests {
         let s = lookup_session().expect("inversion infrastructure should kernel-check");
         for n in ["canonNat", "canonArr", "envConsInv", "envLookup", "injv_inj", "ve_nc"] {
             assert!(s.k.env().contains(n), "missing lemma: {n}");
+        }
+    }
+
+    #[test]
+    fn type_safety_kernel_checks() {
+        // Preservation, progress (notStuck), driver preservation, and the run-level safety
+        // corollary (neverStuck) for the CEK machine are all verified by the kernel.
+        let s = preserv_session().expect("CEK machine type-safety should kernel-check");
+        for n in ["preservation", "notStuck", "runPreserv", "neverStuck"] {
+            assert!(s.k.env().contains(n), "missing safety theorem: {n}");
         }
     }
 
