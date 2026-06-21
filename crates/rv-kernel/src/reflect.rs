@@ -61,12 +61,7 @@ mod tests {
     #[test]
     fn discharge_decidable_goal_by_computation() {
         let mut k = reflect_kernel();
-        let program = r#"
-            def true_eq_true : Eq.{1} Bool Bool.true Bool.true :=
-              of_decide_eq_true (Eq.{1} Bool Bool.true Bool.true)
-                (decEqBool Bool.true Bool.true)
-                (Eq.refl.{1} Bool Bool.true)
-        "#;
+        let program = include_str!("raven/reflect_program1.rvk");
         run_program(&mut k, program).expect("reflective proof should check");
         assert!(k.env().contains("true_eq_true"));
     }

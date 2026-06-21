@@ -1,0 +1,22 @@
+
+            fn identity(x: Nat) -> Nat {
+                ensures(result == x);
+                x
+            }
+
+            fn const_zero(x: Nat) -> Nat {
+                ensures(result == Nat.zero);
+                Nat.zero
+            }
+
+            fn succ_of(x: Nat) -> Nat {
+                ensures(result == Nat.succ(x));
+                Nat.succ(x)
+            }
+
+            fn left_unit(x: Nat) -> Nat {
+                requires(x == x);
+                ensures(result == x);
+                add(Nat.zero, x)
+            }
+        

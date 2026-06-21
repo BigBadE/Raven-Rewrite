@@ -5,33 +5,7 @@ use rv_kernel::verify::Session;
 
 #[test]
 fn rustlike_enum_and_induction_proof() {
-    let src = r#"
-        enum Nat { Zero, Succ(Nat) }
-
-        fn plus(n: Nat, m: Nat) -> Nat {
-            match n {
-              | Nat::Zero => m
-              | Nat::Succ(k) => Nat::Succ(plus(k, m))
-            }
-        }
-
-        // Leibniz substitution, defined in Raven itself on the equality eliminator.
-        fn subst(A: Type, P: A -> Prop, a: A, b: A, h: a == b, pa: P(a)) -> P(b) {
-            Eq::rec(A, a, fun (x: A) (p: a == x) => P(x), pa, b, h)
-        }
-
-        fn succ_cong(a: Nat, b: Nat, h: a == b) -> Nat::Succ(a) == Nat::Succ(b) {
-            subst(Nat, fun (x: Nat) => Nat::Succ(a) == Nat::Succ(x), a, b, h,
-                  Eq::refl(Nat, Nat::Succ(a)))
-        }
-
-        fn plus_zero(n: Nat) -> plus(n, Nat::Zero) == n {
-            match n {
-              | Nat::Zero => Eq::refl(Nat, Nat::Zero)
-              | Nat::Succ(k) => succ_cong(plus(k, Nat::Zero), k, plus_zero(k))
-            }
-        }
-    "#;
+    let src = include_str!("fixtures/rustlike_proofs_src.rv");
     let mut s = Session::new();
     rv_kernel::logic::declare_logic(&mut s.k).unwrap();
     match s.run(src) {

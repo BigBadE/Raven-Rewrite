@@ -1352,28 +1352,7 @@ mod tests {
     #[test]
     fn end_to_end_raven_program() {
         let mut s = base();
-        let program = r#"
-            fn identity(x: Nat) -> Nat {
-                ensures(result == x);
-                x
-            }
-
-            fn const_zero(x: Nat) -> Nat {
-                ensures(result == Nat.zero);
-                Nat.zero
-            }
-
-            fn succ_of(x: Nat) -> Nat {
-                ensures(result == Nat.succ(x));
-                Nat.succ(x)
-            }
-
-            fn left_unit(x: Nat) -> Nat {
-                requires(x == x);
-                ensures(result == x);
-                add(Nat.zero, x)
-            }
-        "#;
+        let program = include_str!("raven/verify_program1.rv");
         s.run(program).expect("the program should run");
         assert!(s.all_verified(), "report:\n{}", s.report());
         assert_eq!(

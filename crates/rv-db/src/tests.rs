@@ -3,19 +3,9 @@ use super::*;
 use salsa::Setter;
 use std::sync::{Arc, Mutex};
 
-const RECIP_OK: &str = r#"
-    fn recip(x: i64) -> i64
-      requires x > 0;
-    {
-      return 100 / x;
-    }
-"#;
+const RECIP_OK: &str = include_str!("fixtures/tests_recip_ok.rv");
 
-const RECIP_BAD: &str = r#"
-    fn bad(x: i64) -> i64 {
-      return 100 / x;
-    }
-"#;
+const RECIP_BAD: &str = include_str!("fixtures/tests_recip_bad.rv");
 
 /// Mutating the `SourceProgram` input to a *different* program changes the
 /// memoized result — the correctness-across-an-input-change requirement.
@@ -70,13 +60,7 @@ fn compile_source_entry() {
 /// `compile_and_run` reuses the memoized elaboration and runs the entry point.
 #[test]
 fn compile_and_run_executes() {
-    let src = r#"
-        fn main() -> i64 {
-          let a: i64 = 10;
-          let b: i64 = 2;
-          return a / b;
-        }
-    "#;
+    let src = include_str!("fixtures/tests_src1.rv");
     let (analysis, run) = compile_and_run(src, Some("main"));
     assert!(matches!(analysis, AnalysisResult::Analyzed(a) if a.all_verified));
     assert_eq!(run, Some(Ok(rv_vm::Value::Int(5))));

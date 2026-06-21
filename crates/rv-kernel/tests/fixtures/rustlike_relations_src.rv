@@ -1,0 +1,28 @@
+
+        enum Nat { Zero, Succ(Nat) }
+
+        // The graph of addition as an indexed relation: `Plus(a, b, c)` means a + b == c.
+        enum Plus(a: Nat, b: Nat, c: Nat) -> Prop {
+            PZero(m: Nat) where a == Nat::Zero, b == m, c == m;
+            PSucc(k: Nat, m: Nat, r: Nat, h: Plus(k, m, r))
+                where a == Nat::Succ(k), b == m, c == Nat::Succ(r);
+        }
+
+        // Plus is total/functional enough to be deterministic: if a+b==c and a+b==d then c==d.
+        // Proof by induction on the first derivation.
+        fn subst(A: Type, P: A -> Prop, a: A, b: A, h: a == b, pa: P(a)) -> P(b) {
+            Eq::rec(A, a, fun (x: A) (p: a == x) => P(x), pa, b, h)
+        }
+        fn succ_cong(a: Nat, b: Nat, h: a == b) -> Nat::Succ(a) == Nat::Succ(b) {
+            subst(Nat, fun (x: Nat) => Nat::Succ(a) == Nat::Succ(x), a, b, h, Eq::refl(Nat, Nat::Succ(a)))
+        }
+
+        // Induction on a derivation, using the IH on the recursive field (`hk.rec`): rebuild
+        // the derivation structurally. This is the capability the deep proofs are migrated onto.
+        fn plus_copy(a: Nat, b: Nat, c: Nat, h: Plus(a, b, c)) -> Plus(a, b, c) {
+            match h {
+              | Plus::PZero(m) => Plus::PZero(m)
+              | Plus::PSucc(k, m, r, hk) => Plus::PSucc(k, m, r, hk.rec)
+            }
+        }
+    

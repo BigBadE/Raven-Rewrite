@@ -1,0 +1,34 @@
+
+    def Eq.subst.{u} (A : Sort u) (P : A -> Prop) (a : A) (b : A) (h : Eq A a b) (pa : P a) : P b :=
+      Eq.rec.{u, 0} A a (fun (x : A) (p : Eq A a x) => P x) pa b h
+    def Eq.symm.{u} (A : Sort u) (a : A) (b : A) (h : Eq A a b) : Eq A b a :=
+      Eq.rec.{u, 0} A a (fun (x : A) (p : Eq A a x) => Eq A x a) (Eq.refl.{u} A a) b h
+    inductive Nat : Type | zero : Nat | succ : Nat -> Nat
+    fn predN(n : Nat) -> Nat { match n { | Nat.zero => Nat.zero | Nat.succ(m) => m } }
+    def natIsZero (k : Nat) : Prop :=
+      Nat.rec.{1} (fun (_ : Nat) => Prop) True (fun (_ : Nat) (_ : Prop) => False) k
+    def zero_ne_succ (n : Nat) (h : Eq.{1} Nat Nat.zero (Nat.succ n)) : False :=
+      Eq.rec.{1, 0} Nat Nat.zero (fun (m : Nat) (_ : Eq.{1} Nat Nat.zero m) => natIsZero m) True.intro (Nat.succ n) h
+    def succ_ne_zero (n : Nat) (h : Eq.{1} Nat (Nat.succ n) Nat.zero) : False :=
+      zero_ne_succ n (Eq.symm.{1} Nat (Nat.succ n) Nat.zero h)
+    def succ_inj (n : Nat) (m : Nat) (h : Eq.{1} Nat (Nat.succ n) (Nat.succ m)) : Eq.{1} Nat n m :=
+      Eq.subst.{1} Nat (fun (x : Nat) => Eq.{1} Nat n (predN x)) (Nat.succ n) (Nat.succ m) h (Eq.refl.{1} Nat n)
+    def succ_cong (n : Nat) (m : Nat) (h : Eq.{1} Nat n m) : Eq.{1} Nat (Nat.succ n) (Nat.succ m) :=
+      Eq.subst.{1} Nat (fun (x : Nat) => Eq.{1} Nat (Nat.succ n) (Nat.succ x)) n m h (Eq.refl.{1} Nat (Nat.succ n))
+    fn decEqNat(a : Nat) -> ((b : Nat) -> Decidable (Eq.{1} Nat a b)) {
+        match a {
+          | Nat.zero => fun (b : Nat) => match b {
+              | Nat.zero    => Decidable.isTrue (Eq.{1} Nat Nat.zero Nat.zero) (Eq.refl.{1} Nat Nat.zero)
+              | Nat.succ(m) => Decidable.isFalse (Eq.{1} Nat Nat.zero (Nat.succ m)) (zero_ne_succ m)
+            }
+          | Nat.succ(k) => fun (b : Nat) => match b {
+              | Nat.zero    => Decidable.isFalse (Eq.{1} Nat (Nat.succ k) Nat.zero) (succ_ne_zero k)
+              | Nat.succ(m) => match decEqNat(k)(m) {
+                  | Decidable.isTrue(h)  => Decidable.isTrue (Eq.{1} Nat (Nat.succ k) (Nat.succ m)) (succ_cong k m h)
+                  | Decidable.isFalse(hn) => Decidable.isFalse (Eq.{1} Nat (Nat.succ k) (Nat.succ m))
+                      (fun (e : Eq.{1} Nat (Nat.succ k) (Nat.succ m)) => hn (succ_inj k m e))
+                }
+            }
+        }
+    }
+    instance decNat {a : Nat} {b : Nat} : Decidable (Eq.{1} Nat a b) := decEqNat a b

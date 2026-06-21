@@ -381,31 +381,7 @@ mod tests {
     #[test]
     fn logic_library_and_proofs_in_surface() {
         let mut k = Kernel::new();
-        let program = r#"
-            inductive True : Prop | intro : True
-            inductive False : Prop
-            inductive And (a : Prop) (b : Prop) : Prop
-              | intro : a -> b -> And a b
-            inductive Or (a : Prop) (b : Prop) : Prop
-              | inl : a -> Or a b
-              | inr : b -> Or a b
-
-            def Not (p : Prop) : Prop := p -> False
-
-            axiom em (p : Prop) : Or p (Not p)
-
-            -- And is commutative.
-            def and_comm (a : Prop) (b : Prop) (h : And a b) : And b a :=
-              And.rec.{0} a b (fun (_ : And a b) => And b a)
-                (fun (ha : a) (hb : b) => And.intro b a hb ha) h
-
-            -- Double-negation elimination, classically.
-            def dne (p : Prop) (nnp : Not (Not p)) : p :=
-              Or.rec p (Not p) (fun (_ : Or p (Not p)) => p)
-                (fun (hp : p) => hp)
-                (fun (hnp : Not p) => False.rec.{0} (fun (_ : False) => p) (nnp hnp))
-                (em p)
-        "#;
+        let program = include_str!("raven/elab_program1.rvk");
         run_program(&mut k, program).expect("the logic library + proofs should check");
 
         // The proofs are now first-class definitions with the expected types.

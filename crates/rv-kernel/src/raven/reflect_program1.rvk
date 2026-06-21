@@ -1,0 +1,6 @@
+
+            def true_eq_true : Eq.{1} Bool Bool.true Bool.true :=
+              of_decide_eq_true (Eq.{1} Bool Bool.true Bool.true)
+                (decEqBool Bool.true Bool.true)
+                (Eq.refl.{1} Bool Bool.true)
+        
