@@ -373,6 +373,95 @@ pub fn meta_session() -> Result<Session, String> {
     Ok(s)
 }
 
+/// **Machine type-safety for the pure fragment.** A simple type system for `Tm`
+/// (`var`/`lit`/`lam`/`app`/`add`/`ifz` — `op`/`handle` are deliberately left *untypable*,
+/// so a well-typed program never performs an effect), lifted to the machine's runtime
+/// objects: value typing `HasTyV` and environment typing `HasTyE` (mutual), continuation
+/// typing `HasTyK k A B` ("feeding an `A` into `k` yields a final answer of type `B`"), and
+/// state typing `HasTyS`. The payoff theorem is **preservation** (`step` preserves the
+/// answer type) — and because the stuck state `sstuck` has *no* typing rule, preservation
+/// alone says **a well-typed state never gets stuck**.
+pub const SAFETY: &str = r#"
+    -- Object types and typing contexts (de Bruijn).
+    inductive Ty : Type | tnat : Ty | tarr : Ty -> Ty -> Ty
+    inductive Ctx : Type | cnil : Ctx | ccons : Ty -> Ctx -> Ctx
+
+    -- de Bruijn lookup in the context.
+    inductive Lookup : Ctx -> Nat -> Ty -> Prop
+      | here  : (G : Ctx) -> (A : Ty) -> Lookup (Ctx.ccons A G) Nat.zero A
+      | there : (G : Ctx) -> (A : Ty) -> (B : Ty) -> (n : Nat)
+                  -> Lookup G n A -> Lookup (Ctx.ccons B G) (Nat.succ n) A
+
+    -- The typing relation for terms (the pure fragment; no rule for op/handle).
+    inductive HasTy : Ctx -> Tm -> Ty -> Prop
+      | tvar : (G : Ctx) -> (n : Nat) -> (A : Ty) -> Lookup G n A -> HasTy G (Tm.var n) A
+      | tlit : (G : Ctx) -> (n : Nat) -> HasTy G (Tm.lit n) Ty.tnat
+      | tlam : (G : Ctx) -> (A : Ty) -> (B : Ty) -> (b : Tm)
+                 -> HasTy (Ctx.ccons A G) b B -> HasTy G (Tm.lam b) (Ty.tarr A B)
+      | tapp : (G : Ctx) -> (f : Tm) -> (a : Tm) -> (A : Ty) -> (B : Ty)
+                 -> HasTy G f (Ty.tarr A B) -> HasTy G a A -> HasTy G (Tm.app f a) B
+      | tadd : (G : Ctx) -> (x : Tm) -> (y : Tm)
+                 -> HasTy G x Ty.tnat -> HasTy G y Ty.tnat -> HasTy G (Tm.add x y) Ty.tnat
+      | tifz : (G : Ctx) -> (c : Tm) -> (t : Tm) -> (e : Tm) -> (A : Ty)
+                 -> HasTy G c Ty.tnat -> HasTy G t A -> HasTy G e A -> HasTy G (Tm.ifz c t e) A
+
+    -- Value typing and environment typing. Indexed *mutual* inductives are unsupported, and
+    -- the pointwise (∀-under-binder) formulation is a W-type (also unsupported). So both
+    -- relations live in ONE non-mutual indexed inductive `HasTyVE` over the sums `VE`
+    -- (Val|Env) and `TC` (Ty|Ctx): a value typing and an environment typing are the two
+    -- injections. The recursive occurrences are finitary and strictly positive. No rule for
+    -- `vkont` — a reified continuation is never well-typed in the pure fragment.
+    inductive VE : Type | injv : Val -> VE | inje : Env -> VE
+    inductive TC : Type | injt : Ty -> TC | injc : Ctx -> TC
+    inductive HasTyVE : VE -> TC -> Prop
+      | vtnat  : (n : Nat) -> HasTyVE (VE.injv (Val.vnat n)) (TC.injt Ty.tnat)
+      | vtclos : (env : Env) -> (G : Ctx) -> (b : Tm) -> (A : Ty) -> (B : Ty)
+                   -> HasTyVE (VE.inje env) (TC.injc G) -> HasTy (Ctx.ccons A G) b B
+                   -> HasTyVE (VE.injv (Val.vclos env b)) (TC.injt (Ty.tarr A B))
+      | etnil  : HasTyVE (VE.inje Env.enil) (TC.injc Ctx.cnil)
+      | etcons : (v : Val) -> (A : Ty) -> (rest : Env) -> (G : Ctx)
+                   -> HasTyVE (VE.injv v) (TC.injt A) -> HasTyVE (VE.inje rest) (TC.injc G)
+                   -> HasTyVE (VE.inje (Env.econs v rest)) (TC.injc (Ctx.ccons A G))
+    def HasTyV (v : Val) (A : Ty) : Prop := HasTyVE (VE.injv v) (TC.injt A)
+    def HasTyE (env : Env) (G : Ctx) : Prop := HasTyVE (VE.inje env) (TC.injc G)
+
+    -- Continuation typing: `HasTyK k A B` means "given a value of type A, the continuation
+    -- k runs to a final answer of type B". One rule per (typable) frame; the effect frames
+    -- kop/khEval/khandle/kresume have no rule.
+    inductive HasTyK : Kont -> Ty -> Ty -> Prop
+      | ktdone : (A : Ty) -> HasTyK Kont.kdone A A
+      | ktapp1 : (env : Env) -> (G : Ctx) -> (a : Tm) -> (C : Ty) -> (D : Ty) -> (B : Ty) -> (k2 : Kont)
+                   -> HasTyE env G -> HasTy G a C -> HasTyK k2 D B
+                   -> HasTyK (Kont.kapp1 env a k2) (Ty.tarr C D) B
+      | ktapp2 : (vf : Val) -> (C : Ty) -> (D : Ty) -> (B : Ty) -> (k2 : Kont)
+                   -> HasTyV vf (Ty.tarr C D) -> HasTyK k2 D B
+                   -> HasTyK (Kont.kapp2 vf k2) C B
+      | ktadd1 : (env : Env) -> (G : Ctx) -> (y : Tm) -> (B : Ty) -> (k2 : Kont)
+                   -> HasTyE env G -> HasTy G y Ty.tnat -> HasTyK k2 Ty.tnat B
+                   -> HasTyK (Kont.kadd1 env y k2) Ty.tnat B
+      | ktadd2 : (m : Nat) -> (B : Ty) -> (k2 : Kont)
+                   -> HasTyK k2 Ty.tnat B -> HasTyK (Kont.kadd2 m k2) Ty.tnat B
+      | ktifz  : (env : Env) -> (G : Ctx) -> (t : Tm) -> (e : Tm) -> (A : Ty) -> (B : Ty) -> (k2 : Kont)
+                   -> HasTyE env G -> HasTy G t A -> HasTy G e A -> HasTyK k2 A B
+                   -> HasTyK (Kont.kifz env t e k2) Ty.tnat B
+
+    -- State typing: a state runs to a final answer of type B. No rule for `sstuck`.
+    inductive HasTyS : State -> Ty -> Prop
+      | stseval : (t : Tm) -> (env : Env) -> (G : Ctx) -> (k : Kont) -> (A : Ty) -> (B : Ty)
+                    -> HasTyE env G -> HasTy G t A -> HasTyK k A B -> HasTyS (State.seval t env k) B
+      | stsret  : (v : Val) -> (k : Kont) -> (A : Ty) -> (B : Ty)
+                    -> HasTyV v A -> HasTyK k A B -> HasTyS (State.sret v k) B
+      | stsdone : (v : Val) -> (B : Ty) -> HasTyV v B -> HasTyS (State.sdone v) B
+"#;
+
+/// The machine session plus the [`SAFETY`] type system (relations only; the metatheory
+/// proofs are layered on top in further sessions).
+pub fn safety_session() -> Result<Session, String> {
+    let mut s = session()?;
+    s.run(SAFETY)?;
+    Ok(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,6 +501,16 @@ mod tests {
         );
         let prog = format!("Tm.app (Tm.lam ({inner})) (Tm.lit ({}))", nat(5));
         assert_eq!(eval(&prog, 30), "5");
+    }
+
+    #[test]
+    fn machine_type_system_kernel_checks() {
+        // The type system for the CEK machine (term typing + value/env typing via the VE/TC
+        // encoding + continuation + state typing) is well-formed and kernel-checked.
+        let s = safety_session().expect("machine type system should kernel-check");
+        for n in ["HasTy", "HasTyVE", "HasTyV", "HasTyE", "HasTyK", "HasTyS"] {
+            assert!(s.k.env().contains(n), "missing relation: {n}");
+        }
     }
 
     #[test]
