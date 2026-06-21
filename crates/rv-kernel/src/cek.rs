@@ -1,50 +1,45 @@
-//! **Tier 4 — a CK abstract machine (and, on top of it, algebraic effect handlers).**
+//! **Tier 4 — a CEK abstract machine (and, on top of it, algebraic effect handlers).**
 //!
 //! Where [`crate::stlc`] evaluates by *searching* a term for the next redex (a
 //! substitution-based small-step `step : Exp → OExp`), this module evaluates with an
-//! **explicit control stack** — an abstract machine. A CK machine is a transition system
-//! over states
+//! **explicit control stack** and an **environment** — an abstract machine. A CEK machine
+//! is a transition system over states
 //!
 //! ```text
-//!   ⟨ C , K ⟩
+//!   ⟨ C , E , K ⟩
 //! ```
 //!
-//! the **C**ontrol (the term currently in focus) and the **K**ontinuation (a
-//! *defunctionalised* stack recording "what to do with the value once C is done"). The
-//! search for the next redex that the small-step semantics re-does on every step is
-//! replaced here by following the stack — each transition is `O(1)`.
+//! the **C**ontrol (the term in focus), the **E**nvironment (the values of the de Bruijn
+//! variables in scope), and the **K**ontinuation (a *defunctionalised* stack recording
+//! "what to do with the value once C is done"). Functions are **closures** — a body paired
+//! with the environment it captured — so there is **no substitution at all**: applying
+//! `(λ. b)` to `v` just extends the environment with `v` and continues with `b`. Each
+//! transition is `O(1)`: no redex search, no term traversal.
 //!
-//! ## CK, not CEK — and why
-//!
-//! The textbook **CEK** machine adds an **E**nvironment, so functions become *closures*
-//! (a body plus the environment it captured) and β just extends the environment instead
-//! of substituting. That requires values and environments to be **mutually inductive**
-//! (a value may be a closure holding an environment; an environment is a list of values).
-//! This kernel's surface `match` compiler does not yet support matching on a member of a
-//! mutual inductive group outside a mutual-function bundle, which makes a readable `step`
-//! over closures impractical today. So this module uses the **CK** presentation: the same
-//! explicit control stack, but β-reduction is by **substitution** (reusing the de Bruijn
-//! machinery), exactly as in Felleisen & Friedman's original CK machine. Everything below
-//! is over a single, ordinary inductive, so every transition is a plain `match`.
+//! This is the genuine CEK machine. An earlier version of this module was a *CK* machine
+//! (substitution instead of an environment) because the surface `match` compiler could not
+//! eliminate a member of a mutual inductive group — and closures force `Val`/`Env` to be
+//! mutual (a value may be a closure holding an environment; an environment is a list of
+//! values). That limitation is now lifted (`elab2::compile_match_mutual`), so the machine
+//! carries a real environment.
 //!
 //! Everything here is verified Raven, kernel-checked, and **executable**: the tests run
 //! real programs through the machine and read the resulting number back out.
 //!
 //!  * **Machine** — `Tm` (variables, literals, λ, application, addition, a zero-test
-//!    conditional), the de Bruijn `shift`/`subst`, the defunctionalised continuation
-//!    `Kont`, the machine `State`, the single-transition `step : State → State`, and the
-//!    fuelled driver `run`.
-//!  * **Effects** — `Tm.op`/`Tm.handle` (in [`MACHINE`]): `handle` pushes a handler frame
-//!    onto the continuation, and performing an operation (`op`) **unwinds** the stack to
-//!    the nearest handler, discarding the delimited continuation in between (the
-//!    exception/abort fragment of algebraic effects — no first-class resumption, which
-//!    would require continuation values and so a mutual `Tm`/`Kont`).
-//!
-//! The computational tests (`tests/cek_demo.rs`) pin the machine's behaviour end to end.
+//!    conditional), the mutually-inductive closures `Val`/`Env`, the defunctionalised
+//!    continuation `Kont`, the machine `State`, the single transition `step : State →
+//!    State`, and the fuelled driver `run`.
+//!  * **Effects** — `Tm.op`/`Tm.handle`: `handle` evaluates its handler to a closure and
+//!    pushes a handler frame; performing an `op` **unwinds** the stack to the nearest
+//!    handler and applies it to the payload, discarding the delimited continuation in
+//!    between (the exception/abort fragment of algebraic effects — no first-class
+//!    resumption, which would additionally need `Kont` reified as a `Val`).
+//!  * **Metatheory** ([`META`]) — the driver's fixed-point theorems.
 
 use crate::verify::Session;
 
-/// Logic, booleans, naturals (with the de Bruijn index helpers), and the term language.
+/// Logic, booleans, naturals (with addition), and the focused term language `Tm`.
 pub const PRELUDE: &str = r#"
     -- Logic.
     inductive True  : Prop | intro : True
@@ -59,28 +54,8 @@ pub const PRELUDE: &str = r#"
 
     inductive Bool : Type | false : Bool | true : Bool
     inductive Nat : Type | zero : Nat | succ : Nat -> Nat
-    fn pred(n: Nat) -> Nat { match n { | Nat.zero => Nat.zero | Nat.succ(k) => k } }
     fn addN(m: Nat) -> (Nat -> Nat) {
         match m { | Nat.zero => fun (n : Nat) => n | Nat.succ(k) => fun (n : Nat) => Nat.succ(addN(k)(n)) }
-    }
-    fn nat_eqb(m: Nat) -> (Nat -> Bool) {
-        match m {
-          | Nat.zero    => fun (n : Nat) => match n { | Nat.zero => Bool.true  | Nat.succ(k) => Bool.false }
-          | Nat.succ(j) => fun (n : Nat) => match n { | Nat.zero => Bool.false | Nat.succ(k) => nat_eqb(j)(k) }
-        }
-    }
-    fn nat_ltb(m: Nat) -> (Nat -> Bool) {
-        match m {
-          | Nat.zero    => fun (n : Nat) => match n { | Nat.zero => Bool.false | Nat.succ(k) => Bool.true }
-          | Nat.succ(j) => fun (n : Nat) => match n { | Nat.zero => Bool.false | Nat.succ(k) => nat_ltb(j)(k) }
-        }
-    }
-    fn shiftIdx(k: Nat) -> (Nat -> Nat) {
-        match k {
-          | Nat.zero    => fun (n : Nat) => Nat.succ(n)
-          | Nat.succ(k2) => fun (n : Nat) =>
-              match n { | Nat.zero => Nat.zero | Nat.succ(n2) => Nat.succ(shiftIdx(k2)(n2)) }
-        }
     }
 
     -- The focused core language (de Bruijn variables; only `lam` binds). The last two
@@ -97,138 +72,123 @@ pub const PRELUDE: &str = r#"
       | handle : Tm -> Tm -> Tm       -- handle body with handler `h : payload -> result`
 "#;
 
-/// The machine: de Bruijn substitution, the continuation stack, the state, the transition.
+/// The machine: closures + environments, the continuation stack, the state, the transition.
 pub const MACHINE: &str = r#"
-    -- de Bruijn shift: lift free variables (index ≥ cutoff) by one (under `lam`, the
-    -- cutoff goes up). Needed so substitution under a binder does not capture.
-    fn shift(t: Tm) -> (Nat -> Tm) {
-        match t {
-          | Tm.var(n)   => fun (c : Nat) => Tm.var(shiftIdx(c)(n))
-          | Tm.lit(n)   => fun (c : Nat) => Tm.lit(n)
-          | Tm.lam(b)   => fun (c : Nat) => Tm.lam(shift(b)(Nat.succ(c)))
-          | Tm.app(f, a) => fun (c : Nat) => Tm.app(shift(f)(c), shift(a)(c))
-          | Tm.add(x, y) => fun (c : Nat) => Tm.add(shift(x)(c), shift(y)(c))
-          | Tm.ifz(s, th, el) => fun (c : Nat) => Tm.ifz(shift(s)(c), shift(th)(c), shift(el)(c))
-          | Tm.op(a) => fun (c : Nat) => Tm.op(shift(a)(c))
-          | Tm.handle(b, h) => fun (c : Nat) => Tm.handle(shift(b)(c), shift(h)(c))
+    -- Closures and environments are mutually inductive: a value may be a closure capturing
+    -- an environment, and an environment is a list of values. (Matching on a member of a
+    -- mutual group is what `elab2::compile_match_mutual` makes possible.)
+    mutual {
+      inductive Val : Type
+        | vnat  : Nat -> Val
+        | vclos : Env -> Tm -> Val      -- ⟨ captured env , λ-body ⟩
+      inductive Env : Type
+        | enil  : Env
+        | econs : Val -> Env -> Env
+    }
+
+    -- Environment lookup by de Bruijn index. Out-of-scope indices return a dummy `vnat 0`;
+    -- on closed, well-scoped programs (everything the machine is run on) that never fires.
+    -- Recurses on the *index* (a plain `Nat`), so it is an ordinary solo recursion.
+    fn lookupEnv(n: Nat) -> (Env -> Val) {
+        match n {
+          | Nat.zero => fun (e : Env) =>
+              match e { | Env.enil => Val.vnat Nat.zero | Env.econs(v, rest) => v }
+          | Nat.succ(m) => fun (e : Env) =>
+              match e { | Env.enil => Val.vnat Nat.zero | Env.econs(v, rest) => lookupEnv(m)(rest) }
         }
     }
 
-    -- Single-variable substitution `t[j := v]`: replace `var j` by `v`, decrement the
-    -- variables above `j` (the binder for `j` is gone), and shift `v` as it crosses binders.
-    fn subst(t: Tm) -> (Nat -> (Tm -> Tm)) {
-        match t {
-          | Tm.var(n)   => fun (j : Nat) (v : Tm) =>
-              match nat_eqb(n)(j) {
-                | Bool.true  => v
-                | Bool.false => match nat_ltb(j)(n) { | Bool.true => Tm.var(pred(n)) | Bool.false => Tm.var(n) }
-              }
-          | Tm.lit(n)   => fun (j : Nat) (v : Tm) => Tm.lit(n)
-          | Tm.lam(b)   => fun (j : Nat) (v : Tm) => Tm.lam(subst(b)(Nat.succ(j))(shift(v)(Nat.zero)))
-          | Tm.app(f, a) => fun (j : Nat) (v : Tm) => Tm.app(subst(f)(j)(v), subst(a)(j)(v))
-          | Tm.add(x, y) => fun (j : Nat) (v : Tm) => Tm.add(subst(x)(j)(v), subst(y)(j)(v))
-          | Tm.ifz(s, th, el) => fun (j : Nat) (v : Tm) => Tm.ifz(subst(s)(j)(v), subst(th)(j)(v), subst(el)(j)(v))
-          | Tm.op(a) => fun (j : Nat) (v : Tm) => Tm.op(subst(a)(j)(v))
-          | Tm.handle(b, h) => fun (j : Nat) (v : Tm) => Tm.handle(subst(b)(j)(v), subst(h)(j)(v))
-        }
-    }
-    -- β: open a λ-body with an argument (substitute it for the bound variable 0).
-    def open (b : Tm) (v : Tm) : Tm := subst(b)(Nat.zero)(v)
-
-    -- The values: literals and λ-abstractions.
-    fn isVal(t: Tm) -> Bool {
-        match t {
-          | Tm.var(n) => Bool.false | Tm.lit(n) => Bool.true | Tm.lam(b) => Bool.true
-          | Tm.app(f, a) => Bool.false | Tm.add(x, y) => Bool.false | Tm.ifz(s, th, el) => Bool.false
-          | Tm.op(a) => Bool.false | Tm.handle(b, h) => Bool.false
-        }
-    }
-
-    -- The continuation: a defunctionalised "rest of the computation" stack. Each frame is
-    -- one pending elimination, remembering the sub-terms not yet evaluated. The last two
-    -- frames belong to the effects layer: `kop` marks "perform the op once the payload is a
-    -- value", and `khandle` is an installed handler waiting while its body runs.
+    -- The continuation: a defunctionalised "rest of the computation" stack. Each frame
+    -- remembers the environment for the sub-terms not yet run. The last three frames are
+    -- the effects layer: `kop` (payload being evaluated), `khEval` (a handler being
+    -- evaluated, with its body pending), and `khandle` (an installed handler value).
     inductive Kont : Type
       | kdone : Kont
-      | kapp1 : Tm -> Kont -> Kont        -- evaluating the function; argument term still to run
-      | kapp2 : Tm -> Kont -> Kont        -- function *value* in hand; evaluating the argument
-      | kadd1 : Tm -> Kont -> Kont        -- evaluating the left summand; right term still to run
-      | kadd2 : Nat -> Kont -> Kont       -- left summand computed; evaluating the right
-      | kifz  : Tm -> Tm -> Kont -> Kont  -- evaluating the scrutinee; both branches pending
-      | kop   : Kont -> Kont              -- payload of a performed operation is being evaluated
-      | khandle : Tm -> Kont -> Kont      -- a handler `h` installed around the running body
+      | kapp1 : Env -> Tm -> Kont -> Kont        -- evaluating the function; arg term + env pending
+      | kapp2 : Val -> Kont -> Kont              -- function value in hand; evaluating the argument
+      | kadd1 : Env -> Tm -> Kont -> Kont        -- evaluating the left summand; right term + env pending
+      | kadd2 : Nat -> Kont -> Kont              -- left summand computed; evaluating the right
+      | kifz  : Env -> Tm -> Tm -> Kont -> Kont  -- evaluating the scrutinee; both branches + env pending
+      | kop   : Kont -> Kont                     -- payload of a performed operation is being evaluated
+      | khEval : Tm -> Env -> Kont -> Kont       -- handler being evaluated; its body + env pending
+      | khandle : Val -> Kont -> Kont            -- an installed handler value around the running body
 
-    -- A machine state: "evaluate C with K", "return value V to K", a final answer, or stuck.
+    -- A machine state: "evaluate C under E with K", "return value V to K", a final answer,
+    -- or stuck (a type error the checker rules out).
     inductive State : Type
-      | seval  : Tm -> Kont -> State
-      | sret   : Tm -> Kont -> State
-      | sdone  : Tm -> State
+      | seval  : Tm -> Env -> Kont -> State
+      | sret   : Val -> Kont -> State
+      | sdone  : Val -> State
       | sstuck : State
 
     fn isFinal(s: State) -> Bool {
         match s { | State.sdone(v) => Bool.true | State.sstuck => Bool.true
-                 | State.seval(t, k) => Bool.false | State.sret(v, k) => Bool.false }
+                 | State.seval(t, e, k) => Bool.false | State.sret(v, k) => Bool.false }
     }
 
-    -- UNWIND: an operation has been performed with payload `v`; walk down the continuation
-    -- to the nearest installed handler, discarding the (delimited) frames in between, and
-    -- apply that handler to the payload. No handler on the stack ⇒ an unhandled effect ⇒
-    -- stuck. Recurses on the continuation (an ordinary, non-mutual inductive).
-    fn unwind(k: Kont) -> (Tm -> State) {
+    -- UNWIND: an operation has been performed with payload `v`; walk the continuation to the
+    -- nearest installed handler, discarding the frames in between, and apply that handler
+    -- (a closure) to the payload. No handler ⇒ unhandled effect ⇒ stuck. Recurses on `Kont`.
+    fn unwind(k: Kont) -> (Val -> State) {
         match k {
-          | Kont.kdone            => fun (v : Tm) => State.sstuck
-          | Kont.khandle(h, k2)   => fun (v : Tm) => State.seval (Tm.app h v) k2
-          | Kont.kop(k2)          => fun (v : Tm) => unwind(k2)(v)
-          | Kont.kapp1(a, k2)     => fun (v : Tm) => unwind(k2)(v)
-          | Kont.kapp2(f, k2)     => fun (v : Tm) => unwind(k2)(v)
-          | Kont.kadd1(y, k2)     => fun (v : Tm) => unwind(k2)(v)
-          | Kont.kadd2(m, k2)     => fun (v : Tm) => unwind(k2)(v)
-          | Kont.kifz(t2, e2, k2) => fun (v : Tm) => unwind(k2)(v)
+          | Kont.kdone => fun (v : Val) => State.sstuck
+          | Kont.khandle(vh, k2) => fun (v : Val) =>
+              match vh {
+                | Val.vclos(cenv, hbody) => State.seval hbody (Env.econs v cenv) k2
+                | Val.vnat(n) => State.sstuck
+              }
+          | Kont.kop(k2)            => fun (v : Val) => unwind(k2)(v)
+          | Kont.khEval(b, e, k2)   => fun (v : Val) => unwind(k2)(v)
+          | Kont.kapp1(e, a, k2)    => fun (v : Val) => unwind(k2)(v)
+          | Kont.kapp2(vf, k2)      => fun (v : Val) => unwind(k2)(v)
+          | Kont.kadd1(e, y, k2)    => fun (v : Val) => unwind(k2)(v)
+          | Kont.kadd2(m, k2)       => fun (v : Val) => unwind(k2)(v)
+          | Kont.kifz(e, t2, e2, k2) => fun (v : Val) => unwind(k2)(v)
         }
     }
 
     -- THE TRANSITION. One clause per (control shape) and per (continuation frame); a total
-    -- function and a *single* step — no search. (Inner mismatches fall through to `sstuck`,
-    -- the states the type checker rules out.)
+    -- function and a *single* step — no search, no substitution.
     fn step(s: State) -> State {
         match s {
-          | State.seval(t, k) =>
+          | State.seval(t, env, k) =>
               match t {
-                | Tm.var(n)         => State.sstuck                                  -- closed programs never focus a free var
-                | Tm.lit(n)         => State.sret (Tm.lit n) k
-                | Tm.lam(b)         => State.sret (Tm.lam b) k
-                | Tm.app(f, a)      => State.seval f (Kont.kapp1 a k)
-                | Tm.add(x, y)      => State.seval x (Kont.kadd1 y k)
-                | Tm.ifz(c, t2, e2) => State.seval c (Kont.kifz t2 e2 k)
-                | Tm.op(a)          => State.seval a (Kont.kop k)
-                | Tm.handle(b, h)   => State.seval b (Kont.khandle h k)
+                | Tm.var(n)         => State.sret (lookupEnv(n)(env)) k
+                | Tm.lit(n)         => State.sret (Val.vnat n) k
+                | Tm.lam(b)         => State.sret (Val.vclos env b) k
+                | Tm.app(f, a)      => State.seval f env (Kont.kapp1 env a k)
+                | Tm.add(x, y)      => State.seval x env (Kont.kadd1 env y k)
+                | Tm.ifz(c, t2, e2) => State.seval c env (Kont.kifz env t2 e2 k)
+                | Tm.op(a)          => State.seval a env (Kont.kop k)
+                | Tm.handle(b, h)   => State.seval h env (Kont.khEval b env k)
               }
           | State.sret(v, k) =>
               match k {
                 | Kont.kdone => State.sdone v
-                | Kont.kapp1(a, k2) => State.seval a (Kont.kapp2 v k2)
+                | Kont.kapp1(env, a, k2) => State.seval a env (Kont.kapp2 v k2)
                 | Kont.kapp2(vf, k2) =>
                     match vf {
-                      | Tm.lam(b) => State.seval (open b v) k2
-                      | _ => State.sstuck
+                      | Val.vclos(cenv, body) => State.seval body (Env.econs v cenv) k2
+                      | Val.vnat(n) => State.sstuck
                     }
-                | Kont.kadd1(y, k2) =>
+                | Kont.kadd1(env, y, k2) =>
                     match v {
-                      | Tm.lit(m) => State.seval y (Kont.kadd2 m k2)
-                      | _ => State.sstuck
+                      | Val.vnat(m) => State.seval y env (Kont.kadd2 m k2)
+                      | Val.vclos(cenv, body) => State.sstuck
                     }
                 | Kont.kadd2(m, k2) =>
                     match v {
-                      | Tm.lit(n) => State.sret (Tm.lit (addN(m)(n))) k2
-                      | _ => State.sstuck
+                      | Val.vnat(n) => State.sret (Val.vnat (addN(m)(n))) k2
+                      | Val.vclos(cenv, body) => State.sstuck
                     }
-                | Kont.kifz(t2, e2, k2) =>
+                | Kont.kifz(env, t2, e2, k2) =>
                     match v {
-                      | Tm.lit(n) => match n { | Nat.zero => State.seval t2 k2 | Nat.succ(m) => State.seval e2 k2 }
-                      | _ => State.sstuck
+                      | Val.vnat(n) => match n { | Nat.zero => State.seval t2 env k2 | Nat.succ(m) => State.seval e2 env k2 }
+                      | Val.vclos(cenv, body) => State.sstuck
                     }
-                | Kont.kop(k2) => unwind(k2)(v)              -- payload evaluated: perform the effect
-                | Kont.khandle(h, k2) => State.sret v k2     -- body finished normally: discard the handler
+                | Kont.kop(k2) => unwind(k2)(v)                      -- payload evaluated: perform the effect
+                | Kont.khEval(body, env2, k2) => State.seval body env2 (Kont.khandle v k2)  -- handler ready; run body
+                | Kont.khandle(vh, k2) => State.sret v k2            -- body finished normally: discard the handler
               }
           | State.sdone(v) => State.sdone v
           | State.sstuck => State.sstuck
@@ -244,13 +204,14 @@ pub const MACHINE: &str = r#"
         }
     }
 
-    -- Load a closed term into the initial state, and read a number out of a final state.
-    def load (t : Tm) : State := State.seval t Kont.kdone
+    -- Load a closed term into the initial state (empty environment), and read a number out
+    -- of a final state.
+    def load (t : Tm) : State := State.seval t Env.enil Kont.kdone
     def evalNat (fuel : Nat) (t : Tm) : Nat :=
       match run(fuel)(load(t)) {
-        | State.sdone(v) => match v { | Tm.lit(n) => n | _ => Nat.zero }
+        | State.sdone(v) => match v { | Val.vnat(n) => n | Val.vclos(env, b) => Nat.zero }
         | State.sret(v, k) => Nat.zero
-        | State.seval(t2, k) => Nat.zero
+        | State.seval(t2, e, k) => Nat.zero
         | State.sstuck => Nat.zero
       }
 "#;
@@ -261,9 +222,6 @@ pub const MACHINE: &str = r#"
 ///  * `step_final` — a **final** state (`sdone`/`sstuck`) is a fixed point of `step`.
 ///  * `run_final_fix` — starting from a final state, `run` returns it unchanged for **any**
 ///    fuel: once the machine answers, more steps never change the answer.
-///
-/// The non-final cases of `step_final` are discharged by deriving `False` from the
-/// impossible hypothesis `isFinal s = true` (when `isFinal s` computes to `false`).
 pub const META: &str = r#"
     -- Bool no-confusion: `false ≠ true`.
     def isFalseProp (b : Bool) : Prop := Bool.rec.{1} (fun (_ : Bool) => Prop) True False b
@@ -281,9 +239,9 @@ pub const META: &str = r#"
               Eq.refl.{1} State (State.sdone v)
           | State.sstuck => fun (h : Eq.{1} Bool (isFinal State.sstuck) Bool.true) =>
               Eq.refl.{1} State State.sstuck
-          | State.seval(t, k) => fun (h : Eq.{1} Bool (isFinal (State.seval t k)) Bool.true) =>
+          | State.seval(t, e, k) => fun (h : Eq.{1} Bool (isFinal (State.seval t e k)) Bool.true) =>
               False.rec.{0}
-                (fun (_ : False) => Eq.{1} State (step (State.seval t k)) (State.seval t k))
+                (fun (_ : False) => Eq.{1} State (step (State.seval t e k)) (State.seval t e k))
                 (ff_ne_tt h)
           | State.sret(v, k) => fun (h : Eq.{1} Bool (isFinal (State.sret v k)) Bool.true) =>
               False.rec.{0}
@@ -349,10 +307,21 @@ mod tests {
 
     #[test]
     fn beta_and_addition() {
-        // (λx. x + 1) 2  ==>  3
+        // (λx. x + 1) 2  ==>  3  (β extends the environment; no substitution)
         let prog = "Tm.app (Tm.lam (Tm.add (Tm.var Nat.zero) (Tm.lit (Nat.succ Nat.zero)))) \
                     (Tm.lit (Nat.succ (Nat.succ Nat.zero)))";
         assert_eq!(eval(prog, 20), "3");
+    }
+
+    #[test]
+    fn closure_captures_its_environment() {
+        // (λx. (λy. x) 9) 5  ==>  5   — the inner closure must capture x from the outer env.
+        let inner = format!(
+            "Tm.app (Tm.lam (Tm.var (Nat.succ Nat.zero))) (Tm.lit ({}))",
+            nat(9)
+        );
+        let prog = format!("Tm.app (Tm.lam ({inner})) (Tm.lit ({}))", nat(5));
+        assert_eq!(eval(&prog, 30), "5");
     }
 
     #[test]
