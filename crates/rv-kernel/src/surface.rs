@@ -254,17 +254,47 @@ enum Tok {
     KwByCases,
 }
 
-fn lex(src: &str) -> Result<Vec<Tok>, String> {
+/// Byte offsets where each line begins (line 0 starts at 0). Used to turn a token's byte
+/// offset into a human `line:col` for diagnostics.
+fn line_starts(src: &str) -> Vec<usize> {
+    let mut starts = vec![0usize];
+    for (i, b) in src.bytes().enumerate() {
+        if b == b'\n' {
+            starts.push(i + 1);
+        }
+    }
+    starts
+}
+
+/// Convert a byte offset into a 1-based `(line, col)` against precomputed line starts.
+fn line_col(starts: &[usize], off: usize) -> (usize, usize) {
+    // The line is the last start that is ≤ off.
+    let line = match starts.binary_search(&off) {
+        Ok(i) => i,
+        Err(i) => i - 1,
+    };
+    (line + 1, off - starts[line] + 1)
+}
+
+/// Lex into a token stream paired with each token's source byte-span (for diagnostics).
+fn lex(src: &str) -> Result<(Vec<Tok>, Vec<core::ops::Range<usize>>), String> {
     use logos::Logos;
-    let mut out = Vec::new();
+    let mut toks = Vec::new();
+    let mut spans = Vec::new();
     let mut lx = Tok::lexer(src);
     while let Some(r) = lx.next() {
         match r {
-            Ok(t) => out.push(t),
-            Err(_) => return Err(format!("lex error near {:?}: '{}'", lx.span(), lx.slice())),
+            Ok(t) => {
+                toks.push(t);
+                spans.push(lx.span());
+            }
+            Err(_) => {
+                let (l, c) = line_col(&line_starts(src), lx.span().start);
+                return Err(format!("{l}:{c}: lex error: unexpected '{}'", lx.slice()));
+            }
         }
     }
-    Ok(out)
+    Ok((toks, spans))
 }
 
 // ---------------------------------------------------------------------------
@@ -273,12 +303,25 @@ fn lex(src: &str) -> Result<Vec<Tok>, String> {
 
 struct Parser {
     toks: Vec<Tok>,
+    spans: Vec<core::ops::Range<usize>>,
+    line_starts: Vec<usize>,
+    src_len: usize,
     pos: usize,
 }
 
 impl Parser {
-    fn new(toks: Vec<Tok>) -> Self {
-        Self { toks, pos: 0 }
+    fn new(toks: Vec<Tok>, spans: Vec<core::ops::Range<usize>>, src: &str) -> Self {
+        Self { toks, spans, line_starts: line_starts(src), src_len: src.len(), pos: 0 }
+    }
+    /// The `line:col` of the current token (or end-of-input), for error prefixes.
+    fn here(&self) -> String {
+        let off = self.spans.get(self.pos).map(|s| s.start).unwrap_or(self.src_len);
+        let (l, c) = line_col(&self.line_starts, off);
+        format!("{l}:{c}")
+    }
+    /// Prefix a parse error with the current source position.
+    fn err<T>(&self, msg: impl std::fmt::Display) -> Result<T, String> {
+        Err(format!("{}: {}", self.here(), msg))
     }
     fn peek(&self) -> Option<&Tok> {
         self.toks.get(self.pos)
@@ -304,17 +347,25 @@ impl Parser {
             false
         }
     }
+    /// Render the current lookahead for a "found X" diagnostic.
+    fn found(&self) -> String {
+        match self.peek() {
+            Some(t) => format!("{t:?}"),
+            None => "end of input".to_string(),
+        }
+    }
     fn expect(&mut self, t: &Tok) -> Result<(), String> {
         if self.eat(t) {
             Ok(())
         } else {
-            Err(format!("expected {t:?}, found {:?}", self.peek()))
+            self.err(format!("expected {t:?}, found {}", self.found()))
         }
     }
     fn ident(&mut self) -> Result<String, String> {
+        let found = self.found();
         match self.bump() {
             Some(Tok::Ident(s)) => Ok(s),
-            other => Err(format!("expected identifier, found {other:?}")),
+            _ => self.err(format!("expected identifier, found {found}")),
         }
     }
 
@@ -608,7 +659,7 @@ impl Parser {
                 let levels = if self.at(&Tok::DotBrace) { Some(self.level_args()?) } else { None };
                 Ok(Expr::Var(nm, levels))
             }
-            other => Err(format!("expected an expression, found {other:?}")),
+            _ => self.err(format!("expected an expression, found {}", self.found())),
         }
     }
 
@@ -626,6 +677,7 @@ impl Parser {
     }
 
     fn level(&mut self) -> Result<SLevel, String> {
+        let (here, found) = (self.here(), self.found());
         let mut l = match self.bump() {
             Some(Tok::Nat(n)) => SLevel::Nat(n),
             Some(Tok::Ident(s)) => SLevel::Var(s),
@@ -634,12 +686,13 @@ impl Parser {
                 self.expect(&Tok::RParen)?;
                 l
             }
-            other => return Err(format!("expected a universe level, found {other:?}")),
+            _ => return Err(format!("{here}: expected a universe level, found {found}")),
         };
         while self.eat(&Tok::Plus) {
+            let (here2, found2) = (self.here(), self.found());
             match self.bump() {
                 Some(Tok::Nat(n)) => l = SLevel::Add(Box::new(l), n),
-                other => return Err(format!("expected a number after '+', found {other:?}")),
+                _ => return Err(format!("{here2}: expected a number after '+', found {found2}")),
             }
         }
         Ok(l)
@@ -789,7 +842,7 @@ impl Parser {
                 let proof = self.expr()?;
                 Ok(Command::Prove { name, proof })
             }
-            other => Err(format!("expected a command, found {other:?}")),
+            _ => self.err(format!("expected a command, found {}", self.found())),
         }
     }
 
@@ -958,17 +1011,19 @@ pub fn lam_telescope(binders: Vec<Binder>, body: Expr) -> Expr {
 
 /// Parse a single expression.
 pub fn parse_expr(src: &str) -> Result<Expr, String> {
-    let mut p = Parser::new(lex(src)?);
+    let (toks, spans) = lex(src)?;
+    let mut p = Parser::new(toks, spans, src);
     let e = p.expr()?;
     if !p.at_eof() {
-        return Err(format!("trailing tokens after expression: {:?}", p.peek()));
+        return p.err(format!("trailing tokens after expression: {}", p.found()));
     }
     Ok(e)
 }
 
 /// Parse a whole program (a sequence of commands).
 pub fn parse_program(src: &str) -> Result<Vec<Command>, String> {
-    let mut p = Parser::new(lex(src)?);
+    let (toks, spans) = lex(src)?;
+    let mut p = Parser::new(toks, spans, src);
     let mut cmds = Vec::new();
     while !p.at_eof() {
         cmds.extend(p.item()?);
@@ -982,10 +1037,35 @@ mod tests {
 
     #[test]
     fn lex_basic() {
-        let ts = lex("fun (A : Type) => A").unwrap();
+        let (ts, _spans) = lex("fun (A : Type) => A").unwrap();
         assert_eq!(ts[0], Tok::KwFun);
         assert_eq!(ts[1], Tok::LParen);
         assert_eq!(ts[2], Tok::Ident("A".into()));
+    }
+
+    #[test]
+    fn parse_errors_carry_line_and_column() {
+        // A dangling `(` at column 8 reports its position; the error is `1:9: ...` (the
+        // expression is expected at the `)`/EOF right after the open paren).
+        let err = parse_expr("foo bar (").unwrap_err();
+        assert!(err.starts_with("1:"), "want a line:col prefix, got: {err}");
+        assert!(err.contains("expected an expression"), "got: {err}");
+    }
+
+    #[test]
+    fn line_numbers_track_across_newlines() {
+        // The error is on the third line (`def`'s body is missing), so it must say `3:`.
+        let src = "def a : Nat := Nat.zero\ndef b : Nat := Nat.zero\ndef c : Nat :=";
+        let err = parse_program(src).unwrap_err();
+        assert!(err.starts_with("3:"), "want a 3:col prefix, got: {err}");
+    }
+
+    #[test]
+    fn lex_errors_carry_position() {
+        // `#` is not a legal token; the lexer reports its line:col.
+        let err = parse_expr("fun x => #").unwrap_err();
+        assert!(err.starts_with("1:"), "want a line:col prefix, got: {err}");
+        assert!(err.contains("lex error"), "got: {err}");
     }
 
     #[test]
