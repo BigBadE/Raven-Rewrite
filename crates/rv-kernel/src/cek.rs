@@ -295,6 +295,67 @@ pub const META: &str = r#"
                 (Eq.refl.{1} State s)
         }
     }
+
+    -- ===== Driver adequacy: fuel composes, and answers are stable under more fuel. =====
+    -- These make "the machine's result" well-defined: once `run` reaches a final state, no
+    -- amount of extra fuel changes it. (The full machine-vs-small-step *simulation* — that
+    -- the machine computes the answer an independent semantics assigns — is a larger
+    -- development and is NOT proved here.)
+    def congrArg.{u, v} (A : Sort u) (B : Sort v) (f : A -> B) (a : A) (b : A) (h : Eq.{u} A a b)
+      : Eq.{v} B (f a) (f b) :=
+      Eq.subst.{u} A (fun (x : A) => Eq.{v} B (f a) (f x)) a b h (Eq.refl.{v} B (f a))
+
+    inductive Or2 (A : Prop) (B : Prop) : Prop | inl : A -> Or2 A B | inr : B -> Or2 A B
+    def bcases (b : Bool) : Or2 (Eq.{1} Bool b Bool.true) (Eq.{1} Bool b Bool.false) :=
+      Bool.rec.{0} (fun (x : Bool) => Or2 (Eq.{1} Bool x Bool.true) (Eq.{1} Bool x Bool.false))
+        (Or2.inr (Eq.{1} Bool Bool.false Bool.true) (Eq.{1} Bool Bool.false Bool.false) (Eq.refl.{1} Bool Bool.false))
+        (Or2.inl (Eq.{1} Bool Bool.true Bool.true) (Eq.{1} Bool Bool.true Bool.false) (Eq.refl.{1} Bool Bool.true))
+        b
+
+    -- One unfolding of `run` on a non-final state: `run (succ x) s = run x (step s)`.
+    def run_succ_step (x : Nat) (s : State) (hf : Eq.{1} Bool (isFinal s) Bool.false)
+      : Eq.{1} State (run (Nat.succ x) s) (run x (step s)) :=
+      Eq.subst.{1} Bool
+        (fun (b : Bool) =>
+           Eq.{1} State (match b { | Bool.true => s | Bool.false => run(x)(step(s)) }) (run x (step s)))
+        Bool.false (isFinal s) (Eq.symm.{1} Bool (isFinal s) Bool.false hf)
+        (Eq.refl.{1} State (run x (step s)))
+
+    -- FUEL COMPOSITION: run (n + m) s = run m (run n s). By induction on n, splitting on
+    -- whether `s` is already final (then both sides collapse via `run_final_fix`) or not
+    -- (then one `step` is shared and the tail follows by the IH).
+    fn run_compose(n: Nat)
+      -> ((m : Nat) -> (s : State) -> Eq.{1} State (run (addN(n)(m)) s) (run m (run n s))) {
+        match n {
+          | Nat.zero => fun (m : Nat) (s : State) => Eq.refl.{1} State (run m s)
+          | Nat.succ(n2) => fun (m : Nat) (s : State) =>
+              match bcases(isFinal s) {
+                | Or2.inl(htrue) =>
+                    Eq.trans.{1} State (run (addN(Nat.succ(n2))(m)) s) s (run m (run (Nat.succ n2) s))
+                      (run_final_fix (addN(Nat.succ(n2))(m)) s htrue)
+                      (Eq.symm.{1} State (run m (run (Nat.succ n2) s)) s
+                        (Eq.trans.{1} State (run m (run (Nat.succ n2) s)) (run m s) s
+                          (congrArg.{1, 1} State State (fun (x : State) => run m x)
+                             (run (Nat.succ n2) s) s (run_final_fix (Nat.succ n2) s htrue))
+                          (run_final_fix m s htrue)))
+                | Or2.inr(hfalse) =>
+                    Eq.trans.{1} State (run (addN(Nat.succ(n2))(m)) s) (run (addN(n2)(m)) (step s)) (run m (run (Nat.succ n2) s))
+                      (run_succ_step (addN(n2)(m)) s hfalse)
+                      (Eq.trans.{1} State (run (addN(n2)(m)) (step s)) (run m (run n2 (step s))) (run m (run (Nat.succ n2) s))
+                        (run_compose(n2)(m)(step s))
+                        (congrArg.{1, 1} State State (fun (x : State) => run m x)
+                           (run n2 (step s)) (run (Nat.succ n2) s)
+                           (Eq.symm.{1} State (run (Nat.succ n2) s) (run n2 (step s)) (run_succ_step n2 s hfalse))))
+              }
+        }
+    }
+
+    -- ANSWER STABILITY: if `run n s` is final, running `n + m` fuel gives the same answer.
+    def run_stable (n : Nat) (m : Nat) (s : State) (h : Eq.{1} Bool (isFinal (run n s)) Bool.true)
+      : Eq.{1} State (run (addN(n)(m)) s) (run n s) :=
+      Eq.trans.{1} State (run (addN(n)(m)) s) (run m (run n s)) (run n s)
+        (run_compose(n)(m)(s))
+        (run_final_fix m (run n s) h)
 "#;
 
 /// The base session: the prelude + the machine, kernel-checked and ready to *run*.
@@ -359,5 +420,8 @@ mod tests {
         let s = meta_session().expect("driver metatheory should kernel-check");
         assert!(s.k.env().contains("step_final"));
         assert!(s.k.env().contains("run_final_fix"));
+        // Driver adequacy: fuel composes and answers are stable under more fuel.
+        assert!(s.k.env().contains("run_compose"));
+        assert!(s.k.env().contains("run_stable"));
     }
 }
