@@ -80,6 +80,18 @@ fn le_trans() {
 }
 
 #[test]
+fn cek_machine() {
+    check("cek_machine.rv");
+    // It also evaluates (\x. x + 1) 2 to 3.
+    let path = format!("{}/../../examples/proofs/cek_machine.rv", env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(&path).unwrap();
+    let run = verify_rv(&src, Some("answer")).unwrap().run.unwrap().unwrap();
+    // 3 = Succ (Succ (Succ Zero)) — three Succs.
+    let succs = run.matches("Succ").count();
+    assert_eq!(succs, 3, "expected the machine to compute 3, got {run}");
+}
+
+#[test]
 fn mutual_trees() {
     check("mutual_trees.rv");
     // It also computes: a forest of two leaves has size 2.

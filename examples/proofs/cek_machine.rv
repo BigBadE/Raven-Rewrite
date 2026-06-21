@@ -1,0 +1,120 @@
+// The (pure) CEK abstract machine, in Rust-like Raven — a small-step evaluator with an
+// explicit control stack, ported from the embedded kernel-surface `cek.rs`.
+// `rvc --verify --run --entry answer` evaluates `(\x. x + 1) 2` to 3.
+
+enum Nat { Zero, Succ(Nat) }
+enum Bool { BTrue, BFalse }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+
+// Terms (de Bruijn).
+enum Tm { Var(Nat), Lit(Nat), Lam(Tm), App(Tm, Tm), Add(Tm, Tm), Ifz(Tm, Tm, Tm) }
+
+// Values, environments, and continuation frames are one mutual group.
+mutual {
+    enum Val  { VNat(Nat), VClos(Env, Tm) }
+    enum Env  { ENil, ECons(Val, Env) }
+    enum Kont {
+        KDone,
+        KApp1(Env, Tm, Kont),
+        KApp2(Val, Kont),
+        KAdd1(Env, Tm, Kont),
+        KAdd2(Nat, Kont),
+        KIfz(Env, Tm, Tm, Kont)
+    }
+}
+
+enum State { SEval(Tm, Env, Kont), SRet(Val, Kont), SDone(Val), SStuck }
+
+// de Bruijn lookup (curried on the index so it is a plain solo recursion).
+fn lookup(n: Nat) -> (Env -> Val) {
+    match n {
+      | Nat::Zero    => fun (e: Env) =>
+          match e { | Env::ENil => Val::VNat(Nat::Zero) | Env::ECons(v, rest) => v }
+      | Nat::Succ(k) => fun (e: Env) =>
+          match e { | Env::ENil => Val::VNat(Nat::Zero) | Env::ECons(v, rest) => lookup(k)(rest) }
+    }
+}
+
+// One machine transition.
+fn step(s: State) -> State {
+    match s {
+      | State::SEval(t, env, k) =>
+          match t {
+            | Tm::Var(n)        => State::SRet(lookup(n)(env), k)
+            | Tm::Lit(n)        => State::SRet(Val::VNat(n), k)
+            | Tm::Lam(b)        => State::SRet(Val::VClos(env, b), k)
+            | Tm::App(f, a)     => State::SEval(f, env, Kont::KApp1(env, a, k))
+            | Tm::Add(x, y)     => State::SEval(x, env, Kont::KAdd1(env, y, k))
+            | Tm::Ifz(c, t2, e) => State::SEval(c, env, Kont::KIfz(env, t2, e, k))
+          }
+      | State::SRet(v, k) =>
+          match k {
+            | Kont::KDone => State::SDone(v)
+            | Kont::KApp1(env, a, k2) => State::SEval(a, env, Kont::KApp2(v, k2))
+            | Kont::KApp2(vf, k2) =>
+                match vf {
+                  | Val::VClos(cenv, body) => State::SEval(body, Env::ECons(v, cenv), k2)
+                  | Val::VNat(n)           => State::SStuck
+                }
+            | Kont::KAdd1(env, y, k2) =>
+                match v {
+                  | Val::VNat(m)      => State::SEval(y, env, Kont::KAdd2(m, k2))
+                  | Val::VClos(c, b)  => State::SStuck
+                }
+            | Kont::KAdd2(m, k2) =>
+                match v {
+                  | Val::VNat(n)      => State::SRet(Val::VNat(plus(m, n)), k2)
+                  | Val::VClos(c, b)  => State::SStuck
+                }
+            | Kont::KIfz(env, t2, e, k2) =>
+                match v {
+                  | Val::VNat(n) =>
+                      match n { | Nat::Zero => State::SEval(t2, env, k2) | Nat::Succ(m) => State::SEval(e, env, k2) }
+                  | Val::VClos(c, b) => State::SStuck
+                }
+          }
+      | State::SDone(v) => State::SDone(v)
+      | State::SStuck   => State::SStuck
+    }
+}
+
+fn is_final(s: State) -> Bool {
+    match s {
+      | State::SDone(v) => Bool::BTrue
+      | State::SStuck   => Bool::BTrue
+      | State::SEval(t, e, k) => Bool::BFalse
+      | State::SRet(v, k)     => Bool::BFalse
+    }
+}
+
+// The fuelled driver.
+fn run(fuel: Nat) -> (State -> State) {
+    match fuel {
+      | Nat::Zero    => fun (s: State) => s
+      | Nat::Succ(k) => fun (s: State) =>
+          match is_final(s) { | Bool::BTrue => s | Bool::BFalse => run(k)(step(s)) }
+    }
+}
+
+fn load(t: Tm) -> State { State::SEval(t, Env::ENil, Kont::KDone) }
+
+fn eval_nat(fuel: Nat, t: Tm) -> Nat {
+    match run(fuel)(load(t)) {
+      | State::SDone(v) => match v { | Val::VNat(n) => n | Val::VClos(e, b) => Nat::Zero }
+      | State::SRet(v, k)     => Nat::Zero
+      | State::SEval(t2, e, k) => Nat::Zero
+      | State::SStuck         => Nat::Zero
+    }
+}
+
+// (\x. x + 1) 2  ==>  3
+def prog : Tm :=
+    Tm::App(Tm::Lam(Tm::Add(Tm::Var(Nat::Zero), Tm::Lit(Nat::Succ(Nat::Zero)))),
+            Tm::Lit(Nat::Succ(Nat::Succ(Nat::Zero))))
+def fuel : Nat :=
+    Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(
+    Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(Nat::Zero)))))))))))))))
+def answer : Nat := eval_nat(fuel, prog)
