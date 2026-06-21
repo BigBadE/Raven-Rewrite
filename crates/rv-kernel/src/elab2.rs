@@ -667,12 +667,11 @@ impl<'a> Infer<'a> {
             _ => return Err(format!("inductive '{ind_name}' has no recursor")),
         };
         if rec.num_motives != 1 {
-            return Err(format!(
-                "`match` on the mutual inductive '{ind_name}' is not supported — recursion \
-                 over a mutual group needs mutual function definitions; use its recursor \
-                 '{}' directly",
-                ind.recursor
-            ));
+            // A member of a *mutual* inductive group: compile via the multi-motive recursor
+            // (real motive+arms for this member, trivial motive+minors for the siblings).
+            return self.compile_match_mutual(
+                &ind, &rec, ind_name, ls, k, &params, &r_ty, &u_r, e_term, arms,
+            );
         }
         let rec_levels: Vec<Level> = if rec.num_levels == ind.num_levels + 1 {
             ls.iter().cloned().chain(std::iter::once(u_r.clone())).collect()
@@ -946,6 +945,168 @@ impl<'a> Infer<'a> {
             self.pop_local();
         }
         let mut lam = body?;
+        for d in doms.into_iter().rev() {
+            lam = Term::lam(d, lam);
+        }
+        Ok(lam)
+    }
+
+    /// Compile a `match` on a member of a **mutual** inductive group via its multi-motive
+    /// recursor. The scrutinee's member gets the real motive `λ s. M` and real minors (from
+    /// the arms); every *sibling* member gets a trivial motive `λ s. (R → R)` and identity
+    /// minors `λ …fields…ih…. (λ z. z)` — `R → R` is inhabited regardless of whether `R`
+    /// itself is, so no auxiliary `Unit` is needed. Non-indexed groups only (which is all
+    /// the mutual-inductive machinery supports).
+    #[allow(clippy::too_many_arguments)]
+    fn compile_match_mutual(
+        &mut self,
+        ind: &crate::env::Inductive,
+        rec: &crate::env::Recursor,
+        ind_name: &str,
+        ls: &[Level],
+        k: usize,
+        params: &[Term],
+        r_ty: &Term,
+        u_r: &Level,
+        e_term: Term,
+        arms: &[crate::surface::MatchArm],
+    ) -> Result<(Term, Term), String> {
+        use crate::env::Decl;
+        if ind.num_indices != 0 {
+            return Err(format!(
+                "`match` on the indexed mutual inductive '{ind_name}' is not supported"
+            ));
+        }
+        let group: Vec<String> = ind.group.iter().map(|n| n.to_string()).collect();
+        let j = group
+            .iter()
+            .position(|n| n == ind_name)
+            .ok_or_else(|| format!("'{ind_name}' is not in its own mutual group"))?;
+
+        // Recursor levels: append the elimination universe unless the group is Prop-bound.
+        let rec_levels: Vec<Level> = if rec.num_levels == ind.num_levels + 1 {
+            ls.iter().cloned().chain(std::iter::once(u_r.clone())).collect()
+        } else {
+            if !matches!(u_r.normalize(), Level::Zero) {
+                return Err(format!(
+                    "`match` on '{ind_name}' can only produce a `Prop` (its group is \
+                     large-elimination-restricted)"
+                ));
+            }
+            ls.to_vec()
+        };
+
+        // The fully-applied type former `I_t params` for member t (the motive's domain).
+        let member_app = |t: usize| -> Term {
+            let mut a = Term::cnst(name(&group[t]), ls.to_vec());
+            for p in params {
+                a = Term::app(a, p.clone());
+            }
+            a
+        };
+
+        // Motives, in group order: the real `λ s. M` at the scrutinee member, the trivial
+        // `λ s. (R → R)` elsewhere (R lifted past the `s` and `z` binders).
+        let motives: Vec<Term> = (0..group.len())
+            .map(|t| {
+                if t == j {
+                    let mut body = r_ty.lift(1, 0);
+                    body = replace_with_var(&body, &e_term.lift(1, 0), 0);
+                    Term::lam(member_app(t), body)
+                } else {
+                    let codom = Term::pi(r_ty.lift(1, 0), r_ty.lift(2, 0));
+                    Term::lam(member_app(t), codom)
+                }
+            })
+            .collect();
+
+        // Peel the recursor type: params, then all motives, to expose the minor band.
+        let mut t = rec.ty.instantiate_levels(&rec_levels);
+        for p in params {
+            let Term::Pi(_, _, b) = &t else { return Err("recursor: parameter Π".into()) };
+            t = b.instantiate(p);
+        }
+        for c in &motives {
+            let Term::Pi(_, _, b) = &t else { return Err("recursor: motive Π".into()) };
+            t = b.instantiate(c);
+        }
+
+        // Minors for every member's constructors, in group order.
+        let mut minors: Vec<Term> = Vec::new();
+        for (t_idx, member) in group.iter().enumerate() {
+            let inds = match self.env.get(member) {
+                Some(Decl::Inductive(i)) => i.clone(),
+                _ => return Err(format!("'{member}' is not an inductive")),
+            };
+            for cname in inds.ctors.iter() {
+                let Term::Pi(_, mdom, mbody) = &t else {
+                    return Err("recursor: minor Π".into());
+                };
+                let minor_ty = (**mdom).clone();
+                let minor = if t_idx == j {
+                    let arm = arms
+                        .iter()
+                        .find(|a| a.pat.as_flat().is_some_and(|(c, _)| c == &**cname))
+                        .ok_or_else(|| format!("non-exhaustive `match`: no arm for '{cname}'"))?;
+                    self.build_minor(&group, ls, k, cname, &minor_ty, arm)?
+                } else {
+                    self.build_dummy_minor(&group, ls, k, cname, &minor_ty)?
+                };
+                t = mbody.instantiate(&minor);
+                minors.push(minor);
+            }
+        }
+
+        // Assemble: I_j.rec.{levels} params… motives… minors… scrutinee.
+        let mut call = Term::cnst(ind.recursor.clone(), rec_levels);
+        for p in params {
+            call = Term::app(call, p.clone());
+        }
+        for c in motives {
+            call = Term::app(call, c);
+        }
+        for mnr in minors {
+            call = Term::app(call, mnr);
+        }
+        call = Term::app(call, e_term);
+        Ok((call, r_ty.clone()))
+    }
+
+    /// A trivial minor premise for a sibling member's constructor: bind the whole telescope
+    /// (fields + recursive-field IHs) and return the identity `λ z. z`, which inhabits the
+    /// conclusion `R → R`. Used by [`Self::compile_match_mutual`] for the members that are
+    /// not the one being matched.
+    fn build_dummy_minor(
+        &self,
+        group: &[String],
+        ls: &[Level],
+        k: usize,
+        cname: &str,
+        minor_ty: &Term,
+    ) -> Result<Term, String> {
+        let kinds = self.ctor_rec_kinds(group, cname, k, ls)?;
+        let mut t = minor_ty.clone();
+        let mut doms: Vec<Term> = Vec::new();
+        for &is_rec in &kinds {
+            let Term::Pi(_, fdom, fbody) = &t else {
+                return Err(format!("dummy minor for '{cname}': expected a field Π"));
+            };
+            doms.push((**fdom).clone());
+            t = (**fbody).clone();
+            if is_rec {
+                let Term::Pi(_, ihdom, ihbody) = &t else {
+                    return Err(format!("dummy minor for '{cname}': expected an IH Π"));
+                };
+                doms.push((**ihdom).clone());
+                t = (**ihbody).clone();
+            }
+        }
+        // `t` is the conclusion `motive (c fields)`, which β-reduces to `R → R`.
+        let concl = crate::reduce::Reducer::new(self.env).whnf(&t);
+        let Term::Pi(_, cdom, _) = &concl else {
+            return Err(format!("dummy minor for '{cname}': conclusion is not `R → R`"));
+        };
+        let mut lam = Term::lam((**cdom).clone(), Term::Var(0));
         for d in doms.into_iter().rev() {
             lam = Term::lam(d, lam);
         }
