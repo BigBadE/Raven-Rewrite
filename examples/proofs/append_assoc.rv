@@ -1,0 +1,23 @@
+// Associativity of list append in Rust-like Raven, by induction (`rvc --verify`).
+
+enum Nat { Zero, Succ(Nat) }
+enum NatList { Nil, Cons(Nat, NatList) }
+
+fn append(xs: NatList, ys: NatList) -> NatList {
+    match xs {
+      | NatList::Nil           => ys
+      | NatList::Cons(x, rest) => NatList::Cons(x, append(rest, ys))
+    }
+}
+
+fn append_assoc(xs: NatList, ys: NatList, zs: NatList)
+    -> append(append(xs, ys), zs) == append(xs, append(ys, zs))
+{
+    match xs {
+      | NatList::Nil           => Eq::refl(NatList, append(ys, zs))
+      | NatList::Cons(x, rest) =>
+          congr_arg(NatList, NatList, fun (l: NatList) => NatList::Cons(x, l),
+                    append(append(rest, ys), zs), append(rest, append(ys, zs)),
+                    append_assoc(rest, ys, zs))
+    }
+}

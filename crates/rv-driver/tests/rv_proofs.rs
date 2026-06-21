@@ -65,6 +65,21 @@ fn list_map() {
 }
 
 #[test]
+fn append_assoc() {
+    check("append_assoc.rv");
+}
+
+#[test]
+fn le() {
+    check("le.rv");
+}
+
+#[test]
+fn le_trans() {
+    check("le_trans.rv");
+}
+
+#[test]
 fn mutual_trees() {
     check("mutual_trees.rv");
     // It also computes: a forest of two leaves has size 2.

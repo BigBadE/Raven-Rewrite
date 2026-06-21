@@ -1,0 +1,31 @@
+// The `<=` relation on Nat as an indexed `enum`, with reflexivity by induction (`rvc --verify`).
+
+enum Nat { Zero, Succ(Nat) }
+
+enum Le(n: Nat, m: Nat) -> Prop {
+    LeZero(x: Nat)
+        where n == Nat::Zero, m == x;
+    LeSucc(a: Nat, b: Nat, h: Le(a, b))
+        where n == Nat::Succ(a), m == Nat::Succ(b);
+}
+
+// 0 <= n for every n.
+fn le_zero(n: Nat) -> Le(Nat::Zero, n) {
+    Le::LeZero(n)
+}
+
+// n <= n, by induction.
+fn le_refl(n: Nat) -> Le(n, n) {
+    match n {
+      | Nat::Zero    => Le::LeZero(Nat::Zero)
+      | Nat::Succ(k) => Le::LeSucc(k, k, le_refl(k))
+    }
+}
+
+// n <= n+1 (i.e. n <= Succ n), by induction.
+fn le_succ(n: Nat) -> Le(n, Nat::Succ(n)) {
+    match n {
+      | Nat::Zero    => Le::LeZero(Nat::Succ(Nat::Zero))
+      | Nat::Succ(k) => Le::LeSucc(k, Nat::Succ(k), le_succ(k))
+    }
+}

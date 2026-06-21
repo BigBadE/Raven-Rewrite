@@ -1,0 +1,58 @@
+// Transitivity of `<=` in Rust-like Raven (`rvc --verify`). Exercises the hard machinery:
+// inverting an indexed derivation (`Le(Succ b, c)`) and index-changing recursion (the curried
+// motive, so the induction hypothesis is abstracted over the moving indices).
+
+enum Nat { Zero, Succ(Nat) }
+
+enum Le(n: Nat, m: Nat) -> Prop {
+    LeZero(x: Nat)                       where n == Nat::Zero,    m == x;
+    LeSucc(a: Nat, b: Nat, h: Le(a, b))  where n == Nat::Succ(a), m == Nat::Succ(b);
+}
+
+fn le_zero(n: Nat) -> Le(Nat::Zero, n) { Le::LeZero(n) }
+
+// No-confusion + injectivity for Nat (built with the prelude's subst/congr_arg).
+fn is_zero(n: Nat) -> Prop {
+    match n { | Nat::Zero => True | Nat::Succ(k) => False }
+}
+fn zero_ne_succ(b: Nat, h: Nat::Zero == Nat::Succ(b)) -> False {
+    subst(Nat, is_zero, Nat::Zero, Nat::Succ(b), h, True::intro)
+}
+fn pred(n: Nat) -> Nat {
+    match n { | Nat::Zero => Nat::Zero | Nat::Succ(k) => k }
+}
+fn succ_inj(a: Nat, b: Nat, h: Nat::Succ(a) == Nat::Succ(b)) -> a == b {
+    congr_arg(Nat, Nat, pred, Nat::Succ(a), Nat::Succ(b), h)
+}
+
+// Inversion: from `Le(Succ b, c)`, recover `c == Succ cc` and `Le(b, cc)`.
+enum LeSuccInv(b: Nat, c: Nat) -> Prop {
+    MkLSI(cc: Nat, h: Le(b, cc)) where c == Nat::Succ(cc);
+}
+fn le_inv(n: Nat, c: Nat, h: Le(n, c)) -> (b: Nat) -> (n == Nat::Succ(b)) -> LeSuccInv(b, c) {
+    match h {
+      | Le::LeZero(x) => fun (b: Nat) (en: Nat::Zero == Nat::Succ(b)) =>
+          False::rec(fun (z: False) => LeSuccInv(b, x), zero_ne_succ(b, en))
+      | Le::LeSucc(a, bb, hab) => fun (b: Nat) (en: Nat::Succ(a) == Nat::Succ(b)) =>
+          subst(Nat, fun (x: Nat) => LeSuccInv(x, Nat::Succ(bb)), a, b, succ_inj(a, b, en),
+                LeSuccInv::MkLSI(a, bb, hab))
+    }
+}
+
+// TRANSITIVITY, by induction on the first derivation (curried over `c`/the second derivation so
+// the IH `hab.rec` is abstracted over the changing indices).
+fn le_trans(a: Nat, b: Nat, h1: Le(a, b)) -> (c: Nat) -> Le(b, c) -> Le(a, c) {
+    match h1 {
+      | Le::LeZero(x) => fun (c: Nat) (h2: Le(x, c)) => le_zero(c)
+      | Le::LeSucc(a2, b2, hab) => fun (c: Nat) (h2: Le(Nat::Succ(b2), c)) =>
+          // The inner inversion abstracts the index `b2`, but the IH `hab.rec` still mentions
+          // it — so convoy the IH through the match (declare its type, apply after refining).
+          let cvy : (ih2: (c3: Nat) -> Le(b2, c3) -> Le(a2, c3)) -> Le(Nat::Succ(a2), c) :=
+            match le_inv(Nat::Succ(b2), c, h2)(b2, Eq::refl(Nat, Nat::Succ(b2))) {
+              | LeSuccInv::MkLSI(bx, cc, hbc) =>
+                  fun (ih2: (c3: Nat) -> Le(bx, c3) -> Le(a2, c3)) =>
+                    Le::LeSucc(a2, cc, ih2(cc)(hbc))
+            }
+          in cvy(hab.rec)
+    }
+}
