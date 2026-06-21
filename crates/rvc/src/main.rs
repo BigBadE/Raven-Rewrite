@@ -12,18 +12,20 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut paths: Vec<String> = Vec::new();
     let mut run = false;
+    let mut verify = false;
     let mut entry = "main".to_string();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--run" => run = true,
+            "--verify" => verify = true,
             "--entry" => {
                 if let Some(e) = it.next() {
                     entry = e.clone();
                 }
             }
             "-h" | "--help" => {
-                eprintln!("usage: rvc <file.rv | file.rs ...> [--run] [--entry NAME]");
+                eprintln!("usage: rvc <file.rv | file.rs ...> [--run] [--verify] [--entry NAME]");
                 return ExitCode::SUCCESS;
             }
             other => paths.push(other.to_string()),
@@ -31,7 +33,7 @@ fn main() -> ExitCode {
     }
 
     if paths.is_empty() {
-        eprintln!("usage: rvc <file.rv | file.rs ...> [--run] [--entry NAME]");
+        eprintln!("usage: rvc <file.rv | file.rs ...> [--run] [--verify] [--entry NAME]");
         return ExitCode::FAILURE;
     }
     // Read every input file.
@@ -46,7 +48,17 @@ fn main() -> ExitCode {
         }
     }
 
-    // A `.rvk` file goes through the dependent-type-theory kernel (verified-Raven).
+    // `--verify` (or a `.rvk` file) verifies a `.rv`/`.rvk` program through the dependent
+    // kernel. `--verify` uses the self-contained `.rv` path (logic prelude only, the file
+    // brings its own data + proofs); `.rvk` uses the stdlib-preloaded kernel path.
+    if verify {
+        if paths.len() != 1 {
+            eprintln!("error: --verify takes exactly one file");
+            return ExitCode::FAILURE;
+        }
+        let entry_opt = if run { Some(entry.as_str()) } else { None };
+        return verify_rv_file(&srcs[0], entry_opt);
+    }
     if paths.iter().any(|p| p.ends_with(".rvk")) {
         let entry_opt = if run { Some(entry.as_str()) } else { None };
         return run_kernel(&paths, &srcs, entry_opt);
@@ -112,6 +124,40 @@ fn main() -> ExitCode {
 /// Verify (and optionally run) `.rvk` Raven kernel-surface files through the
 /// dependent-type-theory kernel. The standard prelude is preloaded, so programs may use
 /// `Bool`/`Nat`/`List`/… freely.
+/// Verify a unified `.rv` program (data + proofs) through the dependent kernel.
+fn verify_rv_file(src: &str, entry: Option<&str>) -> ExitCode {
+    let report = match rv_driver::verify_rv(src, entry) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("=== verification (kernel) ===");
+    for n in &report.verified {
+        println!("  ✓ {n}");
+    }
+    for n in &report.open {
+        println!("  ✗ {n} (open)");
+    }
+    let verified = report.all_verified();
+    println!("{}", if verified { "VERIFIED" } else { "NOT VERIFIED" });
+    if let Some(run_result) = &report.run {
+        match run_result {
+            Ok(v) => println!("=== run ===\n  {} = {v}", entry.unwrap_or("?")),
+            Err(e) => {
+                eprintln!("runtime error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    if verified {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
 fn run_kernel(paths: &[String], srcs: &[String], entry: Option<&str>) -> ExitCode {
     if paths.len() != 1 {
         eprintln!("error: exactly one .rvk file is supported at a time");

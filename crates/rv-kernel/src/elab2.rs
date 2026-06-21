@@ -1435,6 +1435,17 @@ pub fn rewrite_rec_calls(e: &Expr, recs: &RecInfo) -> Expr {
         Expr::EqOp(a, b) => {
             Expr::EqOp(Box::new(rewrite_rec_calls(a, recs)), Box::new(rewrite_rec_calls(b, recs)))
         }
+        // Recurse through the tactic forms, so recursive calls used inside them (e.g. an IH
+        // fed to `rewrite`) are still rewritten to the `.rec` hypothesis.
+        Expr::Rewrite(h, body) => Expr::Rewrite(
+            Box::new(rewrite_rec_calls(h, recs)),
+            Box::new(rewrite_rec_calls(body, recs)),
+        ),
+        Expr::ByCases(s, t, f) => Expr::ByCases(
+            Box::new(rewrite_rec_calls(s, recs)),
+            Box::new(rewrite_rec_calls(t, recs)),
+            Box::new(rewrite_rec_calls(f, recs)),
+        ),
         _ => e.clone(),
     }
 }

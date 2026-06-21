@@ -131,6 +131,18 @@ pub fn run_raven(src: &str, with_stdlib: bool, entry: Option<&str>) -> Result<Ra
     Ok(RavenReport { verified: session.verified_fns(), open: session.open_fns(), run })
 }
 
+/// Verify a Raven `.rv` program through the dependent kernel, loading only the **logic**
+/// prelude (`Eq`, `And`/`Or`/`False`, `Not`/`Iff`) — *not* the full stdlib — so a `.rv` file
+/// is self-contained and brings its own data types (`enum`s) and proofs. This is the unified
+/// `.rv` surface's proof/verification path; obligations are discharged by the kernel.
+pub fn verify_rv(src: &str, entry: Option<&str>) -> Result<RavenReport, String> {
+    let mut session = rv_kernel::verify::Session::new();
+    rv_kernel::logic::declare_logic(&mut session.k)?;
+    session.run(src)?;
+    let run = entry.map(|e| session.run_entry(e));
+    Ok(RavenReport { verified: session.verified_fns(), open: session.open_fns(), run })
+}
+
 /// Run the pipeline on **real Rust source** (parsed by the `tree-sitter`-based
 /// `rv-rustfe` frontend), then elaborate → borrow-check → discharge → optionally
 /// compile + run. Same `Report` shape as the toy frontend. (This path runs the

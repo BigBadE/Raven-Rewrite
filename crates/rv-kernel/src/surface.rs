@@ -225,9 +225,12 @@ pub enum Command {
 /// of the token vector, not by a token.
 #[derive(logos::Logos, Clone, Debug, PartialEq)]
 #[logos(skip r"[ \t\r\n\f]+")] // whitespace
-#[logos(skip("--[^\n]*", allow_greedy = true))] // line comments
+#[logos(skip("--[^\n]*", allow_greedy = true))] // line comments (Lean-style)
+#[logos(skip("//[^\n]*", allow_greedy = true))] // line comments (Rust-style)
 enum Tok {
-    #[regex(r"[A-Za-z_][A-Za-z0-9_']*(\.[A-Za-z_][A-Za-z0-9_']*)*", |lx| lx.slice().to_owned(), priority = 2)]
+    // Dotted *or* `::`-separated paths are one identifier token; `::` (Rust-style) is
+    // normalised to `.` so `Nat::Zero` and `Nat.Zero` are the same name.
+    #[regex(r"[A-Za-z_][A-Za-z0-9_']*((::|\.)[A-Za-z_][A-Za-z0-9_']*)*", |lx| lx.slice().replace("::", "."), priority = 2)]
     Ident(String),
     #[regex(r"[0-9]+", |lx| lx.slice().parse::<u32>().ok())]
     Nat(u32),
@@ -277,6 +280,8 @@ enum Tok {
     KwAxiom,
     #[token("inductive")]
     KwInductive,
+    #[token("enum")]
+    KwEnum,
     #[token("check")]
     KwCheck,
     #[token(";")]
@@ -845,6 +850,40 @@ impl Parser {
                     ctors.push((cname, cty));
                 }
                 Ok(Command::Inductive { name, levels, params, result, ctors })
+            }
+            // Rust-like data declaration: `enum Name { V1, V2(T1, T2), ... }` desugars to a
+            // (non-indexed, `Type`-valued) inductive. Each variant's tuple fields become the
+            // constructor's argument types (`V2(T1, T2)` -> `T1 -> T2 -> Name`).
+            Some(Tok::KwEnum) => {
+                self.bump();
+                let name = self.ident()?;
+                let levels = self.level_decl()?;
+                self.expect(&Tok::LBrace)?;
+                let self_ref = Expr::Var(name.clone(), None);
+                let mut ctors = Vec::new();
+                while !self.at(&Tok::RBrace) {
+                    let cname = self.ident()?;
+                    let mut fields = Vec::new();
+                    if self.eat(&Tok::LParen) {
+                        if !self.at(&Tok::RParen) {
+                            loop {
+                                fields.push(self.expr()?);
+                                if !self.eat(&Tok::Comma) {
+                                    break;
+                                }
+                            }
+                        }
+                        self.expect(&Tok::RParen)?;
+                    }
+                    // ctor type: field0 -> field1 -> ... -> Name
+                    let cty = fields.into_iter().rev().fold(self_ref.clone(), |acc, f| {
+                        Expr::Arrow(Box::new(f), Box::new(acc))
+                    });
+                    ctors.push((cname, cty));
+                    self.eat(&Tok::Comma); // optional separator/trailing comma
+                }
+                self.expect(&Tok::RBrace)?;
+                Ok(Command::Inductive { name, levels, params: Vec::new(), result: Expr::Type(0), ctors })
             }
             Some(Tok::KwCheck) => {
                 self.bump();

@@ -1,0 +1,31 @@
+// Verified mathematics in Rust-like Raven — checked with `rvc --verify`.
+//
+// Data is an `enum`, functions are recursive `fn`s, a lemma is a `fn` whose return *type* is
+// the proposition, and induction is just a recursive call. No special proof syntax.
+
+enum Nat { Zero, Succ(Nat) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n {
+      | Nat::Zero    => m
+      | Nat::Succ(k) => Nat::Succ(plus(k, m))
+    }
+}
+
+// Leibniz substitution, defined in Raven itself on the equality eliminator.
+fn subst(A: Type, P: A -> Prop, a: A, b: A, h: a == b, pa: P(a)) -> P(b) {
+    Eq::rec(A, a, fun (x: A) (p: a == x) => P(x), pa, b, h)
+}
+
+// Congruence for `Succ` follows from substitution.
+fn succ_cong(a: Nat, b: Nat, h: a == b) -> Nat::Succ(a) == Nat::Succ(b) {
+    subst(Nat, fun (x: Nat) => Nat::Succ(a) == Nat::Succ(x), a, b, h, Eq::refl(Nat, Nat::Succ(a)))
+}
+
+// THEOREM: n + 0 == n, by induction on n. The `Succ` case recurses (`plus_zero(k)` is the IH).
+fn plus_zero(n: Nat) -> plus(n, Nat::Zero) == n {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(k) => succ_cong(plus(k, Nat::Zero), k, plus_zero(k))
+    }
+}
