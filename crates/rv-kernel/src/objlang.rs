@@ -20,50 +20,7 @@ use crate::verify::Session;
 
 /// The object language, its evaluator, and an optimization pass — in surface Raven (on
 /// top of the [`stdlib`] `Nat`/`add`/`mul`).
-pub const OBJLANG: &str = r#"
-    -- A tiny arithmetic expression language. `wrap` is a semantically-transparent
-    -- node (think: a redundant annotation / no-op the compiler should remove).
-    inductive Expr : Type
-      | lit  : Nat -> Expr
-      | add  : Expr -> Expr -> Expr
-      | mul  : Expr -> Expr -> Expr
-      | wrap : Expr -> Expr
-
-    -- The evaluation pass (semantics) — structural recursion written by name.
-    fn eval(e: Expr) -> Nat {
-        match e {
-          | Expr.lit(n)    => n
-          | Expr.add(a, b) => add(eval(a), eval(b))
-          | Expr.mul(a, b) => mul(eval(a), eval(b))
-          | Expr.wrap(a)   => eval(a)
-        }
-    }
-
-    -- An optimization pass: strip `wrap` nodes (dead-node elimination), recursing
-    -- structurally elsewhere. This genuinely changes the term — `opt` is not the
-    -- identity — yet must preserve the evaluation semantics.
-    fn opt(e: Expr) -> Expr {
-        match e {
-          | Expr.lit(n)    => Expr.lit(n)
-          | Expr.add(a, b) => Expr.add(opt(a), opt(b))
-          | Expr.mul(a, b) => Expr.mul(opt(a), opt(b))
-          | Expr.wrap(a)   => opt(a)
-        }
-    }
-
-    -- Constant folding: a `+` of two literals collapses to one literal. Uses NESTED
-    -- patterns (a constructor whose children are themselves constructors) with a
-    -- fall-through arm — and recurses by name.
-    fn cfold(e: Expr) -> Expr {
-        match e {
-          | Expr.add(Expr.lit(m), Expr.lit(n)) => Expr.lit(add(m, n))
-          | Expr.add(a, b)                     => Expr.add(cfold(a), cfold(b))
-          | Expr.lit(n)                        => Expr.lit(n)
-          | Expr.mul(a, b)                     => Expr.mul(cfold(a), cfold(b))
-          | Expr.wrap(a)                       => cfold(a)
-        }
-    }
-"#;
+pub const OBJLANG: &str = include_str!("raven/objlang_objlang.rvk");
 
 /// A session with the standard library and the object language + evaluator loaded.
 pub fn session() -> Result<Session, String> {

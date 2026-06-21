@@ -1,0 +1,33 @@
+
+    fn tysubst_lemma(G: FCtx, e: FExp, T: FTy, d: FHasTy G e T)
+      -> ((j : Nat) -> (S : FTy) -> FHasTy (tysubstCtx(G)(j)(S)) (esubstTy(e)(j)(S)) (tsubst(T)(j)(S))) {
+        match d {
+          | FHasTy.ftvar(G2, n2, T2, lk2) => fun (j : Nat) (S : FTy) =>
+              FHasTy.ftvar (tysubstCtx(G2)(j)(S)) n2 (tsubst(T2)(j)(S)) (flookup_tysubst G2 n2 T2 lk2 j S)
+          | FHasTy.ftnat(G2, n2) => fun (j : Nat) (S : FTy) =>
+              FHasTy.ftnat (tysubstCtx(G2)(j)(S)) n2
+          | FHasTy.ftlam(G2, A2, b2, B2, dbody) => fun (j : Nat) (S : FTy) =>
+              FHasTy.ftlam (tysubstCtx(G2)(j)(S)) (tsubst(A2)(j)(S)) (esubstTy(b2)(j)(S)) (tsubst(B2)(j)(S)) (dbody.rec j S)
+          | FHasTy.ftapp(G2, f2, a2, A2, B2, df, da) => fun (j : Nat) (S : FTy) =>
+              FHasTy.ftapp (tysubstCtx(G2)(j)(S)) (esubstTy(f2)(j)(S)) (esubstTy(a2)(j)(S)) (tsubst(A2)(j)(S)) (tsubst(B2)(j)(S)) (df.rec j S) (da.rec j S)
+          | FHasTy.fttlam(G2, b2, B2, dbody) => fun (j : Nat) (S : FTy) =>
+              FHasTy.fttlam (tysubstCtx(G2)(j)(S)) (esubstTy(b2)(Nat.succ j)(tshift(S)(Nat.zero))) (tsubst(B2)(Nat.succ j)(tshift(S)(Nat.zero)))
+                (Eq.subst.{1} FCtx (fun (g : FCtx) => FHasTy g (esubstTy(b2)(Nat.succ j)(tshift(S)(Nat.zero))) (tsubst(B2)(Nat.succ j)(tshift(S)(Nat.zero))))
+                   (tysubstCtx(shiftCtx(G2))(Nat.succ j)(tshift(S)(Nat.zero))) (shiftCtx(tysubstCtx(G2)(j)(S)))
+                   (tysubstCtx_shiftCtx_comm(G2)(j)(S))
+                   (dbody.rec (Nat.succ j) (tshift(S)(Nat.zero))))
+          | FHasTy.fttapp(G2, f2, B2, T2, df) => fun (j : Nat) (S : FTy) =>
+              Eq.subst.{1} FTy (fun (x : FTy) => FHasTy (tysubstCtx(G2)(j)(S)) (FExp.etapp (esubstTy(f2)(j)(S)) (tsubst(T2)(j)(S))) x)
+                (tsubst(tsubst(B2)(Nat.succ j)(tshift(S)(Nat.zero)))(Nat.zero)(tsubst(T2)(j)(S))) (tsubst(tsubst(B2)(Nat.zero)(T2))(j)(S))
+                (Eq.symm.{1} FTy (tsubst(tsubst(B2)(Nat.zero)(T2))(j)(S)) (tsubst(tsubst(B2)(Nat.succ j)(tshift(S)(Nat.zero)))(Nat.zero)(tsubst(T2)(j)(S)))
+                   (subst_subst_comm(B2)(Nat.zero)(T2)(j)(S)(Eq.refl.{1} Bool Bool.true)))
+                (FHasTy.fttapp (tysubstCtx(G2)(j)(S)) (esubstTy(f2)(j)(S)) (tsubst(B2)(Nat.succ j)(tshift(S)(Nat.zero))) (tsubst(T2)(j)(S)) (df.rec j S))
+        }
+    }
+
+    -- Type-β preserves typing: specialise at variable 0 over a freshly-shifted context.
+    def tysubst_preserves (G : FCtx) (b : FExp) (B : FTy) (S : FTy) (dbody : FHasTy (shiftCtx G) b B)
+        : FHasTy G (esubstTy(b)(Nat.zero)(S)) (tsubst(B)(Nat.zero)(S)) :=
+      Eq.subst.{1} FCtx (fun (g : FCtx) => FHasTy g (esubstTy(b)(Nat.zero)(S)) (tsubst(B)(Nat.zero)(S)))
+        (tysubstCtx(shiftCtx(G))(Nat.zero)(S)) G (tysubstCtx_shiftCtx_cancel G S)
+        (tysubst_lemma (shiftCtx G) b B dbody Nat.zero S)

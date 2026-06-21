@@ -1,0 +1,156 @@
+
+    -- Standalone sum-redex preservation lemmas (each is one redex arm of `preservation`).
+    fn pres_case_inl(B: Ty, v: Exp, l: Exp, r: Exp)
+      -> ((G : Ctx) -> (T : Ty) -> HasTy G (Exp.ecase (Exp.einl B v) l r) T -> HasTy G (subst l Nat.zero v) T) {
+        fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.ecase (Exp.einl B v) l r) T) =>
+            match hasty_case_inv G (Exp.ecase (Exp.einl B v) l r) T d (Exp.einl B v) l r (Eq.refl.{1} Exp (Exp.ecase (Exp.einl B v) l r)) {
+              | ExTy.mk(A, ExTy.mk(Br, And2.mk(ds, And2.mk(dl, dr)))) =>
+                  match hasty_inl_inv G (Exp.einl B v) (Ty.tsum A Br) ds B v (Eq.refl.{1} Exp (Exp.einl B v)) {
+                    | ExTy.mk(A2, And2.mk(eqT, dv)) =>
+                        subst_preserves A G l T v dl
+                          (Eq.subst.{1} Ty (fun (x : Ty) => HasTy G v x) A2 A
+                             (Eq.symm.{1} Ty A A2 (ty_proj_inj fstSum (Ty.tsum A Br) (Ty.tsum A2 B) eqT)) dv)
+                  }
+            }
+    }
+    fn pres_case_inr(A: Ty, v: Exp, l: Exp, r: Exp)
+      -> ((G : Ctx) -> (T : Ty) -> HasTy G (Exp.ecase (Exp.einr A v) l r) T -> HasTy G (subst r Nat.zero v) T) {
+        fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.ecase (Exp.einr A v) l r) T) =>
+            match hasty_case_inv G (Exp.ecase (Exp.einr A v) l r) T d (Exp.einr A v) l r (Eq.refl.{1} Exp (Exp.ecase (Exp.einr A v) l r)) {
+              | ExTy.mk(Al, ExTy.mk(B, And2.mk(ds, And2.mk(dl, dr)))) =>
+                  match hasty_inr_inv G (Exp.einr A v) (Ty.tsum Al B) ds A v (Eq.refl.{1} Exp (Exp.einr A v)) {
+                    | ExTy.mk(B2, And2.mk(eqT, dv)) =>
+                        subst_preserves B G r T v dr
+                          (Eq.subst.{1} Ty (fun (x : Ty) => HasTy G v x) B2 B
+                             (Eq.symm.{1} Ty B B2 (ty_proj_inj sndSum (Ty.tsum Al B) (Ty.tsum A B2) eqT)) dv)
+                  }
+            }
+    }
+
+    -- **PRESERVATION**: reduction preserves typing. By induction on the reduction; redexes
+    -- are discharged by `subst_preserves` (β/let) or directly, congruences by the induction
+    -- hypothesis after inverting the typing of the compound term.
+    fn preservation(e: Exp, e2: Exp, st: Step e e2)
+      -> ((G : Ctx) -> (T : Ty) -> HasTy G e T -> HasTy G e2 T) {
+        match st {
+          | Step.s_add_l(a, a2, b, sta) => fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.eadd a b) T) =>
+              match hasty_add_inv G (Exp.eadd a b) T d a b (Eq.refl.{1} Exp (Exp.eadd a b)) {
+                | And2.mk(ha, And2.mk(hb, hT)) =>
+                    Eq.subst.{1} Ty (fun (x : Ty) => HasTy G (Exp.eadd a2 b) x) Ty.tnat T (Eq.symm.{1} Ty T Ty.tnat hT)
+                      (HasTy.tadd G a2 b (sta.rec G Ty.tnat ha) hb)
+              }
+          | Step.s_add_r(a, b, b2, stb) => fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.eadd a b) T) =>
+              match hasty_add_inv G (Exp.eadd a b) T d a b (Eq.refl.{1} Exp (Exp.eadd a b)) {
+                | And2.mk(ha, And2.mk(hb, hT)) =>
+                    Eq.subst.{1} Ty (fun (x : Ty) => HasTy G (Exp.eadd a b2) x) Ty.tnat T (Eq.symm.{1} Ty T Ty.tnat hT)
+                      (HasTy.tadd G a b2 ha (stb.rec G Ty.tnat hb))
+              }
+          | Step.s_add(m, n) => fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.eadd (Exp.enat m) (Exp.enat n)) T) =>
+              match hasty_add_inv G (Exp.eadd (Exp.enat m) (Exp.enat n)) T d (Exp.enat m) (Exp.enat n) (Eq.refl.{1} Exp (Exp.eadd (Exp.enat m) (Exp.enat n))) {
+                | And2.mk(ha, And2.mk(hb, hT)) =>
+                    Eq.subst.{1} Ty (fun (x : Ty) => HasTy G (Exp.enat (addN m n)) x) Ty.tnat T (Eq.symm.{1} Ty T Ty.tnat hT)
+                      (HasTy.tnat G (addN m n))
+              }
+          | Step.s_let_a(a, a2, body, sta) => fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.elet a body) T) =>
+              match hasty_let_inv G (Exp.elet a body) T d a body (Eq.refl.{1} Exp (Exp.elet a body)) {
+                | ExTy.mk(A, And2.mk(da, dbody)) => HasTy.tlet G a2 body A T (sta.rec G A da) dbody
+              }
+          | Step.s_let(v, body) => fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.elet v body) T) =>
+              match hasty_let_inv G (Exp.elet v body) T d v body (Eq.refl.{1} Exp (Exp.elet v body)) {
+                | ExTy.mk(A, And2.mk(dv, dbody)) => subst_preserves A G body T v dbody dv
+              }
+          | Step.s_app_l(f, f2, a, stf) => fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.eapp f a) T) =>
+              match hasty_app_inv G (Exp.eapp f a) T d f a (Eq.refl.{1} Exp (Exp.eapp f a)) {
+                | ExTy.mk(A, And2.mk(df, da)) => HasTy.tapp G f2 a A T (stf.rec G (Ty.tarrow A T) df) da
+              }
+          | Step.s_app_r(f, a, a2, sta) => fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.eapp f a) T) =>
+              match hasty_app_inv G (Exp.eapp f a) T d f a (Eq.refl.{1} Exp (Exp.eapp f a)) {
+                | ExTy.mk(A, And2.mk(df, da)) => HasTy.tapp G f a2 A T df (sta.rec G A da)
+              }
+          | Step.s_beta(A, body, v) => fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.eapp (Exp.elam A body) v) T) =>
+              match hasty_app_inv G (Exp.eapp (Exp.elam A body) v) T d (Exp.elam A body) v (Eq.refl.{1} Exp (Exp.eapp (Exp.elam A body) v)) {
+                | ExTy.mk(A2, And2.mk(df, dv)) =>
+                    match hasty_lam_inv G (Exp.elam A body) (Ty.tarrow A2 T) df A body (Eq.refl.{1} Exp (Exp.elam A body)) {
+                      | ExTy.mk(B, And2.mk(eqArrow, dbody)) =>
+                          subst_preserves A G body T v
+                            (Eq.subst.{1} Ty (fun (x : Ty) => HasTy (Ctx.cons A G) body x) B T
+                               (Eq.symm.{1} Ty T B (ty_proj_inj codOf (Ty.tarrow A2 T) (Ty.tarrow A B) eqArrow)) dbody)
+                            (Eq.subst.{1} Ty (fun (x : Ty) => HasTy G v x) A2 A
+                               (ty_proj_inj domOf (Ty.tarrow A2 T) (Ty.tarrow A B) eqArrow) dv)
+                    }
+              }
+          | Step.s_if_c(c, c2, t, el, stc) => fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.eif c t el) T) =>
+              match hasty_if_inv G (Exp.eif c t el) T d c t el (Eq.refl.{1} Exp (Exp.eif c t el)) {
+                | And2.mk(dc, And2.mk(dt, de)) => HasTy.tif G c2 t el T (stc.rec G Ty.tbool dc) dt de
+              }
+          | Step.s_if_t(t, el) => fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.eif (Exp.ebool Bool.true) t el) T) =>
+              match hasty_if_inv G (Exp.eif (Exp.ebool Bool.true) t el) T d (Exp.ebool Bool.true) t el (Eq.refl.{1} Exp (Exp.eif (Exp.ebool Bool.true) t el)) {
+                | And2.mk(dc, And2.mk(dt, de)) => dt
+              }
+          | Step.s_if_f(t, el) => fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.eif (Exp.ebool Bool.false) t el) T) =>
+              match hasty_if_inv G (Exp.eif (Exp.ebool Bool.false) t el) T d (Exp.ebool Bool.false) t el (Eq.refl.{1} Exp (Exp.eif (Exp.ebool Bool.false) t el)) {
+                | And2.mk(dc, And2.mk(dt, de)) => de
+              }
+          | Step.s_fix(A, body) => fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.efix A body) T) =>
+              match hasty_fix_inv G (Exp.efix A body) T d A body (Eq.refl.{1} Exp (Exp.efix A body)) {
+                | And2.mk(eqT, dbody) =>
+                    Eq.subst.{1} Ty (fun (x : Ty) => HasTy G (subst(body)(Nat.zero)(Exp.efix(A, body))) x) A T
+                      (Eq.symm.{1} Ty T A eqT)
+                      (subst_preserves A G body A (Exp.efix(A, body)) dbody
+                         (Eq.subst.{1} Ty (fun (x : Ty) => HasTy G (Exp.efix(A, body)) x) T A eqT d))
+              }
+          | Step.s_fst_l(p, p2, stp) => fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.efst p) T) =>
+              match hasty_fst_inv G (Exp.efst p) T d p (Eq.refl.{1} Exp (Exp.efst p)) {
+                | ExTy.mk(B, dp) => HasTy.tfst G p2 T B (stp.rec G (Ty.tprod T B) dp)
+              }
+          | Step.s_fst(a, b) => fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.efst (Exp.epair a b)) T) =>
+              match hasty_fst_inv G (Exp.efst (Exp.epair a b)) T d (Exp.epair a b) (Eq.refl.{1} Exp (Exp.efst (Exp.epair a b))) {
+                | ExTy.mk(B, dpair) =>
+                    match hasty_pair_inv G (Exp.epair a b) (Ty.tprod T B) dpair a b (Eq.refl.{1} Exp (Exp.epair a b)) {
+                      | ExTy.mk(A2, ExTy.mk(B2, And2.mk(eqProd, And2.mk(da, db)))) =>
+                          Eq.subst.{1} Ty (fun (x : Ty) => HasTy G a x) A2 T
+                            (Eq.symm.{1} Ty T A2 (ty_proj_inj fstTy (Ty.tprod T B) (Ty.tprod A2 B2) eqProd))
+                            da
+                    }
+              }
+          | Step.s_snd_l(p, p2, stp) => fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.esnd p) T) =>
+              match hasty_snd_inv G (Exp.esnd p) T d p (Eq.refl.{1} Exp (Exp.esnd p)) {
+                | ExTy.mk(A, dp) => HasTy.tsnd G p2 A T (stp.rec G (Ty.tprod A T) dp)
+              }
+          | Step.s_snd(a, b) => fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.esnd (Exp.epair a b)) T) =>
+              match hasty_snd_inv G (Exp.esnd (Exp.epair a b)) T d (Exp.epair a b) (Eq.refl.{1} Exp (Exp.esnd (Exp.epair a b))) {
+                | ExTy.mk(A, dpair) =>
+                    match hasty_pair_inv G (Exp.epair a b) (Ty.tprod A T) dpair a b (Eq.refl.{1} Exp (Exp.epair a b)) {
+                      | ExTy.mk(A2, ExTy.mk(B2, And2.mk(eqProd, And2.mk(da, db)))) =>
+                          Eq.subst.{1} Ty (fun (x : Ty) => HasTy G b x) B2 T
+                            (Eq.symm.{1} Ty T B2 (ty_proj_inj sndTy (Ty.tprod A T) (Ty.tprod A2 B2) eqProd))
+                            db
+                    }
+              }
+          | Step.s_case_l(s, s2, l, r, sts) => fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.ecase s l r) T) =>
+              match hasty_case_inv G (Exp.ecase s l r) T d s l r (Eq.refl.{1} Exp (Exp.ecase s l r)) {
+                | ExTy.mk(A, ExTy.mk(B, And2.mk(ds, And2.mk(dl, dr)))) =>
+                    HasTy.tcase G s2 l r A B T (sts.rec G (Ty.tsum A B) ds) dl dr
+              }
+          | Step.s_case_inl(B, v, l, r) => fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.ecase (Exp.einl B v) l r) T) =>
+              match hasty_case_inv G (Exp.ecase (Exp.einl B v) l r) T d (Exp.einl B v) l r (Eq.refl.{1} Exp (Exp.ecase (Exp.einl B v) l r)) {
+                | ExTy.mk(A, ExTy.mk(Br, And2.mk(ds, And2.mk(dl, dr)))) =>
+                    match hasty_inl_inv G (Exp.einl B v) (Ty.tsum A Br) ds B v (Eq.refl.{1} Exp (Exp.einl B v)) {
+                      | ExTy.mk(A2, And2.mk(eqT, dv)) =>
+                          subst_preserves A G l T v dl
+                            (Eq.subst.{1} Ty (fun (x : Ty) => HasTy G v x) A2 A
+                               (Eq.symm.{1} Ty A A2 (ty_proj_inj fstSum (Ty.tsum A Br) (Ty.tsum A2 B) eqT)) dv)
+                    }
+              }
+          | Step.s_case_inr(A, v, l, r) => fun (G : Ctx) (T : Ty) (d : HasTy G (Exp.ecase (Exp.einr A v) l r) T) =>
+              match hasty_case_inv G (Exp.ecase (Exp.einr A v) l r) T d (Exp.einr A v) l r (Eq.refl.{1} Exp (Exp.ecase (Exp.einr A v) l r)) {
+                | ExTy.mk(Al, ExTy.mk(B, And2.mk(ds, And2.mk(dl, dr)))) =>
+                    match hasty_inr_inv G (Exp.einr A v) (Ty.tsum Al B) ds A v (Eq.refl.{1} Exp (Exp.einr A v)) {
+                      | ExTy.mk(B2, And2.mk(eqT, dv)) =>
+                          subst_preserves B G r T v dr
+                            (Eq.subst.{1} Ty (fun (x : Ty) => HasTy G v x) B2 B
+                               (Eq.symm.{1} Ty B B2 (ty_proj_inj sndSum (Ty.tsum Al B) (Ty.tsum A B2) eqT)) dv)
+                    }
+              }
+        }
+    }

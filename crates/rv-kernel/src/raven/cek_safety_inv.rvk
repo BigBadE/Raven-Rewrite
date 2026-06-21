@@ -1,0 +1,66 @@
+
+    def congrArg.{u, v} (A : Sort u) (B : Sort v) (f : A -> B) (a : A) (b : A) (h : Eq.{u} A a b)
+      : Eq.{v} B (f a) (f b) := Eq.subst.{u} A (fun (x : A) => Eq.{v} B (f a) (f x)) a b h (Eq.refl.{v} B (f a))
+
+    -- No-confusion: the VE / TC injections and the Ty constructors are distinct.
+    def veIsV (w : VE) : Prop := match w { | VE.injv(x) => True | VE.inje(y) => False }
+    def ve_nc (e : Env) (v : Val) (h : Eq.{1} VE (VE.inje e) (VE.injv v)) : False :=
+      Eq.subst.{1} VE veIsV (VE.injv v) (VE.inje e) (Eq.symm.{1} VE (VE.inje e) (VE.injv v) h) True.intro
+    def tyIsNat (t : Ty) : Prop := match t { | Ty.tnat => True | Ty.tarr(a, b) => False }
+    def ty_nc (a : Ty) (b : Ty) (h : Eq.{1} Ty (Ty.tarr a b) Ty.tnat) : False :=
+      Eq.subst.{1} Ty tyIsNat Ty.tnat (Ty.tarr a b) (Eq.symm.{1} Ty (Ty.tarr a b) Ty.tnat h) True.intro
+
+    -- Injectivity of the injections and of `tarr`, via projection + congrArg.
+    def unInjv (w : VE) (d : Val) : Val := match w { | VE.injv(x) => x | VE.inje(y) => d }
+    def injv_inj (a : Val) (b : Val) (h : Eq.{1} VE (VE.injv a) (VE.injv b)) : Eq.{1} Val a b :=
+      congrArg.{1, 1} VE Val (fun (w : VE) => unInjv w a) (VE.injv a) (VE.injv b) h
+    def unInjt (w : TC) (d : Ty) : Ty := match w { | TC.injt(x) => x | TC.injc(y) => d }
+    def injt_inj (a : Ty) (b : Ty) (h : Eq.{1} TC (TC.injt a) (TC.injt b)) : Eq.{1} Ty a b :=
+      congrArg.{1, 1} TC Ty (fun (w : TC) => unInjt w a) (TC.injt a) (TC.injt b) h
+    def tarrDom (t : Ty) (d : Ty) : Ty := match t { | Ty.tnat => d | Ty.tarr(a, b) => a }
+    def tarrCod (t : Ty) (d : Ty) : Ty := match t { | Ty.tnat => d | Ty.tarr(a, b) => b }
+    def tarr_inj_dom (a : Ty) (b : Ty) (c : Ty) (d : Ty) (h : Eq.{1} Ty (Ty.tarr a b) (Ty.tarr c d)) : Eq.{1} Ty a c :=
+      congrArg.{1, 1} Ty Ty (fun (t : Ty) => tarrDom t a) (Ty.tarr a b) (Ty.tarr c d) h
+    def tarr_inj_cod (a : Ty) (b : Ty) (c : Ty) (d : Ty) (h : Eq.{1} Ty (Ty.tarr a b) (Ty.tarr c d)) : Eq.{1} Ty b d :=
+      congrArg.{1, 1} Ty Ty (fun (t : Ty) => tarrCod t b) (Ty.tarr a b) (Ty.tarr c d) h
+
+    -- Canonical-form packages (indexed by the value directly).
+    inductive NatInv : Val -> Prop | mkN : (n : Nat) -> NatInv (Val.vnat n)
+    inductive ClosInv : Val -> Ty -> Ty -> Prop
+      | mkC : (cenv : Env) -> (G : Ctx) -> (body : Tm) -> (C : Ty) -> (D : Ty)
+                -> HasTyE cenv G -> HasTy (Ctx.ccons C G) body D -> ClosInv (Val.vclos cenv body) C D
+
+    -- A well-typed value of type `tnat` is a `vnat`.
+    def hvNat (ve : VE) (tc : TC) (h : HasTyVE ve tc)
+      : (v : Val) -> Eq.{1} VE ve (VE.injv v) -> Eq.{1} TC tc (TC.injt Ty.tnat) -> NatInv v :=
+      match h {
+        | HasTyVE.vtnat(n) => fun (v : Val) (ev : Eq.{1} VE (VE.injv (Val.vnat n)) (VE.injv v)) (et : Eq.{1} TC (TC.injt Ty.tnat) (TC.injt Ty.tnat)) =>
+            Eq.subst.{1} Val NatInv (Val.vnat n) v (injv_inj (Val.vnat n) v ev) (NatInv.mkN n)
+        | HasTyVE.vtclos(env, G, b, A, B, he, hb) => fun (v : Val) (ev : Eq.{1} VE (VE.injv (Val.vclos env b)) (VE.injv v)) (et : Eq.{1} TC (TC.injt (Ty.tarr A B)) (TC.injt Ty.tnat)) =>
+            False.rec.{0} (fun (_ : False) => NatInv v) (ty_nc A B (injt_inj (Ty.tarr A B) Ty.tnat et))
+        | HasTyVE.etnil => fun (v : Val) (ev : Eq.{1} VE (VE.inje Env.enil) (VE.injv v)) (et : Eq.{1} TC (TC.injc Ctx.cnil) (TC.injt Ty.tnat)) =>
+            False.rec.{0} (fun (_ : False) => NatInv v) (ve_nc Env.enil v ev)
+        | HasTyVE.etcons(v2, A2, rest, G2, hv2, he2) => fun (v : Val) (ev : Eq.{1} VE (VE.inje (Env.econs v2 rest)) (VE.injv v)) (et : Eq.{1} TC (TC.injc (Ctx.ccons A2 G2)) (TC.injt Ty.tnat)) =>
+            False.rec.{0} (fun (_ : False) => NatInv v) (ve_nc (Env.econs v2 rest) v ev)
+      }
+    def canonNat (v : Val) (h : HasTyV v Ty.tnat) : NatInv v :=
+      hvNat (VE.injv v) (TC.injt Ty.tnat) h v (Eq.refl.{1} VE (VE.injv v)) (Eq.refl.{1} TC (TC.injt Ty.tnat))
+
+    -- A well-typed value of type `tarr C D` is a closure with a well-typed env and body.
+    def hvArr (ve : VE) (tc : TC) (h : HasTyVE ve tc)
+      : (v : Val) -> (C : Ty) -> (D : Ty) -> Eq.{1} VE ve (VE.injv v) -> Eq.{1} TC tc (TC.injt (Ty.tarr C D)) -> ClosInv v C D :=
+      match h {
+        | HasTyVE.vtnat(n) => fun (v : Val) (C : Ty) (D : Ty) (ev : Eq.{1} VE (VE.injv (Val.vnat n)) (VE.injv v)) (et : Eq.{1} TC (TC.injt Ty.tnat) (TC.injt (Ty.tarr C D))) =>
+            False.rec.{0} (fun (_ : False) => ClosInv v C D) (ty_nc C D (Eq.symm.{1} Ty Ty.tnat (Ty.tarr C D) (injt_inj Ty.tnat (Ty.tarr C D) et)))
+        | HasTyVE.vtclos(env, G, b, A, B, he, hb) => fun (v : Val) (C : Ty) (D : Ty) (ev : Eq.{1} VE (VE.injv (Val.vclos env b)) (VE.injv v)) (et : Eq.{1} TC (TC.injt (Ty.tarr A B)) (TC.injt (Ty.tarr C D))) =>
+            Eq.subst.{1} Val (fun (w : Val) => ClosInv w C D) (Val.vclos env b) v (injv_inj (Val.vclos env b) v ev)
+              (Eq.subst.{1} Ty (fun (cc : Ty) => ClosInv (Val.vclos env b) cc D) A C (tarr_inj_dom A B C D (injt_inj (Ty.tarr A B) (Ty.tarr C D) et))
+                (Eq.subst.{1} Ty (fun (dd : Ty) => ClosInv (Val.vclos env b) A dd) B D (tarr_inj_cod A B C D (injt_inj (Ty.tarr A B) (Ty.tarr C D) et))
+                  (ClosInv.mkC env G b A B he hb)))
+        | HasTyVE.etnil => fun (v : Val) (C : Ty) (D : Ty) (ev : Eq.{1} VE (VE.inje Env.enil) (VE.injv v)) (et : Eq.{1} TC (TC.injc Ctx.cnil) (TC.injt (Ty.tarr C D))) =>
+            False.rec.{0} (fun (_ : False) => ClosInv v C D) (ve_nc Env.enil v ev)
+        | HasTyVE.etcons(v2, A2, rest, G2, hv2, he2) => fun (v : Val) (C : Ty) (D : Ty) (ev : Eq.{1} VE (VE.inje (Env.econs v2 rest)) (VE.injv v)) (et : Eq.{1} TC (TC.injc (Ctx.ccons A2 G2)) (TC.injt (Ty.tarr C D))) =>
+            False.rec.{0} (fun (_ : False) => ClosInv v C D) (ve_nc (Env.econs v2 rest) v ev)
+      }
+    def canonArr (v : Val) (C : Ty) (D : Ty) (h : HasTyV v (Ty.tarr C D)) : ClosInv v C D :=
+      hvArr (VE.injv v) (TC.injt (Ty.tarr C D)) h v C D (Eq.refl.{1} VE (VE.injv v)) (Eq.refl.{1} TC (TC.injt (Ty.tarr C D)))

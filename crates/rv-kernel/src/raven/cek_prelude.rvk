@@ -1,0 +1,30 @@
+
+    -- Logic.
+    inductive True  : Prop | intro : True
+    inductive False : Prop
+    inductive Eq.{u} (A : Sort u) (a : A) : A -> Prop | refl : Eq A a a
+    def Eq.subst.{u} (A : Sort u) (P : A -> Prop) (a : A) (b : A) (h : Eq A a b) (pa : P a)
+      : P b := Eq.rec.{u, 0} A a (fun (x : A) (p : Eq A a x) => P x) pa b h
+    def Eq.symm.{u} (A : Sort u) (a : A) (b : A) (h : Eq A a b) : Eq A b a :=
+      Eq.rec.{u, 0} A a (fun (x : A) (p : Eq A a x) => Eq A x a) (Eq.refl.{u} A a) b h
+    def Eq.trans.{u} (A : Sort u) (a : A) (b : A) (c : A) (h1 : Eq A a b) (h2 : Eq A b c)
+      : Eq A a c := Eq.subst.{u} A (fun (x : A) => Eq A a x) b c h2 h1
+
+    inductive Bool : Type | false : Bool | true : Bool
+    inductive Nat : Type | zero : Nat | succ : Nat -> Nat
+    fn addN(m: Nat) -> (Nat -> Nat) {
+        match m { | Nat.zero => fun (n : Nat) => n | Nat.succ(k) => fun (n : Nat) => Nat.succ(addN(k)(n)) }
+    }
+
+    -- The focused core language (de Bruijn variables; only `lam` binds). The last two
+    -- constructors are the **algebraic effects** layer: `op` performs an operation with a
+    -- payload, and `handle body h` runs `body` under the handler `h : payload -> resume -> r`.
+    inductive Tm : Type
+      | var : Nat -> Tm
+      | lit : Nat -> Tm
+      | lam : Tm -> Tm                -- λ. body          (body refers to the parameter as var 0)
+      | app : Tm -> Tm -> Tm
+      | add : Tm -> Tm -> Tm
+      | ifz : Tm -> Tm -> Tm -> Tm    -- ifz s then else  (branch on whether s evaluates to zero)
+      | op  : Tm -> Tm                -- perform an operation carrying the payload term
+      | handle : Tm -> Tm -> Tm       -- handle body with handler `h : payload -> resume -> r`

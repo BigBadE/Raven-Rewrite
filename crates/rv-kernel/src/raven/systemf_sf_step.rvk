@@ -1,0 +1,46 @@
+
+    -- Nat equality reflexivity (eqNat n n = true) for the tag no-confusion.
+    fn eqNat_refl(n: Nat) -> Eq.{1} Bool (eqNat(n)(n)) Bool.true {
+        match n { | Nat.zero => Eq.refl.{1} Bool Bool.true | Nat.succ(k) => k.rec }
+    }
+    -- A constructor tag + reflexivity give a generic no-confusion: distinct heads are unequal.
+    fn expTag(e: FExp) -> Nat {
+        match e {
+          | FExp.evar(n)     => Nat.zero
+          | FExp.enat(n)     => Nat.succ(Nat.zero)
+          | FExp.elam(A, b)  => Nat.succ(Nat.succ(Nat.zero))
+          | FExp.eapp(f, a)  => Nat.succ(Nat.succ(Nat.succ(Nat.zero)))
+          | FExp.etlam(b)    => Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.zero))))
+          | FExp.etapp(f, T) => Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.zero)))))
+        }
+    }
+    def exp_noconf (e1 : FExp) (e2 : FExp)
+        (htag : Eq.{1} Bool (eqNat(expTag(e1))(expTag(e2))) Bool.false)
+        (heq : Eq.{1} FExp e1 e2) : False :=
+      ff_ne_tt (Eq.trans.{1} Bool Bool.false (eqNat(expTag(e1))(expTag(e2))) Bool.true
+                  (Eq.symm.{1} Bool (eqNat(expTag(e1))(expTag(e2))) Bool.false htag)
+                  (Eq.subst.{1} Nat (fun (t : Nat) => Eq.{1} Bool (eqNat(expTag(e1))(t)) Bool.true)
+                     (expTag(e1)) (expTag(e2))
+                     (Eq.subst.{1} FExp (fun (x : FExp) => Eq.{1} Nat (expTag(e1)) (expTag(x))) e1 e2 heq (Eq.refl.{1} Nat (expTag(e1))))
+                     (eqNat_refl (expTag(e1)))))
+
+    -- Argument projections (junk catch-alls) + their injectivity.
+    fn appFof(e: FExp) -> FExp { match e { | FExp.eapp(f, a) => f | FExp.evar(n) => e | FExp.enat(n) => e | FExp.elam(A, b) => e | FExp.etlam(b) => e | FExp.etapp(f, T) => e } }
+    fn appAof(e: FExp) -> FExp { match e { | FExp.eapp(f, a) => a | FExp.evar(n) => e | FExp.enat(n) => e | FExp.elam(A, b) => e | FExp.etlam(b) => e | FExp.etapp(f, T) => e } }
+    fn lamTyOf(e: FExp) -> FTy { match e { | FExp.elam(A, b) => A | FExp.evar(n) => FTy.tnat | FExp.enat(n) => FTy.tnat | FExp.eapp(f, a) => FTy.tnat | FExp.etlam(b) => FTy.tnat | FExp.etapp(f, T) => FTy.tnat } }
+    fn lamBodyOf(e: FExp) -> FExp { match e { | FExp.elam(A, b) => b | FExp.evar(n) => e | FExp.enat(n) => e | FExp.eapp(f, a) => e | FExp.etlam(b) => e | FExp.etapp(f, T) => e } }
+    fn tlamBodyOf(e: FExp) -> FExp { match e { | FExp.etlam(b) => b | FExp.evar(n) => e | FExp.enat(n) => e | FExp.elam(A, b) => e | FExp.eapp(f, a) => e | FExp.etapp(f, T) => e } }
+    fn tappFof(e: FExp) -> FExp { match e { | FExp.etapp(f, T) => f | FExp.evar(n) => e | FExp.enat(n) => e | FExp.elam(A, b) => e | FExp.eapp(f, a) => e | FExp.etlam(b) => e } }
+    fn tappTyOf(e: FExp) -> FTy { match e { | FExp.etapp(f, T) => T | FExp.evar(n) => FTy.tnat | FExp.enat(n) => FTy.tnat | FExp.elam(A, b) => FTy.tnat | FExp.eapp(f, a) => FTy.tnat | FExp.etlam(b) => FTy.tnat } }
+    def eproj_inj (proj : FExp -> FExp) (x : FExp) (y : FExp) (h : Eq.{1} FExp x y) : Eq.{1} FExp (proj x) (proj y) :=
+      Eq.subst.{1} FExp (fun (z : FExp) => Eq.{1} FExp (proj x) (proj z)) x y h (Eq.refl.{1} FExp (proj x))
+    def etproj_inj (proj : FExp -> FTy) (x : FExp) (y : FExp) (h : Eq.{1} FExp x y) : Eq.{1} FTy (proj x) (proj y) :=
+      Eq.subst.{1} FExp (fun (z : FExp) => Eq.{1} FTy (proj x) (proj z)) x y h (Eq.refl.{1} FTy (proj x))
+
+    -- The small-step relation (CBV; mirrors the executable `step`).
+    inductive Step : FExp -> FExp -> Prop
+      | s_app_l  : (f : FExp) -> (f2 : FExp) -> (a : FExp) -> Step f f2 -> Step (FExp.eapp f a) (FExp.eapp f2 a)
+      | s_app_r  : (f : FExp) -> (a : FExp) -> (a2 : FExp) -> Step a a2 -> Step (FExp.eapp f a) (FExp.eapp f a2)
+      | s_beta   : (A : FTy) -> (b : FExp) -> (v : FExp) -> Step (FExp.eapp (FExp.elam A b) v) (esubstTm b Nat.zero v)
+      | s_tapp   : (f : FExp) -> (f2 : FExp) -> (T : FTy) -> Step f f2 -> Step (FExp.etapp f T) (FExp.etapp f2 T)
+      | s_ttbeta : (b : FExp) -> (T : FTy) -> Step (FExp.etapp (FExp.etlam b) T) (esubstTy b Nat.zero T)

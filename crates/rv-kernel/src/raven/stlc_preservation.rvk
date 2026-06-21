@@ -1,0 +1,891 @@
+
+    -- Insert type `B` at de Bruijn position `k` in the context.
+    fn insertCtx(k: Nat) -> (Ty -> Ctx -> Ctx) {
+        match k {
+          | Nat.zero    => fun (B : Ty) (G : Ctx) => Ctx.cons B G
+          | Nat.succ(k2) => fun (B : Ty) (G : Ctx) =>
+              match G { | Ctx.nil => Ctx.cons B Ctx.nil | Ctx.cons(T, G2) => Ctx.cons T (insertCtx(k2)(B)(G2)) }
+        }
+    }
+
+    -- Lookup weakening: inserting a binding shifts every existing lookup index.
+    fn lookup_weaken(G: Ctx, n: Nat, T: Ty, lk: Lookup G n T)
+      -> ((k : Nat) -> (B : Ty) -> Lookup (insertCtx(k)(B)(G)) (shiftIdx(k)(n)) T) {
+        match lk {
+          | Lookup.here(T0, G0) => fun (k : Nat) (B : Ty) =>
+              match k {
+                | Nat.zero    => Lookup.there T0 B (Ctx.cons T0 G0) Nat.zero (Lookup.here T0 G0)
+                | Nat.succ(k2) => Lookup.here T0 (insertCtx(k2)(B)(G0))
+              }
+          | Lookup.there(T0, U0, G0, n0, lk0) => fun (k : Nat) (B : Ty) =>
+              match k {
+                | Nat.zero    => Lookup.there T0 B (Ctx.cons U0 G0) (Nat.succ n0) (Lookup.there T0 U0 G0 n0 lk0)
+                | Nat.succ(k2) => Lookup.there T0 U0 (insertCtx(k2)(B)(G0)) (shiftIdx(k2)(n0)) (lk0.rec k2 B)
+              }
+        }
+    }
+
+    -- Typing weakening: inserting a binding anywhere preserves typing (with the term
+    -- shifted to match). By induction on the typing derivation; the variable case uses
+    -- `lookup_weaken`, the binders increment the insertion point.
+    fn HasTy_weaken(G: Ctx, e: Exp, T: Ty, d: HasTy G e T)
+      -> ((k : Nat) -> (A : Ty) -> HasTy (insertCtx(k)(A)(G)) (shift(e)(k)) T) {
+        match d {
+          | HasTy.tvar(G2, n2, T2, lk2) => fun (k : Nat) (A : Ty) =>
+              HasTy.tvar (insertCtx(k)(A)(G2)) (shiftIdx(k)(n2)) T2 (lookup_weaken G2 n2 T2 lk2 k A)
+          | HasTy.tnat(G2, n2) => fun (k : Nat) (A : Ty) => HasTy.tnat (insertCtx(k)(A)(G2)) n2
+          | HasTy.tbool(G2, b2) => fun (k : Nat) (A : Ty) => HasTy.tbool (insertCtx(k)(A)(G2)) b2
+          | HasTy.tadd(G2, a2, b2, da, db) => fun (k : Nat) (A : Ty) =>
+              HasTy.tadd (insertCtx(k)(A)(G2)) (shift(a2)(k)) (shift(b2)(k)) (da.rec k A) (db.rec k A)
+          | HasTy.tlet(G2, a2, body2, A2, B2, da, dbody) => fun (k : Nat) (A : Ty) =>
+              HasTy.tlet (insertCtx(k)(A)(G2)) (shift(a2)(k)) (shift(body2)(Nat.succ(k))) A2 B2
+                (da.rec k A) (dbody.rec (Nat.succ(k)) A)
+          | HasTy.tlam(G2, A2, body2, B2, dbody) => fun (k : Nat) (A : Ty) =>
+              HasTy.tlam (insertCtx(k)(A)(G2)) A2 (shift(body2)(Nat.succ(k))) B2 (dbody.rec (Nat.succ(k)) A)
+          | HasTy.tapp(G2, f2, a2, A2, B2, df, da) => fun (k : Nat) (A : Ty) =>
+              HasTy.tapp (insertCtx(k)(A)(G2)) (shift(f2)(k)) (shift(a2)(k)) A2 B2 (df.rec k A) (da.rec k A)
+          | HasTy.tif(G2, cnd2, thn2, els2, T2, dc, dt, de) => fun (k : Nat) (A : Ty) =>
+              HasTy.tif (insertCtx(k)(A)(G2)) (shift(cnd2)(k)) (shift(thn2)(k)) (shift(els2)(k)) T2
+                (dc.rec k A) (dt.rec k A) (de.rec k A)
+          | HasTy.tfix(G2, A2, body2, dbody) => fun (k : Nat) (A : Ty) =>
+              HasTy.tfix (insertCtx(k)(A)(G2)) A2 (shift(body2)(Nat.succ(k))) (dbody.rec (Nat.succ(k)) A)
+          | HasTy.tpair(G2, a2, b2, A2, B2, da, db) => fun (k : Nat) (A : Ty) =>
+              HasTy.tpair (insertCtx(k)(A)(G2)) (shift(a2)(k)) (shift(b2)(k)) A2 B2 (da.rec k A) (db.rec k A)
+          | HasTy.tfst(G2, p2, A2, B2, dp) => fun (k : Nat) (A : Ty) =>
+              HasTy.tfst (insertCtx(k)(A)(G2)) (shift(p2)(k)) A2 B2 (dp.rec k A)
+          | HasTy.tsnd(G2, p2, A2, B2, dp) => fun (k : Nat) (A : Ty) =>
+              HasTy.tsnd (insertCtx(k)(A)(G2)) (shift(p2)(k)) A2 B2 (dp.rec k A)
+          | HasTy.tinl(G2, B2, v2, A2, dv) => fun (k : Nat) (A : Ty) =>
+              HasTy.tinl (insertCtx(k)(A)(G2)) B2 (shift(v2)(k)) A2 (dv.rec k A)
+          | HasTy.tinr(G2, A2, v2, B2, dv) => fun (k : Nat) (A : Ty) =>
+              HasTy.tinr (insertCtx(k)(A)(G2)) A2 (shift(v2)(k)) B2 (dv.rec k A)
+          | HasTy.tcase(G2, s2, l2, r2, A2, B2, C2, ds, dl, dr) => fun (k : Nat) (A : Ty) =>
+              HasTy.tcase (insertCtx(k)(A)(G2)) (shift(s2)(k)) (shift(l2)(Nat.succ(k))) (shift(r2)(Nat.succ(k))) A2 B2 C2
+                (ds.rec k A) (dl.rec (Nat.succ(k)) A) (dr.rec (Nat.succ(k)) A)
+        }
+    }
+
+    -- No-confusion / injectivity for Nat and Ctx (needed to invert lookups whose index is
+    -- concrete — done by matching over a VARIABLE index with the concreteness supplied as
+    -- equation hypotheses, then discharging impossible cases with these).
+    def isZeroP (n : Nat) : Prop := Nat.rec.{1} (fun (_ : Nat) => Prop) True (fun (_ : Nat) (_ : Prop) => False) n
+    def succ_ne_zero (n : Nat) (h : Eq.{1} Nat (Nat.succ n) Nat.zero) : False :=
+      Eq.subst.{1} Nat isZeroP Nat.zero (Nat.succ n) (Eq.symm.{1} Nat (Nat.succ n) Nat.zero h) True.intro
+    def succ_inj (n : Nat) (m : Nat) (h : Eq.{1} Nat (Nat.succ n) (Nat.succ m)) : Eq.{1} Nat n m :=
+      Eq.subst.{1} Nat (fun (x : Nat) => Eq.{1} Nat n (pred x)) (Nat.succ n) (Nat.succ m) h (Eq.refl.{1} Nat n)
+    def headTy (G : Ctx) : Ty := Ctx.rec.{1} (fun (_ : Ctx) => Ty) Ty.tnat (fun (T : Ty) (G2 : Ctx) (_ : Ty) => T) G
+    def tailCtx (G : Ctx) : Ctx := Ctx.rec.{1} (fun (_ : Ctx) => Ctx) Ctx.nil (fun (T : Ty) (G2 : Ctx) (_ : Ctx) => G2) G
+    def cons_inj_head (X : Ty) (Y : Ctx) (X2 : Ty) (Y2 : Ctx) (h : Eq.{1} Ctx (Ctx.cons X Y) (Ctx.cons X2 Y2)) : Eq.{1} Ty X X2 :=
+      Eq.subst.{1} Ctx (fun (G : Ctx) => Eq.{1} Ty X (headTy G)) (Ctx.cons X Y) (Ctx.cons X2 Y2) h (Eq.refl.{1} Ty X)
+    def cons_inj_tail (X : Ty) (Y : Ctx) (X2 : Ty) (Y2 : Ctx) (h : Eq.{1} Ctx (Ctx.cons X Y) (Ctx.cons X2 Y2)) : Eq.{1} Ctx Y Y2 :=
+      Eq.subst.{1} Ctx (fun (G : Ctx) => Eq.{1} Ctx Y (tailCtx G)) (Ctx.cons X Y) (Ctx.cons X2 Y2) h (Eq.refl.{1} Ctx Y)
+
+    -- Lookup inversions: at index 0 the type is the head; at index succ m it is a lookup
+    -- in the tail. Proved by matching the derivation over variable indices with the
+    -- concreteness as equation hypotheses (impossible cases via succ_ne_zero).
+    fn lookup_zero_inv(Gc: Ctx, n: Nat, U: Ty, lk: Lookup Gc n U)
+      -> ((A : Ty) -> (G0 : Ctx) -> Eq.{1} Ctx Gc (Ctx.cons A G0) -> Eq.{1} Nat n Nat.zero -> Eq.{1} Ty U A) {
+        match lk {
+          | Lookup.here(T0, G00) => fun (A : Ty) (G0 : Ctx) (hG : Eq.{1} Ctx (Ctx.cons T0 G00) (Ctx.cons A G0)) (hn : Eq.{1} Nat Nat.zero Nat.zero) =>
+              cons_inj_head T0 G00 A G0 hG
+          | Lookup.there(T0, U0, G00, n0, lk0) => fun (A : Ty) (G0 : Ctx) (hG : Eq.{1} Ctx (Ctx.cons U0 G00) (Ctx.cons A G0)) (hn : Eq.{1} Nat (Nat.succ n0) Nat.zero) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Ty T0 A) (succ_ne_zero n0 hn)
+        }
+    }
+    fn lookup_succ_inv(Gc: Ctx, n: Nat, U: Ty, lk: Lookup Gc n U)
+      -> ((A : Ty) -> (G0 : Ctx) -> (m : Nat) -> Eq.{1} Ctx Gc (Ctx.cons A G0) -> Eq.{1} Nat n (Nat.succ m) -> Lookup G0 m U) {
+        match lk {
+          | Lookup.here(T0, G00) => fun (A : Ty) (G0 : Ctx) (m : Nat) (hG : Eq.{1} Ctx (Ctx.cons T0 G00) (Ctx.cons A G0)) (hn : Eq.{1} Nat Nat.zero (Nat.succ m)) =>
+              False.rec.{0} (fun (_ : False) => Lookup G0 m T0) (succ_ne_zero m (Eq.symm.{1} Nat Nat.zero (Nat.succ m) hn))
+          | Lookup.there(T0, U0, G00, n0, lk0) => fun (A : Ty) (G0 : Ctx) (m : Nat) (hG : Eq.{1} Ctx (Ctx.cons U0 G00) (Ctx.cons A G0)) (hn : Eq.{1} Nat (Nat.succ n0) (Nat.succ m)) =>
+              Eq.subst.{1} Nat (fun (x : Nat) => Lookup G0 x T0) n0 m (succ_inj n0 m hn)
+                (Eq.subst.{1} Ctx (fun (g : Ctx) => Lookup g n0 T0) G00 G0 (cons_inj_tail U0 G00 A G0 hG) lk0)
+        }
+    }
+
+    -- Lifting a substitution preserves the "respects" relation: if σ maps G's lookups to
+    -- well-typed terms in G', then liftSub σ maps (cons A G)'s lookups into (cons A G').
+    -- The variable-0 case is the new binding; deeper variables go through σ + weakening.
+    def liftSub_respects (A : Ty) (G : Ctx) (G' : Ctx) (s : Nat -> Exp)
+        (resp : (n : Nat) -> (U : Ty) -> Lookup G n U -> HasTy G' (s n) U)
+        (n : Nat) (U : Ty) : Lookup (Ctx.cons A G) n U -> HasTy (Ctx.cons A G') (liftSub(s)(n)) U :=
+      match n {
+        | Nat.zero => fun (lk : Lookup (Ctx.cons A G) Nat.zero U) =>
+            Eq.subst.{1} Ty (fun (x : Ty) => HasTy (Ctx.cons A G') (Exp.evar(Nat.zero)) x) A U
+              (Eq.symm.{1} Ty U A (lookup_zero_inv (Ctx.cons A G) Nat.zero U lk A G (Eq.refl.{1} Ctx (Ctx.cons A G)) (Eq.refl.{1} Nat Nat.zero)))
+              (HasTy.tvar (Ctx.cons A G') Nat.zero A (Lookup.here A G'))
+        | Nat.succ(m) => fun (lk : Lookup (Ctx.cons A G) (Nat.succ m) U) =>
+            HasTy_weaken G' (s m) U
+              (resp m U (lookup_succ_inv (Ctx.cons A G) (Nat.succ m) U lk A G m (Eq.refl.{1} Ctx (Ctx.cons A G)) (Eq.refl.{1} Nat (Nat.succ m))))
+              Nat.zero A
+      }
+
+    -- THE SUBSTITUTION LEMMA (parallel form): a well-typed term stays well-typed under any
+    -- substitution that maps the context's variables to well-typed terms in a target
+    -- context. By induction on the typing derivation; binders extend the substitution with
+    -- `liftSub` (typed by `liftSub_respects`). This is stated over the ORIGINAL context, so
+    -- the variable case is just the "respects" hypothesis — no context-splice inversion.
+    fn subst_lemma(G: Ctx, e: Exp, T: Ty, d: HasTy G e T)
+      -> ((G2 : Ctx) -> (s : Nat -> Exp)
+            -> ((n : Nat) -> (U : Ty) -> Lookup G n U -> HasTy G2 (s n) U)
+            -> HasTy G2 (applySub(e)(s)) T) {
+        match d {
+          | HasTy.tvar(Gv, n2, T2, lk2) => fun (G2 : Ctx) (s : Nat -> Exp)
+                (resp : (n : Nat) -> (U : Ty) -> Lookup Gv n U -> HasTy G2 (s n) U) =>
+              resp n2 T2 lk2
+          | HasTy.tnat(Gv, n2) => fun (G2 : Ctx) (s : Nat -> Exp)
+                (resp : (n : Nat) -> (U : Ty) -> Lookup Gv n U -> HasTy G2 (s n) U) =>
+              HasTy.tnat G2 n2
+          | HasTy.tbool(Gv, b2) => fun (G2 : Ctx) (s : Nat -> Exp)
+                (resp : (n : Nat) -> (U : Ty) -> Lookup Gv n U -> HasTy G2 (s n) U) =>
+              HasTy.tbool G2 b2
+          | HasTy.tadd(Gv, a2, b2, da, db) => fun (G2 : Ctx) (s : Nat -> Exp)
+                (resp : (n : Nat) -> (U : Ty) -> Lookup Gv n U -> HasTy G2 (s n) U) =>
+              HasTy.tadd G2 (applySub(a2)(s)) (applySub(b2)(s)) (da.rec G2 s resp) (db.rec G2 s resp)
+          | HasTy.tlet(Gv, a2, body2, A2, B2, da, dbody) => fun (G2 : Ctx) (s : Nat -> Exp)
+                (resp : (n : Nat) -> (U : Ty) -> Lookup Gv n U -> HasTy G2 (s n) U) =>
+              HasTy.tlet G2 (applySub(a2)(s)) (applySub(body2)(liftSub(s))) A2 B2
+                (da.rec G2 s resp)
+                (dbody.rec (Ctx.cons A2 G2) (liftSub(s)) (liftSub_respects A2 Gv G2 s resp))
+          | HasTy.tlam(Gv, A2, body2, B2, dbody) => fun (G2 : Ctx) (s : Nat -> Exp)
+                (resp : (n : Nat) -> (U : Ty) -> Lookup Gv n U -> HasTy G2 (s n) U) =>
+              HasTy.tlam G2 A2 (applySub(body2)(liftSub(s))) B2
+                (dbody.rec (Ctx.cons A2 G2) (liftSub(s)) (liftSub_respects A2 Gv G2 s resp))
+          | HasTy.tapp(Gv, f2, a2, A2, B2, df, da) => fun (G2 : Ctx) (s : Nat -> Exp)
+                (resp : (n : Nat) -> (U : Ty) -> Lookup Gv n U -> HasTy G2 (s n) U) =>
+              HasTy.tapp G2 (applySub(f2)(s)) (applySub(a2)(s)) A2 B2 (df.rec G2 s resp) (da.rec G2 s resp)
+          | HasTy.tif(Gv, cnd2, thn2, els2, T2, dc, dt, de) => fun (G2 : Ctx) (s : Nat -> Exp)
+                (resp : (n : Nat) -> (U : Ty) -> Lookup Gv n U -> HasTy G2 (s n) U) =>
+              HasTy.tif G2 (applySub(cnd2)(s)) (applySub(thn2)(s)) (applySub(els2)(s)) T2
+                (dc.rec G2 s resp) (dt.rec G2 s resp) (de.rec G2 s resp)
+          | HasTy.tfix(Gv, A2, body2, dbody) => fun (G2 : Ctx) (s : Nat -> Exp)
+                (resp : (n : Nat) -> (U : Ty) -> Lookup Gv n U -> HasTy G2 (s n) U) =>
+              HasTy.tfix G2 A2 (applySub(body2)(liftSub(s)))
+                (dbody.rec (Ctx.cons A2 G2) (liftSub(s)) (liftSub_respects A2 Gv G2 s resp))
+          | HasTy.tpair(Gv, a2, b2, A2, B2, da, db) => fun (G2 : Ctx) (s : Nat -> Exp)
+                (resp : (n : Nat) -> (U : Ty) -> Lookup Gv n U -> HasTy G2 (s n) U) =>
+              HasTy.tpair G2 (applySub(a2)(s)) (applySub(b2)(s)) A2 B2 (da.rec G2 s resp) (db.rec G2 s resp)
+          | HasTy.tfst(Gv, p2, A2, B2, dp) => fun (G2 : Ctx) (s : Nat -> Exp)
+                (resp : (n : Nat) -> (U : Ty) -> Lookup Gv n U -> HasTy G2 (s n) U) =>
+              HasTy.tfst G2 (applySub(p2)(s)) A2 B2 (dp.rec G2 s resp)
+          | HasTy.tsnd(Gv, p2, A2, B2, dp) => fun (G2 : Ctx) (s : Nat -> Exp)
+                (resp : (n : Nat) -> (U : Ty) -> Lookup Gv n U -> HasTy G2 (s n) U) =>
+              HasTy.tsnd G2 (applySub(p2)(s)) A2 B2 (dp.rec G2 s resp)
+          | HasTy.tinl(Gv, B2, v2, A2, dv) => fun (G2 : Ctx) (s : Nat -> Exp)
+                (resp : (n : Nat) -> (U : Ty) -> Lookup Gv n U -> HasTy G2 (s n) U) =>
+              HasTy.tinl G2 B2 (applySub(v2)(s)) A2 (dv.rec G2 s resp)
+          | HasTy.tinr(Gv, A2, v2, B2, dv) => fun (G2 : Ctx) (s : Nat -> Exp)
+                (resp : (n : Nat) -> (U : Ty) -> Lookup Gv n U -> HasTy G2 (s n) U) =>
+              HasTy.tinr G2 A2 (applySub(v2)(s)) B2 (dv.rec G2 s resp)
+          | HasTy.tcase(Gv, s2, l2, r2, A2, B2, C2, ds, dl, dr) => fun (G2 : Ctx) (s : Nat -> Exp)
+                (resp : (n : Nat) -> (U : Ty) -> Lookup Gv n U -> HasTy G2 (s n) U) =>
+              HasTy.tcase G2 (applySub(s2)(s)) (applySub(l2)(liftSub(s))) (applySub(r2)(liftSub(s))) A2 B2 C2
+                (ds.rec G2 s resp)
+                (dl.rec (Ctx.cons A2 G2) (liftSub(s)) (liftSub_respects A2 Gv G2 s resp))
+                (dr.rec (Ctx.cons B2 G2) (liftSub(s)) (liftSub_respects B2 Gv G2 s resp))
+        }
+    }
+
+    -- The single-substitution assignment `atSubj 0 v` respects (cons A G) ⇝ G when v : A.
+    def atSub0_respects (A : Ty) (G : Ctx) (v : Exp) (dv : HasTy G v A)
+        (n : Nat) (U : Ty) : Lookup (Ctx.cons A G) n U -> HasTy G (atSubj(Nat.zero)(v)(n)) U :=
+      match n {
+        | Nat.zero => fun (lk : Lookup (Ctx.cons A G) Nat.zero U) =>
+            Eq.subst.{1} Ty (fun (x : Ty) => HasTy G v x) A U
+              (Eq.symm.{1} Ty U A (lookup_zero_inv (Ctx.cons A G) Nat.zero U lk A G (Eq.refl.{1} Ctx (Ctx.cons A G)) (Eq.refl.{1} Nat Nat.zero)))
+              dv
+        | Nat.succ(m) => fun (lk : Lookup (Ctx.cons A G) (Nat.succ m) U) =>
+            HasTy.tvar G m U (lookup_succ_inv (Ctx.cons A G) (Nat.succ m) U lk A G m (Eq.refl.{1} Ctx (Ctx.cons A G)) (Eq.refl.{1} Nat (Nat.succ m)))
+      }
+
+    -- **Substitution preserves typing** (the β/let case of preservation): substituting a
+    -- value `v : A` for the most-recent binding in a well-typed `body : T` yields a
+    -- well-typed term. A direct instance of the substitution lemma.
+    def subst_preserves (A : Ty) (G : Ctx) (body : Exp) (T : Ty) (v : Exp)
+        (dbody : HasTy (Ctx.cons A G) body T) (dv : HasTy G v A)
+        : HasTy G (subst(body)(Nat.zero)(v)) T :=
+      subst_lemma (Ctx.cons A G) body T dbody G (atSubj(Nat.zero)(v)) (atSub0_respects A G v dv)
+
+    -- ===== Inversion scaffolding for the preservation theorem =====
+    -- A constructor tag for Exp + reflexivity of nat equality give a single generic
+    -- no-confusion principle (distinct head constructors are unequal), avoiding a
+    -- per-constructor discriminator.
+    fn expTag(e: Exp) -> Nat {
+        match e {
+          | Exp.evar(n)  => Nat.zero
+          | Exp.enat(n)  => Nat.succ(Nat.zero)
+          | Exp.ebool(b) => Nat.succ(Nat.succ(Nat.zero))
+          | Exp.eadd(a, b) => Nat.succ(Nat.succ(Nat.succ(Nat.zero)))
+          | Exp.elet(a, b) => Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.zero))))
+          | Exp.elam(A, b) => Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.zero)))))
+          | Exp.eapp(f, a) => Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.zero))))))
+          | Exp.eif(c, t, el) => Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.zero)))))))
+          | Exp.efix(A, b) => Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.zero))))))))
+          | Exp.epair(a, b) => Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.zero)))))))))
+          | Exp.efst(p) => Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.zero))))))))))
+          | Exp.esnd(p) => Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.zero)))))))))))
+          | Exp.einl(B, v) => Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.zero))))))))))))
+          | Exp.einr(A, v) => Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.zero)))))))))))))
+          | Exp.ecase(s, l, r) => Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.zero))))))))))))))
+        }
+    }
+    fn nat_eqb_refl(n: Nat) -> Eq.{1} Bool (nat_eqb(n)(n)) Bool.true {
+        match n { | Nat.zero => Eq.refl.{1} Bool Bool.true | Nat.succ(k) => k.rec }
+    }
+    -- Distinct-tag terms are unequal: from `e1 = e2` we'd get equal tags, but the tags'
+    -- `nat_eqb` is `false` (computed), contradicting reflexivity.
+    def exp_noconf (e1 : Exp) (e2 : Exp)
+        (htag : Eq.{1} Bool (nat_eqb(expTag(e1))(expTag(e2))) Bool.false)
+        (heq : Eq.{1} Exp e1 e2) : False :=
+      ff_ne_tt (Eq.trans.{1} Bool Bool.false (nat_eqb(expTag(e1))(expTag(e2))) Bool.true
+                  (Eq.symm.{1} Bool (nat_eqb(expTag(e1))(expTag(e2))) Bool.false htag)
+                  (Eq.subst.{1} Nat (fun (t : Nat) => Eq.{1} Bool (nat_eqb(expTag(e1))(t)) Bool.true)
+                     (expTag(e1)) (expTag(e2))
+                     (Eq.subst.{1} Exp (fun (x : Exp) => Eq.{1} Nat (expTag(e1)) (expTag(x))) e1 e2 heq (Eq.refl.{1} Nat (expTag(e1))))
+                     (nat_eqb_refl (expTag(e1)))))
+
+    -- OExp no-confusion + injection (for relating `step` outputs to reducts later).
+    def isNoneP (o : OExp) : Prop := OExp.rec.{1} (fun (_ : OExp) => Prop) True (fun (_ : Exp) => False) o
+    def osome_ne_onone (e : Exp) (h : Eq.{1} OExp (OExp.osome e) OExp.onone) : False :=
+      Eq.subst.{1} OExp isNoneP OExp.onone (OExp.osome e) (Eq.symm.{1} OExp (OExp.osome e) OExp.onone h) True.intro
+    fn osomeOf(o: OExp) -> Exp { match o { | OExp.osome(e) => e | _ => Exp.enat(Nat.zero) } }
+    def osome_inj (x : Exp) (y : Exp) (h : Eq.{1} OExp (OExp.osome x) (OExp.osome y)) : Eq.{1} Exp x y :=
+      Eq.subst.{1} OExp (fun (o : OExp) => Eq.{1} Exp x (osomeOf o)) (OExp.osome x) (OExp.osome y) h (Eq.refl.{1} Exp x)
+
+    -- Argument projections (with wildcard catch-alls) + constructor injectivity.
+    fn addLof(e: Exp) -> Exp { match e { | Exp.eadd(a, b) => a | _ => Exp.enat(Nat.zero) } }
+    fn addRof(e: Exp) -> Exp { match e { | Exp.eadd(a, b) => b | _ => Exp.enat(Nat.zero) } }
+    fn appFof(e: Exp) -> Exp { match e { | Exp.eapp(f, a) => f | _ => Exp.enat(Nat.zero) } }
+    fn appAof(e: Exp) -> Exp { match e { | Exp.eapp(f, a) => a | _ => Exp.enat(Nat.zero) } }
+    fn ifCof(e: Exp) -> Exp { match e { | Exp.eif(c, t, el) => c | _ => Exp.enat(Nat.zero) } }
+    fn ifTof(e: Exp) -> Exp { match e { | Exp.eif(c, t, el) => t | _ => Exp.enat(Nat.zero) } }
+    fn ifEof(e: Exp) -> Exp { match e { | Exp.eif(c, t, el) => el | _ => Exp.enat(Nat.zero) } }
+    fn letAof(e: Exp) -> Exp { match e { | Exp.elet(a, b) => a | _ => Exp.enat(Nat.zero) } }
+    fn letBof(e: Exp) -> Exp { match e { | Exp.elet(a, b) => b | _ => Exp.enat(Nat.zero) } }
+    fn fixTyOf(e: Exp) -> Ty { match e { | Exp.efix(A, b) => A | _ => Ty.tnat } }
+    fn fixBodyOf(e: Exp) -> Exp { match e { | Exp.efix(A, b) => b | _ => Exp.enat(Nat.zero) } }
+    fn pairLof(e: Exp) -> Exp { match e { | Exp.epair(a, b) => a | _ => Exp.enat(Nat.zero) } }
+    fn pairRof(e: Exp) -> Exp { match e { | Exp.epair(a, b) => b | _ => Exp.enat(Nat.zero) } }
+    fn fstArgOf(e: Exp) -> Exp { match e { | Exp.efst(p) => p | _ => Exp.enat(Nat.zero) } }
+    fn sndArgOf(e: Exp) -> Exp { match e { | Exp.esnd(p) => p | _ => Exp.enat(Nat.zero) } }
+    fn caseScrutOf(e: Exp) -> Exp { match e { | Exp.ecase(s, l, r) => s | _ => Exp.enat(Nat.zero) } }
+    fn caseLof(e: Exp) -> Exp { match e { | Exp.ecase(s, l, r) => l | _ => Exp.enat(Nat.zero) } }
+    fn caseRof(e: Exp) -> Exp { match e { | Exp.ecase(s, l, r) => r | _ => Exp.enat(Nat.zero) } }
+    def proj_inj (proj : Exp -> Exp) (x : Exp) (y : Exp) (h : Eq.{1} Exp x y) : Eq.{1} Exp (proj x) (proj y) :=
+      Eq.subst.{1} Exp (fun (z : Exp) => Eq.{1} Exp (proj x) (proj z)) x y h (Eq.refl.{1} Exp (proj x))
+    def ty_proj_inj (proj : Ty -> Ty) (x : Ty) (y : Ty) (h : Eq.{1} Ty x y) : Eq.{1} Ty (proj x) (proj y) :=
+      Eq.subst.{1} Ty (fun (z : Ty) => Eq.{1} Ty (proj x) (proj z)) x y h (Eq.refl.{1} Ty (proj x))
+
+    -- Existential + conjunction, for the inversions that must expose a bound/argument type.
+    inductive And2 (a : Prop) (b : Prop) : Prop | mk : a -> b -> And2 a b
+    inductive ExTy (P : Ty -> Prop) : Prop | mk : (A : Ty) -> P A -> ExTy P
+
+    -- ===== HasTy inversions (via the equation-hypothesis trick) =====
+    fn hasty_add_inv(G: Ctx, e: Exp, T: Ty, d: HasTy G e T)
+      -> ((a : Exp) -> (b : Exp) -> Eq.{1} Exp e (Exp.eadd a b)
+            -> And2 (HasTy G a Ty.tnat) (And2 (HasTy G b Ty.tnat) (Eq.{1} Ty T Ty.tnat))) {
+        match d {
+          | HasTy.tvar(Gv, n2, T2, lk2) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.evar n2) (Exp.eadd a b)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv a Ty.tnat) (And2 (HasTy Gv b Ty.tnat) (Eq.{1} Ty T2 Ty.tnat)))
+                (exp_noconf (Exp.evar n2) (Exp.eadd a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tnat(Gv, n2) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.enat n2) (Exp.eadd a b)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv a Ty.tnat) (And2 (HasTy Gv b Ty.tnat) (Eq.{1} Ty Ty.tnat Ty.tnat)))
+                (exp_noconf (Exp.enat n2) (Exp.eadd a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tbool(Gv, b2) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.ebool b2) (Exp.eadd a b)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv a Ty.tnat) (And2 (HasTy Gv b Ty.tnat) (Eq.{1} Ty Ty.tbool Ty.tnat)))
+                (exp_noconf (Exp.ebool b2) (Exp.eadd a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tadd(Gv, a2, b2, da, db) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.eadd a2 b2) (Exp.eadd a b)) =>
+              And2.mk (HasTy Gv a Ty.tnat) (And2 (HasTy Gv b Ty.tnat) (Eq.{1} Ty Ty.tnat Ty.tnat))
+                (Eq.subst.{1} Exp (fun (x : Exp) => HasTy Gv x Ty.tnat) a2 a (proj_inj addLof (Exp.eadd a2 b2) (Exp.eadd a b) heq) da)
+                (And2.mk (HasTy Gv b Ty.tnat) (Eq.{1} Ty Ty.tnat Ty.tnat)
+                  (Eq.subst.{1} Exp (fun (x : Exp) => HasTy Gv x Ty.tnat) b2 b (proj_inj addRof (Exp.eadd a2 b2) (Exp.eadd a b) heq) db)
+                  (Eq.refl.{1} Ty Ty.tnat))
+          | HasTy.tlet(Gv, a2, body2, A2, B2, da, dbody) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.elet a2 body2) (Exp.eadd a b)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv a Ty.tnat) (And2 (HasTy Gv b Ty.tnat) (Eq.{1} Ty B2 Ty.tnat)))
+                (exp_noconf (Exp.elet a2 body2) (Exp.eadd a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlam(Gv, A2, body2, B2, dbody) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.elam A2 body2) (Exp.eadd a b)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv a Ty.tnat) (And2 (HasTy Gv b Ty.tnat) (Eq.{1} Ty (Ty.tarrow A2 B2) Ty.tnat)))
+                (exp_noconf (Exp.elam A2 body2) (Exp.eadd a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tapp(Gv, f2, a2, A2, B2, df, da) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.eapp f2 a2) (Exp.eadd a b)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv a Ty.tnat) (And2 (HasTy Gv b Ty.tnat) (Eq.{1} Ty B2 Ty.tnat)))
+                (exp_noconf (Exp.eapp f2 a2) (Exp.eadd a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tif(Gv, cnd2, thn2, els2, Tif, dc, dt, de) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.eif cnd2 thn2 els2) (Exp.eadd a b)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv a Ty.tnat) (And2 (HasTy Gv b Ty.tnat) (Eq.{1} Ty Tif Ty.tnat)))
+                (exp_noconf (Exp.eif cnd2 thn2 els2) (Exp.eadd a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfix(Gv, Afix2, body2, dbody) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.efix Afix2 body2) (Exp.eadd a b)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv a Ty.tnat) (And2 (HasTy Gv b Ty.tnat) (Eq.{1} Ty Afix2 Ty.tnat)))
+                (exp_noconf (Exp.efix Afix2 body2) (Exp.eadd a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tpair(Gv, a2, b2, Ap, Bp, da, db) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.epair a2 b2) (Exp.eadd a b)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv a Ty.tnat) (And2 (HasTy Gv b Ty.tnat) (Eq.{1} Ty (Ty.tprod Ap Bp) Ty.tnat)))
+                (exp_noconf (Exp.epair a2 b2) (Exp.eadd a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfst(Gv, p2, Ap, Bp, dp) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.efst p2) (Exp.eadd a b)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv a Ty.tnat) (And2 (HasTy Gv b Ty.tnat) (Eq.{1} Ty Ap Ty.tnat)))
+                (exp_noconf (Exp.efst p2) (Exp.eadd a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tsnd(Gv, p2, Ap, Bp, dp) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.esnd p2) (Exp.eadd a b)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv a Ty.tnat) (And2 (HasTy Gv b Ty.tnat) (Eq.{1} Ty Bp Ty.tnat)))
+                (exp_noconf (Exp.esnd p2) (Exp.eadd a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinl(Gv, Bi, v2, Ai, dv) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.einl Bi v2) (Exp.eadd a b)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv a Ty.tnat) (And2 (HasTy Gv b Ty.tnat) (Eq.{1} Ty (Ty.tsum Ai Bi) Ty.tnat)))
+                (exp_noconf (Exp.einl Bi v2) (Exp.eadd a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinr(Gv, Ai, v2, Bi, dv) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.einr Ai v2) (Exp.eadd a b)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv a Ty.tnat) (And2 (HasTy Gv b Ty.tnat) (Eq.{1} Ty (Ty.tsum Ai Bi) Ty.tnat)))
+                (exp_noconf (Exp.einr Ai v2) (Exp.eadd a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tcase(Gv, s2, l2, r2, Ac, Bc, Cc, ds, dl, dr) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.ecase s2 l2 r2) (Exp.eadd a b)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv a Ty.tnat) (And2 (HasTy Gv b Ty.tnat) (Eq.{1} Ty Cc Ty.tnat)))
+                (exp_noconf (Exp.ecase s2 l2 r2) (Exp.eadd a b) (Eq.refl.{1} Bool Bool.false) heq)
+        }
+    }
+    fn hasty_if_inv(G: Ctx, e: Exp, T: Ty, d: HasTy G e T)
+      -> ((c : Exp) -> (t : Exp) -> (el : Exp) -> Eq.{1} Exp e (Exp.eif c t el)
+            -> And2 (HasTy G c Ty.tbool) (And2 (HasTy G t T) (HasTy G el T))) {
+        match d {
+          | HasTy.tvar(Gv, n2, T2, lk2) => fun (c : Exp) (t : Exp) (el : Exp) (heq : Eq.{1} Exp (Exp.evar n2) (Exp.eif c t el)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv c Ty.tbool) (And2 (HasTy Gv t T2) (HasTy Gv el T2)))
+                (exp_noconf (Exp.evar n2) (Exp.eif c t el) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tnat(Gv, n2) => fun (c : Exp) (t : Exp) (el : Exp) (heq : Eq.{1} Exp (Exp.enat n2) (Exp.eif c t el)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv c Ty.tbool) (And2 (HasTy Gv t Ty.tnat) (HasTy Gv el Ty.tnat)))
+                (exp_noconf (Exp.enat n2) (Exp.eif c t el) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tbool(Gv, b2) => fun (c : Exp) (t : Exp) (el : Exp) (heq : Eq.{1} Exp (Exp.ebool b2) (Exp.eif c t el)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv c Ty.tbool) (And2 (HasTy Gv t Ty.tbool) (HasTy Gv el Ty.tbool)))
+                (exp_noconf (Exp.ebool b2) (Exp.eif c t el) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tadd(Gv, a2, b2, da, db) => fun (c : Exp) (t : Exp) (el : Exp) (heq : Eq.{1} Exp (Exp.eadd a2 b2) (Exp.eif c t el)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv c Ty.tbool) (And2 (HasTy Gv t Ty.tnat) (HasTy Gv el Ty.tnat)))
+                (exp_noconf (Exp.eadd a2 b2) (Exp.eif c t el) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlet(Gv, a2, body2, A2, B2, da, dbody) => fun (c : Exp) (t : Exp) (el : Exp) (heq : Eq.{1} Exp (Exp.elet a2 body2) (Exp.eif c t el)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv c Ty.tbool) (And2 (HasTy Gv t B2) (HasTy Gv el B2)))
+                (exp_noconf (Exp.elet a2 body2) (Exp.eif c t el) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlam(Gv, A2, body2, B2, dbody) => fun (c : Exp) (t : Exp) (el : Exp) (heq : Eq.{1} Exp (Exp.elam A2 body2) (Exp.eif c t el)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv c Ty.tbool) (And2 (HasTy Gv t (Ty.tarrow A2 B2)) (HasTy Gv el (Ty.tarrow A2 B2))))
+                (exp_noconf (Exp.elam A2 body2) (Exp.eif c t el) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tapp(Gv, f2, a2, A2, B2, df, da) => fun (c : Exp) (t : Exp) (el : Exp) (heq : Eq.{1} Exp (Exp.eapp f2 a2) (Exp.eif c t el)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv c Ty.tbool) (And2 (HasTy Gv t B2) (HasTy Gv el B2)))
+                (exp_noconf (Exp.eapp f2 a2) (Exp.eif c t el) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tif(Gv, cnd2, thn2, els2, Tif, dc, dt, de) => fun (c : Exp) (t : Exp) (el : Exp) (heq : Eq.{1} Exp (Exp.eif cnd2 thn2 els2) (Exp.eif c t el)) =>
+              And2.mk (HasTy Gv c Ty.tbool) (And2 (HasTy Gv t Tif) (HasTy Gv el Tif))
+                (Eq.subst.{1} Exp (fun (x : Exp) => HasTy Gv x Ty.tbool) cnd2 c (proj_inj ifCof (Exp.eif cnd2 thn2 els2) (Exp.eif c t el) heq) dc)
+                (And2.mk (HasTy Gv t Tif) (HasTy Gv el Tif)
+                  (Eq.subst.{1} Exp (fun (x : Exp) => HasTy Gv x Tif) thn2 t (proj_inj ifTof (Exp.eif cnd2 thn2 els2) (Exp.eif c t el) heq) dt)
+                  (Eq.subst.{1} Exp (fun (x : Exp) => HasTy Gv x Tif) els2 el (proj_inj ifEof (Exp.eif cnd2 thn2 els2) (Exp.eif c t el) heq) de))
+          | HasTy.tfix(Gv, Afix2, body2, dbody) => fun (c : Exp) (t : Exp) (el : Exp) (heq : Eq.{1} Exp (Exp.efix Afix2 body2) (Exp.eif c t el)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv c Ty.tbool) (And2 (HasTy Gv t Afix2) (HasTy Gv el Afix2)))
+                (exp_noconf (Exp.efix Afix2 body2) (Exp.eif c t el) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tpair(Gv, a2, b2, Ap, Bp, da, db) => fun (c : Exp) (t : Exp) (el : Exp) (heq : Eq.{1} Exp (Exp.epair a2 b2) (Exp.eif c t el)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv c Ty.tbool) (And2 (HasTy Gv t (Ty.tprod Ap Bp)) (HasTy Gv el (Ty.tprod Ap Bp))))
+                (exp_noconf (Exp.epair a2 b2) (Exp.eif c t el) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfst(Gv, p2, Ap, Bp, dp) => fun (c : Exp) (t : Exp) (el : Exp) (heq : Eq.{1} Exp (Exp.efst p2) (Exp.eif c t el)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv c Ty.tbool) (And2 (HasTy Gv t Ap) (HasTy Gv el Ap)))
+                (exp_noconf (Exp.efst p2) (Exp.eif c t el) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tsnd(Gv, p2, Ap, Bp, dp) => fun (c : Exp) (t : Exp) (el : Exp) (heq : Eq.{1} Exp (Exp.esnd p2) (Exp.eif c t el)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv c Ty.tbool) (And2 (HasTy Gv t Bp) (HasTy Gv el Bp)))
+                (exp_noconf (Exp.esnd p2) (Exp.eif c t el) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinl(Gv, Bi, v2, Ai, dv) => fun (c : Exp) (t : Exp) (el : Exp) (heq : Eq.{1} Exp (Exp.einl Bi v2) (Exp.eif c t el)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv c Ty.tbool) (And2 (HasTy Gv t (Ty.tsum Ai Bi)) (HasTy Gv el (Ty.tsum Ai Bi))))
+                (exp_noconf (Exp.einl Bi v2) (Exp.eif c t el) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinr(Gv, Ai, v2, Bi, dv) => fun (c : Exp) (t : Exp) (el : Exp) (heq : Eq.{1} Exp (Exp.einr Ai v2) (Exp.eif c t el)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv c Ty.tbool) (And2 (HasTy Gv t (Ty.tsum Ai Bi)) (HasTy Gv el (Ty.tsum Ai Bi))))
+                (exp_noconf (Exp.einr Ai v2) (Exp.eif c t el) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tcase(Gv, s2, l2, r2, Ac, Bc, Cc, ds, dl, dr) => fun (c : Exp) (t : Exp) (el : Exp) (heq : Eq.{1} Exp (Exp.ecase s2 l2 r2) (Exp.eif c t el)) =>
+              False.rec.{0} (fun (_ : False) => And2 (HasTy Gv c Ty.tbool) (And2 (HasTy Gv t Cc) (HasTy Gv el Cc)))
+                (exp_noconf (Exp.ecase s2 l2 r2) (Exp.eif c t el) (Eq.refl.{1} Bool Bool.false) heq)
+        }
+    }
+    def exp_ty_proj_inj (proj : Exp -> Ty) (x : Exp) (y : Exp) (h : Eq.{1} Exp x y) : Eq.{1} Ty (proj x) (proj y) :=
+      Eq.subst.{1} Exp (fun (z : Exp) => Eq.{1} Ty (proj x) (proj z)) x y h (Eq.refl.{1} Ty (proj x))
+
+    fn hasty_let_inv(G: Ctx, e: Exp, T: Ty, d: HasTy G e T)
+      -> ((a : Exp) -> (body : Exp) -> Eq.{1} Exp e (Exp.elet a body)
+            -> ExTy (fun (A : Ty) => And2 (HasTy G a A) (HasTy (Ctx.cons A G) body T))) {
+        match d {
+          | HasTy.tvar(Gv, n2, T2, lk2) => fun (a : Exp) (body : Exp) (heq : Eq.{1} Exp (Exp.evar n2) (Exp.elet a body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv a A) (HasTy (Ctx.cons A Gv) body T2)))
+                (exp_noconf (Exp.evar n2) (Exp.elet a body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tnat(Gv, n2) => fun (a : Exp) (body : Exp) (heq : Eq.{1} Exp (Exp.enat n2) (Exp.elet a body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv a A) (HasTy (Ctx.cons A Gv) body Ty.tnat)))
+                (exp_noconf (Exp.enat n2) (Exp.elet a body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tbool(Gv, b2) => fun (a : Exp) (body : Exp) (heq : Eq.{1} Exp (Exp.ebool b2) (Exp.elet a body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv a A) (HasTy (Ctx.cons A Gv) body Ty.tbool)))
+                (exp_noconf (Exp.ebool b2) (Exp.elet a body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tadd(Gv, a2, b2, da, db) => fun (a : Exp) (body : Exp) (heq : Eq.{1} Exp (Exp.eadd a2 b2) (Exp.elet a body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv a A) (HasTy (Ctx.cons A Gv) body Ty.tnat)))
+                (exp_noconf (Exp.eadd a2 b2) (Exp.elet a body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlet(Gv, a2, body2, A2, B2, da, dbody) => fun (a : Exp) (body : Exp) (heq : Eq.{1} Exp (Exp.elet a2 body2) (Exp.elet a body)) =>
+              ExTy.mk (fun (A : Ty) => And2 (HasTy Gv a A) (HasTy (Ctx.cons A Gv) body B2)) A2
+                (And2.mk (HasTy Gv a A2) (HasTy (Ctx.cons A2 Gv) body B2)
+                  (Eq.subst.{1} Exp (fun (x : Exp) => HasTy Gv x A2) a2 a (proj_inj letAof (Exp.elet a2 body2) (Exp.elet a body) heq) da)
+                  (Eq.subst.{1} Exp (fun (x : Exp) => HasTy (Ctx.cons A2 Gv) x B2) body2 body (proj_inj letBof (Exp.elet a2 body2) (Exp.elet a body) heq) dbody))
+          | HasTy.tlam(Gv, A2, body2, B2, dbody) => fun (a : Exp) (body : Exp) (heq : Eq.{1} Exp (Exp.elam A2 body2) (Exp.elet a body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv a A) (HasTy (Ctx.cons A Gv) body (Ty.tarrow A2 B2))))
+                (exp_noconf (Exp.elam A2 body2) (Exp.elet a body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tapp(Gv, f2, a2, A2, B2, df, da) => fun (a : Exp) (body : Exp) (heq : Eq.{1} Exp (Exp.eapp f2 a2) (Exp.elet a body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv a A) (HasTy (Ctx.cons A Gv) body B2)))
+                (exp_noconf (Exp.eapp f2 a2) (Exp.elet a body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tif(Gv, cnd2, thn2, els2, Tif, dc, dt, de) => fun (a : Exp) (body : Exp) (heq : Eq.{1} Exp (Exp.eif cnd2 thn2 els2) (Exp.elet a body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv a A) (HasTy (Ctx.cons A Gv) body Tif)))
+                (exp_noconf (Exp.eif cnd2 thn2 els2) (Exp.elet a body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfix(Gv, Afix2, body2, dbody) => fun (a : Exp) (body : Exp) (heq : Eq.{1} Exp (Exp.efix Afix2 body2) (Exp.elet a body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv a A) (HasTy (Ctx.cons A Gv) body Afix2)))
+                (exp_noconf (Exp.efix Afix2 body2) (Exp.elet a body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tpair(Gv, a2, b2, Ap, Bp, da, db) => fun (a : Exp) (body : Exp) (heq : Eq.{1} Exp (Exp.epair a2 b2) (Exp.elet a body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv a A) (HasTy (Ctx.cons A Gv) body (Ty.tprod Ap Bp))))
+                (exp_noconf (Exp.epair a2 b2) (Exp.elet a body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfst(Gv, p2, Ap, Bp, dp) => fun (a : Exp) (body : Exp) (heq : Eq.{1} Exp (Exp.efst p2) (Exp.elet a body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv a A) (HasTy (Ctx.cons A Gv) body Ap)))
+                (exp_noconf (Exp.efst p2) (Exp.elet a body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tsnd(Gv, p2, Ap, Bp, dp) => fun (a : Exp) (body : Exp) (heq : Eq.{1} Exp (Exp.esnd p2) (Exp.elet a body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv a A) (HasTy (Ctx.cons A Gv) body Bp)))
+                (exp_noconf (Exp.esnd p2) (Exp.elet a body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinl(Gv, Bi, v2, Ai, dv) => fun (a : Exp) (body : Exp) (heq : Eq.{1} Exp (Exp.einl Bi v2) (Exp.elet a body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv a A) (HasTy (Ctx.cons A Gv) body (Ty.tsum Ai Bi))))
+                (exp_noconf (Exp.einl Bi v2) (Exp.elet a body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinr(Gv, Ai, v2, Bi, dv) => fun (a : Exp) (body : Exp) (heq : Eq.{1} Exp (Exp.einr Ai v2) (Exp.elet a body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv a A) (HasTy (Ctx.cons A Gv) body (Ty.tsum Ai Bi))))
+                (exp_noconf (Exp.einr Ai v2) (Exp.elet a body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tcase(Gv, s2, l2, r2, Ac, Bc, Cc, ds, dl, dr) => fun (a : Exp) (body : Exp) (heq : Eq.{1} Exp (Exp.ecase s2 l2 r2) (Exp.elet a body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv a A) (HasTy (Ctx.cons A Gv) body Cc)))
+                (exp_noconf (Exp.ecase s2 l2 r2) (Exp.elet a body) (Eq.refl.{1} Bool Bool.false) heq)
+        }
+    }
+    fn hasty_app_inv(G: Ctx, e: Exp, T: Ty, d: HasTy G e T)
+      -> ((f : Exp) -> (a : Exp) -> Eq.{1} Exp e (Exp.eapp f a)
+            -> ExTy (fun (A : Ty) => And2 (HasTy G f (Ty.tarrow A T)) (HasTy G a A))) {
+        match d {
+          | HasTy.tvar(Gv, n2, T2, lk2) => fun (f : Exp) (a : Exp) (heq : Eq.{1} Exp (Exp.evar n2) (Exp.eapp f a)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv f (Ty.tarrow A T2)) (HasTy Gv a A)))
+                (exp_noconf (Exp.evar n2) (Exp.eapp f a) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tnat(Gv, n2) => fun (f : Exp) (a : Exp) (heq : Eq.{1} Exp (Exp.enat n2) (Exp.eapp f a)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv f (Ty.tarrow A Ty.tnat)) (HasTy Gv a A)))
+                (exp_noconf (Exp.enat n2) (Exp.eapp f a) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tbool(Gv, b2) => fun (f : Exp) (a : Exp) (heq : Eq.{1} Exp (Exp.ebool b2) (Exp.eapp f a)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv f (Ty.tarrow A Ty.tbool)) (HasTy Gv a A)))
+                (exp_noconf (Exp.ebool b2) (Exp.eapp f a) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tadd(Gv, a2, b2, da, db) => fun (f : Exp) (a : Exp) (heq : Eq.{1} Exp (Exp.eadd a2 b2) (Exp.eapp f a)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv f (Ty.tarrow A Ty.tnat)) (HasTy Gv a A)))
+                (exp_noconf (Exp.eadd a2 b2) (Exp.eapp f a) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlet(Gv, a2, body2, A2, B2, da, dbody) => fun (f : Exp) (a : Exp) (heq : Eq.{1} Exp (Exp.elet a2 body2) (Exp.eapp f a)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv f (Ty.tarrow A B2)) (HasTy Gv a A)))
+                (exp_noconf (Exp.elet a2 body2) (Exp.eapp f a) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlam(Gv, A2, body2, B2, dbody) => fun (f : Exp) (a : Exp) (heq : Eq.{1} Exp (Exp.elam A2 body2) (Exp.eapp f a)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv f (Ty.tarrow A (Ty.tarrow A2 B2))) (HasTy Gv a A)))
+                (exp_noconf (Exp.elam A2 body2) (Exp.eapp f a) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tapp(Gv, f2, a2, A2, B2, df, da) => fun (f : Exp) (a : Exp) (heq : Eq.{1} Exp (Exp.eapp f2 a2) (Exp.eapp f a)) =>
+              ExTy.mk (fun (A : Ty) => And2 (HasTy Gv f (Ty.tarrow A B2)) (HasTy Gv a A)) A2
+                (And2.mk (HasTy Gv f (Ty.tarrow A2 B2)) (HasTy Gv a A2)
+                  (Eq.subst.{1} Exp (fun (x : Exp) => HasTy Gv x (Ty.tarrow A2 B2)) f2 f (proj_inj appFof (Exp.eapp f2 a2) (Exp.eapp f a) heq) df)
+                  (Eq.subst.{1} Exp (fun (x : Exp) => HasTy Gv x A2) a2 a (proj_inj appAof (Exp.eapp f2 a2) (Exp.eapp f a) heq) da))
+          | HasTy.tif(Gv, cnd2, thn2, els2, Tif, dc, dt, de) => fun (f : Exp) (a : Exp) (heq : Eq.{1} Exp (Exp.eif cnd2 thn2 els2) (Exp.eapp f a)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv f (Ty.tarrow A Tif)) (HasTy Gv a A)))
+                (exp_noconf (Exp.eif cnd2 thn2 els2) (Exp.eapp f a) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfix(Gv, Afix2, body2, dbody) => fun (f : Exp) (a : Exp) (heq : Eq.{1} Exp (Exp.efix Afix2 body2) (Exp.eapp f a)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv f (Ty.tarrow A Afix2)) (HasTy Gv a A)))
+                (exp_noconf (Exp.efix Afix2 body2) (Exp.eapp f a) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tpair(Gv, a2, b2, Ap, Bp, da, db) => fun (f : Exp) (a : Exp) (heq : Eq.{1} Exp (Exp.epair a2 b2) (Exp.eapp f a)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv f (Ty.tarrow A (Ty.tprod Ap Bp))) (HasTy Gv a A)))
+                (exp_noconf (Exp.epair a2 b2) (Exp.eapp f a) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfst(Gv, p2, Ap, Bp, dp) => fun (f : Exp) (a : Exp) (heq : Eq.{1} Exp (Exp.efst p2) (Exp.eapp f a)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv f (Ty.tarrow A Ap)) (HasTy Gv a A)))
+                (exp_noconf (Exp.efst p2) (Exp.eapp f a) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tsnd(Gv, p2, Ap, Bp, dp) => fun (f : Exp) (a : Exp) (heq : Eq.{1} Exp (Exp.esnd p2) (Exp.eapp f a)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv f (Ty.tarrow A Bp)) (HasTy Gv a A)))
+                (exp_noconf (Exp.esnd p2) (Exp.eapp f a) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinl(Gv, Bi, v2, Ai, dv) => fun (f : Exp) (a : Exp) (heq : Eq.{1} Exp (Exp.einl Bi v2) (Exp.eapp f a)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv f (Ty.tarrow A (Ty.tsum Ai Bi))) (HasTy Gv a A)))
+                (exp_noconf (Exp.einl Bi v2) (Exp.eapp f a) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinr(Gv, Ai, v2, Bi, dv) => fun (f : Exp) (a : Exp) (heq : Eq.{1} Exp (Exp.einr Ai v2) (Exp.eapp f a)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv f (Ty.tarrow A (Ty.tsum Ai Bi))) (HasTy Gv a A)))
+                (exp_noconf (Exp.einr Ai v2) (Exp.eapp f a) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tcase(Gv, s2, l2, r2, Ac, Bc, Cc, ds, dl, dr) => fun (f : Exp) (a : Exp) (heq : Eq.{1} Exp (Exp.ecase s2 l2 r2) (Exp.eapp f a)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (HasTy Gv f (Ty.tarrow A Cc)) (HasTy Gv a A)))
+                (exp_noconf (Exp.ecase s2 l2 r2) (Exp.eapp f a) (Eq.refl.{1} Bool Bool.false) heq)
+        }
+    }
+    fn hasty_lam_inv(G: Ctx, e: Exp, Tf: Ty, d: HasTy G e Tf)
+      -> ((Alam : Ty) -> (body : Exp) -> Eq.{1} Exp e (Exp.elam Alam body)
+            -> ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Tf (Ty.tarrow Alam B)) (HasTy (Ctx.cons Alam G) body B))) {
+        match d {
+          | HasTy.tvar(Gv, n2, T2, lk2) => fun (Alam : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.evar n2) (Exp.elam Alam body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty T2 (Ty.tarrow Alam B)) (HasTy (Ctx.cons Alam Gv) body B)))
+                (exp_noconf (Exp.evar n2) (Exp.elam Alam body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tnat(Gv, n2) => fun (Alam : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.enat n2) (Exp.elam Alam body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Ty.tnat (Ty.tarrow Alam B)) (HasTy (Ctx.cons Alam Gv) body B)))
+                (exp_noconf (Exp.enat n2) (Exp.elam Alam body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tbool(Gv, b2) => fun (Alam : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.ebool b2) (Exp.elam Alam body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Ty.tbool (Ty.tarrow Alam B)) (HasTy (Ctx.cons Alam Gv) body B)))
+                (exp_noconf (Exp.ebool b2) (Exp.elam Alam body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tadd(Gv, a2, b2, da, db) => fun (Alam : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.eadd a2 b2) (Exp.elam Alam body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Ty.tnat (Ty.tarrow Alam B)) (HasTy (Ctx.cons Alam Gv) body B)))
+                (exp_noconf (Exp.eadd a2 b2) (Exp.elam Alam body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlet(Gv, a2, body2, A2, B2, da, dbody) => fun (Alam : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.elet a2 body2) (Exp.elam Alam body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty B2 (Ty.tarrow Alam B)) (HasTy (Ctx.cons Alam Gv) body B)))
+                (exp_noconf (Exp.elet a2 body2) (Exp.elam Alam body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlam(Gv, A2, body2, B2, dbody) => fun (Alam : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.elam A2 body2) (Exp.elam Alam body)) =>
+              ExTy.mk (fun (B : Ty) => And2 (Eq.{1} Ty (Ty.tarrow A2 B2) (Ty.tarrow Alam B)) (HasTy (Ctx.cons Alam Gv) body B)) B2
+                (And2.mk (Eq.{1} Ty (Ty.tarrow A2 B2) (Ty.tarrow Alam B2)) (HasTy (Ctx.cons Alam Gv) body B2)
+                  (tarrow_cong A2 Alam B2 B2 (exp_ty_proj_inj lamTyOf (Exp.elam A2 body2) (Exp.elam Alam body) heq) (Eq.refl.{1} Ty B2))
+                  (Eq.subst.{1} Ctx (fun (g : Ctx) => HasTy g body B2)
+                     (Ctx.cons A2 Gv) (Ctx.cons Alam Gv)
+                     (Eq.subst.{1} Ty (fun (x : Ty) => Eq.{1} Ctx (Ctx.cons A2 Gv) (Ctx.cons x Gv)) A2 Alam (exp_ty_proj_inj lamTyOf (Exp.elam A2 body2) (Exp.elam Alam body) heq) (Eq.refl.{1} Ctx (Ctx.cons A2 Gv)))
+                     (Eq.subst.{1} Exp (fun (x : Exp) => HasTy (Ctx.cons A2 Gv) x B2) body2 body (proj_inj lamBodyOf (Exp.elam A2 body2) (Exp.elam Alam body) heq) dbody)))
+          | HasTy.tapp(Gv, f2, a2, A2, B2, df, da) => fun (Alam : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.eapp f2 a2) (Exp.elam Alam body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty B2 (Ty.tarrow Alam B)) (HasTy (Ctx.cons Alam Gv) body B)))
+                (exp_noconf (Exp.eapp f2 a2) (Exp.elam Alam body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tif(Gv, cnd2, thn2, els2, Tif, dc, dt, de) => fun (Alam : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.eif cnd2 thn2 els2) (Exp.elam Alam body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Tif (Ty.tarrow Alam B)) (HasTy (Ctx.cons Alam Gv) body B)))
+                (exp_noconf (Exp.eif cnd2 thn2 els2) (Exp.elam Alam body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfix(Gv, Afix2, body2, dbody) => fun (Alam : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.efix Afix2 body2) (Exp.elam Alam body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Afix2 (Ty.tarrow Alam B)) (HasTy (Ctx.cons Alam Gv) body B)))
+                (exp_noconf (Exp.efix Afix2 body2) (Exp.elam Alam body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tpair(Gv, a2, b2, Ap, Bp, da, db) => fun (Alam : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.epair a2 b2) (Exp.elam Alam body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty (Ty.tprod Ap Bp) (Ty.tarrow Alam B)) (HasTy (Ctx.cons Alam Gv) body B)))
+                (exp_noconf (Exp.epair a2 b2) (Exp.elam Alam body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfst(Gv, p2, Ap, Bp, dp) => fun (Alam : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.efst p2) (Exp.elam Alam body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Ap (Ty.tarrow Alam B)) (HasTy (Ctx.cons Alam Gv) body B)))
+                (exp_noconf (Exp.efst p2) (Exp.elam Alam body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tsnd(Gv, p2, Ap, Bp, dp) => fun (Alam : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.esnd p2) (Exp.elam Alam body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Bp (Ty.tarrow Alam B)) (HasTy (Ctx.cons Alam Gv) body B)))
+                (exp_noconf (Exp.esnd p2) (Exp.elam Alam body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinl(Gv, Bi, v2, Ai, dv) => fun (Alam : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.einl Bi v2) (Exp.elam Alam body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty (Ty.tsum Ai Bi) (Ty.tarrow Alam B)) (HasTy (Ctx.cons Alam Gv) body B)))
+                (exp_noconf (Exp.einl Bi v2) (Exp.elam Alam body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinr(Gv, Ai, v2, Bi, dv) => fun (Alam : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.einr Ai v2) (Exp.elam Alam body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty (Ty.tsum Ai Bi) (Ty.tarrow Alam B)) (HasTy (Ctx.cons Alam Gv) body B)))
+                (exp_noconf (Exp.einr Ai v2) (Exp.elam Alam body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tcase(Gv, s2, l2, r2, Ac, Bc, Cc, ds, dl, dr) => fun (Alam : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.ecase s2 l2 r2) (Exp.elam Alam body)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Cc (Ty.tarrow Alam B)) (HasTy (Ctx.cons Alam Gv) body B)))
+                (exp_noconf (Exp.ecase s2 l2 r2) (Exp.elam Alam body) (Eq.refl.{1} Bool Bool.false) heq)
+        }
+    }
+    -- fix inversion: a typed `efix Afix body` has body : Afix in the self-extended context,
+    -- and its type is exactly Afix. (The 8 non-fix derivations are impossible by no-confusion.)
+    fn hasty_fix_inv(G: Ctx, e: Exp, Tf: Ty, d: HasTy G e Tf)
+      -> ((Afix : Ty) -> (body : Exp) -> Eq.{1} Exp e (Exp.efix Afix body)
+            -> And2 (Eq.{1} Ty Tf Afix) (HasTy (Ctx.cons Afix G) body Afix)) {
+        match d {
+          | HasTy.tvar(Gv, n2, T2, lk2) => fun (Afix : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.evar n2) (Exp.efix Afix body)) =>
+              False.rec.{0} (fun (_ : False) => And2 (Eq.{1} Ty T2 Afix) (HasTy (Ctx.cons Afix Gv) body Afix))
+                (exp_noconf (Exp.evar n2) (Exp.efix Afix body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tnat(Gv, n2) => fun (Afix : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.enat n2) (Exp.efix Afix body)) =>
+              False.rec.{0} (fun (_ : False) => And2 (Eq.{1} Ty Ty.tnat Afix) (HasTy (Ctx.cons Afix Gv) body Afix))
+                (exp_noconf (Exp.enat n2) (Exp.efix Afix body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tbool(Gv, b2) => fun (Afix : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.ebool b2) (Exp.efix Afix body)) =>
+              False.rec.{0} (fun (_ : False) => And2 (Eq.{1} Ty Ty.tbool Afix) (HasTy (Ctx.cons Afix Gv) body Afix))
+                (exp_noconf (Exp.ebool b2) (Exp.efix Afix body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tadd(Gv, a2, b2, da, db) => fun (Afix : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.eadd a2 b2) (Exp.efix Afix body)) =>
+              False.rec.{0} (fun (_ : False) => And2 (Eq.{1} Ty Ty.tnat Afix) (HasTy (Ctx.cons Afix Gv) body Afix))
+                (exp_noconf (Exp.eadd a2 b2) (Exp.efix Afix body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlet(Gv, a2, body2, A2, B2, da, dbody) => fun (Afix : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.elet a2 body2) (Exp.efix Afix body)) =>
+              False.rec.{0} (fun (_ : False) => And2 (Eq.{1} Ty B2 Afix) (HasTy (Ctx.cons Afix Gv) body Afix))
+                (exp_noconf (Exp.elet a2 body2) (Exp.efix Afix body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlam(Gv, A2, body2, B2, dbody) => fun (Afix : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.elam A2 body2) (Exp.efix Afix body)) =>
+              False.rec.{0} (fun (_ : False) => And2 (Eq.{1} Ty (Ty.tarrow A2 B2) Afix) (HasTy (Ctx.cons Afix Gv) body Afix))
+                (exp_noconf (Exp.elam A2 body2) (Exp.efix Afix body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tapp(Gv, f2, a2, A2, B2, df, da) => fun (Afix : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.eapp f2 a2) (Exp.efix Afix body)) =>
+              False.rec.{0} (fun (_ : False) => And2 (Eq.{1} Ty B2 Afix) (HasTy (Ctx.cons Afix Gv) body Afix))
+                (exp_noconf (Exp.eapp f2 a2) (Exp.efix Afix body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tif(Gv, cnd2, thn2, els2, Tif, dc, dt, de) => fun (Afix : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.eif cnd2 thn2 els2) (Exp.efix Afix body)) =>
+              False.rec.{0} (fun (_ : False) => And2 (Eq.{1} Ty Tif Afix) (HasTy (Ctx.cons Afix Gv) body Afix))
+                (exp_noconf (Exp.eif cnd2 thn2 els2) (Exp.efix Afix body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tpair(Gv, a2, b2, Ap, Bp, da, db) => fun (Afix : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.epair a2 b2) (Exp.efix Afix body)) =>
+              False.rec.{0} (fun (_ : False) => And2 (Eq.{1} Ty (Ty.tprod Ap Bp) Afix) (HasTy (Ctx.cons Afix Gv) body Afix))
+                (exp_noconf (Exp.epair a2 b2) (Exp.efix Afix body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfst(Gv, p2, Ap, Bp, dp) => fun (Afix : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.efst p2) (Exp.efix Afix body)) =>
+              False.rec.{0} (fun (_ : False) => And2 (Eq.{1} Ty Ap Afix) (HasTy (Ctx.cons Afix Gv) body Afix))
+                (exp_noconf (Exp.efst p2) (Exp.efix Afix body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tsnd(Gv, p2, Ap, Bp, dp) => fun (Afix : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.esnd p2) (Exp.efix Afix body)) =>
+              False.rec.{0} (fun (_ : False) => And2 (Eq.{1} Ty Bp Afix) (HasTy (Ctx.cons Afix Gv) body Afix))
+                (exp_noconf (Exp.esnd p2) (Exp.efix Afix body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinl(Gv, Bi, v2, Ai, dv) => fun (Afix : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.einl Bi v2) (Exp.efix Afix body)) =>
+              False.rec.{0} (fun (_ : False) => And2 (Eq.{1} Ty (Ty.tsum Ai Bi) Afix) (HasTy (Ctx.cons Afix Gv) body Afix))
+                (exp_noconf (Exp.einl Bi v2) (Exp.efix Afix body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinr(Gv, Ai, v2, Bi, dv) => fun (Afix : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.einr Ai v2) (Exp.efix Afix body)) =>
+              False.rec.{0} (fun (_ : False) => And2 (Eq.{1} Ty (Ty.tsum Ai Bi) Afix) (HasTy (Ctx.cons Afix Gv) body Afix))
+                (exp_noconf (Exp.einr Ai v2) (Exp.efix Afix body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tcase(Gv, s2, l2, r2, Ac, Bc, Cc, ds, dl, dr) => fun (Afix : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.ecase s2 l2 r2) (Exp.efix Afix body)) =>
+              False.rec.{0} (fun (_ : False) => And2 (Eq.{1} Ty Cc Afix) (HasTy (Ctx.cons Afix Gv) body Afix))
+                (exp_noconf (Exp.ecase s2 l2 r2) (Exp.efix Afix body) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfix(Gv, A2, body2, dbody) => fun (Afix : Ty) (body : Exp) (heq : Eq.{1} Exp (Exp.efix A2 body2) (Exp.efix Afix body)) =>
+              And2.mk (Eq.{1} Ty A2 Afix) (HasTy (Ctx.cons Afix Gv) body Afix)
+                (exp_ty_proj_inj fixTyOf (Exp.efix A2 body2) (Exp.efix Afix body) heq)
+                (Eq.subst.{1} Ctx (fun (g : Ctx) => HasTy g body Afix) (Ctx.cons A2 Gv) (Ctx.cons Afix Gv)
+                   (Eq.subst.{1} Ty (fun (x : Ty) => Eq.{1} Ctx (Ctx.cons A2 Gv) (Ctx.cons x Gv)) A2 Afix (exp_ty_proj_inj fixTyOf (Exp.efix A2 body2) (Exp.efix Afix body) heq) (Eq.refl.{1} Ctx (Ctx.cons A2 Gv)))
+                   (Eq.subst.{1} Exp (fun (x : Exp) => HasTy (Ctx.cons A2 Gv) x Afix) body2 body (proj_inj fixBodyOf (Exp.efix A2 body2) (Exp.efix Afix body) heq)
+                      (Eq.subst.{1} Ty (fun (x : Ty) => HasTy (Ctx.cons A2 Gv) body2 x) A2 Afix (exp_ty_proj_inj fixTyOf (Exp.efix A2 body2) (Exp.efix Afix body) heq) dbody)))
+        }
+    }
+
+    -- pair inversion: a typed `epair a b` has its type a product of the components' types.
+    fn hasty_pair_inv(G: Ctx, e: Exp, T: Ty, d: HasTy G e T)
+      -> ((a : Exp) -> (b : Exp) -> Eq.{1} Exp e (Exp.epair a b)
+            -> ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty T (Ty.tprod A B)) (And2 (HasTy G a A) (HasTy G b B))))) {
+        match d {
+          | HasTy.tvar(Gv, n2, T2, lk2) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.evar n2) (Exp.epair a b)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty T2 (Ty.tprod A B)) (And2 (HasTy Gv a A) (HasTy Gv b B)))))
+                (exp_noconf (Exp.evar n2) (Exp.epair a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tnat(Gv, n2) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.enat n2) (Exp.epair a b)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Ty.tnat (Ty.tprod A B)) (And2 (HasTy Gv a A) (HasTy Gv b B)))))
+                (exp_noconf (Exp.enat n2) (Exp.epair a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tbool(Gv, b2) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.ebool b2) (Exp.epair a b)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Ty.tbool (Ty.tprod A B)) (And2 (HasTy Gv a A) (HasTy Gv b B)))))
+                (exp_noconf (Exp.ebool b2) (Exp.epair a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tadd(Gv, a2, b2, da, db) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.eadd a2 b2) (Exp.epair a b)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Ty.tnat (Ty.tprod A B)) (And2 (HasTy Gv a A) (HasTy Gv b B)))))
+                (exp_noconf (Exp.eadd a2 b2) (Exp.epair a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlet(Gv, a2, body2, A2, B2, da, dbody) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.elet a2 body2) (Exp.epair a b)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty B2 (Ty.tprod A B)) (And2 (HasTy Gv a A) (HasTy Gv b B)))))
+                (exp_noconf (Exp.elet a2 body2) (Exp.epair a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlam(Gv, A2, body2, B2, dbody) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.elam A2 body2) (Exp.epair a b)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty (Ty.tarrow A2 B2) (Ty.tprod A B)) (And2 (HasTy Gv a A) (HasTy Gv b B)))))
+                (exp_noconf (Exp.elam A2 body2) (Exp.epair a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tapp(Gv, f2, a2, A2, B2, df, da) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.eapp f2 a2) (Exp.epair a b)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty B2 (Ty.tprod A B)) (And2 (HasTy Gv a A) (HasTy Gv b B)))))
+                (exp_noconf (Exp.eapp f2 a2) (Exp.epair a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tif(Gv, cnd2, thn2, els2, Tif, dc, dt, de) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.eif cnd2 thn2 els2) (Exp.epair a b)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Tif (Ty.tprod A B)) (And2 (HasTy Gv a A) (HasTy Gv b B)))))
+                (exp_noconf (Exp.eif cnd2 thn2 els2) (Exp.epair a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfix(Gv, Afix2, body2, dbody) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.efix Afix2 body2) (Exp.epair a b)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Afix2 (Ty.tprod A B)) (And2 (HasTy Gv a A) (HasTy Gv b B)))))
+                (exp_noconf (Exp.efix Afix2 body2) (Exp.epair a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tpair(Gv, a2, b2, Ap, Bp, da, db) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.epair a2 b2) (Exp.epair a b)) =>
+              ExTy.mk (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty (Ty.tprod Ap Bp) (Ty.tprod A B)) (And2 (HasTy Gv a A) (HasTy Gv b B)))) Ap
+                (ExTy.mk (fun (B : Ty) => And2 (Eq.{1} Ty (Ty.tprod Ap Bp) (Ty.tprod Ap B)) (And2 (HasTy Gv a Ap) (HasTy Gv b B))) Bp
+                  (And2.mk (Eq.{1} Ty (Ty.tprod Ap Bp) (Ty.tprod Ap Bp)) (And2 (HasTy Gv a Ap) (HasTy Gv b Bp))
+                    (Eq.refl.{1} Ty (Ty.tprod Ap Bp))
+                    (And2.mk (HasTy Gv a Ap) (HasTy Gv b Bp)
+                      (Eq.subst.{1} Exp (fun (x : Exp) => HasTy Gv x Ap) a2 a (proj_inj pairLof (Exp.epair a2 b2) (Exp.epair a b) heq) da)
+                      (Eq.subst.{1} Exp (fun (x : Exp) => HasTy Gv x Bp) b2 b (proj_inj pairRof (Exp.epair a2 b2) (Exp.epair a b) heq) db))))
+          | HasTy.tfst(Gv, p2, Ap, Bp, dp) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.efst p2) (Exp.epair a b)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Ap (Ty.tprod A B)) (And2 (HasTy Gv a A) (HasTy Gv b B)))))
+                (exp_noconf (Exp.efst p2) (Exp.epair a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tsnd(Gv, p2, Ap, Bp, dp) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.esnd p2) (Exp.epair a b)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Bp (Ty.tprod A B)) (And2 (HasTy Gv a A) (HasTy Gv b B)))))
+                (exp_noconf (Exp.esnd p2) (Exp.epair a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinl(Gv, Bi, v2, Ai, dv) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.einl Bi v2) (Exp.epair a b)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty (Ty.tsum Ai Bi) (Ty.tprod A B)) (And2 (HasTy Gv a A) (HasTy Gv b B)))))
+                (exp_noconf (Exp.einl Bi v2) (Exp.epair a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinr(Gv, Ai, v2, Bi, dv) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.einr Ai v2) (Exp.epair a b)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty (Ty.tsum Ai Bi) (Ty.tprod A B)) (And2 (HasTy Gv a A) (HasTy Gv b B)))))
+                (exp_noconf (Exp.einr Ai v2) (Exp.epair a b) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tcase(Gv, s2, l2, r2, Ac, Bc, Cc, ds, dl, dr) => fun (a : Exp) (b : Exp) (heq : Eq.{1} Exp (Exp.ecase s2 l2 r2) (Exp.epair a b)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Cc (Ty.tprod A B)) (And2 (HasTy Gv a A) (HasTy Gv b B)))))
+                (exp_noconf (Exp.ecase s2 l2 r2) (Exp.epair a b) (Eq.refl.{1} Bool Bool.false) heq)
+        }
+    }
+    -- fst inversion: a typed `efst p` has `p` of some product type whose first component is T.
+    fn hasty_fst_inv(G: Ctx, e: Exp, T: Ty, d: HasTy G e T)
+      -> ((p : Exp) -> Eq.{1} Exp e (Exp.efst p) -> ExTy (fun (B : Ty) => HasTy G p (Ty.tprod T B))) {
+        match d {
+          | HasTy.tvar(Gv, n2, T2, lk2) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.evar n2) (Exp.efst p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => HasTy Gv p (Ty.tprod T2 B))) (exp_noconf (Exp.evar n2) (Exp.efst p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tnat(Gv, n2) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.enat n2) (Exp.efst p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => HasTy Gv p (Ty.tprod Ty.tnat B))) (exp_noconf (Exp.enat n2) (Exp.efst p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tbool(Gv, b2) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.ebool b2) (Exp.efst p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => HasTy Gv p (Ty.tprod Ty.tbool B))) (exp_noconf (Exp.ebool b2) (Exp.efst p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tadd(Gv, a2, b2, da, db) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.eadd a2 b2) (Exp.efst p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => HasTy Gv p (Ty.tprod Ty.tnat B))) (exp_noconf (Exp.eadd a2 b2) (Exp.efst p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlet(Gv, a2, body2, A2, B2, da, dbody) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.elet a2 body2) (Exp.efst p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => HasTy Gv p (Ty.tprod B2 B))) (exp_noconf (Exp.elet a2 body2) (Exp.efst p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlam(Gv, A2, body2, B2, dbody) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.elam A2 body2) (Exp.efst p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => HasTy Gv p (Ty.tprod (Ty.tarrow A2 B2) B))) (exp_noconf (Exp.elam A2 body2) (Exp.efst p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tapp(Gv, f2, a2, A2, B2, df, da) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.eapp f2 a2) (Exp.efst p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => HasTy Gv p (Ty.tprod B2 B))) (exp_noconf (Exp.eapp f2 a2) (Exp.efst p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tif(Gv, cnd2, thn2, els2, Tif, dc, dt, de) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.eif cnd2 thn2 els2) (Exp.efst p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => HasTy Gv p (Ty.tprod Tif B))) (exp_noconf (Exp.eif cnd2 thn2 els2) (Exp.efst p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfix(Gv, Afix2, body2, dbody) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.efix Afix2 body2) (Exp.efst p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => HasTy Gv p (Ty.tprod Afix2 B))) (exp_noconf (Exp.efix Afix2 body2) (Exp.efst p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tpair(Gv, a2, b2, Ap, Bp, da, db) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.epair a2 b2) (Exp.efst p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => HasTy Gv p (Ty.tprod (Ty.tprod Ap Bp) B))) (exp_noconf (Exp.epair a2 b2) (Exp.efst p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfst(Gv, p2, A2, B2, dp) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.efst p2) (Exp.efst p)) =>
+              ExTy.mk (fun (B : Ty) => HasTy Gv p (Ty.tprod A2 B)) B2
+                (Eq.subst.{1} Exp (fun (x : Exp) => HasTy Gv x (Ty.tprod A2 B2)) p2 p (proj_inj fstArgOf (Exp.efst p2) (Exp.efst p) heq) dp)
+          | HasTy.tsnd(Gv, p2, A2, B2, dp) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.esnd p2) (Exp.efst p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => HasTy Gv p (Ty.tprod B2 B))) (exp_noconf (Exp.esnd p2) (Exp.efst p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinl(Gv, Bi, v2, Ai, dv) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.einl Bi v2) (Exp.efst p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => HasTy Gv p (Ty.tprod (Ty.tsum Ai Bi) B))) (exp_noconf (Exp.einl Bi v2) (Exp.efst p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinr(Gv, Ai, v2, Bi, dv) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.einr Ai v2) (Exp.efst p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => HasTy Gv p (Ty.tprod (Ty.tsum Ai Bi) B))) (exp_noconf (Exp.einr Ai v2) (Exp.efst p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tcase(Gv, s2, l2, r2, Ac, Bc, Cc, ds, dl, dr) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.ecase s2 l2 r2) (Exp.efst p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => HasTy Gv p (Ty.tprod Cc B))) (exp_noconf (Exp.ecase s2 l2 r2) (Exp.efst p) (Eq.refl.{1} Bool Bool.false) heq)
+        }
+    }
+    -- snd inversion: a typed `esnd p` has `p` of some product type whose second component is T.
+    fn hasty_snd_inv(G: Ctx, e: Exp, T: Ty, d: HasTy G e T)
+      -> ((p : Exp) -> Eq.{1} Exp e (Exp.esnd p) -> ExTy (fun (A : Ty) => HasTy G p (Ty.tprod A T))) {
+        match d {
+          | HasTy.tvar(Gv, n2, T2, lk2) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.evar n2) (Exp.esnd p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => HasTy Gv p (Ty.tprod A T2))) (exp_noconf (Exp.evar n2) (Exp.esnd p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tnat(Gv, n2) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.enat n2) (Exp.esnd p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => HasTy Gv p (Ty.tprod A Ty.tnat))) (exp_noconf (Exp.enat n2) (Exp.esnd p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tbool(Gv, b2) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.ebool b2) (Exp.esnd p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => HasTy Gv p (Ty.tprod A Ty.tbool))) (exp_noconf (Exp.ebool b2) (Exp.esnd p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tadd(Gv, a2, b2, da, db) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.eadd a2 b2) (Exp.esnd p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => HasTy Gv p (Ty.tprod A Ty.tnat))) (exp_noconf (Exp.eadd a2 b2) (Exp.esnd p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlet(Gv, a2, body2, A2, B2, da, dbody) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.elet a2 body2) (Exp.esnd p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => HasTy Gv p (Ty.tprod A B2))) (exp_noconf (Exp.elet a2 body2) (Exp.esnd p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlam(Gv, A2, body2, B2, dbody) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.elam A2 body2) (Exp.esnd p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => HasTy Gv p (Ty.tprod A (Ty.tarrow A2 B2)))) (exp_noconf (Exp.elam A2 body2) (Exp.esnd p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tapp(Gv, f2, a2, A2, B2, df, da) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.eapp f2 a2) (Exp.esnd p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => HasTy Gv p (Ty.tprod A B2))) (exp_noconf (Exp.eapp f2 a2) (Exp.esnd p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tif(Gv, cnd2, thn2, els2, Tif, dc, dt, de) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.eif cnd2 thn2 els2) (Exp.esnd p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => HasTy Gv p (Ty.tprod A Tif))) (exp_noconf (Exp.eif cnd2 thn2 els2) (Exp.esnd p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfix(Gv, Afix2, body2, dbody) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.efix Afix2 body2) (Exp.esnd p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => HasTy Gv p (Ty.tprod A Afix2))) (exp_noconf (Exp.efix Afix2 body2) (Exp.esnd p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tpair(Gv, a2, b2, Ap, Bp, da, db) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.epair a2 b2) (Exp.esnd p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => HasTy Gv p (Ty.tprod A (Ty.tprod Ap Bp)))) (exp_noconf (Exp.epair a2 b2) (Exp.esnd p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfst(Gv, p2, A2, B2, dp) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.efst p2) (Exp.esnd p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => HasTy Gv p (Ty.tprod A A2))) (exp_noconf (Exp.efst p2) (Exp.esnd p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinl(Gv, Bi, v2, Ai, dv) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.einl Bi v2) (Exp.esnd p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => HasTy Gv p (Ty.tprod A (Ty.tsum Ai Bi)))) (exp_noconf (Exp.einl Bi v2) (Exp.esnd p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinr(Gv, Ai, v2, Bi, dv) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.einr Ai v2) (Exp.esnd p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => HasTy Gv p (Ty.tprod A (Ty.tsum Ai Bi)))) (exp_noconf (Exp.einr Ai v2) (Exp.esnd p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tcase(Gv, s2, l2, r2, Ac, Bc, Cc, ds, dl, dr) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.ecase s2 l2 r2) (Exp.esnd p)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => HasTy Gv p (Ty.tprod A Cc))) (exp_noconf (Exp.ecase s2 l2 r2) (Exp.esnd p) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tsnd(Gv, p2, A2, B2, dp) => fun (p : Exp) (heq : Eq.{1} Exp (Exp.esnd p2) (Exp.esnd p)) =>
+              ExTy.mk (fun (A : Ty) => HasTy Gv p (Ty.tprod A B2)) A2
+                (Eq.subst.{1} Exp (fun (x : Exp) => HasTy Gv x (Ty.tprod A2 B2)) p2 p (proj_inj sndArgOf (Exp.esnd p2) (Exp.esnd p) heq) dp)
+        }
+    }
+
+    -- inl inversion: a typed `einl Bx vx` has `vx` of the left summand, and its type is a sum.
+    fn hasty_inl_inv(G: Ctx, e: Exp, T: Ty, d: HasTy G e T)
+      -> ((Bx : Ty) -> (vx : Exp) -> Eq.{1} Exp e (Exp.einl Bx vx)
+            -> ExTy (fun (A : Ty) => And2 (Eq.{1} Ty T (Ty.tsum A Bx)) (HasTy G vx A))) {
+        match d {
+          | HasTy.tvar(Gv, n2, T2, lk2) => fun (Bx : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.evar n2) (Exp.einl Bx vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (Eq.{1} Ty T2 (Ty.tsum A Bx)) (HasTy Gv vx A))) (exp_noconf (Exp.evar n2) (Exp.einl Bx vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tnat(Gv, n2) => fun (Bx : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.enat n2) (Exp.einl Bx vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (Eq.{1} Ty Ty.tnat (Ty.tsum A Bx)) (HasTy Gv vx A))) (exp_noconf (Exp.enat n2) (Exp.einl Bx vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tbool(Gv, b2) => fun (Bx : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.ebool b2) (Exp.einl Bx vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (Eq.{1} Ty Ty.tbool (Ty.tsum A Bx)) (HasTy Gv vx A))) (exp_noconf (Exp.ebool b2) (Exp.einl Bx vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tadd(Gv, a2, b2, da, db) => fun (Bx : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.eadd a2 b2) (Exp.einl Bx vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (Eq.{1} Ty Ty.tnat (Ty.tsum A Bx)) (HasTy Gv vx A))) (exp_noconf (Exp.eadd a2 b2) (Exp.einl Bx vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlet(Gv, a2, body2, A2, B2, da, dbody) => fun (Bx : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.elet a2 body2) (Exp.einl Bx vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (Eq.{1} Ty B2 (Ty.tsum A Bx)) (HasTy Gv vx A))) (exp_noconf (Exp.elet a2 body2) (Exp.einl Bx vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlam(Gv, A2, body2, B2, dbody) => fun (Bx : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.elam A2 body2) (Exp.einl Bx vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (Eq.{1} Ty (Ty.tarrow A2 B2) (Ty.tsum A Bx)) (HasTy Gv vx A))) (exp_noconf (Exp.elam A2 body2) (Exp.einl Bx vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tapp(Gv, f2, a2, A2, B2, df, da) => fun (Bx : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.eapp f2 a2) (Exp.einl Bx vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (Eq.{1} Ty B2 (Ty.tsum A Bx)) (HasTy Gv vx A))) (exp_noconf (Exp.eapp f2 a2) (Exp.einl Bx vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tif(Gv, cnd2, thn2, els2, Tif, dc, dt, de) => fun (Bx : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.eif cnd2 thn2 els2) (Exp.einl Bx vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (Eq.{1} Ty Tif (Ty.tsum A Bx)) (HasTy Gv vx A))) (exp_noconf (Exp.eif cnd2 thn2 els2) (Exp.einl Bx vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfix(Gv, Afix2, body2, dbody) => fun (Bx : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.efix Afix2 body2) (Exp.einl Bx vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (Eq.{1} Ty Afix2 (Ty.tsum A Bx)) (HasTy Gv vx A))) (exp_noconf (Exp.efix Afix2 body2) (Exp.einl Bx vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tpair(Gv, a2, b2, Ap, Bp, da, db) => fun (Bx : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.epair a2 b2) (Exp.einl Bx vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (Eq.{1} Ty (Ty.tprod Ap Bp) (Ty.tsum A Bx)) (HasTy Gv vx A))) (exp_noconf (Exp.epair a2 b2) (Exp.einl Bx vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfst(Gv, p2, Ap, Bp, dp) => fun (Bx : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.efst p2) (Exp.einl Bx vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (Eq.{1} Ty Ap (Ty.tsum A Bx)) (HasTy Gv vx A))) (exp_noconf (Exp.efst p2) (Exp.einl Bx vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tsnd(Gv, p2, Ap, Bp, dp) => fun (Bx : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.esnd p2) (Exp.einl Bx vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (Eq.{1} Ty Bp (Ty.tsum A Bx)) (HasTy Gv vx A))) (exp_noconf (Exp.esnd p2) (Exp.einl Bx vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinl(Gv, B2, v2, A2, dv) => fun (Bx : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.einl B2 v2) (Exp.einl Bx vx)) =>
+              ExTy.mk (fun (A : Ty) => And2 (Eq.{1} Ty (Ty.tsum A2 B2) (Ty.tsum A Bx)) (HasTy Gv vx A)) A2
+                (And2.mk (Eq.{1} Ty (Ty.tsum A2 B2) (Ty.tsum A2 Bx)) (HasTy Gv vx A2)
+                  (tsum_cong A2 A2 B2 Bx (Eq.refl.{1} Ty A2) (exp_ty_proj_inj inlTyOf (Exp.einl B2 v2) (Exp.einl Bx vx) heq))
+                  (Eq.subst.{1} Exp (fun (x : Exp) => HasTy Gv x A2) v2 vx (proj_inj inlValOf (Exp.einl B2 v2) (Exp.einl Bx vx) heq) dv))
+          | HasTy.tinr(Gv, Ai, v2, Bi, dv) => fun (Bx : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.einr Ai v2) (Exp.einl Bx vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (Eq.{1} Ty (Ty.tsum Ai Bi) (Ty.tsum A Bx)) (HasTy Gv vx A))) (exp_noconf (Exp.einr Ai v2) (Exp.einl Bx vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tcase(Gv, s2, l2, r2, Ac, Bc, Cc, ds, dl, dr) => fun (Bx : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.ecase s2 l2 r2) (Exp.einl Bx vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => And2 (Eq.{1} Ty Cc (Ty.tsum A Bx)) (HasTy Gv vx A))) (exp_noconf (Exp.ecase s2 l2 r2) (Exp.einl Bx vx) (Eq.refl.{1} Bool Bool.false) heq)
+        }
+    }
+    -- inr inversion (symmetric to inl).
+    fn hasty_inr_inv(G: Ctx, e: Exp, T: Ty, d: HasTy G e T)
+      -> ((Ax : Ty) -> (vx : Exp) -> Eq.{1} Exp e (Exp.einr Ax vx)
+            -> ExTy (fun (B : Ty) => And2 (Eq.{1} Ty T (Ty.tsum Ax B)) (HasTy G vx B))) {
+        match d {
+          | HasTy.tvar(Gv, n2, T2, lk2) => fun (Ax : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.evar n2) (Exp.einr Ax vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty T2 (Ty.tsum Ax B)) (HasTy Gv vx B))) (exp_noconf (Exp.evar n2) (Exp.einr Ax vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tnat(Gv, n2) => fun (Ax : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.enat n2) (Exp.einr Ax vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Ty.tnat (Ty.tsum Ax B)) (HasTy Gv vx B))) (exp_noconf (Exp.enat n2) (Exp.einr Ax vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tbool(Gv, b2) => fun (Ax : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.ebool b2) (Exp.einr Ax vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Ty.tbool (Ty.tsum Ax B)) (HasTy Gv vx B))) (exp_noconf (Exp.ebool b2) (Exp.einr Ax vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tadd(Gv, a2, b2, da, db) => fun (Ax : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.eadd a2 b2) (Exp.einr Ax vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Ty.tnat (Ty.tsum Ax B)) (HasTy Gv vx B))) (exp_noconf (Exp.eadd a2 b2) (Exp.einr Ax vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlet(Gv, a2, body2, A2, B2, da, dbody) => fun (Ax : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.elet a2 body2) (Exp.einr Ax vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty B2 (Ty.tsum Ax B)) (HasTy Gv vx B))) (exp_noconf (Exp.elet a2 body2) (Exp.einr Ax vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlam(Gv, A2, body2, B2, dbody) => fun (Ax : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.elam A2 body2) (Exp.einr Ax vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty (Ty.tarrow A2 B2) (Ty.tsum Ax B)) (HasTy Gv vx B))) (exp_noconf (Exp.elam A2 body2) (Exp.einr Ax vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tapp(Gv, f2, a2, A2, B2, df, da) => fun (Ax : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.eapp f2 a2) (Exp.einr Ax vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty B2 (Ty.tsum Ax B)) (HasTy Gv vx B))) (exp_noconf (Exp.eapp f2 a2) (Exp.einr Ax vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tif(Gv, cnd2, thn2, els2, Tif, dc, dt, de) => fun (Ax : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.eif cnd2 thn2 els2) (Exp.einr Ax vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Tif (Ty.tsum Ax B)) (HasTy Gv vx B))) (exp_noconf (Exp.eif cnd2 thn2 els2) (Exp.einr Ax vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfix(Gv, Afix2, body2, dbody) => fun (Ax : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.efix Afix2 body2) (Exp.einr Ax vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Afix2 (Ty.tsum Ax B)) (HasTy Gv vx B))) (exp_noconf (Exp.efix Afix2 body2) (Exp.einr Ax vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tpair(Gv, a2, b2, Ap, Bp, da, db) => fun (Ax : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.epair a2 b2) (Exp.einr Ax vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty (Ty.tprod Ap Bp) (Ty.tsum Ax B)) (HasTy Gv vx B))) (exp_noconf (Exp.epair a2 b2) (Exp.einr Ax vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfst(Gv, p2, Ap, Bp, dp) => fun (Ax : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.efst p2) (Exp.einr Ax vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Ap (Ty.tsum Ax B)) (HasTy Gv vx B))) (exp_noconf (Exp.efst p2) (Exp.einr Ax vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tsnd(Gv, p2, Ap, Bp, dp) => fun (Ax : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.esnd p2) (Exp.einr Ax vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Bp (Ty.tsum Ax B)) (HasTy Gv vx B))) (exp_noconf (Exp.esnd p2) (Exp.einr Ax vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinl(Gv, Bi, v2, Ai, dv) => fun (Ax : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.einl Bi v2) (Exp.einr Ax vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty (Ty.tsum Ai Bi) (Ty.tsum Ax B)) (HasTy Gv vx B))) (exp_noconf (Exp.einl Bi v2) (Exp.einr Ax vx) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinr(Gv, A2, v2, B2, dv) => fun (Ax : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.einr A2 v2) (Exp.einr Ax vx)) =>
+              ExTy.mk (fun (B : Ty) => And2 (Eq.{1} Ty (Ty.tsum A2 B2) (Ty.tsum Ax B)) (HasTy Gv vx B)) B2
+                (And2.mk (Eq.{1} Ty (Ty.tsum A2 B2) (Ty.tsum Ax B2)) (HasTy Gv vx B2)
+                  (tsum_cong A2 Ax B2 B2 (exp_ty_proj_inj inrTyOf (Exp.einr A2 v2) (Exp.einr Ax vx) heq) (Eq.refl.{1} Ty B2))
+                  (Eq.subst.{1} Exp (fun (x : Exp) => HasTy Gv x B2) v2 vx (proj_inj inrValOf (Exp.einr A2 v2) (Exp.einr Ax vx) heq) dv))
+          | HasTy.tcase(Gv, s2, l2, r2, Ac, Bc, Cc, ds, dl, dr) => fun (Ax : Ty) (vx : Exp) (heq : Eq.{1} Exp (Exp.ecase s2 l2 r2) (Exp.einr Ax vx)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : Ty) => And2 (Eq.{1} Ty Cc (Ty.tsum Ax B)) (HasTy Gv vx B))) (exp_noconf (Exp.ecase s2 l2 r2) (Exp.einr Ax vx) (Eq.refl.{1} Bool Bool.false) heq)
+        }
+    }
+    -- case inversion: a typed `ecase s l r : T` has `s : tsum A B`, `l : T` under A, `r : T` under B.
+    fn hasty_case_inv(G: Ctx, e: Exp, T: Ty, d: HasTy G e T)
+      -> ((s : Exp) -> (l : Exp) -> (r : Exp) -> Eq.{1} Exp e (Exp.ecase s l r)
+            -> ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (HasTy G s (Ty.tsum A B)) (And2 (HasTy (Ctx.cons A G) l T) (HasTy (Ctx.cons B G) r T))))) {
+        match d {
+          | HasTy.tvar(Gv, n2, T2, lk2) => fun (s : Exp) (l : Exp) (r : Exp) (heq : Eq.{1} Exp (Exp.evar n2) (Exp.ecase s l r)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (HasTy Gv s (Ty.tsum A B)) (And2 (HasTy (Ctx.cons A Gv) l T2) (HasTy (Ctx.cons B Gv) r T2))))) (exp_noconf (Exp.evar n2) (Exp.ecase s l r) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tnat(Gv, n2) => fun (s : Exp) (l : Exp) (r : Exp) (heq : Eq.{1} Exp (Exp.enat n2) (Exp.ecase s l r)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (HasTy Gv s (Ty.tsum A B)) (And2 (HasTy (Ctx.cons A Gv) l Ty.tnat) (HasTy (Ctx.cons B Gv) r Ty.tnat))))) (exp_noconf (Exp.enat n2) (Exp.ecase s l r) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tbool(Gv, b2) => fun (s : Exp) (l : Exp) (r : Exp) (heq : Eq.{1} Exp (Exp.ebool b2) (Exp.ecase s l r)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (HasTy Gv s (Ty.tsum A B)) (And2 (HasTy (Ctx.cons A Gv) l Ty.tbool) (HasTy (Ctx.cons B Gv) r Ty.tbool))))) (exp_noconf (Exp.ebool b2) (Exp.ecase s l r) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tadd(Gv, a2, b2, da, db) => fun (s : Exp) (l : Exp) (r : Exp) (heq : Eq.{1} Exp (Exp.eadd a2 b2) (Exp.ecase s l r)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (HasTy Gv s (Ty.tsum A B)) (And2 (HasTy (Ctx.cons A Gv) l Ty.tnat) (HasTy (Ctx.cons B Gv) r Ty.tnat))))) (exp_noconf (Exp.eadd a2 b2) (Exp.ecase s l r) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlet(Gv, a2, body2, A2, B2, da, dbody) => fun (s : Exp) (l : Exp) (r : Exp) (heq : Eq.{1} Exp (Exp.elet a2 body2) (Exp.ecase s l r)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (HasTy Gv s (Ty.tsum A B)) (And2 (HasTy (Ctx.cons A Gv) l B2) (HasTy (Ctx.cons B Gv) r B2))))) (exp_noconf (Exp.elet a2 body2) (Exp.ecase s l r) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tlam(Gv, A2, body2, B2, dbody) => fun (s : Exp) (l : Exp) (r : Exp) (heq : Eq.{1} Exp (Exp.elam A2 body2) (Exp.ecase s l r)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (HasTy Gv s (Ty.tsum A B)) (And2 (HasTy (Ctx.cons A Gv) l (Ty.tarrow A2 B2)) (HasTy (Ctx.cons B Gv) r (Ty.tarrow A2 B2)))))) (exp_noconf (Exp.elam A2 body2) (Exp.ecase s l r) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tapp(Gv, f2, a2, A2, B2, df, da) => fun (s : Exp) (l : Exp) (r : Exp) (heq : Eq.{1} Exp (Exp.eapp f2 a2) (Exp.ecase s l r)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (HasTy Gv s (Ty.tsum A B)) (And2 (HasTy (Ctx.cons A Gv) l B2) (HasTy (Ctx.cons B Gv) r B2))))) (exp_noconf (Exp.eapp f2 a2) (Exp.ecase s l r) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tif(Gv, cnd2, thn2, els2, Tif, dc, dt, de) => fun (s : Exp) (l : Exp) (r : Exp) (heq : Eq.{1} Exp (Exp.eif cnd2 thn2 els2) (Exp.ecase s l r)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (HasTy Gv s (Ty.tsum A B)) (And2 (HasTy (Ctx.cons A Gv) l Tif) (HasTy (Ctx.cons B Gv) r Tif))))) (exp_noconf (Exp.eif cnd2 thn2 els2) (Exp.ecase s l r) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfix(Gv, Afix2, body2, dbody) => fun (s : Exp) (l : Exp) (r : Exp) (heq : Eq.{1} Exp (Exp.efix Afix2 body2) (Exp.ecase s l r)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (HasTy Gv s (Ty.tsum A B)) (And2 (HasTy (Ctx.cons A Gv) l Afix2) (HasTy (Ctx.cons B Gv) r Afix2))))) (exp_noconf (Exp.efix Afix2 body2) (Exp.ecase s l r) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tpair(Gv, a2, b2, Ap, Bp, da, db) => fun (s : Exp) (l : Exp) (r : Exp) (heq : Eq.{1} Exp (Exp.epair a2 b2) (Exp.ecase s l r)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (HasTy Gv s (Ty.tsum A B)) (And2 (HasTy (Ctx.cons A Gv) l (Ty.tprod Ap Bp)) (HasTy (Ctx.cons B Gv) r (Ty.tprod Ap Bp)))))) (exp_noconf (Exp.epair a2 b2) (Exp.ecase s l r) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tfst(Gv, p2, Ap, Bp, dp) => fun (s : Exp) (l : Exp) (r : Exp) (heq : Eq.{1} Exp (Exp.efst p2) (Exp.ecase s l r)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (HasTy Gv s (Ty.tsum A B)) (And2 (HasTy (Ctx.cons A Gv) l Ap) (HasTy (Ctx.cons B Gv) r Ap))))) (exp_noconf (Exp.efst p2) (Exp.ecase s l r) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tsnd(Gv, p2, Ap, Bp, dp) => fun (s : Exp) (l : Exp) (r : Exp) (heq : Eq.{1} Exp (Exp.esnd p2) (Exp.ecase s l r)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (HasTy Gv s (Ty.tsum A B)) (And2 (HasTy (Ctx.cons A Gv) l Bp) (HasTy (Ctx.cons B Gv) r Bp))))) (exp_noconf (Exp.esnd p2) (Exp.ecase s l r) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinl(Gv, Bi, v2, Ai, dv) => fun (s : Exp) (l : Exp) (r : Exp) (heq : Eq.{1} Exp (Exp.einl Bi v2) (Exp.ecase s l r)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (HasTy Gv s (Ty.tsum A B)) (And2 (HasTy (Ctx.cons A Gv) l (Ty.tsum Ai Bi)) (HasTy (Ctx.cons B Gv) r (Ty.tsum Ai Bi)))))) (exp_noconf (Exp.einl Bi v2) (Exp.ecase s l r) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tinr(Gv, Ai, v2, Bi, dv) => fun (s : Exp) (l : Exp) (r : Exp) (heq : Eq.{1} Exp (Exp.einr Ai v2) (Exp.ecase s l r)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (HasTy Gv s (Ty.tsum A B)) (And2 (HasTy (Ctx.cons A Gv) l (Ty.tsum Ai Bi)) (HasTy (Ctx.cons B Gv) r (Ty.tsum Ai Bi)))))) (exp_noconf (Exp.einr Ai v2) (Exp.ecase s l r) (Eq.refl.{1} Bool Bool.false) heq)
+          | HasTy.tcase(Gv, s2, l2, r2, A2, B2, C2, ds, dl, dr) => fun (s : Exp) (l : Exp) (r : Exp) (heq : Eq.{1} Exp (Exp.ecase s2 l2 r2) (Exp.ecase s l r)) =>
+              ExTy.mk (fun (A : Ty) => ExTy (fun (B : Ty) => And2 (HasTy Gv s (Ty.tsum A B)) (And2 (HasTy (Ctx.cons A Gv) l C2) (HasTy (Ctx.cons B Gv) r C2)))) A2
+                (ExTy.mk (fun (B : Ty) => And2 (HasTy Gv s (Ty.tsum A2 B)) (And2 (HasTy (Ctx.cons A2 Gv) l C2) (HasTy (Ctx.cons B Gv) r C2))) B2
+                  (And2.mk (HasTy Gv s (Ty.tsum A2 B2)) (And2 (HasTy (Ctx.cons A2 Gv) l C2) (HasTy (Ctx.cons B2 Gv) r C2))
+                    (Eq.subst.{1} Exp (fun (x : Exp) => HasTy Gv x (Ty.tsum A2 B2)) s2 s (proj_inj caseScrutOf (Exp.ecase s2 l2 r2) (Exp.ecase s l r) heq) ds)
+                    (And2.mk (HasTy (Ctx.cons A2 Gv) l C2) (HasTy (Ctx.cons B2 Gv) r C2)
+                      (Eq.subst.{1} Exp (fun (x : Exp) => HasTy (Ctx.cons A2 Gv) x C2) l2 l (proj_inj caseLof (Exp.ecase s2 l2 r2) (Exp.ecase s l r) heq) dl)
+                      (Eq.subst.{1} Exp (fun (x : Exp) => HasTy (Ctx.cons B2 Gv) x C2) r2 r (proj_inj caseRof (Exp.ecase s2 l2 r2) (Exp.ecase s l r) heq) dr))))
+        }
+    }
+
+    -- ===== Small-step reduction relation and PRESERVATION =====
+    inductive Step : Exp -> Exp -> Prop
+      | s_add_l : (a : Exp) -> (a2 : Exp) -> (b : Exp) -> Step a a2 -> Step (Exp.eadd a b) (Exp.eadd a2 b)
+      | s_add_r : (a : Exp) -> (b : Exp) -> (b2 : Exp) -> Step b b2 -> Step (Exp.eadd a b) (Exp.eadd a b2)
+      | s_add   : (m : Nat) -> (n : Nat) -> Step (Exp.eadd (Exp.enat m) (Exp.enat n)) (Exp.enat (addN m n))
+      | s_let_a : (a : Exp) -> (a2 : Exp) -> (body : Exp) -> Step a a2 -> Step (Exp.elet a body) (Exp.elet a2 body)
+      | s_let   : (v : Exp) -> (body : Exp) -> Step (Exp.elet v body) (subst body Nat.zero v)
+      | s_app_l : (f : Exp) -> (f2 : Exp) -> (a : Exp) -> Step f f2 -> Step (Exp.eapp f a) (Exp.eapp f2 a)
+      | s_app_r : (f : Exp) -> (a : Exp) -> (a2 : Exp) -> Step a a2 -> Step (Exp.eapp f a) (Exp.eapp f a2)
+      | s_beta  : (A : Ty) -> (body : Exp) -> (v : Exp) -> Step (Exp.eapp (Exp.elam A body) v) (subst body Nat.zero v)
+      | s_if_c  : (c : Exp) -> (c2 : Exp) -> (t : Exp) -> (el : Exp) -> Step c c2 -> Step (Exp.eif c t el) (Exp.eif c2 t el)
+      | s_if_t  : (t : Exp) -> (el : Exp) -> Step (Exp.eif (Exp.ebool Bool.true) t el) t
+      | s_if_f  : (t : Exp) -> (el : Exp) -> Step (Exp.eif (Exp.ebool Bool.false) t el) el
+      | s_fix   : (A : Ty) -> (body : Exp) -> Step (Exp.efix A body) (subst body Nat.zero (Exp.efix A body))
+      | s_fst_l : (p : Exp) -> (p2 : Exp) -> Step p p2 -> Step (Exp.efst p) (Exp.efst p2)
+      | s_fst   : (a : Exp) -> (b : Exp) -> Step (Exp.efst (Exp.epair a b)) a
+      | s_snd_l : (p : Exp) -> (p2 : Exp) -> Step p p2 -> Step (Exp.esnd p) (Exp.esnd p2)
+      | s_snd   : (a : Exp) -> (b : Exp) -> Step (Exp.esnd (Exp.epair a b)) b
+      | s_case_l : (s : Exp) -> (s2 : Exp) -> (l : Exp) -> (r : Exp) -> Step s s2 -> Step (Exp.ecase s l r) (Exp.ecase s2 l r)
+      | s_case_inl : (B : Ty) -> (v : Exp) -> (l : Exp) -> (r : Exp) -> Step (Exp.ecase (Exp.einl B v) l r) (subst l Nat.zero v)
+      | s_case_inr : (A : Ty) -> (v : Exp) -> (l : Exp) -> (r : Exp) -> Step (Exp.ecase (Exp.einr A v) l r) (subst r Nat.zero v)

@@ -1,0 +1,405 @@
+
+    inductive Or (a : Prop) (b : Prop) : Prop | inl : a -> Or a b | inr : b -> Or a b
+
+    -- Boolean disjunction + the elimination we need (left-false ⇒ right-true).
+    fn orB(x: Bool) -> (Bool -> Bool) {
+        match x { | Bool.true => fun (y : Bool) => Bool.true | Bool.false => fun (y : Bool) => y }
+    }
+    def orB_false_left (x : Bool) (y : Bool)
+        : Eq.{1} Bool (orB(x)(y)) Bool.true -> Eq.{1} Bool x Bool.false -> Eq.{1} Bool y Bool.true :=
+      match x {
+        | Bool.true  => fun (h : Eq.{1} Bool (orB(Bool.true)(y)) Bool.true) (hxf : Eq.{1} Bool Bool.true Bool.false) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Bool y Bool.true)
+              (ff_ne_tt (Eq.symm.{1} Bool Bool.true Bool.false hxf))
+        | Bool.false => fun (h : Eq.{1} Bool (orB(Bool.false)(y)) Bool.true) (hxf : Eq.{1} Bool Bool.false Bool.false) => h
+      }
+
+    -- Case analysis on an (opaque) Bool, as a disjunction of equations.
+    def bool_cases (b : Bool) : Or (Eq.{1} Bool b Bool.true) (Eq.{1} Bool b Bool.false) :=
+      match b {
+        | Bool.true  => Or.inl (Eq.{1} Bool Bool.true Bool.true) (Eq.{1} Bool Bool.true Bool.false) (Eq.refl.{1} Bool Bool.true)
+        | Bool.false => Or.inr (Eq.{1} Bool Bool.false Bool.true) (Eq.{1} Bool Bool.false Bool.false) (Eq.refl.{1} Bool Bool.false)
+      }
+
+    -- Structural predicates used by canonical forms / progress.
+    fn isNil(G: Ctx) -> Bool { match G { | Ctx.nil => Bool.true | _ => Bool.false } }
+    fn isLam(e: Exp) -> Bool { match e { | Exp.elam(A, body) => Bool.true | _ => Bool.false } }
+    fn isNatLit(e: Exp) -> Bool { match e { | Exp.enat(n) => Bool.true | _ => Bool.false } }
+    fn isBoolLit(e: Exp) -> Bool { match e { | Exp.ebool(b) => Bool.true | _ => Bool.false } }
+    fn isPair(e: Exp) -> Bool { match e { | Exp.epair(a, b) => Bool.true | _ => Bool.false } }
+    fn isInl(e: Exp) -> Bool { match e { | Exp.einl(B, v) => Bool.true | _ => Bool.false } }
+    fn isInr(e: Exp) -> Bool { match e { | Exp.einr(A, v) => Bool.true | _ => Bool.false } }
+    fn isTnat(t: Ty) -> Bool { match t { | Ty.tnat => Bool.true | _ => Bool.false } }
+    fn isTbool(t: Ty) -> Bool { match t { | Ty.tbool => Bool.true | _ => Bool.false } }
+    fn isSome(o: OExp) -> Bool { match o { | OExp.osome(e) => Bool.true | _ => Bool.false } }
+
+    -- `omap` preserves some/none, so it preserves "can step".
+    def isSome_omap (f : Exp -> Exp) (o : OExp) : Eq.{1} Bool (isSome(omap f o)) (isSome(o)) :=
+      match o {
+        | OExp.onone    => Eq.refl.{1} Bool Bool.false
+        | OExp.osome(e) => Eq.refl.{1} Bool Bool.true
+      }
+
+    -- Extractors + value inversions: a term that tests as a literal/λ really is one.
+    fn natOf(e: Exp) -> Nat { match e { | Exp.enat(n) => n | _ => Nat.zero } }
+    fn boolOf(e: Exp) -> Bool { match e { | Exp.ebool(b) => b | _ => Bool.false } }
+    fn lamTyOf(e: Exp) -> Ty { match e { | Exp.elam(A, body) => A | _ => Ty.tnat } }
+    fn lamBodyOf(e: Exp) -> Exp { match e { | Exp.elam(A, body) => body | _ => Exp.enat(Nat.zero) } }
+    fn fstOf(e: Exp) -> Exp { match e { | Exp.epair(a, b) => a | _ => Exp.enat(Nat.zero) } }
+    fn sndOf(e: Exp) -> Exp { match e { | Exp.epair(a, b) => b | _ => Exp.enat(Nat.zero) } }
+    fn inlTyOf(e: Exp) -> Ty { match e { | Exp.einl(B, v) => B | _ => Ty.tnat } }
+    fn inlValOf(e: Exp) -> Exp { match e { | Exp.einl(B, v) => v | _ => Exp.enat(Nat.zero) } }
+    fn inrTyOf(e: Exp) -> Ty { match e { | Exp.einr(A, v) => A | _ => Ty.tnat } }
+    fn inrValOf(e: Exp) -> Exp { match e { | Exp.einr(A, v) => v | _ => Exp.enat(Nat.zero) } }
+    def natlit_inv (e : Exp) : Eq.{1} Bool (isNatLit(e)) Bool.true -> Eq.{1} Exp e (Exp.enat (natOf(e))) :=
+      match e {
+        | Exp.enat(n) => fun (h : Eq.{1} Bool (isNatLit(Exp.enat(n))) Bool.true) => Eq.refl.{1} Exp (Exp.enat n)
+        | Exp.evar(n) => fun (h : Eq.{1} Bool (isNatLit(Exp.evar(n))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.evar n) (Exp.enat (natOf(Exp.evar(n))))) (ff_ne_tt h)
+        | Exp.ebool(b) => fun (h : Eq.{1} Bool (isNatLit(Exp.ebool(b))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.ebool b) (Exp.enat (natOf(Exp.ebool(b))))) (ff_ne_tt h)
+        | Exp.eadd(a, b) => fun (h : Eq.{1} Bool (isNatLit(Exp.eadd(a, b))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.eadd a b) (Exp.enat (natOf(Exp.eadd(a, b))))) (ff_ne_tt h)
+        | Exp.elet(a, body) => fun (h : Eq.{1} Bool (isNatLit(Exp.elet(a, body))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.elet a body) (Exp.enat (natOf(Exp.elet(a, body))))) (ff_ne_tt h)
+        | Exp.elam(A, body) => fun (h : Eq.{1} Bool (isNatLit(Exp.elam(A, body))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.elam A body) (Exp.enat (natOf(Exp.elam(A, body))))) (ff_ne_tt h)
+        | Exp.eapp(f, a) => fun (h : Eq.{1} Bool (isNatLit(Exp.eapp(f, a))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.eapp f a) (Exp.enat (natOf(Exp.eapp(f, a))))) (ff_ne_tt h)
+        | Exp.eif(cnd, thn, els) => fun (h : Eq.{1} Bool (isNatLit(Exp.eif(cnd, thn, els))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.eif cnd thn els) (Exp.enat (natOf(Exp.eif(cnd, thn, els))))) (ff_ne_tt h)
+        | Exp.efix(A, body) => fun (h : Eq.{1} Bool (isNatLit(Exp.efix(A, body))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.efix A body) (Exp.enat (natOf(Exp.efix(A, body))))) (ff_ne_tt h)
+        | Exp.epair(a, b) => fun (h : Eq.{1} Bool (isNatLit(Exp.epair(a, b))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.epair a b) (Exp.enat (natOf(Exp.epair(a, b))))) (ff_ne_tt h)
+        | Exp.efst(p) => fun (h : Eq.{1} Bool (isNatLit(Exp.efst(p))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.efst p) (Exp.enat (natOf(Exp.efst(p))))) (ff_ne_tt h)
+        | Exp.esnd(p) => fun (h : Eq.{1} Bool (isNatLit(Exp.esnd(p))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.esnd p) (Exp.enat (natOf(Exp.esnd(p))))) (ff_ne_tt h)
+        | Exp.einl(B, v) => fun (h : Eq.{1} Bool (isNatLit(Exp.einl(B, v))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.einl B v) (Exp.enat (natOf(Exp.einl(B, v))))) (ff_ne_tt h)
+        | Exp.einr(A, v) => fun (h : Eq.{1} Bool (isNatLit(Exp.einr(A, v))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.einr A v) (Exp.enat (natOf(Exp.einr(A, v))))) (ff_ne_tt h)
+        | Exp.ecase(s, l, r) => fun (h : Eq.{1} Bool (isNatLit(Exp.ecase(s, l, r))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.ecase s l r) (Exp.enat (natOf(Exp.ecase(s, l, r))))) (ff_ne_tt h)
+      }
+    def boollit_inv (e : Exp) : Eq.{1} Bool (isBoolLit(e)) Bool.true -> Eq.{1} Exp e (Exp.ebool (boolOf(e))) :=
+      match e {
+        | Exp.ebool(b) => fun (h : Eq.{1} Bool (isBoolLit(Exp.ebool(b))) Bool.true) => Eq.refl.{1} Exp (Exp.ebool b)
+        | Exp.evar(n) => fun (h : Eq.{1} Bool (isBoolLit(Exp.evar(n))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.evar n) (Exp.ebool (boolOf(Exp.evar(n))))) (ff_ne_tt h)
+        | Exp.enat(n) => fun (h : Eq.{1} Bool (isBoolLit(Exp.enat(n))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.enat n) (Exp.ebool (boolOf(Exp.enat(n))))) (ff_ne_tt h)
+        | Exp.eadd(a, b) => fun (h : Eq.{1} Bool (isBoolLit(Exp.eadd(a, b))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.eadd a b) (Exp.ebool (boolOf(Exp.eadd(a, b))))) (ff_ne_tt h)
+        | Exp.elet(a, body) => fun (h : Eq.{1} Bool (isBoolLit(Exp.elet(a, body))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.elet a body) (Exp.ebool (boolOf(Exp.elet(a, body))))) (ff_ne_tt h)
+        | Exp.elam(A, body) => fun (h : Eq.{1} Bool (isBoolLit(Exp.elam(A, body))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.elam A body) (Exp.ebool (boolOf(Exp.elam(A, body))))) (ff_ne_tt h)
+        | Exp.eapp(f, a) => fun (h : Eq.{1} Bool (isBoolLit(Exp.eapp(f, a))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.eapp f a) (Exp.ebool (boolOf(Exp.eapp(f, a))))) (ff_ne_tt h)
+        | Exp.eif(cnd, thn, els) => fun (h : Eq.{1} Bool (isBoolLit(Exp.eif(cnd, thn, els))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.eif cnd thn els) (Exp.ebool (boolOf(Exp.eif(cnd, thn, els))))) (ff_ne_tt h)
+        | Exp.efix(A, body) => fun (h : Eq.{1} Bool (isBoolLit(Exp.efix(A, body))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.efix A body) (Exp.ebool (boolOf(Exp.efix(A, body))))) (ff_ne_tt h)
+        | Exp.epair(a, b) => fun (h : Eq.{1} Bool (isBoolLit(Exp.epair(a, b))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.epair a b) (Exp.ebool (boolOf(Exp.epair(a, b))))) (ff_ne_tt h)
+        | Exp.efst(p) => fun (h : Eq.{1} Bool (isBoolLit(Exp.efst(p))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.efst p) (Exp.ebool (boolOf(Exp.efst(p))))) (ff_ne_tt h)
+        | Exp.esnd(p) => fun (h : Eq.{1} Bool (isBoolLit(Exp.esnd(p))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.esnd p) (Exp.ebool (boolOf(Exp.esnd(p))))) (ff_ne_tt h)
+        | Exp.einl(B, v) => fun (h : Eq.{1} Bool (isBoolLit(Exp.einl(B, v))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.einl B v) (Exp.ebool (boolOf(Exp.einl(B, v))))) (ff_ne_tt h)
+        | Exp.einr(A, v) => fun (h : Eq.{1} Bool (isBoolLit(Exp.einr(A, v))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.einr A v) (Exp.ebool (boolOf(Exp.einr(A, v))))) (ff_ne_tt h)
+        | Exp.ecase(s, l, r) => fun (h : Eq.{1} Bool (isBoolLit(Exp.ecase(s, l, r))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.ecase s l r) (Exp.ebool (boolOf(Exp.ecase(s, l, r))))) (ff_ne_tt h)
+      }
+    def lam_inv (e : Exp) : Eq.{1} Bool (isLam(e)) Bool.true -> Eq.{1} Exp e (Exp.elam (lamTyOf(e)) (lamBodyOf(e))) :=
+      match e {
+        | Exp.elam(A, body) => fun (h : Eq.{1} Bool (isLam(Exp.elam(A, body))) Bool.true) => Eq.refl.{1} Exp (Exp.elam A body)
+        | Exp.evar(n) => fun (h : Eq.{1} Bool (isLam(Exp.evar(n))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.evar n) (Exp.elam (lamTyOf(Exp.evar(n))) (lamBodyOf(Exp.evar(n))))) (ff_ne_tt h)
+        | Exp.enat(n) => fun (h : Eq.{1} Bool (isLam(Exp.enat(n))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.enat n) (Exp.elam (lamTyOf(Exp.enat(n))) (lamBodyOf(Exp.enat(n))))) (ff_ne_tt h)
+        | Exp.ebool(b) => fun (h : Eq.{1} Bool (isLam(Exp.ebool(b))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.ebool b) (Exp.elam (lamTyOf(Exp.ebool(b))) (lamBodyOf(Exp.ebool(b))))) (ff_ne_tt h)
+        | Exp.eadd(a, b) => fun (h : Eq.{1} Bool (isLam(Exp.eadd(a, b))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.eadd a b) (Exp.elam (lamTyOf(Exp.eadd(a, b))) (lamBodyOf(Exp.eadd(a, b))))) (ff_ne_tt h)
+        | Exp.elet(a, body) => fun (h : Eq.{1} Bool (isLam(Exp.elet(a, body))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.elet a body) (Exp.elam (lamTyOf(Exp.elet(a, body))) (lamBodyOf(Exp.elet(a, body))))) (ff_ne_tt h)
+        | Exp.eapp(f, a) => fun (h : Eq.{1} Bool (isLam(Exp.eapp(f, a))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.eapp f a) (Exp.elam (lamTyOf(Exp.eapp(f, a))) (lamBodyOf(Exp.eapp(f, a))))) (ff_ne_tt h)
+        | Exp.eif(cnd, thn, els) => fun (h : Eq.{1} Bool (isLam(Exp.eif(cnd, thn, els))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.eif cnd thn els) (Exp.elam (lamTyOf(Exp.eif(cnd, thn, els))) (lamBodyOf(Exp.eif(cnd, thn, els))))) (ff_ne_tt h)
+        | Exp.efix(A, body) => fun (h : Eq.{1} Bool (isLam(Exp.efix(A, body))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.efix A body) (Exp.elam (lamTyOf(Exp.efix(A, body))) (lamBodyOf(Exp.efix(A, body))))) (ff_ne_tt h)
+        | Exp.epair(a, b) => fun (h : Eq.{1} Bool (isLam(Exp.epair(a, b))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.epair a b) (Exp.elam (lamTyOf(Exp.epair(a, b))) (lamBodyOf(Exp.epair(a, b))))) (ff_ne_tt h)
+        | Exp.efst(p) => fun (h : Eq.{1} Bool (isLam(Exp.efst(p))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.efst p) (Exp.elam (lamTyOf(Exp.efst(p))) (lamBodyOf(Exp.efst(p))))) (ff_ne_tt h)
+        | Exp.esnd(p) => fun (h : Eq.{1} Bool (isLam(Exp.esnd(p))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.esnd p) (Exp.elam (lamTyOf(Exp.esnd(p))) (lamBodyOf(Exp.esnd(p))))) (ff_ne_tt h)
+        | Exp.einl(B, v) => fun (h : Eq.{1} Bool (isLam(Exp.einl(B, v))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.einl B v) (Exp.elam (lamTyOf(Exp.einl(B, v))) (lamBodyOf(Exp.einl(B, v))))) (ff_ne_tt h)
+        | Exp.einr(A, v) => fun (h : Eq.{1} Bool (isLam(Exp.einr(A, v))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.einr A v) (Exp.elam (lamTyOf(Exp.einr(A, v))) (lamBodyOf(Exp.einr(A, v))))) (ff_ne_tt h)
+        | Exp.ecase(s, l, r) => fun (h : Eq.{1} Bool (isLam(Exp.ecase(s, l, r))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.ecase s l r) (Exp.elam (lamTyOf(Exp.ecase(s, l, r))) (lamBodyOf(Exp.ecase(s, l, r))))) (ff_ne_tt h)
+      }
+
+    def pair_inv (e : Exp) : Eq.{1} Bool (isPair(e)) Bool.true -> Eq.{1} Exp e (Exp.epair (fstOf(e)) (sndOf(e))) :=
+      match e {
+        | Exp.epair(a, b) => fun (h : Eq.{1} Bool (isPair(Exp.epair(a, b))) Bool.true) => Eq.refl.{1} Exp (Exp.epair a b)
+        | Exp.evar(n) => fun (h : Eq.{1} Bool (isPair(Exp.evar(n))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.evar n) (Exp.epair (fstOf(Exp.evar(n))) (sndOf(Exp.evar(n))))) (ff_ne_tt h)
+        | Exp.enat(n) => fun (h : Eq.{1} Bool (isPair(Exp.enat(n))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.enat n) (Exp.epair (fstOf(Exp.enat(n))) (sndOf(Exp.enat(n))))) (ff_ne_tt h)
+        | Exp.ebool(b) => fun (h : Eq.{1} Bool (isPair(Exp.ebool(b))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.ebool b) (Exp.epair (fstOf(Exp.ebool(b))) (sndOf(Exp.ebool(b))))) (ff_ne_tt h)
+        | Exp.eadd(a, b) => fun (h : Eq.{1} Bool (isPair(Exp.eadd(a, b))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.eadd a b) (Exp.epair (fstOf(Exp.eadd(a, b))) (sndOf(Exp.eadd(a, b))))) (ff_ne_tt h)
+        | Exp.elet(a, b) => fun (h : Eq.{1} Bool (isPair(Exp.elet(a, b))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.elet a b) (Exp.epair (fstOf(Exp.elet(a, b))) (sndOf(Exp.elet(a, b))))) (ff_ne_tt h)
+        | Exp.elam(A, body) => fun (h : Eq.{1} Bool (isPair(Exp.elam(A, body))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.elam A body) (Exp.epair (fstOf(Exp.elam(A, body))) (sndOf(Exp.elam(A, body))))) (ff_ne_tt h)
+        | Exp.eapp(f, a) => fun (h : Eq.{1} Bool (isPair(Exp.eapp(f, a))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.eapp f a) (Exp.epair (fstOf(Exp.eapp(f, a))) (sndOf(Exp.eapp(f, a))))) (ff_ne_tt h)
+        | Exp.eif(cnd, thn, els) => fun (h : Eq.{1} Bool (isPair(Exp.eif(cnd, thn, els))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.eif cnd thn els) (Exp.epair (fstOf(Exp.eif(cnd, thn, els))) (sndOf(Exp.eif(cnd, thn, els))))) (ff_ne_tt h)
+        | Exp.efix(A, body) => fun (h : Eq.{1} Bool (isPair(Exp.efix(A, body))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.efix A body) (Exp.epair (fstOf(Exp.efix(A, body))) (sndOf(Exp.efix(A, body))))) (ff_ne_tt h)
+        | Exp.efst(p) => fun (h : Eq.{1} Bool (isPair(Exp.efst(p))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.efst p) (Exp.epair (fstOf(Exp.efst(p))) (sndOf(Exp.efst(p))))) (ff_ne_tt h)
+        | Exp.esnd(p) => fun (h : Eq.{1} Bool (isPair(Exp.esnd(p))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.esnd p) (Exp.epair (fstOf(Exp.esnd(p))) (sndOf(Exp.esnd(p))))) (ff_ne_tt h)
+        | Exp.einl(B, v) => fun (h : Eq.{1} Bool (isPair(Exp.einl(B, v))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.einl B v) (Exp.epair (fstOf(Exp.einl(B, v))) (sndOf(Exp.einl(B, v))))) (ff_ne_tt h)
+        | Exp.einr(A, v) => fun (h : Eq.{1} Bool (isPair(Exp.einr(A, v))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.einr A v) (Exp.epair (fstOf(Exp.einr(A, v))) (sndOf(Exp.einr(A, v))))) (ff_ne_tt h)
+        | Exp.ecase(s, l, r) => fun (h : Eq.{1} Bool (isPair(Exp.ecase(s, l, r))) Bool.true) =>
+            False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.ecase s l r) (Exp.epair (fstOf(Exp.ecase(s, l, r))) (sndOf(Exp.ecase(s, l, r))))) (ff_ne_tt h)
+      }
+    def inl_inv (e : Exp) : Eq.{1} Bool (isInl(e)) Bool.true -> Eq.{1} Exp e (Exp.einl (inlTyOf(e)) (inlValOf(e))) :=
+      match e {
+        | Exp.einl(B, v) => fun (h : Eq.{1} Bool (isInl(Exp.einl(B, v))) Bool.true) => Eq.refl.{1} Exp (Exp.einl B v)
+        | Exp.evar(n) => fun (h : Eq.{1} Bool (isInl(Exp.evar(n))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.evar n) (Exp.einl (inlTyOf(Exp.evar(n))) (inlValOf(Exp.evar(n))))) (ff_ne_tt h)
+        | Exp.enat(n) => fun (h : Eq.{1} Bool (isInl(Exp.enat(n))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.enat n) (Exp.einl (inlTyOf(Exp.enat(n))) (inlValOf(Exp.enat(n))))) (ff_ne_tt h)
+        | Exp.ebool(b) => fun (h : Eq.{1} Bool (isInl(Exp.ebool(b))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.ebool b) (Exp.einl (inlTyOf(Exp.ebool(b))) (inlValOf(Exp.ebool(b))))) (ff_ne_tt h)
+        | Exp.eadd(a, b) => fun (h : Eq.{1} Bool (isInl(Exp.eadd(a, b))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.eadd a b) (Exp.einl (inlTyOf(Exp.eadd(a, b))) (inlValOf(Exp.eadd(a, b))))) (ff_ne_tt h)
+        | Exp.elet(a, b) => fun (h : Eq.{1} Bool (isInl(Exp.elet(a, b))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.elet a b) (Exp.einl (inlTyOf(Exp.elet(a, b))) (inlValOf(Exp.elet(a, b))))) (ff_ne_tt h)
+        | Exp.elam(A, body) => fun (h : Eq.{1} Bool (isInl(Exp.elam(A, body))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.elam A body) (Exp.einl (inlTyOf(Exp.elam(A, body))) (inlValOf(Exp.elam(A, body))))) (ff_ne_tt h)
+        | Exp.eapp(f, a) => fun (h : Eq.{1} Bool (isInl(Exp.eapp(f, a))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.eapp f a) (Exp.einl (inlTyOf(Exp.eapp(f, a))) (inlValOf(Exp.eapp(f, a))))) (ff_ne_tt h)
+        | Exp.eif(c, t, el) => fun (h : Eq.{1} Bool (isInl(Exp.eif(c, t, el))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.eif c t el) (Exp.einl (inlTyOf(Exp.eif(c, t, el))) (inlValOf(Exp.eif(c, t, el))))) (ff_ne_tt h)
+        | Exp.efix(A, body) => fun (h : Eq.{1} Bool (isInl(Exp.efix(A, body))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.efix A body) (Exp.einl (inlTyOf(Exp.efix(A, body))) (inlValOf(Exp.efix(A, body))))) (ff_ne_tt h)
+        | Exp.epair(a, b) => fun (h : Eq.{1} Bool (isInl(Exp.epair(a, b))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.epair a b) (Exp.einl (inlTyOf(Exp.epair(a, b))) (inlValOf(Exp.epair(a, b))))) (ff_ne_tt h)
+        | Exp.efst(p) => fun (h : Eq.{1} Bool (isInl(Exp.efst(p))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.efst p) (Exp.einl (inlTyOf(Exp.efst(p))) (inlValOf(Exp.efst(p))))) (ff_ne_tt h)
+        | Exp.esnd(p) => fun (h : Eq.{1} Bool (isInl(Exp.esnd(p))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.esnd p) (Exp.einl (inlTyOf(Exp.esnd(p))) (inlValOf(Exp.esnd(p))))) (ff_ne_tt h)
+        | Exp.einr(A, v) => fun (h : Eq.{1} Bool (isInl(Exp.einr(A, v))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.einr A v) (Exp.einl (inlTyOf(Exp.einr(A, v))) (inlValOf(Exp.einr(A, v))))) (ff_ne_tt h)
+        | Exp.ecase(s, l, r) => fun (h : Eq.{1} Bool (isInl(Exp.ecase(s, l, r))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.ecase s l r) (Exp.einl (inlTyOf(Exp.ecase(s, l, r))) (inlValOf(Exp.ecase(s, l, r))))) (ff_ne_tt h)
+      }
+    def inr_inv (e : Exp) : Eq.{1} Bool (isInr(e)) Bool.true -> Eq.{1} Exp e (Exp.einr (inrTyOf(e)) (inrValOf(e))) :=
+      match e {
+        | Exp.einr(A, v) => fun (h : Eq.{1} Bool (isInr(Exp.einr(A, v))) Bool.true) => Eq.refl.{1} Exp (Exp.einr A v)
+        | Exp.evar(n) => fun (h : Eq.{1} Bool (isInr(Exp.evar(n))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.evar n) (Exp.einr (inrTyOf(Exp.evar(n))) (inrValOf(Exp.evar(n))))) (ff_ne_tt h)
+        | Exp.enat(n) => fun (h : Eq.{1} Bool (isInr(Exp.enat(n))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.enat n) (Exp.einr (inrTyOf(Exp.enat(n))) (inrValOf(Exp.enat(n))))) (ff_ne_tt h)
+        | Exp.ebool(b) => fun (h : Eq.{1} Bool (isInr(Exp.ebool(b))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.ebool b) (Exp.einr (inrTyOf(Exp.ebool(b))) (inrValOf(Exp.ebool(b))))) (ff_ne_tt h)
+        | Exp.eadd(a, b) => fun (h : Eq.{1} Bool (isInr(Exp.eadd(a, b))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.eadd a b) (Exp.einr (inrTyOf(Exp.eadd(a, b))) (inrValOf(Exp.eadd(a, b))))) (ff_ne_tt h)
+        | Exp.elet(a, b) => fun (h : Eq.{1} Bool (isInr(Exp.elet(a, b))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.elet a b) (Exp.einr (inrTyOf(Exp.elet(a, b))) (inrValOf(Exp.elet(a, b))))) (ff_ne_tt h)
+        | Exp.elam(A, body) => fun (h : Eq.{1} Bool (isInr(Exp.elam(A, body))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.elam A body) (Exp.einr (inrTyOf(Exp.elam(A, body))) (inrValOf(Exp.elam(A, body))))) (ff_ne_tt h)
+        | Exp.eapp(f, a) => fun (h : Eq.{1} Bool (isInr(Exp.eapp(f, a))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.eapp f a) (Exp.einr (inrTyOf(Exp.eapp(f, a))) (inrValOf(Exp.eapp(f, a))))) (ff_ne_tt h)
+        | Exp.eif(c, t, el) => fun (h : Eq.{1} Bool (isInr(Exp.eif(c, t, el))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.eif c t el) (Exp.einr (inrTyOf(Exp.eif(c, t, el))) (inrValOf(Exp.eif(c, t, el))))) (ff_ne_tt h)
+        | Exp.efix(A, body) => fun (h : Eq.{1} Bool (isInr(Exp.efix(A, body))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.efix A body) (Exp.einr (inrTyOf(Exp.efix(A, body))) (inrValOf(Exp.efix(A, body))))) (ff_ne_tt h)
+        | Exp.epair(a, b) => fun (h : Eq.{1} Bool (isInr(Exp.epair(a, b))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.epair a b) (Exp.einr (inrTyOf(Exp.epair(a, b))) (inrValOf(Exp.epair(a, b))))) (ff_ne_tt h)
+        | Exp.efst(p) => fun (h : Eq.{1} Bool (isInr(Exp.efst(p))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.efst p) (Exp.einr (inrTyOf(Exp.efst(p))) (inrValOf(Exp.efst(p))))) (ff_ne_tt h)
+        | Exp.esnd(p) => fun (h : Eq.{1} Bool (isInr(Exp.esnd(p))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.esnd p) (Exp.einr (inrTyOf(Exp.esnd(p))) (inrValOf(Exp.esnd(p))))) (ff_ne_tt h)
+        | Exp.einl(B, v) => fun (h : Eq.{1} Bool (isInr(Exp.einl(B, v))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.einl B v) (Exp.einr (inrTyOf(Exp.einl(B, v))) (inrValOf(Exp.einl(B, v))))) (ff_ne_tt h)
+        | Exp.ecase(s, l, r) => fun (h : Eq.{1} Bool (isInr(Exp.ecase(s, l, r))) Bool.true) => False.rec.{0} (fun (_ : False) => Eq.{1} Exp (Exp.ecase s l r) (Exp.einr (inrTyOf(Exp.ecase(s, l, r))) (inrValOf(Exp.ecase(s, l, r))))) (ff_ne_tt h)
+      }
+
+    -- A variable cannot be looked up in the empty context (by induction on the lookup).
+    def nilLookupFalse (G : Ctx) (n : Nat) (T : Ty) (lk : Lookup G n T)
+        : Eq.{1} Bool (isNil(G)) Bool.true -> False :=
+      match lk {
+        | Lookup.here(T2, G2) => fun (h : Eq.{1} Bool (isNil(Ctx.cons T2 G2)) Bool.true) => ff_ne_tt h
+        | Lookup.there(T2, U2, G2, n2, lk2) => fun (h : Eq.{1} Bool (isNil(Ctx.cons U2 G2)) Bool.true) => ff_ne_tt h
+      }
+
+    -- CANONICAL FORMS: a well-typed value of arrow / nat / bool type is a λ / nat / bool.
+    fn canon_arrow(G: Ctx, e: Exp, ty: Ty, d: HasTy G e ty)
+      -> (Eq.{1} Bool (isValue(e)) Bool.true -> Eq.{1} Bool (isArrow(ty)) Bool.true -> Eq.{1} Bool (isLam(e)) Bool.true) {
+        match d {
+          | HasTy.tvar(G2, n2, T2, lk2) => fun (h1 : Eq.{1} Bool (isValue(Exp.evar(n2))) Bool.true) (h2 : Eq.{1} Bool (isArrow(T2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isLam(Exp.evar(n2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tnat(G2, n2) => fun (h1 : Eq.{1} Bool (isValue(Exp.enat(n2))) Bool.true) (h2 : Eq.{1} Bool (isArrow(Ty.tnat)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isLam(Exp.enat(n2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tbool(G2, b2) => fun (h1 : Eq.{1} Bool (isValue(Exp.ebool(b2))) Bool.true) (h2 : Eq.{1} Bool (isArrow(Ty.tbool)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isLam(Exp.ebool(b2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tadd(G2, a2, b2, da, db) => fun (h1 : Eq.{1} Bool (isValue(Exp.eadd(a2, b2))) Bool.true) (h2 : Eq.{1} Bool (isArrow(Ty.tnat)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isLam(Exp.eadd(a2, b2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tlet(G2, a2, body2, A2, B2, da, dbody) => fun (h1 : Eq.{1} Bool (isValue(Exp.elet(a2, body2))) Bool.true) (h2 : Eq.{1} Bool (isArrow(B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isLam(Exp.elet(a2, body2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tlam(G2, A2, body2, B2, dbody) => fun (h1 : Eq.{1} Bool (isValue(Exp.elam(A2, body2))) Bool.true) (h2 : Eq.{1} Bool (isArrow(Ty.tarrow A2 B2)) Bool.true) =>
+              Eq.refl.{1} Bool Bool.true
+          | HasTy.tapp(G2, f2, a2, A2, B2, df, da) => fun (h1 : Eq.{1} Bool (isValue(Exp.eapp(f2, a2))) Bool.true) (h2 : Eq.{1} Bool (isArrow(B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isLam(Exp.eapp(f2, a2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tif(G2, cnd2, thn2, els2, T2, dc, dt, de) => fun (h1 : Eq.{1} Bool (isValue(Exp.eif(cnd2, thn2, els2))) Bool.true) (h2 : Eq.{1} Bool (isArrow(T2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isLam(Exp.eif(cnd2, thn2, els2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tfix(G2, A2, body2, dbody) => fun (h1 : Eq.{1} Bool (isValue(Exp.efix(A2, body2))) Bool.true) (h2 : Eq.{1} Bool (isArrow(A2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isLam(Exp.efix(A2, body2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tpair(G2, a2, b2, A2, B2, da, db) => fun (h1 : Eq.{1} Bool (isValue(Exp.epair(a2, b2))) Bool.true) (h2 : Eq.{1} Bool (isArrow(Ty.tprod A2 B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isLam(Exp.epair(a2, b2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tfst(G2, p2, A2, B2, dp) => fun (h1 : Eq.{1} Bool (isValue(Exp.efst(p2))) Bool.true) (h2 : Eq.{1} Bool (isArrow(A2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isLam(Exp.efst(p2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tsnd(G2, p2, A2, B2, dp) => fun (h1 : Eq.{1} Bool (isValue(Exp.esnd(p2))) Bool.true) (h2 : Eq.{1} Bool (isArrow(B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isLam(Exp.esnd(p2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tinl(G2, B2, v2, A2, dv) => fun (h1 : Eq.{1} Bool (isValue(Exp.einl(B2, v2))) Bool.true) (h2 : Eq.{1} Bool (isArrow(Ty.tsum A2 B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isLam(Exp.einl(B2, v2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tinr(G2, A2, v2, B2, dv) => fun (h1 : Eq.{1} Bool (isValue(Exp.einr(A2, v2))) Bool.true) (h2 : Eq.{1} Bool (isArrow(Ty.tsum A2 B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isLam(Exp.einr(A2, v2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tcase(G2, s2, l2, r2, A2, B2, C2, ds, dl, dr) => fun (h1 : Eq.{1} Bool (isValue(Exp.ecase(s2, l2, r2))) Bool.true) (h2 : Eq.{1} Bool (isArrow(C2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isLam(Exp.ecase(s2, l2, r2))) Bool.true) (ff_ne_tt h1)
+        }
+    }
+    fn canon_nat(G: Ctx, e: Exp, ty: Ty, d: HasTy G e ty)
+      -> (Eq.{1} Bool (isValue(e)) Bool.true -> Eq.{1} Bool (isTnat(ty)) Bool.true -> Eq.{1} Bool (isNatLit(e)) Bool.true) {
+        match d {
+          | HasTy.tvar(G2, n2, T2, lk2) => fun (h1 : Eq.{1} Bool (isValue(Exp.evar(n2))) Bool.true) (h2 : Eq.{1} Bool (isTnat(T2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isNatLit(Exp.evar(n2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tnat(G2, n2) => fun (h1 : Eq.{1} Bool (isValue(Exp.enat(n2))) Bool.true) (h2 : Eq.{1} Bool (isTnat(Ty.tnat)) Bool.true) =>
+              Eq.refl.{1} Bool Bool.true
+          | HasTy.tbool(G2, b2) => fun (h1 : Eq.{1} Bool (isValue(Exp.ebool(b2))) Bool.true) (h2 : Eq.{1} Bool (isTnat(Ty.tbool)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isNatLit(Exp.ebool(b2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tadd(G2, a2, b2, da, db) => fun (h1 : Eq.{1} Bool (isValue(Exp.eadd(a2, b2))) Bool.true) (h2 : Eq.{1} Bool (isTnat(Ty.tnat)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isNatLit(Exp.eadd(a2, b2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tlet(G2, a2, body2, A2, B2, da, dbody) => fun (h1 : Eq.{1} Bool (isValue(Exp.elet(a2, body2))) Bool.true) (h2 : Eq.{1} Bool (isTnat(B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isNatLit(Exp.elet(a2, body2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tlam(G2, A2, body2, B2, dbody) => fun (h1 : Eq.{1} Bool (isValue(Exp.elam(A2, body2))) Bool.true) (h2 : Eq.{1} Bool (isTnat(Ty.tarrow A2 B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isNatLit(Exp.elam(A2, body2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tapp(G2, f2, a2, A2, B2, df, da) => fun (h1 : Eq.{1} Bool (isValue(Exp.eapp(f2, a2))) Bool.true) (h2 : Eq.{1} Bool (isTnat(B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isNatLit(Exp.eapp(f2, a2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tif(G2, cnd2, thn2, els2, T2, dc, dt, de) => fun (h1 : Eq.{1} Bool (isValue(Exp.eif(cnd2, thn2, els2))) Bool.true) (h2 : Eq.{1} Bool (isTnat(T2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isNatLit(Exp.eif(cnd2, thn2, els2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tfix(G2, A2, body2, dbody) => fun (h1 : Eq.{1} Bool (isValue(Exp.efix(A2, body2))) Bool.true) (h2 : Eq.{1} Bool (isTnat(A2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isNatLit(Exp.efix(A2, body2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tpair(G2, a2, b2, A2, B2, da, db) => fun (h1 : Eq.{1} Bool (isValue(Exp.epair(a2, b2))) Bool.true) (h2 : Eq.{1} Bool (isTnat(Ty.tprod A2 B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isNatLit(Exp.epair(a2, b2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tfst(G2, p2, A2, B2, dp) => fun (h1 : Eq.{1} Bool (isValue(Exp.efst(p2))) Bool.true) (h2 : Eq.{1} Bool (isTnat(A2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isNatLit(Exp.efst(p2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tsnd(G2, p2, A2, B2, dp) => fun (h1 : Eq.{1} Bool (isValue(Exp.esnd(p2))) Bool.true) (h2 : Eq.{1} Bool (isTnat(B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isNatLit(Exp.esnd(p2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tinl(G2, B2, v2, A2, dv) => fun (h1 : Eq.{1} Bool (isValue(Exp.einl(B2, v2))) Bool.true) (h2 : Eq.{1} Bool (isTnat(Ty.tsum A2 B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isNatLit(Exp.einl(B2, v2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tinr(G2, A2, v2, B2, dv) => fun (h1 : Eq.{1} Bool (isValue(Exp.einr(A2, v2))) Bool.true) (h2 : Eq.{1} Bool (isTnat(Ty.tsum A2 B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isNatLit(Exp.einr(A2, v2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tcase(G2, s2, l2, r2, A2, B2, C2, ds, dl, dr) => fun (h1 : Eq.{1} Bool (isValue(Exp.ecase(s2, l2, r2))) Bool.true) (h2 : Eq.{1} Bool (isTnat(C2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isNatLit(Exp.ecase(s2, l2, r2))) Bool.true) (ff_ne_tt h1)
+        }
+    }
+    fn canon_bool(G: Ctx, e: Exp, ty: Ty, d: HasTy G e ty)
+      -> (Eq.{1} Bool (isValue(e)) Bool.true -> Eq.{1} Bool (isTbool(ty)) Bool.true -> Eq.{1} Bool (isBoolLit(e)) Bool.true) {
+        match d {
+          | HasTy.tvar(G2, n2, T2, lk2) => fun (h1 : Eq.{1} Bool (isValue(Exp.evar(n2))) Bool.true) (h2 : Eq.{1} Bool (isTbool(T2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isBoolLit(Exp.evar(n2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tnat(G2, n2) => fun (h1 : Eq.{1} Bool (isValue(Exp.enat(n2))) Bool.true) (h2 : Eq.{1} Bool (isTbool(Ty.tnat)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isBoolLit(Exp.enat(n2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tbool(G2, b2) => fun (h1 : Eq.{1} Bool (isValue(Exp.ebool(b2))) Bool.true) (h2 : Eq.{1} Bool (isTbool(Ty.tbool)) Bool.true) =>
+              Eq.refl.{1} Bool Bool.true
+          | HasTy.tadd(G2, a2, b2, da, db) => fun (h1 : Eq.{1} Bool (isValue(Exp.eadd(a2, b2))) Bool.true) (h2 : Eq.{1} Bool (isTbool(Ty.tnat)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isBoolLit(Exp.eadd(a2, b2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tlet(G2, a2, body2, A2, B2, da, dbody) => fun (h1 : Eq.{1} Bool (isValue(Exp.elet(a2, body2))) Bool.true) (h2 : Eq.{1} Bool (isTbool(B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isBoolLit(Exp.elet(a2, body2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tlam(G2, A2, body2, B2, dbody) => fun (h1 : Eq.{1} Bool (isValue(Exp.elam(A2, body2))) Bool.true) (h2 : Eq.{1} Bool (isTbool(Ty.tarrow A2 B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isBoolLit(Exp.elam(A2, body2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tapp(G2, f2, a2, A2, B2, df, da) => fun (h1 : Eq.{1} Bool (isValue(Exp.eapp(f2, a2))) Bool.true) (h2 : Eq.{1} Bool (isTbool(B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isBoolLit(Exp.eapp(f2, a2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tif(G2, cnd2, thn2, els2, T2, dc, dt, de) => fun (h1 : Eq.{1} Bool (isValue(Exp.eif(cnd2, thn2, els2))) Bool.true) (h2 : Eq.{1} Bool (isTbool(T2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isBoolLit(Exp.eif(cnd2, thn2, els2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tfix(G2, A2, body2, dbody) => fun (h1 : Eq.{1} Bool (isValue(Exp.efix(A2, body2))) Bool.true) (h2 : Eq.{1} Bool (isTbool(A2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isBoolLit(Exp.efix(A2, body2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tpair(G2, a2, b2, A2, B2, da, db) => fun (h1 : Eq.{1} Bool (isValue(Exp.epair(a2, b2))) Bool.true) (h2 : Eq.{1} Bool (isTbool(Ty.tprod A2 B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isBoolLit(Exp.epair(a2, b2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tfst(G2, p2, A2, B2, dp) => fun (h1 : Eq.{1} Bool (isValue(Exp.efst(p2))) Bool.true) (h2 : Eq.{1} Bool (isTbool(A2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isBoolLit(Exp.efst(p2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tsnd(G2, p2, A2, B2, dp) => fun (h1 : Eq.{1} Bool (isValue(Exp.esnd(p2))) Bool.true) (h2 : Eq.{1} Bool (isTbool(B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isBoolLit(Exp.esnd(p2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tinl(G2, B2, v2, A2, dv) => fun (h1 : Eq.{1} Bool (isValue(Exp.einl(B2, v2))) Bool.true) (h2 : Eq.{1} Bool (isTbool(Ty.tsum A2 B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isBoolLit(Exp.einl(B2, v2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tinr(G2, A2, v2, B2, dv) => fun (h1 : Eq.{1} Bool (isValue(Exp.einr(A2, v2))) Bool.true) (h2 : Eq.{1} Bool (isTbool(Ty.tsum A2 B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isBoolLit(Exp.einr(A2, v2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tcase(G2, s2, l2, r2, A2, B2, C2, ds, dl, dr) => fun (h1 : Eq.{1} Bool (isValue(Exp.ecase(s2, l2, r2))) Bool.true) (h2 : Eq.{1} Bool (isTbool(C2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isBoolLit(Exp.ecase(s2, l2, r2))) Bool.true) (ff_ne_tt h1)
+        }
+    }
+    -- A well-typed VALUE of sum type is an injection (canonical forms for sums).
+    fn canon_sum(G: Ctx, e: Exp, ty: Ty, d: HasTy G e ty)
+      -> (Eq.{1} Bool (isValue(e)) Bool.true -> Eq.{1} Bool (isSum(ty)) Bool.true -> Or (Eq.{1} Bool (isInl(e)) Bool.true) (Eq.{1} Bool (isInr(e)) Bool.true)) {
+        match d {
+          | HasTy.tvar(G2, n2, T2, lk2) => fun (h1 : Eq.{1} Bool (isValue(Exp.evar(n2))) Bool.true) (h2 : Eq.{1} Bool (isSum(T2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Or (Eq.{1} Bool (isInl(Exp.evar(n2))) Bool.true) (Eq.{1} Bool (isInr(Exp.evar(n2))) Bool.true)) (ff_ne_tt h1)
+          | HasTy.tnat(G2, n2) => fun (h1 : Eq.{1} Bool (isValue(Exp.enat(n2))) Bool.true) (h2 : Eq.{1} Bool (isSum(Ty.tnat)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Or (Eq.{1} Bool (isInl(Exp.enat(n2))) Bool.true) (Eq.{1} Bool (isInr(Exp.enat(n2))) Bool.true)) (ff_ne_tt h2)
+          | HasTy.tbool(G2, b2) => fun (h1 : Eq.{1} Bool (isValue(Exp.ebool(b2))) Bool.true) (h2 : Eq.{1} Bool (isSum(Ty.tbool)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Or (Eq.{1} Bool (isInl(Exp.ebool(b2))) Bool.true) (Eq.{1} Bool (isInr(Exp.ebool(b2))) Bool.true)) (ff_ne_tt h2)
+          | HasTy.tadd(G2, a2, b2, da, db) => fun (h1 : Eq.{1} Bool (isValue(Exp.eadd(a2, b2))) Bool.true) (h2 : Eq.{1} Bool (isSum(Ty.tnat)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Or (Eq.{1} Bool (isInl(Exp.eadd(a2, b2))) Bool.true) (Eq.{1} Bool (isInr(Exp.eadd(a2, b2))) Bool.true)) (ff_ne_tt h1)
+          | HasTy.tlet(G2, a2, body2, A2, B2, da, dbody) => fun (h1 : Eq.{1} Bool (isValue(Exp.elet(a2, body2))) Bool.true) (h2 : Eq.{1} Bool (isSum(B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Or (Eq.{1} Bool (isInl(Exp.elet(a2, body2))) Bool.true) (Eq.{1} Bool (isInr(Exp.elet(a2, body2))) Bool.true)) (ff_ne_tt h1)
+          | HasTy.tlam(G2, A2, body2, B2, dbody) => fun (h1 : Eq.{1} Bool (isValue(Exp.elam(A2, body2))) Bool.true) (h2 : Eq.{1} Bool (isSum(Ty.tarrow A2 B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Or (Eq.{1} Bool (isInl(Exp.elam(A2, body2))) Bool.true) (Eq.{1} Bool (isInr(Exp.elam(A2, body2))) Bool.true)) (ff_ne_tt h2)
+          | HasTy.tapp(G2, f2, a2, A2, B2, df, da) => fun (h1 : Eq.{1} Bool (isValue(Exp.eapp(f2, a2))) Bool.true) (h2 : Eq.{1} Bool (isSum(B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Or (Eq.{1} Bool (isInl(Exp.eapp(f2, a2))) Bool.true) (Eq.{1} Bool (isInr(Exp.eapp(f2, a2))) Bool.true)) (ff_ne_tt h1)
+          | HasTy.tif(G2, cnd2, thn2, els2, T2, dc, dt, de) => fun (h1 : Eq.{1} Bool (isValue(Exp.eif(cnd2, thn2, els2))) Bool.true) (h2 : Eq.{1} Bool (isSum(T2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Or (Eq.{1} Bool (isInl(Exp.eif(cnd2, thn2, els2))) Bool.true) (Eq.{1} Bool (isInr(Exp.eif(cnd2, thn2, els2))) Bool.true)) (ff_ne_tt h1)
+          | HasTy.tfix(G2, A2, body2, dbody) => fun (h1 : Eq.{1} Bool (isValue(Exp.efix(A2, body2))) Bool.true) (h2 : Eq.{1} Bool (isSum(A2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Or (Eq.{1} Bool (isInl(Exp.efix(A2, body2))) Bool.true) (Eq.{1} Bool (isInr(Exp.efix(A2, body2))) Bool.true)) (ff_ne_tt h1)
+          | HasTy.tpair(G2, a2, b2, A2, B2, da, db) => fun (h1 : Eq.{1} Bool (isValue(Exp.epair(a2, b2))) Bool.true) (h2 : Eq.{1} Bool (isSum(Ty.tprod A2 B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Or (Eq.{1} Bool (isInl(Exp.epair(a2, b2))) Bool.true) (Eq.{1} Bool (isInr(Exp.epair(a2, b2))) Bool.true)) (ff_ne_tt h2)
+          | HasTy.tfst(G2, p2, A2, B2, dp) => fun (h1 : Eq.{1} Bool (isValue(Exp.efst(p2))) Bool.true) (h2 : Eq.{1} Bool (isSum(A2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Or (Eq.{1} Bool (isInl(Exp.efst(p2))) Bool.true) (Eq.{1} Bool (isInr(Exp.efst(p2))) Bool.true)) (ff_ne_tt h1)
+          | HasTy.tsnd(G2, p2, A2, B2, dp) => fun (h1 : Eq.{1} Bool (isValue(Exp.esnd(p2))) Bool.true) (h2 : Eq.{1} Bool (isSum(B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Or (Eq.{1} Bool (isInl(Exp.esnd(p2))) Bool.true) (Eq.{1} Bool (isInr(Exp.esnd(p2))) Bool.true)) (ff_ne_tt h1)
+          | HasTy.tinl(G2, B2, v2, A2, dv) => fun (h1 : Eq.{1} Bool (isValue(Exp.einl(B2, v2))) Bool.true) (h2 : Eq.{1} Bool (isSum(Ty.tsum A2 B2)) Bool.true) =>
+              Or.inl (Eq.{1} Bool (isInl(Exp.einl(B2, v2))) Bool.true) (Eq.{1} Bool (isInr(Exp.einl(B2, v2))) Bool.true) (Eq.refl.{1} Bool Bool.true)
+          | HasTy.tinr(G2, A2, v2, B2, dv) => fun (h1 : Eq.{1} Bool (isValue(Exp.einr(A2, v2))) Bool.true) (h2 : Eq.{1} Bool (isSum(Ty.tsum A2 B2)) Bool.true) =>
+              Or.inr (Eq.{1} Bool (isInl(Exp.einr(A2, v2))) Bool.true) (Eq.{1} Bool (isInr(Exp.einr(A2, v2))) Bool.true) (Eq.refl.{1} Bool Bool.true)
+          | HasTy.tcase(G2, s2, l2, r2, A2, B2, C2, ds, dl, dr) => fun (h1 : Eq.{1} Bool (isValue(Exp.ecase(s2, l2, r2))) Bool.true) (h2 : Eq.{1} Bool (isSum(C2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Or (Eq.{1} Bool (isInl(Exp.ecase(s2, l2, r2))) Bool.true) (Eq.{1} Bool (isInr(Exp.ecase(s2, l2, r2))) Bool.true)) (ff_ne_tt h1)
+        }
+    }
+    -- A well-typed VALUE of product type is a pair (canonical forms for products).
+    fn canon_prod(G: Ctx, e: Exp, ty: Ty, d: HasTy G e ty)
+      -> (Eq.{1} Bool (isValue(e)) Bool.true -> Eq.{1} Bool (isProd(ty)) Bool.true -> Eq.{1} Bool (isPair(e)) Bool.true) {
+        match d {
+          | HasTy.tvar(G2, n2, T2, lk2) => fun (h1 : Eq.{1} Bool (isValue(Exp.evar(n2))) Bool.true) (h2 : Eq.{1} Bool (isProd(T2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isPair(Exp.evar(n2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tnat(G2, n2) => fun (h1 : Eq.{1} Bool (isValue(Exp.enat(n2))) Bool.true) (h2 : Eq.{1} Bool (isProd(Ty.tnat)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isPair(Exp.enat(n2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tbool(G2, b2) => fun (h1 : Eq.{1} Bool (isValue(Exp.ebool(b2))) Bool.true) (h2 : Eq.{1} Bool (isProd(Ty.tbool)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isPair(Exp.ebool(b2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tadd(G2, a2, b2, da, db) => fun (h1 : Eq.{1} Bool (isValue(Exp.eadd(a2, b2))) Bool.true) (h2 : Eq.{1} Bool (isProd(Ty.tnat)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isPair(Exp.eadd(a2, b2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tlet(G2, a2, body2, A2, B2, da, dbody) => fun (h1 : Eq.{1} Bool (isValue(Exp.elet(a2, body2))) Bool.true) (h2 : Eq.{1} Bool (isProd(B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isPair(Exp.elet(a2, body2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tlam(G2, A2, body2, B2, dbody) => fun (h1 : Eq.{1} Bool (isValue(Exp.elam(A2, body2))) Bool.true) (h2 : Eq.{1} Bool (isProd(Ty.tarrow A2 B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isPair(Exp.elam(A2, body2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tapp(G2, f2, a2, A2, B2, df, da) => fun (h1 : Eq.{1} Bool (isValue(Exp.eapp(f2, a2))) Bool.true) (h2 : Eq.{1} Bool (isProd(B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isPair(Exp.eapp(f2, a2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tif(G2, cnd2, thn2, els2, T2, dc, dt, de) => fun (h1 : Eq.{1} Bool (isValue(Exp.eif(cnd2, thn2, els2))) Bool.true) (h2 : Eq.{1} Bool (isProd(T2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isPair(Exp.eif(cnd2, thn2, els2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tfix(G2, A2, body2, dbody) => fun (h1 : Eq.{1} Bool (isValue(Exp.efix(A2, body2))) Bool.true) (h2 : Eq.{1} Bool (isProd(A2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isPair(Exp.efix(A2, body2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tpair(G2, a2, b2, A2, B2, da, db) => fun (h1 : Eq.{1} Bool (isValue(Exp.epair(a2, b2))) Bool.true) (h2 : Eq.{1} Bool (isProd(Ty.tprod A2 B2)) Bool.true) =>
+              Eq.refl.{1} Bool Bool.true
+          | HasTy.tfst(G2, p2, A2, B2, dp) => fun (h1 : Eq.{1} Bool (isValue(Exp.efst(p2))) Bool.true) (h2 : Eq.{1} Bool (isProd(A2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isPair(Exp.efst(p2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tsnd(G2, p2, A2, B2, dp) => fun (h1 : Eq.{1} Bool (isValue(Exp.esnd(p2))) Bool.true) (h2 : Eq.{1} Bool (isProd(B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isPair(Exp.esnd(p2))) Bool.true) (ff_ne_tt h1)
+          | HasTy.tinl(G2, B2, v2, A2, dv) => fun (h1 : Eq.{1} Bool (isValue(Exp.einl(B2, v2))) Bool.true) (h2 : Eq.{1} Bool (isProd(Ty.tsum A2 B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isPair(Exp.einl(B2, v2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tinr(G2, A2, v2, B2, dv) => fun (h1 : Eq.{1} Bool (isValue(Exp.einr(A2, v2))) Bool.true) (h2 : Eq.{1} Bool (isProd(Ty.tsum A2 B2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isPair(Exp.einr(A2, v2))) Bool.true) (ff_ne_tt h2)
+          | HasTy.tcase(G2, s2, l2, r2, A2, B2, C2, ds, dl, dr) => fun (h1 : Eq.{1} Bool (isValue(Exp.ecase(s2, l2, r2))) Bool.true) (h2 : Eq.{1} Bool (isProd(C2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (isPair(Exp.ecase(s2, l2, r2))) Bool.true) (ff_ne_tt h1)
+        }
+    }

@@ -1,0 +1,109 @@
+
+    inductive And2 (a : Prop) (b : Prop) : Prop | mk : a -> b -> And2 a b
+    inductive ExTy (P : FTy -> Prop) : Prop | mk : (A : FTy) -> P A -> ExTy P
+
+    -- Type-constructor injectivity (junk projections + proj_inj).
+    fn arrowDom(t: FTy) -> FTy { match t { | FTy.tarrow(a, b) => a | FTy.tvar(n) => FTy.tnat | FTy.tnat => FTy.tnat | FTy.tall(a) => FTy.tnat } }
+    fn arrowCod(t: FTy) -> FTy { match t { | FTy.tarrow(a, b) => b | FTy.tvar(n) => FTy.tnat | FTy.tnat => FTy.tnat | FTy.tall(a) => FTy.tnat } }
+    fn allBody(t: FTy) -> FTy { match t { | FTy.tall(a) => a | FTy.tvar(n) => FTy.tnat | FTy.tnat => FTy.tnat | FTy.tarrow(a, b) => FTy.tnat } }
+    def typroj_inj (proj : FTy -> FTy) (x : FTy) (y : FTy) (h : Eq.{1} FTy x y) : Eq.{1} FTy (proj x) (proj y) :=
+      Eq.subst.{1} FTy (fun (z : FTy) => Eq.{1} FTy (proj x) (proj z)) x y h (Eq.refl.{1} FTy (proj x))
+    def tarrow_inj_dom (a : FTy) (b : FTy) (c : FTy) (d : FTy) (h : Eq.{1} FTy (FTy.tarrow a b) (FTy.tarrow c d)) : Eq.{1} FTy a c :=
+      typroj_inj arrowDom (FTy.tarrow a b) (FTy.tarrow c d) h
+    def tarrow_inj_cod (a : FTy) (b : FTy) (c : FTy) (d : FTy) (h : Eq.{1} FTy (FTy.tarrow a b) (FTy.tarrow c d)) : Eq.{1} FTy b d :=
+      typroj_inj arrowCod (FTy.tarrow a b) (FTy.tarrow c d) h
+    def tall_inj (a : FTy) (b : FTy) (h : Eq.{1} FTy (FTy.tall a) (FTy.tall b)) : Eq.{1} FTy a b :=
+      typroj_inj allBody (FTy.tall a) (FTy.tall b) h
+
+    -- λ inversion: a typed `elam A0 b0` has an arrow type with body typed under `cons A0`.
+    fn hasty_lam_inv(G: FCtx, e: FExp, T: FTy, d: FHasTy G e T)
+      -> ((A0 : FTy) -> (b0 : FExp) -> Eq.{1} FExp e (FExp.elam A0 b0)
+            -> ExTy (fun (B : FTy) => And2 (Eq.{1} FTy T (FTy.tarrow A0 B)) (FHasTy (FCtx.cons A0 G) b0 B))) {
+        match d {
+          | FHasTy.ftvar(G2, n2, T2, lk2) => fun (A0 : FTy) (b0 : FExp) (heq : Eq.{1} FExp (FExp.evar n2) (FExp.elam A0 b0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : FTy) => And2 (Eq.{1} FTy T2 (FTy.tarrow A0 B)) (FHasTy (FCtx.cons A0 G2) b0 B))) (exp_noconf (FExp.evar n2) (FExp.elam A0 b0) (Eq.refl.{1} Bool Bool.false) heq)
+          | FHasTy.ftnat(G2, n2) => fun (A0 : FTy) (b0 : FExp) (heq : Eq.{1} FExp (FExp.enat n2) (FExp.elam A0 b0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : FTy) => And2 (Eq.{1} FTy FTy.tnat (FTy.tarrow A0 B)) (FHasTy (FCtx.cons A0 G2) b0 B))) (exp_noconf (FExp.enat n2) (FExp.elam A0 b0) (Eq.refl.{1} Bool Bool.false) heq)
+          | FHasTy.ftlam(G2, A2, body2, B2, dbody) => fun (A0 : FTy) (b0 : FExp) (heq : Eq.{1} FExp (FExp.elam A2 body2) (FExp.elam A0 b0)) =>
+              ExTy.mk (fun (B : FTy) => And2 (Eq.{1} FTy (FTy.tarrow A2 B2) (FTy.tarrow A0 B)) (FHasTy (FCtx.cons A0 G2) b0 B)) B2
+                (And2.mk (Eq.{1} FTy (FTy.tarrow A2 B2) (FTy.tarrow A0 B2)) (FHasTy (FCtx.cons A0 G2) b0 B2)
+                  (Eq.subst.{1} FTy (fun (x : FTy) => Eq.{1} FTy (FTy.tarrow A2 B2) (FTy.tarrow x B2)) A2 A0 (etproj_inj lamTyOf (FExp.elam A2 body2) (FExp.elam A0 b0) heq) (Eq.refl.{1} FTy (FTy.tarrow A2 B2)))
+                  (Eq.subst.{1} FExp (fun (x : FExp) => FHasTy (FCtx.cons A0 G2) x B2) body2 b0 (eproj_inj lamBodyOf (FExp.elam A2 body2) (FExp.elam A0 b0) heq)
+                    (Eq.subst.{1} FTy (fun (x : FTy) => FHasTy (FCtx.cons x G2) body2 B2) A2 A0 (etproj_inj lamTyOf (FExp.elam A2 body2) (FExp.elam A0 b0) heq) dbody)))
+          | FHasTy.ftapp(G2, f2, a2, A2, B2, df, da) => fun (A0 : FTy) (b0 : FExp) (heq : Eq.{1} FExp (FExp.eapp f2 a2) (FExp.elam A0 b0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : FTy) => And2 (Eq.{1} FTy B2 (FTy.tarrow A0 B)) (FHasTy (FCtx.cons A0 G2) b0 B))) (exp_noconf (FExp.eapp f2 a2) (FExp.elam A0 b0) (Eq.refl.{1} Bool Bool.false) heq)
+          | FHasTy.fttlam(G2, body2, B2, dbody) => fun (A0 : FTy) (b0 : FExp) (heq : Eq.{1} FExp (FExp.etlam body2) (FExp.elam A0 b0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : FTy) => And2 (Eq.{1} FTy (FTy.tall B2) (FTy.tarrow A0 B)) (FHasTy (FCtx.cons A0 G2) b0 B))) (exp_noconf (FExp.etlam body2) (FExp.elam A0 b0) (Eq.refl.{1} Bool Bool.false) heq)
+          | FHasTy.fttapp(G2, f2, B2, T2, df) => fun (A0 : FTy) (b0 : FExp) (heq : Eq.{1} FExp (FExp.etapp f2 T2) (FExp.elam A0 b0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : FTy) => And2 (Eq.{1} FTy (tsubst B2 Nat.zero T2) (FTy.tarrow A0 B)) (FHasTy (FCtx.cons A0 G2) b0 B))) (exp_noconf (FExp.etapp f2 T2) (FExp.elam A0 b0) (Eq.refl.{1} Bool Bool.false) heq)
+        }
+    }
+
+    -- application inversion: `eapp f0 a0 : T` ⇒ ∃A, f0 : A→T and a0 : A.
+    fn hasty_app_inv(G: FCtx, e: FExp, T: FTy, d: FHasTy G e T)
+      -> ((f0 : FExp) -> (a0 : FExp) -> Eq.{1} FExp e (FExp.eapp f0 a0)
+            -> ExTy (fun (A : FTy) => And2 (FHasTy G f0 (FTy.tarrow A T)) (FHasTy G a0 A))) {
+        match d {
+          | FHasTy.ftvar(G2, n2, T2, lk2) => fun (f0 : FExp) (a0 : FExp) (heq : Eq.{1} FExp (FExp.evar n2) (FExp.eapp f0 a0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : FTy) => And2 (FHasTy G2 f0 (FTy.tarrow A T2)) (FHasTy G2 a0 A))) (exp_noconf (FExp.evar n2) (FExp.eapp f0 a0) (Eq.refl.{1} Bool Bool.false) heq)
+          | FHasTy.ftnat(G2, n2) => fun (f0 : FExp) (a0 : FExp) (heq : Eq.{1} FExp (FExp.enat n2) (FExp.eapp f0 a0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : FTy) => And2 (FHasTy G2 f0 (FTy.tarrow A FTy.tnat)) (FHasTy G2 a0 A))) (exp_noconf (FExp.enat n2) (FExp.eapp f0 a0) (Eq.refl.{1} Bool Bool.false) heq)
+          | FHasTy.ftlam(G2, A2, body2, B2, dbody) => fun (f0 : FExp) (a0 : FExp) (heq : Eq.{1} FExp (FExp.elam A2 body2) (FExp.eapp f0 a0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : FTy) => And2 (FHasTy G2 f0 (FTy.tarrow A (FTy.tarrow A2 B2))) (FHasTy G2 a0 A))) (exp_noconf (FExp.elam A2 body2) (FExp.eapp f0 a0) (Eq.refl.{1} Bool Bool.false) heq)
+          | FHasTy.ftapp(G2, f2, a2, A2, B2, df, da) => fun (f0 : FExp) (a0 : FExp) (heq : Eq.{1} FExp (FExp.eapp f2 a2) (FExp.eapp f0 a0)) =>
+              ExTy.mk (fun (A : FTy) => And2 (FHasTy G2 f0 (FTy.tarrow A B2)) (FHasTy G2 a0 A)) A2
+                (And2.mk (FHasTy G2 f0 (FTy.tarrow A2 B2)) (FHasTy G2 a0 A2)
+                  (Eq.subst.{1} FExp (fun (x : FExp) => FHasTy G2 x (FTy.tarrow A2 B2)) f2 f0 (eproj_inj appFof (FExp.eapp f2 a2) (FExp.eapp f0 a0) heq) df)
+                  (Eq.subst.{1} FExp (fun (x : FExp) => FHasTy G2 x A2) a2 a0 (eproj_inj appAof (FExp.eapp f2 a2) (FExp.eapp f0 a0) heq) da))
+          | FHasTy.fttlam(G2, body2, B2, dbody) => fun (f0 : FExp) (a0 : FExp) (heq : Eq.{1} FExp (FExp.etlam body2) (FExp.eapp f0 a0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : FTy) => And2 (FHasTy G2 f0 (FTy.tarrow A (FTy.tall B2))) (FHasTy G2 a0 A))) (exp_noconf (FExp.etlam body2) (FExp.eapp f0 a0) (Eq.refl.{1} Bool Bool.false) heq)
+          | FHasTy.fttapp(G2, f2, B2, T2, df) => fun (f0 : FExp) (a0 : FExp) (heq : Eq.{1} FExp (FExp.etapp f2 T2) (FExp.eapp f0 a0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (A : FTy) => And2 (FHasTy G2 f0 (FTy.tarrow A (tsubst B2 Nat.zero T2))) (FHasTy G2 a0 A))) (exp_noconf (FExp.etapp f2 T2) (FExp.eapp f0 a0) (Eq.refl.{1} Bool Bool.false) heq)
+        }
+    }
+
+    -- Λ inversion: `etlam b0 : T` ⇒ ∃B, T = ∀B and b0 : B under shiftCtx.
+    fn hasty_tlam_inv(G: FCtx, e: FExp, T: FTy, d: FHasTy G e T)
+      -> ((b0 : FExp) -> Eq.{1} FExp e (FExp.etlam b0)
+            -> ExTy (fun (B : FTy) => And2 (Eq.{1} FTy T (FTy.tall B)) (FHasTy (shiftCtx G) b0 B))) {
+        match d {
+          | FHasTy.ftvar(G2, n2, T2, lk2) => fun (b0 : FExp) (heq : Eq.{1} FExp (FExp.evar n2) (FExp.etlam b0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : FTy) => And2 (Eq.{1} FTy T2 (FTy.tall B)) (FHasTy (shiftCtx G2) b0 B))) (exp_noconf (FExp.evar n2) (FExp.etlam b0) (Eq.refl.{1} Bool Bool.false) heq)
+          | FHasTy.ftnat(G2, n2) => fun (b0 : FExp) (heq : Eq.{1} FExp (FExp.enat n2) (FExp.etlam b0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : FTy) => And2 (Eq.{1} FTy FTy.tnat (FTy.tall B)) (FHasTy (shiftCtx G2) b0 B))) (exp_noconf (FExp.enat n2) (FExp.etlam b0) (Eq.refl.{1} Bool Bool.false) heq)
+          | FHasTy.ftlam(G2, A2, body2, B2, dbody) => fun (b0 : FExp) (heq : Eq.{1} FExp (FExp.elam A2 body2) (FExp.etlam b0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : FTy) => And2 (Eq.{1} FTy (FTy.tarrow A2 B2) (FTy.tall B)) (FHasTy (shiftCtx G2) b0 B))) (exp_noconf (FExp.elam A2 body2) (FExp.etlam b0) (Eq.refl.{1} Bool Bool.false) heq)
+          | FHasTy.ftapp(G2, f2, a2, A2, B2, df, da) => fun (b0 : FExp) (heq : Eq.{1} FExp (FExp.eapp f2 a2) (FExp.etlam b0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : FTy) => And2 (Eq.{1} FTy B2 (FTy.tall B)) (FHasTy (shiftCtx G2) b0 B))) (exp_noconf (FExp.eapp f2 a2) (FExp.etlam b0) (Eq.refl.{1} Bool Bool.false) heq)
+          | FHasTy.fttlam(G2, body2, B2, dbody) => fun (b0 : FExp) (heq : Eq.{1} FExp (FExp.etlam body2) (FExp.etlam b0)) =>
+              ExTy.mk (fun (B : FTy) => And2 (Eq.{1} FTy (FTy.tall B2) (FTy.tall B)) (FHasTy (shiftCtx G2) b0 B)) B2
+                (And2.mk (Eq.{1} FTy (FTy.tall B2) (FTy.tall B2)) (FHasTy (shiftCtx G2) b0 B2)
+                  (Eq.refl.{1} FTy (FTy.tall B2))
+                  (Eq.subst.{1} FExp (fun (x : FExp) => FHasTy (shiftCtx G2) x B2) body2 b0 (eproj_inj tlamBodyOf (FExp.etlam body2) (FExp.etlam b0) heq) dbody))
+          | FHasTy.fttapp(G2, f2, B2, T2, df) => fun (b0 : FExp) (heq : Eq.{1} FExp (FExp.etapp f2 T2) (FExp.etlam b0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : FTy) => And2 (Eq.{1} FTy (tsubst B2 Nat.zero T2) (FTy.tall B)) (FHasTy (shiftCtx G2) b0 B))) (exp_noconf (FExp.etapp f2 T2) (FExp.etlam b0) (Eq.refl.{1} Bool Bool.false) heq)
+        }
+    }
+
+    -- type-application inversion: `etapp f0 T0 : T` ⇒ ∃B, f0 : ∀B and T = B{T0/0}.
+    fn hasty_tapp_inv(G: FCtx, e: FExp, T: FTy, d: FHasTy G e T)
+      -> ((f0 : FExp) -> (T0 : FTy) -> Eq.{1} FExp e (FExp.etapp f0 T0)
+            -> ExTy (fun (B : FTy) => And2 (FHasTy G f0 (FTy.tall B)) (Eq.{1} FTy T (tsubst B Nat.zero T0)))) {
+        match d {
+          | FHasTy.ftvar(G2, n2, T2, lk2) => fun (f0 : FExp) (T0 : FTy) (heq : Eq.{1} FExp (FExp.evar n2) (FExp.etapp f0 T0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : FTy) => And2 (FHasTy G2 f0 (FTy.tall B)) (Eq.{1} FTy T2 (tsubst B Nat.zero T0)))) (exp_noconf (FExp.evar n2) (FExp.etapp f0 T0) (Eq.refl.{1} Bool Bool.false) heq)
+          | FHasTy.ftnat(G2, n2) => fun (f0 : FExp) (T0 : FTy) (heq : Eq.{1} FExp (FExp.enat n2) (FExp.etapp f0 T0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : FTy) => And2 (FHasTy G2 f0 (FTy.tall B)) (Eq.{1} FTy FTy.tnat (tsubst B Nat.zero T0)))) (exp_noconf (FExp.enat n2) (FExp.etapp f0 T0) (Eq.refl.{1} Bool Bool.false) heq)
+          | FHasTy.ftlam(G2, A2, body2, B2, dbody) => fun (f0 : FExp) (T0 : FTy) (heq : Eq.{1} FExp (FExp.elam A2 body2) (FExp.etapp f0 T0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : FTy) => And2 (FHasTy G2 f0 (FTy.tall B)) (Eq.{1} FTy (FTy.tarrow A2 B2) (tsubst B Nat.zero T0)))) (exp_noconf (FExp.elam A2 body2) (FExp.etapp f0 T0) (Eq.refl.{1} Bool Bool.false) heq)
+          | FHasTy.ftapp(G2, f2, a2, A2, B2, df, da) => fun (f0 : FExp) (T0 : FTy) (heq : Eq.{1} FExp (FExp.eapp f2 a2) (FExp.etapp f0 T0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : FTy) => And2 (FHasTy G2 f0 (FTy.tall B)) (Eq.{1} FTy B2 (tsubst B Nat.zero T0)))) (exp_noconf (FExp.eapp f2 a2) (FExp.etapp f0 T0) (Eq.refl.{1} Bool Bool.false) heq)
+          | FHasTy.fttlam(G2, body2, B2, dbody) => fun (f0 : FExp) (T0 : FTy) (heq : Eq.{1} FExp (FExp.etlam body2) (FExp.etapp f0 T0)) =>
+              False.rec.{0} (fun (_ : False) => ExTy (fun (B : FTy) => And2 (FHasTy G2 f0 (FTy.tall B)) (Eq.{1} FTy (FTy.tall B2) (tsubst B Nat.zero T0)))) (exp_noconf (FExp.etlam body2) (FExp.etapp f0 T0) (Eq.refl.{1} Bool Bool.false) heq)
+          | FHasTy.fttapp(G2, f2, B2, T2, df) => fun (f0 : FExp) (T0 : FTy) (heq : Eq.{1} FExp (FExp.etapp f2 T2) (FExp.etapp f0 T0)) =>
+              ExTy.mk (fun (B : FTy) => And2 (FHasTy G2 f0 (FTy.tall B)) (Eq.{1} FTy (tsubst B2 Nat.zero T2) (tsubst B Nat.zero T0))) B2
+                (And2.mk (FHasTy G2 f0 (FTy.tall B2)) (Eq.{1} FTy (tsubst B2 Nat.zero T2) (tsubst B2 Nat.zero T0))
+                  (Eq.subst.{1} FExp (fun (x : FExp) => FHasTy G2 x (FTy.tall B2)) f2 f0 (eproj_inj tappFof (FExp.etapp f2 T2) (FExp.etapp f0 T0) heq) df)
+                  (Eq.subst.{1} FTy (fun (x : FTy) => Eq.{1} FTy (tsubst B2 Nat.zero T2) (tsubst B2 Nat.zero x)) T2 T0 (etproj_inj tappTyOf (FExp.etapp f2 T2) (FExp.etapp f0 T0) heq) (Eq.refl.{1} FTy (tsubst B2 Nat.zero T2))))
+        }
+    }

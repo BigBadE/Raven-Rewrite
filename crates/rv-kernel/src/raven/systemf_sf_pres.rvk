@@ -1,0 +1,48 @@
+
+    fn preservation(e: FExp, e2: FExp, st: Step e e2)
+      -> ((G : FCtx) -> (T : FTy) -> FHasTy G e T -> FHasTy G e2 T) {
+        match st {
+          | Step.s_app_l(f, f2, a, stf) => fun (G : FCtx) (T : FTy) (d : FHasTy G (FExp.eapp f a) T) =>
+              match hasty_app_inv G (FExp.eapp f a) T d f a (Eq.refl.{1} FExp (FExp.eapp f a)) {
+                | ExTy.mk(A, And2.mk(df, da)) =>
+                    FHasTy.ftapp G f2 a A T (stf.rec G (FTy.tarrow A T) df) da
+              }
+          | Step.s_app_r(f, a, a2, sta) => fun (G : FCtx) (T : FTy) (d : FHasTy G (FExp.eapp f a) T) =>
+              match hasty_app_inv G (FExp.eapp f a) T d f a (Eq.refl.{1} FExp (FExp.eapp f a)) {
+                | ExTy.mk(A, And2.mk(df, da)) =>
+                    FHasTy.ftapp G f a2 A T df (sta.rec G A da)
+              }
+          | Step.s_beta(A0, b, v) => fun (G : FCtx) (T : FTy) (d : FHasTy G (FExp.eapp (FExp.elam A0 b) v) T) =>
+              match hasty_app_inv G (FExp.eapp (FExp.elam A0 b) v) T d (FExp.elam A0 b) v (Eq.refl.{1} FExp (FExp.eapp (FExp.elam A0 b) v)) {
+                | ExTy.mk(A2, And2.mk(df, dv)) =>
+                    match hasty_lam_inv G (FExp.elam A0 b) (FTy.tarrow A2 T) df A0 b (Eq.refl.{1} FExp (FExp.elam A0 b)) {
+                      | ExTy.mk(B, And2.mk(eqArrow, dbody)) =>
+                          esubstTm_preserves A0 G b T v
+                            (Eq.subst.{1} FTy (fun (x : FTy) => FHasTy (FCtx.cons A0 G) b x) B T
+                               (Eq.symm.{1} FTy T B (tarrow_inj_cod A2 T A0 B eqArrow)) dbody)
+                            (Eq.subst.{1} FTy (fun (x : FTy) => FHasTy G v x) A2 A0
+                               (tarrow_inj_dom A2 T A0 B eqArrow) dv)
+                    }
+              }
+          | Step.s_tapp(f, f2, T0, stf) => fun (G : FCtx) (T : FTy) (d : FHasTy G (FExp.etapp f T0) T) =>
+              match hasty_tapp_inv G (FExp.etapp f T0) T d f T0 (Eq.refl.{1} FExp (FExp.etapp f T0)) {
+                | ExTy.mk(B, And2.mk(df, eqT)) =>
+                    Eq.subst.{1} FTy (fun (x : FTy) => FHasTy G (FExp.etapp f2 T0) x)
+                      (tsubst(B)(Nat.zero)(T0)) T (Eq.symm.{1} FTy T (tsubst(B)(Nat.zero)(T0)) eqT)
+                      (FHasTy.fttapp G f2 B T0 (stf.rec G (FTy.tall B) df))
+              }
+          | Step.s_ttbeta(b, T0) => fun (G : FCtx) (T : FTy) (d : FHasTy G (FExp.etapp (FExp.etlam b) T0) T) =>
+              match hasty_tapp_inv G (FExp.etapp (FExp.etlam b) T0) T d (FExp.etlam b) T0 (Eq.refl.{1} FExp (FExp.etapp (FExp.etlam b) T0)) {
+                | ExTy.mk(B, And2.mk(df, eqT)) =>
+                    match hasty_tlam_inv G (FExp.etlam b) (FTy.tall B) df b (Eq.refl.{1} FExp (FExp.etlam b)) {
+                      | ExTy.mk(B2, And2.mk(eqAll, dbody)) =>
+                          Eq.subst.{1} FTy (fun (x : FTy) => FHasTy G (esubstTy(b)(Nat.zero)(T0)) x)
+                            (tsubst(B2)(Nat.zero)(T0)) T
+                            (Eq.trans.{1} FTy (tsubst(B2)(Nat.zero)(T0)) (tsubst(B)(Nat.zero)(T0)) T
+                               (tsubst1_cong B2 B Nat.zero T0 (Eq.symm.{1} FTy B B2 (tall_inj B B2 eqAll)))
+                               (Eq.symm.{1} FTy T (tsubst(B)(Nat.zero)(T0)) eqT))
+                            (tysubst_preserves G b B2 T0 dbody)
+                    }
+              }
+        }
+    }

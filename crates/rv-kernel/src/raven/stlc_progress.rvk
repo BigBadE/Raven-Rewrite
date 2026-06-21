@@ -1,0 +1,126 @@
+
+    fn progress(G: Ctx, e: Exp, T: Ty, d: HasTy G e T)
+      -> (Eq.{1} Bool (isNil(G)) Bool.true -> Eq.{1} Bool (orB(isValue(e))(canStep(e))) Bool.true) {
+        match d {
+          | HasTy.tvar(G2, n2, T2, lk2) => fun (hnil : Eq.{1} Bool (isNil(G2)) Bool.true) =>
+              False.rec.{0} (fun (_ : False) => Eq.{1} Bool (orB(isValue(Exp.evar(n2)))(canStep(Exp.evar(n2)))) Bool.true) (nilLookupFalse G2 n2 T2 lk2 hnil)
+          | HasTy.tnat(G2, n2) => fun (hnil : Eq.{1} Bool (isNil(G2)) Bool.true) => Eq.refl.{1} Bool Bool.true
+          | HasTy.tbool(G2, b2) => fun (hnil : Eq.{1} Bool (isNil(G2)) Bool.true) => Eq.refl.{1} Bool Bool.true
+          | HasTy.tlam(G2, A2, body2, B2, dbody) => fun (hnil : Eq.{1} Bool (isNil(G2)) Bool.true) => Eq.refl.{1} Bool Bool.true
+          | HasTy.tadd(G2, a2, b2, da, db) => fun (hnil : Eq.{1} Bool (isNil(G2)) Bool.true) =>
+              match bool_cases(isValue(a2)) {
+                | Or.inl(eva) =>
+                    match bool_cases(isValue(b2)) {
+                      | Or.inl(evb) =>
+                          Eq.subst.{1} Exp (fun (x : Exp) => Eq.{1} Bool (isSome(step(Exp.eadd(x, b2)))) Bool.true)
+                            (Exp.enat (natOf(a2))) a2
+                            (Eq.symm.{1} Exp a2 (Exp.enat (natOf(a2))) (natlit_inv a2 (canon_nat G2 a2 Ty.tnat da eva (Eq.refl.{1} Bool Bool.true))))
+                            (Eq.subst.{1} Exp (fun (x : Exp) => Eq.{1} Bool (isSome(step(Exp.eadd(Exp.enat(natOf(a2)), x)))) Bool.true)
+                               (Exp.enat (natOf(b2))) b2
+                               (Eq.symm.{1} Exp b2 (Exp.enat (natOf(b2))) (natlit_inv b2 (canon_nat G2 b2 Ty.tnat db evb (Eq.refl.{1} Bool Bool.true))))
+                               (step_eadd_lit (natOf(a2)) (natOf(b2))))
+                      | Or.inr(evb) =>
+                          Eq.subst.{1} Exp (fun (x : Exp) => Eq.{1} Bool (isSome(step(Exp.eadd(x, b2)))) Bool.true)
+                            (Exp.enat (natOf(a2))) a2
+                            (Eq.symm.{1} Exp a2 (Exp.enat (natOf(a2))) (natlit_inv a2 (canon_nat G2 a2 Ty.tnat da eva (Eq.refl.{1} Bool Bool.true))))
+                            (Eq.trans.{1} Bool (isSome(step(Exp.eadd(Exp.enat(natOf(a2)), b2)))) (isSome(step(b2))) Bool.true
+                               (step_eadd_enat_r (natOf(a2)) b2 evb)
+                               (orB_false_left (isValue(b2)) (canStep(b2)) (db.rec hnil) evb))
+                    }
+                | Or.inr(eva) =>
+                    Eq.trans.{1} Bool (isSome(step(Exp.eadd(a2, b2)))) (isSome(step(a2))) Bool.true
+                      (step_eadd_l a2 b2 eva)
+                      (orB_false_left (isValue(a2)) (canStep(a2)) (da.rec hnil) eva)
+              }
+          | HasTy.tlet(G2, a2, body2, A2, B2, da, dbody) => fun (hnil : Eq.{1} Bool (isNil(G2)) Bool.true) =>
+              match bool_cases(isValue(a2)) {
+                | Or.inl(eva) => step_elet_val a2 body2 eva
+                | Or.inr(eva) =>
+                    Eq.trans.{1} Bool (isSome(step(Exp.elet(a2, body2)))) (isSome(step(a2))) Bool.true
+                      (step_elet_a a2 body2 eva)
+                      (orB_false_left (isValue(a2)) (canStep(a2)) (da.rec hnil) eva)
+              }
+          | HasTy.tif(G2, cnd2, thn2, els2, T2, dc, dt, de) => fun (hnil : Eq.{1} Bool (isNil(G2)) Bool.true) =>
+              match bool_cases(isValue(cnd2)) {
+                | Or.inl(evc) =>
+                    Eq.subst.{1} Exp (fun (x : Exp) => Eq.{1} Bool (isSome(step(Exp.eif(x, thn2, els2)))) Bool.true)
+                      (Exp.ebool (boolOf(cnd2))) cnd2
+                      (Eq.symm.{1} Exp cnd2 (Exp.ebool (boolOf(cnd2))) (boollit_inv cnd2 (canon_bool G2 cnd2 Ty.tbool dc evc (Eq.refl.{1} Bool Bool.true))))
+                      (step_eif_ebool (boolOf(cnd2)) thn2 els2)
+                | Or.inr(evc) =>
+                    Eq.trans.{1} Bool (isSome(step(Exp.eif(cnd2, thn2, els2)))) (isSome(step(cnd2))) Bool.true
+                      (step_eif_c cnd2 thn2 els2 evc)
+                      (orB_false_left (isValue(cnd2)) (canStep(cnd2)) (dc.rec hnil) evc)
+              }
+          | HasTy.tapp(G2, f2, a2, A2, B2, df, da) => fun (hnil : Eq.{1} Bool (isNil(G2)) Bool.true) =>
+              match bool_cases(isValue(f2)) {
+                | Or.inl(evf) =>
+                    Eq.subst.{1} Exp (fun (x : Exp) => Eq.{1} Bool (isSome(step(Exp.eapp(x, a2)))) Bool.true)
+                      (Exp.elam (lamTyOf(f2)) (lamBodyOf(f2))) f2
+                      (Eq.symm.{1} Exp f2 (Exp.elam (lamTyOf(f2)) (lamBodyOf(f2))) (lam_inv f2 (canon_arrow G2 f2 (Ty.tarrow A2 B2) df evf (Eq.refl.{1} Bool Bool.true))))
+                      (match bool_cases(isValue(a2)) {
+                        | Or.inl(eva) => step_eapp_beta (lamTyOf(f2)) (lamBodyOf(f2)) a2 eva
+                        | Or.inr(eva) =>
+                            Eq.trans.{1} Bool (isSome(step(Exp.eapp(Exp.elam(lamTyOf(f2), lamBodyOf(f2)), a2)))) (isSome(step(a2))) Bool.true
+                              (step_eapp_elam_r (lamTyOf(f2)) (lamBodyOf(f2)) a2 eva)
+                              (orB_false_left (isValue(a2)) (canStep(a2)) (da.rec hnil) eva)
+                      })
+                | Or.inr(evf) =>
+                    Eq.trans.{1} Bool (isSome(step(Exp.eapp(f2, a2)))) (isSome(step(f2))) Bool.true
+                      (step_eapp_l f2 a2 evf)
+                      (orB_false_left (isValue(f2)) (canStep(f2)) (df.rec hnil) evf)
+              }
+          | HasTy.tfix(G2, A2, body2, dbody) => fun (hnil : Eq.{1} Bool (isNil(G2)) Bool.true) =>
+              Eq.refl.{1} Bool Bool.true
+          | HasTy.tpair(G2, a2, b2, A2, B2, da, db) => fun (hnil : Eq.{1} Bool (isNil(G2)) Bool.true) =>
+              Eq.refl.{1} Bool Bool.true
+          | HasTy.tfst(G2, p2, A2, B2, dp) => fun (hnil : Eq.{1} Bool (isNil(G2)) Bool.true) =>
+              match bool_cases(isValue(p2)) {
+                | Or.inl(evp) =>
+                    Eq.subst.{1} Exp (fun (x : Exp) => Eq.{1} Bool (isSome(step(Exp.efst(x)))) Bool.true)
+                      (Exp.epair (fstOf(p2)) (sndOf(p2))) p2
+                      (Eq.symm.{1} Exp p2 (Exp.epair (fstOf(p2)) (sndOf(p2))) (pair_inv p2 (canon_prod G2 p2 (Ty.tprod A2 B2) dp evp (Eq.refl.{1} Bool Bool.true))))
+                      (step_efst_pair (fstOf(p2)) (sndOf(p2)))
+                | Or.inr(evp) =>
+                    Eq.trans.{1} Bool (isSome(step(Exp.efst(p2)))) (isSome(step(p2))) Bool.true
+                      (step_efst_l p2 evp)
+                      (orB_false_left (isValue(p2)) (canStep(p2)) (dp.rec hnil) evp)
+              }
+          | HasTy.tsnd(G2, p2, A2, B2, dp) => fun (hnil : Eq.{1} Bool (isNil(G2)) Bool.true) =>
+              match bool_cases(isValue(p2)) {
+                | Or.inl(evp) =>
+                    Eq.subst.{1} Exp (fun (x : Exp) => Eq.{1} Bool (isSome(step(Exp.esnd(x)))) Bool.true)
+                      (Exp.epair (fstOf(p2)) (sndOf(p2))) p2
+                      (Eq.symm.{1} Exp p2 (Exp.epair (fstOf(p2)) (sndOf(p2))) (pair_inv p2 (canon_prod G2 p2 (Ty.tprod A2 B2) dp evp (Eq.refl.{1} Bool Bool.true))))
+                      (step_esnd_pair (fstOf(p2)) (sndOf(p2)))
+                | Or.inr(evp) =>
+                    Eq.trans.{1} Bool (isSome(step(Exp.esnd(p2)))) (isSome(step(p2))) Bool.true
+                      (step_esnd_l p2 evp)
+                      (orB_false_left (isValue(p2)) (canStep(p2)) (dp.rec hnil) evp)
+              }
+          | HasTy.tinl(G2, B2, v2, A2, dv) => fun (hnil : Eq.{1} Bool (isNil(G2)) Bool.true) =>
+              Eq.refl.{1} Bool Bool.true
+          | HasTy.tinr(G2, A2, v2, B2, dv) => fun (hnil : Eq.{1} Bool (isNil(G2)) Bool.true) =>
+              Eq.refl.{1} Bool Bool.true
+          | HasTy.tcase(G2, s2, l2, r2, A2, B2, C2, ds, dl, dr) => fun (hnil : Eq.{1} Bool (isNil(G2)) Bool.true) =>
+              match bool_cases(isValue(s2)) {
+                | Or.inl(evs) =>
+                    match canon_sum G2 s2 (Ty.tsum A2 B2) ds evs (Eq.refl.{1} Bool Bool.true) {
+                      | Or.inl(hinl) =>
+                          Eq.subst.{1} Exp (fun (x : Exp) => Eq.{1} Bool (isSome(step(Exp.ecase(x, l2, r2)))) Bool.true)
+                            (Exp.einl (inlTyOf(s2)) (inlValOf(s2))) s2
+                            (Eq.symm.{1} Exp s2 (Exp.einl (inlTyOf(s2)) (inlValOf(s2))) (inl_inv s2 hinl))
+                            (step_ecase_inl (inlTyOf(s2)) (inlValOf(s2)) l2 r2)
+                      | Or.inr(hinr) =>
+                          Eq.subst.{1} Exp (fun (x : Exp) => Eq.{1} Bool (isSome(step(Exp.ecase(x, l2, r2)))) Bool.true)
+                            (Exp.einr (inrTyOf(s2)) (inrValOf(s2))) s2
+                            (Eq.symm.{1} Exp s2 (Exp.einr (inrTyOf(s2)) (inrValOf(s2))) (inr_inv s2 hinr))
+                            (step_ecase_inr (inrTyOf(s2)) (inrValOf(s2)) l2 r2)
+                    }
+                | Or.inr(evs) =>
+                    Eq.trans.{1} Bool (isSome(step(Exp.ecase(s2, l2, r2)))) (isSome(step(s2))) Bool.true
+                      (step_ecase_l s2 l2 r2 evs)
+                      (orB_false_left (isValue(s2)) (canStep(s2)) (ds.rec hnil) evs)
+              }
+        }
+    }

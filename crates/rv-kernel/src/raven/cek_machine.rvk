@@ -1,0 +1,170 @@
+
+    -- Values, environments, and continuations are ONE mutual inductive group: a value may
+    -- be a closure (capturing an environment) or a reified continuation `vkont` (a
+    -- resumption); an environment is a list of values; a continuation frame may hold values
+    -- and other continuations.
+    mutual {
+      inductive Val : Type
+        | vnat  : Nat -> Val
+        | vclos : Env -> Tm -> Val      -- ⟨ captured env , λ-body ⟩
+        | vkont : Kont -> Val           -- a reified resumption (first-class continuation)
+      inductive Env : Type
+        | enil  : Env
+        | econs : Val -> Env -> Env
+      inductive Kont : Type
+        | kdone : Kont
+        | kapp1 : Env -> Tm -> Kont -> Kont        -- evaluating the function; arg term + env pending
+        | kapp2 : Val -> Kont -> Kont              -- function value in hand; evaluating the argument
+        | kadd1 : Env -> Tm -> Kont -> Kont        -- evaluating the left summand; right term + env pending
+        | kadd2 : Nat -> Kont -> Kont              -- left summand computed; evaluating the right
+        | kifz  : Env -> Tm -> Tm -> Kont -> Kont  -- evaluating the scrutinee; both branches + env pending
+        | kop   : Kont -> Kont                     -- payload of a performed operation is being evaluated
+        | khEval : Tm -> Env -> Kont -> Kont       -- handler being evaluated; its body + env pending
+        | khandle : Val -> Kont -> Kont            -- an installed handler value around the running body
+        | kresume : Val -> Kont -> Kont            -- apply the returned function to this value, then continue
+    }
+
+    -- Environment lookup by de Bruijn index. Recurses on the *index* (a plain `Nat`), so it
+    -- is an ordinary solo recursion even though `Env` is a mutual member.
+    fn lookupEnv(n: Nat) -> (Env -> Val) {
+        match n {
+          | Nat.zero => fun (e : Env) =>
+              match e { | Env.enil => Val.vnat Nat.zero | Env.econs(v, rest) => v }
+          | Nat.succ(m) => fun (e : Env) =>
+              match e { | Env.enil => Val.vnat Nat.zero | Env.econs(v, rest) => lookupEnv(m)(rest) }
+        }
+    }
+
+    -- A machine state: "evaluate C under E with K", "return value V to K", a final answer,
+    -- or stuck (a type error the checker rules out).
+    inductive State : Type
+      | seval  : Tm -> Env -> Kont -> State
+      | sret   : Val -> Kont -> State
+      | sdone  : Val -> State
+      | sstuck : State
+
+    -- HANDLER SEARCH. `walkKont` walks a continuation down to the nearest installed handler
+    -- and fires it: it runs the handler body with the payload bound and the *original*
+    -- continuation (passed as `ko`) reified as the resumption `vkont ko`; the handler then
+    -- runs with the continuation that was below the handler. No handler ⇒ stuck.
+    --
+    -- It must recurse structurally over `Kont` (a mutual member), so it is written as a
+    -- mutual-function bundle over the whole group; `walkVal`/`walkEnv` are the (unused)
+    -- sibling members the bundle requires. Each returns `Kont -> Val -> State`, i.e. it is
+    -- applied to the original continuation `ko` and the payload `pv`.
+    fn walkVal(x: Val) -> (Kont -> (Val -> State)) {
+        match x {
+          | Val.vnat(n)      => fun (ko : Kont) => fun (pv : Val) => State.sstuck
+          | Val.vclos(e, b)  => fun (ko : Kont) => fun (pv : Val) => State.sstuck
+          | Val.vkont(kk)    => fun (ko : Kont) => fun (pv : Val) => State.sstuck
+        }
+    }
+    fn walkEnv(x: Env) -> (Kont -> (Val -> State)) {
+        match x {
+          | Env.enil         => fun (ko : Kont) => fun (pv : Val) => State.sstuck
+          | Env.econs(v, r)  => fun (ko : Kont) => fun (pv : Val) => State.sstuck
+        }
+    }
+    fn walkKont(k: Kont) -> (Kont -> (Val -> State)) {
+        match k {
+          | Kont.kdone => fun (ko : Kont) => fun (pv : Val) => State.sstuck
+          | Kont.khandle(vh, k2) => fun (ko : Kont) => fun (pv : Val) =>
+              match vh {
+                | Val.vclos(hcenv, hb) => State.seval hb (Env.econs pv hcenv) (Kont.kresume (Val.vkont ko) k2)
+                | Val.vnat(n) => State.sstuck
+                | Val.vkont(kk) => State.sstuck
+              }
+          | Kont.kapp1(e, a, k2)     => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.kapp2(vf, k2)       => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.kadd1(e, y, k2)     => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.kadd2(m, k2)        => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.kifz(e, t2, e2, k2) => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.kop(k2)             => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.khEval(b, e, k2)    => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.kresume(rv, k2)     => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+        }
+    }
+
+    fn isFinal(s: State) -> Bool {
+        match s { | State.sdone(v) => Bool.true | State.sstuck => Bool.true
+                 | State.seval(t, e, k) => Bool.false | State.sret(v, k) => Bool.false }
+    }
+
+    -- THE TRANSITION. One clause per (control shape) and per (continuation frame); a total
+    -- function and a *single* step — no search (the search lives in `walkKont`, invoked once
+    -- per performed operation), no substitution.
+    fn step(s: State) -> State {
+        match s {
+          | State.seval(t, env, k) =>
+              match t {
+                | Tm.var(n)         => State.sret (lookupEnv(n)(env)) k
+                | Tm.lit(n)         => State.sret (Val.vnat n) k
+                | Tm.lam(b)         => State.sret (Val.vclos env b) k
+                | Tm.app(f, a)      => State.seval f env (Kont.kapp1 env a k)
+                | Tm.add(x, y)      => State.seval x env (Kont.kadd1 env y k)
+                | Tm.ifz(c, t2, e2) => State.seval c env (Kont.kifz env t2 e2 k)
+                | Tm.op(a)          => State.seval a env (Kont.kop k)
+                | Tm.handle(b, h)   => State.seval h env (Kont.khEval b env k)
+              }
+          | State.sret(v, k) =>
+              match k {
+                | Kont.kdone => State.sdone v
+                | Kont.kapp1(env, a, k2) => State.seval a env (Kont.kapp2 v k2)
+                | Kont.kapp2(vf, k2) =>
+                    match vf {
+                      | Val.vclos(cenv, body) => State.seval body (Env.econs v cenv) k2
+                      | Val.vkont(kr) => State.sret v kr            -- applying a resumption: jump to it
+                      | Val.vnat(n) => State.sstuck
+                    }
+                | Kont.kadd1(env, y, k2) =>
+                    match v {
+                      | Val.vnat(m) => State.seval y env (Kont.kadd2 m k2)
+                      | Val.vclos(cenv, body) => State.sstuck
+                      | Val.vkont(kk) => State.sstuck
+                    }
+                | Kont.kadd2(m, k2) =>
+                    match v {
+                      | Val.vnat(n) => State.sret (Val.vnat (addN(m)(n))) k2
+                      | Val.vclos(cenv, body) => State.sstuck
+                      | Val.vkont(kk) => State.sstuck
+                    }
+                | Kont.kifz(env, t2, e2, k2) =>
+                    match v {
+                      | Val.vnat(n) => match n { | Nat.zero => State.seval t2 env k2 | Nat.succ(m) => State.seval e2 env k2 }
+                      | Val.vclos(cenv, body) => State.sstuck
+                      | Val.vkont(kk) => State.sstuck
+                    }
+                | Kont.kop(k2) => walkKont(k2)(k2)(v)                -- payload evaluated: find handler, resume = k2
+                | Kont.khEval(body, env2, k2) => State.seval body env2 (Kont.khandle v k2)  -- handler ready; run body
+                | Kont.khandle(vh, k2) => State.sret v k2            -- body finished normally: discard the handler
+                | Kont.kresume(rv, k2) =>
+                    match v {
+                      | Val.vclos(cenv, body) => State.seval body (Env.econs rv cenv) k2  -- apply (λresume. …) to the resumption
+                      | Val.vkont(kr) => State.sret rv kr
+                      | Val.vnat(n) => State.sstuck
+                    }
+              }
+          | State.sdone(v) => State.sdone v
+          | State.sstuck => State.sstuck
+        }
+    }
+
+    -- The fuelled driver: step until the state is final or the fuel runs out.
+    fn run(fuel: Nat) -> (State -> State) {
+        match fuel {
+          | Nat.zero    => fun (s : State) => s
+          | Nat.succ(k) => fun (s : State) =>
+              match isFinal(s) { | Bool.true => s | Bool.false => run(k)(step(s)) }
+        }
+    }
+
+    -- Load a closed term into the initial state (empty environment), and read a number out
+    -- of a final state.
+    def load (t : Tm) : State := State.seval t Env.enil Kont.kdone
+    def evalNat (fuel : Nat) (t : Tm) : Nat :=
+      match run(fuel)(load(t)) {
+        | State.sdone(v) => match v { | Val.vnat(n) => n | Val.vclos(env, b) => Nat.zero | Val.vkont(k) => Nat.zero }
+        | State.sret(v, k) => Nat.zero
+        | State.seval(t2, e, k) => Nat.zero
+        | State.sstuck => Nat.zero
+      }

@@ -1,0 +1,76 @@
+
+    -- liftSubF preserves the "respects" relation across a term binder.
+    def liftSub_respects (A : FTy) (G : FCtx) (G2 : FCtx) (s : Nat -> FExp)
+        (resp : (n : Nat) -> (U : FTy) -> FLookup G n U -> FHasTy G2 (s n) U)
+        (n : Nat) (U : FTy) : FLookup (FCtx.cons A G) n U -> FHasTy (FCtx.cons A G2) (liftSubF(s)(n)) U :=
+      match n {
+        | Nat.zero => fun (lk : FLookup (FCtx.cons A G) Nat.zero U) =>
+            Eq.subst.{1} FTy (fun (x : FTy) => FHasTy (FCtx.cons A G2) (FExp.evar Nat.zero) x) A U
+              (Eq.symm.{1} FTy U A (flookup_zero_inv (FCtx.cons A G) Nat.zero U lk A G (Eq.refl.{1} FCtx (FCtx.cons A G)) (Eq.refl.{1} Nat Nat.zero)))
+              (FHasTy.ftvar (FCtx.cons A G2) Nat.zero A (FLookup.here G2 A))
+        | Nat.succ(m) => fun (lk : FLookup (FCtx.cons A G) (Nat.succ m) U) =>
+            FHasTy_tmweaken G2 (s m) U
+              (resp m U (flookup_succ_inv (FCtx.cons A G) (Nat.succ m) U lk A G m (Eq.refl.{1} FCtx (FCtx.cons A G)) (Eq.refl.{1} Nat (Nat.succ m))))
+              Nat.zero A
+      }
+
+    -- liftSubTyF preserves the "respects" relation across a type binder (uses type weakening).
+    def liftSubTy_respects (G : FCtx) (G2 : FCtx) (s : Nat -> FExp)
+        (resp : (n : Nat) -> (U : FTy) -> FLookup G n U -> FHasTy G2 (s n) U)
+        (n : Nat) (U : FTy) : FLookup (shiftCtx G) n U -> FHasTy (shiftCtx G2) (liftSubTyF(s)(n)) U :=
+      fun (lk : FLookup (shiftCtx G) n U) =>
+        match flookup_shiftCtx_inv(G)(n)(U)(lk) {
+          | ExTy.mk(T0, And2.mk(eqU, lk0)) =>
+              Eq.subst.{1} FTy (fun (x : FTy) => FHasTy (shiftCtx G2) (eshiftTy(s(n))(Nat.zero)) x) (tshift(T0)(Nat.zero)) U
+                (Eq.symm.{1} FTy U (tshift(T0)(Nat.zero)) eqU)
+                (Eq.subst.{1} FCtx (fun (g : FCtx) => FHasTy g (eshiftTy(s(n))(Nat.zero)) (tshift(T0)(Nat.zero)))
+                   (shiftCtxAt(G2)(Nat.zero)) (shiftCtx G2) (shiftCtxAt0_eq G2)
+                   (FHasTy_tyweaken G2 (s(n)) T0 (resp n T0 lk0) Nat.zero))
+        }
+
+    -- THE SUBSTITUTION LEMMA (parallel form), by induction on the typing derivation.
+    fn subst_lemma(G: FCtx, e: FExp, T: FTy, d: FHasTy G e T)
+      -> ((G2 : FCtx) -> (s : Nat -> FExp)
+            -> ((n : Nat) -> (U : FTy) -> FLookup G n U -> FHasTy G2 (s n) U)
+            -> FHasTy G2 (applySub(e)(s)) T) {
+        match d {
+          | FHasTy.ftvar(Gv, n2, T2, lk2) => fun (G2 : FCtx) (s : Nat -> FExp) (resp : (n : Nat) -> (U : FTy) -> FLookup Gv n U -> FHasTy G2 (s n) U) =>
+              resp n2 T2 lk2
+          | FHasTy.ftnat(Gv, n2) => fun (G2 : FCtx) (s : Nat -> FExp) (resp : (n : Nat) -> (U : FTy) -> FLookup Gv n U -> FHasTy G2 (s n) U) =>
+              FHasTy.ftnat G2 n2
+          | FHasTy.ftlam(Gv, A2, b2, B2, dbody) => fun (G2 : FCtx) (s : Nat -> FExp) (resp : (n : Nat) -> (U : FTy) -> FLookup Gv n U -> FHasTy G2 (s n) U) =>
+              FHasTy.ftlam G2 A2 (applySub(b2)(liftSubF(s))) B2
+                (dbody.rec (FCtx.cons A2 G2) (liftSubF(s)) (liftSub_respects A2 Gv G2 s resp))
+          | FHasTy.ftapp(Gv, f2, a2, A2, B2, df, da) => fun (G2 : FCtx) (s : Nat -> FExp) (resp : (n : Nat) -> (U : FTy) -> FLookup Gv n U -> FHasTy G2 (s n) U) =>
+              FHasTy.ftapp G2 (applySub(f2)(s)) (applySub(a2)(s)) A2 B2 (df.rec G2 s resp) (da.rec G2 s resp)
+          | FHasTy.fttlam(Gv, b2, B2, dbody) => fun (G2 : FCtx) (s : Nat -> FExp) (resp : (n : Nat) -> (U : FTy) -> FLookup Gv n U -> FHasTy G2 (s n) U) =>
+              FHasTy.fttlam G2 (applySub(b2)(liftSubTyF(s))) B2
+                (dbody.rec (shiftCtx G2) (liftSubTyF(s)) (liftSubTy_respects Gv G2 s resp))
+          | FHasTy.fttapp(Gv, f2, B2, T2, df) => fun (G2 : FCtx) (s : Nat -> FExp) (resp : (n : Nat) -> (U : FTy) -> FLookup Gv n U -> FHasTy G2 (s n) U) =>
+              FHasTy.fttapp G2 (applySub(f2)(s)) B2 T2 (df.rec G2 s resp)
+        }
+    }
+
+    -- The single substitution `atSubjF 0 v` respects (cons A G) ⇝ G when v : A.
+    def atSub0_respects (A : FTy) (G : FCtx) (v : FExp) (dv : FHasTy G v A)
+        (n : Nat) (U : FTy) : FLookup (FCtx.cons A G) n U -> FHasTy G (atSubjF(Nat.zero)(v)(n)) U :=
+      match n {
+        | Nat.zero => fun (lk : FLookup (FCtx.cons A G) Nat.zero U) =>
+            Eq.subst.{1} FTy (fun (x : FTy) => FHasTy G v x) A U
+              (Eq.symm.{1} FTy U A (flookup_zero_inv (FCtx.cons A G) Nat.zero U lk A G (Eq.refl.{1} FCtx (FCtx.cons A G)) (Eq.refl.{1} Nat Nat.zero)))
+              dv
+        | Nat.succ(m) => fun (lk : FLookup (FCtx.cons A G) (Nat.succ m) U) =>
+            FHasTy.ftvar G m U (flookup_succ_inv (FCtx.cons A G) (Nat.succ m) U lk A G m (Eq.refl.{1} FCtx (FCtx.cons A G)) (Eq.refl.{1} Nat (Nat.succ m)))
+      }
+
+    -- Substitution preserves typing (β case), in applySub form then bridged to esubstTm.
+    def subst_preserves (A : FTy) (G : FCtx) (b : FExp) (T : FTy) (v : FExp)
+        (dbody : FHasTy (FCtx.cons A G) b T) (dv : FHasTy G v A)
+        : FHasTy G (applySub(b)(atSubjF(Nat.zero)(v))) T :=
+      subst_lemma (FCtx.cons A G) b T dbody G (atSubjF(Nat.zero)(v)) (atSub0_respects A G v dv)
+    def esubstTm_preserves (A : FTy) (G : FCtx) (b : FExp) (T : FTy) (v : FExp)
+        (dbody : FHasTy (FCtx.cons A G) b T) (dv : FHasTy G v A)
+        : FHasTy G (esubstTm(b)(Nat.zero)(v)) T :=
+      Eq.subst.{1} FExp (fun (x : FExp) => FHasTy G x T) (applySub(b)(atSubjF(Nat.zero)(v))) (esubstTm(b)(Nat.zero)(v))
+        (Eq.symm.{1} FExp (esubstTm(b)(Nat.zero)(v)) (applySub(b)(atSubjF(Nat.zero)(v))) (subst_bridge(b)(Nat.zero)(v)))
+        (subst_preserves A G b T v dbody dv)

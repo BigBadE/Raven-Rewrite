@@ -1,0 +1,69 @@
+
+    def unInje (w : VE) (d : Env) : Env := match w { | VE.injv(x) => d | VE.inje(y) => y }
+    def inje_inj (a : Env) (b : Env) (h : Eq.{1} VE (VE.inje a) (VE.inje b)) : Eq.{1} Env a b :=
+      congrArg.{1, 1} VE Env (fun (w : VE) => unInje w a) (VE.inje a) (VE.inje b) h
+    def unInjc (w : TC) (d : Ctx) : Ctx := match w { | TC.injt(x) => d | TC.injc(y) => y }
+    def injc_inj (a : Ctx) (b : Ctx) (h : Eq.{1} TC (TC.injc a) (TC.injc b)) : Eq.{1} Ctx a b :=
+      congrArg.{1, 1} TC Ctx (fun (w : TC) => unInjc w a) (TC.injc a) (TC.injc b) h
+    def ctxIsCons (c : Ctx) : Prop := match c { | Ctx.cnil => False | Ctx.ccons(A, G) => True }
+    def ctx_nc (A : Ty) (G : Ctx) (h : Eq.{1} Ctx (Ctx.ccons A G) Ctx.cnil) : False :=
+      Eq.subst.{1} Ctx ctxIsCons (Ctx.ccons A G) Ctx.cnil h True.intro
+    def cconsHd (c : Ctx) (d : Ty) : Ty := match c { | Ctx.cnil => d | Ctx.ccons(A, G) => A }
+    def cconsTl (c : Ctx) (d : Ctx) : Ctx := match c { | Ctx.cnil => d | Ctx.ccons(A, G) => G }
+    def ccons_inj_hd (A : Ty) (G : Ctx) (A2 : Ty) (G2 : Ctx) (h : Eq.{1} Ctx (Ctx.ccons A G) (Ctx.ccons A2 G2)) : Eq.{1} Ty A A2 :=
+      congrArg.{1, 1} Ctx Ty (fun (c : Ctx) => cconsHd c A) (Ctx.ccons A G) (Ctx.ccons A2 G2) h
+    def ccons_inj_tl (A : Ty) (G : Ctx) (A2 : Ty) (G2 : Ctx) (h : Eq.{1} Ctx (Ctx.ccons A G) (Ctx.ccons A2 G2)) : Eq.{1} Ctx G G2 :=
+      congrArg.{1, 1} Ctx Ctx (fun (c : Ctx) => cconsTl c G) (Ctx.ccons A G) (Ctx.ccons A2 G2) h
+
+    -- Invert an environment typed at a non-empty context: it is an `econs` of a typed head
+    -- and a typed tail.
+    inductive EnvConsInv : Env -> Ty -> Ctx -> Prop
+      | mkE : (v : Val) -> (A : Ty) -> (rest : Env) -> (G : Ctx)
+                -> HasTyV v A -> HasTyE rest G -> EnvConsInv (Env.econs v rest) A G
+    def heInv (ve : VE) (tc : TC) (h : HasTyVE ve tc)
+      : (env : Env) -> (A : Ty) -> (G : Ctx) -> Eq.{1} VE ve (VE.inje env) -> Eq.{1} TC tc (TC.injc (Ctx.ccons A G)) -> EnvConsInv env A G :=
+      match h {
+        | HasTyVE.vtnat(n) => fun (env : Env) (A : Ty) (G : Ctx) (ev : Eq.{1} VE (VE.injv (Val.vnat n)) (VE.inje env)) (et : Eq.{1} TC (TC.injt Ty.tnat) (TC.injc (Ctx.ccons A G))) =>
+            False.rec.{0} (fun (_ : False) => EnvConsInv env A G) (ve_nc env (Val.vnat n) (Eq.symm.{1} VE (VE.injv (Val.vnat n)) (VE.inje env) ev))
+        | HasTyVE.vtclos(env2, G2, b, A2, B2, he, hb) => fun (env : Env) (A : Ty) (G : Ctx) (ev : Eq.{1} VE (VE.injv (Val.vclos env2 b)) (VE.inje env)) (et : Eq.{1} TC (TC.injt (Ty.tarr A2 B2)) (TC.injc (Ctx.ccons A G))) =>
+            False.rec.{0} (fun (_ : False) => EnvConsInv env A G) (ve_nc env (Val.vclos env2 b) (Eq.symm.{1} VE (VE.injv (Val.vclos env2 b)) (VE.inje env) ev))
+        | HasTyVE.etnil => fun (env : Env) (A : Ty) (G : Ctx) (ev : Eq.{1} VE (VE.inje Env.enil) (VE.inje env)) (et : Eq.{1} TC (TC.injc Ctx.cnil) (TC.injc (Ctx.ccons A G))) =>
+            False.rec.{0} (fun (_ : False) => EnvConsInv env A G) (ctx_nc A G (Eq.symm.{1} Ctx Ctx.cnil (Ctx.ccons A G) (injc_inj Ctx.cnil (Ctx.ccons A G) et)))
+        | HasTyVE.etcons(v2, A2, rest2, G2, hv2, he2) => fun (env : Env) (A : Ty) (G : Ctx) (ev : Eq.{1} VE (VE.inje (Env.econs v2 rest2)) (VE.inje env)) (et : Eq.{1} TC (TC.injc (Ctx.ccons A2 G2)) (TC.injc (Ctx.ccons A G))) =>
+            Eq.subst.{1} Env (fun (e : Env) => EnvConsInv e A G) (Env.econs v2 rest2) env (inje_inj (Env.econs v2 rest2) env ev)
+              (Eq.subst.{1} Ty (fun (aa : Ty) => EnvConsInv (Env.econs v2 rest2) aa G) A2 A (ccons_inj_hd A2 G2 A G (injc_inj (Ctx.ccons A2 G2) (Ctx.ccons A G) et))
+                (Eq.subst.{1} Ctx (fun (gg : Ctx) => EnvConsInv (Env.econs v2 rest2) A2 gg) G2 G (ccons_inj_tl A2 G2 A G (injc_inj (Ctx.ccons A2 G2) (Ctx.ccons A G) et))
+                  (EnvConsInv.mkE v2 A2 rest2 G2 hv2 he2)))
+      }
+    def envConsInv (env : Env) (A : Ty) (G : Ctx) (h : HasTyE env (Ctx.ccons A G)) : EnvConsInv env A G :=
+      heInv (VE.inje env) (TC.injc (Ctx.ccons A G)) h env A G (Eq.refl.{1} VE (VE.inje env)) (Eq.refl.{1} TC (TC.injc (Ctx.ccons A G)))
+
+    -- Environment lookup respects typing: if `env : G` and `Lookup G n A`, then the n-th
+    -- value `lookupEnv n env` has type `A`. Proved by *induction on the lookup derivation*
+    -- (the `match` exposes `hl.rec` as the induction hypothesis on the tail). The result type
+    -- is the *curried* `(env) -> HasTyE env G -> HasTyV (lookupEnv n env) A`, so the IH lands
+    -- already abstracted over the environment — essential, since the recursion descends into
+    -- the tail environment, which is not a `Lookup` index. The `there` step needs the *convoy
+    -- pattern*: the inner `envConsInv` match abstracts the index `G2`, but the IH's type still
+    -- mentions `G2`, so the match returns a function still expecting the IH (specialised to the
+    -- branch's `G3`), and we feed it `hl.rec` only after the match has refined the environment.
+    def envLookup (G : Ctx) (n : Nat) (A : Ty) (l : Lookup G n A)
+      : (env : Env) -> HasTyE env G -> HasTyV (lookupEnv n env) A :=
+      match l {
+        | Lookup.here(G2, A2) =>
+            fun (env : Env) (he : HasTyE env (Ctx.ccons A2 G2)) =>
+              match (envConsInv env A2 G2 he) {
+                | EnvConsInv.mkE(v, A3, rest, G3, hv, hrest) => hv
+              }
+        | Lookup.there(G2, A2, B2, n2, hl) =>
+            fun (env : Env) (he : HasTyE env (Ctx.ccons B2 G2)) =>
+              let cvy : (ih2 : (e : Env) -> HasTyE e G2 -> HasTyV (lookupEnv n2 e) A2)
+                          -> HasTyV (lookupEnv (Nat.succ n2) env) A2 :=
+                match (envConsInv env B2 G2 he) {
+                  | EnvConsInv.mkE(v, A3, rest, G3, hv, hrest) =>
+                      fun (ih2 : (e : Env) -> HasTyE e G3 -> HasTyV (lookupEnv n2 e) A2) =>
+                        ih2 rest hrest
+                }
+              in cvy (hl.rec)
+      }
+

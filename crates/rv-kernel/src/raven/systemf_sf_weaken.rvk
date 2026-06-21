@@ -1,0 +1,51 @@
+
+    fn FHasTy_tmweaken(G: FCtx, e: FExp, T: FTy, d: FHasTy G e T)
+      -> ((c : Nat) -> (C : FTy) -> FHasTy (insertCtxF(c)(C)(G)) (eshiftTm(e)(c)) T) {
+        match d {
+          | FHasTy.ftvar(G2, n2, T2, lk2) => fun (c : Nat) (C : FTy) =>
+              Eq.subst.{1} FExp (fun (x : FExp) => FHasTy (insertCtxF(c)(C)(G2)) x T2)
+                (FExp.evar (shiftIdx(c)(n2))) (eshiftTm(FExp.evar n2)(c))
+                (Eq.symm.{1} FExp (eshiftTm(FExp.evar n2)(c)) (FExp.evar (shiftIdx(c)(n2))) (eshiftTm_var(c)(n2)))
+                (FHasTy.ftvar (insertCtxF(c)(C)(G2)) (shiftIdx(c)(n2)) T2 (flookup_weaken G2 n2 T2 lk2 c C))
+          | FHasTy.ftnat(G2, n2) => fun (c : Nat) (C : FTy) =>
+              FHasTy.ftnat (insertCtxF(c)(C)(G2)) n2
+          | FHasTy.ftlam(G2, A2, b2, B2, dbody) => fun (c : Nat) (C : FTy) =>
+              FHasTy.ftlam (insertCtxF(c)(C)(G2)) A2 (eshiftTm(b2)(Nat.succ c)) B2 (dbody.rec (Nat.succ c) C)
+          | FHasTy.ftapp(G2, f2, a2, A2, B2, df, da) => fun (c : Nat) (C : FTy) =>
+              FHasTy.ftapp (insertCtxF(c)(C)(G2)) (eshiftTm(f2)(c)) (eshiftTm(a2)(c)) A2 B2 (df.rec c C) (da.rec c C)
+          | FHasTy.fttlam(G2, b2, B2, dbody) => fun (c : Nat) (C : FTy) =>
+              FHasTy.fttlam (insertCtxF(c)(C)(G2)) (eshiftTm(b2)(c)) B2
+                (Eq.subst.{1} FCtx (fun (g : FCtx) => FHasTy g (eshiftTm(b2)(c)) B2)
+                   (insertCtxF(c)(tshift(C)(Nat.zero))(shiftCtx(G2))) (shiftCtx(insertCtxF(c)(C)(G2)))
+                   (insertCtxF_shiftCtx_comm(c)(C)(G2))
+                   (dbody.rec c (tshift(C)(Nat.zero))))
+          | FHasTy.fttapp(G2, f2, B2, T2, df) => fun (c : Nat) (C : FTy) =>
+              FHasTy.fttapp (insertCtxF(c)(C)(G2)) (eshiftTm(f2)(c)) B2 T2 (df.rec c C)
+        }
+    }
+
+    fn FHasTy_tyweaken(G: FCtx, e: FExp, T: FTy, d: FHasTy G e T)
+      -> ((c : Nat) -> FHasTy (shiftCtxAt(G)(c)) (eshiftTy(e)(c)) (tshift(T)(c))) {
+        match d {
+          | FHasTy.ftvar(G2, n2, T2, lk2) => fun (c : Nat) =>
+              FHasTy.ftvar (shiftCtxAt(G2)(c)) n2 (tshift(T2)(c)) (flookup_tyshift G2 n2 T2 lk2 c)
+          | FHasTy.ftnat(G2, n2) => fun (c : Nat) =>
+              FHasTy.ftnat (shiftCtxAt(G2)(c)) n2
+          | FHasTy.ftlam(G2, A2, b2, B2, dbody) => fun (c : Nat) =>
+              FHasTy.ftlam (shiftCtxAt(G2)(c)) (tshift(A2)(c)) (eshiftTy(b2)(c)) (tshift(B2)(c)) (dbody.rec c)
+          | FHasTy.ftapp(G2, f2, a2, A2, B2, df, da) => fun (c : Nat) =>
+              FHasTy.ftapp (shiftCtxAt(G2)(c)) (eshiftTy(f2)(c)) (eshiftTy(a2)(c)) (tshift(A2)(c)) (tshift(B2)(c)) (df.rec c) (da.rec c)
+          | FHasTy.fttlam(G2, b2, B2, dbody) => fun (c : Nat) =>
+              FHasTy.fttlam (shiftCtxAt(G2)(c)) (eshiftTy(b2)(Nat.succ c)) (tshift(B2)(Nat.succ c))
+                (Eq.subst.{1} FCtx (fun (g : FCtx) => FHasTy g (eshiftTy(b2)(Nat.succ c)) (tshift(B2)(Nat.succ c)))
+                   (shiftCtxAt(shiftCtx(G2))(Nat.succ c)) (shiftCtx(shiftCtxAt(G2)(c)))
+                   (shiftCtx_at_comm(G2)(c))
+                   (dbody.rec (Nat.succ c)))
+          | FHasTy.fttapp(G2, f2, B2, T2, df) => fun (c : Nat) =>
+              Eq.subst.{1} FTy (fun (x : FTy) => FHasTy (shiftCtxAt(G2)(c)) (FExp.etapp (eshiftTy(f2)(c)) (tshift(T2)(c))) x)
+                (tsubst(tshift(B2)(Nat.succ c))(Nat.zero)(tshift(T2)(c))) (tshift(tsubst(B2)(Nat.zero)(T2))(c))
+                (Eq.symm.{1} FTy (tshift(tsubst(B2)(Nat.zero)(T2))(c)) (tsubst(tshift(B2)(Nat.succ c))(Nat.zero)(tshift(T2)(c)))
+                   (shift_subst_comm(B2)(Nat.zero)(T2)(c)(Eq.refl.{1} Bool Bool.true)))
+                (FHasTy.fttapp (shiftCtxAt(G2)(c)) (eshiftTy(f2)(c)) (tshift(B2)(Nat.succ c)) (tshift(T2)(c)) (df.rec c))
+        }
+    }
