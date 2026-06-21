@@ -1,0 +1,26 @@
+// A small verified boolean library in Rust-like Raven (`rvc --verify`).
+
+enum Bool { True, False }
+
+fn not(b: Bool) -> Bool {
+    match b { | Bool::True => Bool::False | Bool::False => Bool::True }
+}
+fn and(a: Bool, b: Bool) -> Bool {
+    match a { | Bool::True => b | Bool::False => Bool::False }
+}
+
+// Double negation: not(not(b)) == b, by case analysis.
+fn not_not(b: Bool) -> not(not(b)) == b {
+    match b {
+      | Bool::True  => Eq::refl(Bool, Bool::True)
+      | Bool::False => Eq::refl(Bool, Bool::False)
+    }
+}
+
+// `and b false == false` for every b.
+fn and_false(b: Bool) -> and(b, Bool::False) == Bool::False {
+    match b {
+      | Bool::True  => Eq::refl(Bool, Bool::False)
+      | Bool::False => Eq::refl(Bool, Bool::False)
+    }
+}

@@ -1,0 +1,34 @@
+// A verified list library in Rust-like Raven: `length (append xs ys) == length xs + length ys`.
+// `rvc --verify`. (`congr_arg` from the standard prelude.)
+
+enum Nat { Zero, Succ(Nat) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+
+enum NatList { Nil, Cons(Nat, NatList) }
+
+fn length(xs: NatList) -> Nat {
+    match xs { | NatList::Nil => Nat::Zero | NatList::Cons(x, rest) => Nat::Succ(length(rest)) }
+}
+
+fn append(xs: NatList, ys: NatList) -> NatList {
+    match xs {
+      | NatList::Nil           => ys
+      | NatList::Cons(x, rest) => NatList::Cons(x, append(rest, ys))
+    }
+}
+
+// length distributes over append, by induction on the first list.
+fn length_append(xs: NatList, ys: NatList)
+    -> length(append(xs, ys)) == plus(length(xs), length(ys))
+{
+    match xs {
+      | NatList::Nil           => Eq::refl(Nat, length(ys))
+      | NatList::Cons(x, rest) =>
+          congr_arg(Nat, Nat, Nat::Succ,
+                    length(append(rest, ys)), plus(length(rest), length(ys)),
+                    length_append(rest, ys))
+    }
+}

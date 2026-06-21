@@ -30,6 +30,21 @@ fn compiler_correctness() {
 }
 
 #[test]
+fn list_lib() {
+    check("list.rv");
+}
+
+#[test]
+fn bool_logic() {
+    check("bool_logic.rv");
+}
+
+#[test]
+fn arith_assoc() {
+    check("arith_assoc.rv");
+}
+
+#[test]
 fn mutual_trees() {
     check("mutual_trees.rv");
     // It also computes: a forest of two leaves has size 2.

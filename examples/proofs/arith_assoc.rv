@@ -1,0 +1,19 @@
+// Associativity of addition in Rust-like Raven, by induction (`rvc --verify`).
+
+enum Nat { Zero, Succ(Nat) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+
+fn plus_assoc(a: Nat, b: Nat, c: Nat)
+    -> plus(plus(a, b), c) == plus(a, plus(b, c))
+{
+    match a {
+      | Nat::Zero    => Eq::refl(Nat, plus(b, c))
+      | Nat::Succ(k) =>
+          congr_arg(Nat, Nat, Nat::Succ,
+                    plus(plus(k, b), c), plus(k, plus(b, c)),
+                    plus_assoc(k, b, c))
+    }
+}
