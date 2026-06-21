@@ -80,6 +80,15 @@ fn le_trans() {
 }
 
 #[test]
+fn refinement() {
+    check("refinement.rv");
+    let path = format!("{}/../../examples/proofs/refinement.rv", env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(&path).unwrap();
+    let run = verify_rv(&src, Some("example")).unwrap().run.unwrap().unwrap();
+    assert_eq!(run.matches("Succ").count(), 1, "pred of 2 should be 1, got {run}");
+}
+
+#[test]
 fn cek_machine() {
     check("cek_machine.rv");
     // It also evaluates (\x. x + 1) 2 to 3.

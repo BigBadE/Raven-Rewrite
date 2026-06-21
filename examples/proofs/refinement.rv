@@ -1,0 +1,22 @@
+// Refinement types in Rust-like Raven (`rvc --verify --run --entry example`).
+//
+// A parameter `x: T where p` is a *refinement*: the function takes the value AND a proof of
+// `p` (which may mention `x`). The proof is supplied at the call site and checked by the
+// kernel — so a function can demand a precondition as part of its type.
+
+enum Nat { Zero, Succ(Nat) }
+
+fn is_pos(n: Nat) -> Prop {
+    match n { | Nat::Zero => False | Nat::Succ(k) => True }
+}
+fn pred(n: Nat) -> Nat {
+    match n { | Nat::Zero => Nat::Zero | Nat::Succ(k) => k }
+}
+
+// Safe predecessor: only callable on a positive number (`n where is_pos(n)`).
+fn safe_pred(n: Nat where is_pos(n)) -> Nat {
+    pred(n)
+}
+
+// `is_pos(Succ Zero)` reduces to `True`, so the obligation is discharged by `True::intro`.
+def example : Nat := safe_pred(Nat::Succ(Nat::Succ(Nat::Zero)), True::intro)

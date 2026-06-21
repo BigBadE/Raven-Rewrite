@@ -998,7 +998,17 @@ impl Parser {
                         let pname = self.ident()?;
                         self.expect(&Tok::Colon)?;
                         let pty = self.expr()?;
-                        params.push(Binder { names: vec![pname], ty: pty, implicit: false });
+                        // A *refinement* `x: T where p` desugars to two parameters: the value
+                        // `x: T` and a proof obligation `_: p` (which may mention `x`). Callers
+                        // supply the proof; the kernel checks it.
+                        if self.eat(&Tok::KwWhere) {
+                            let pred = self.expr()?;
+                            let pf = format!("{pname}__ref");
+                            params.push(Binder { names: vec![pname], ty: pty, implicit: false });
+                            params.push(Binder { names: vec![pf], ty: pred, implicit: false });
+                        } else {
+                            params.push(Binder { names: vec![pname], ty: pty, implicit: false });
+                        }
                         if !self.eat(&Tok::Comma) {
                             break;
                         }
