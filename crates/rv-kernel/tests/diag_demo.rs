@@ -38,3 +38,20 @@ fn semantic_errors_carry_the_declaration_position() {
     assert!(err.starts_with("3:"), "want a 3:col position prefix, got: {err}");
     assert!(err.contains("def 'bad'"), "should still name the def: {err}");
 }
+
+#[test]
+fn error_points_a_caret_at_the_offending_subterm() {
+    let mut s = systemf::safety_session().unwrap();
+    // The offending sub-term is the application `FExp.evar(Nat.zero)`; the error should
+    // carry a caret line underlining it (sub-term granularity, not just the declaration).
+    let err = s
+        .run("def bad : FTy := FExp.evar(Nat.zero)")
+        .unwrap_err();
+    assert!(err.contains('^'), "should draw a caret under the sub-term: {err}");
+    assert!(
+        err.contains("FExp.evar(Nat.zero)"),
+        "the underlined source line should show the offending sub-term: {err}"
+    );
+    // The caret's reported position points into the def body (column > 1), not the line start.
+    assert!(err.contains("  at 1:18"), "caret should locate the sub-term at 1:18: {err}");
+}

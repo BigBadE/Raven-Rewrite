@@ -57,6 +57,10 @@ pub struct Session {
     /// Type-class instance registry: class head name → instance definition names, consulted
     /// by the elaborator's instance resolution (filling class-typed implicit holes).
     instances: HashMap<String, Vec<String>>,
+    /// The source of the program currently being run, so the elaborator can render a caret
+    /// under the offending sub-term of a type error (the byte spans in `Expr::Spanned` index
+    /// into this string).
+    cur_src: String,
 }
 
 impl Session {
@@ -72,6 +76,7 @@ impl Session {
     /// group is recognised as a mutually-recursive bundle and compiled jointly — no
     /// `mutual { … }` block or hand-written recursor needed.
     pub fn run(&mut self, src: &str) -> Result<(), String> {
+        self.cur_src = src.to_string();
         let cmds = surface::parse_program_spanned(src)?;
         let mut pending: Vec<Command> = Vec::new();
         let mut pending_group: Option<Vec<String>> = None;
@@ -121,7 +126,7 @@ impl Session {
         let Command::Fn { params, body, .. } = cmd else { return Ok(None) };
         let Some((_, _, scrut_name)) = match_recursion(params, body) else { return Ok(None) };
         // Find and elaborate the matched parameter's type, with earlier params in scope.
-        let mut inf = Infer::with_implicits(self.k.env(), &self.implicits);
+        let mut inf = Infer::with_implicits(self.k.env(), &self.implicits).with_src(&self.cur_src);
         for b in params {
             for n in &b.names {
                 if n == &scrut_name {
@@ -185,7 +190,7 @@ impl Session {
             let Command::Fn { name: nm, params, ret, body, .. } = c else { unreachable!() };
             let (_, _, scrut_name) = match_recursion(params, body).unwrap();
             let scrut_ty = param_type(params, &scrut_name).unwrap().clone();
-            let Expr::Match(_, arms) = body else { unreachable!() };
+            let Expr::Match(_, arms) = body.peel() else { unreachable!() };
             let arms: Vec<MatchArm> = arms
                 .iter()
                 .map(|a| MatchArm {
@@ -211,7 +216,7 @@ impl Session {
             .ok_or("mutual bundle does not cover every group member")?;
 
         let defs = {
-            let mut inf = Infer::with_implicits(self.k.env(), &self.implicits);
+            let mut inf = Infer::with_implicits(self.k.env(), &self.implicits).with_src(&self.cur_src);
             inf.compile_bundle(&members, group)?
         };
         for (nm, ty, value) in defs {
@@ -223,7 +228,7 @@ impl Session {
 
     /// Which group member's type does `scrut_ty` recurse on?
     fn member_index(&self, scrut_ty: &Expr, group: &[String]) -> Result<usize, String> {
-        let mut inf = Infer::with_implicits(self.k.env(), &self.implicits);
+        let mut inf = Infer::with_implicits(self.k.env(), &self.implicits).with_src(&self.cur_src);
         let (raw, _) = inf.infer(scrut_ty)?;
         let ty = inf.finish(&raw)?;
         let (head, _) = crate::nbe::Nbe::new(self.k.env()).normalize(&ty).unfold_apps();
@@ -243,7 +248,7 @@ impl Session {
             Command::Prove { name, proof } => {
                 let (levels, goal) = self.goal_entry(name)?;
                 let proof_term = {
-                    let mut inf = Infer::with_implicits(self.k.env(), &self.implicits)
+                    let mut inf = Infer::with_implicits(self.k.env(), &self.implicits).with_src(&self.cur_src)
                         .with_levels(&levels)
                         .with_instances(&self.instances);
                     let t = inf.check(proof, &goal)?;
@@ -276,7 +281,7 @@ impl Session {
             }
             Command::Check(e) => {
                 let t = {
-                    let mut inf = Infer::with_implicits(self.k.env(), &self.implicits);
+                    let mut inf = Infer::with_implicits(self.k.env(), &self.implicits).with_src(&self.cur_src);
                     let (t, _) = inf.infer(e)?;
                     inf.finish(&t)?
                 };
@@ -327,7 +332,7 @@ impl Session {
         body: &Expr,
     ) -> Result<(), String> {
         let (tty, tbody) = {
-            let mut inf = Infer::with_implicits(self.k.env(), &self.implicits)
+            let mut inf = Infer::with_implicits(self.k.env(), &self.implicits).with_src(&self.cur_src)
                 .with_levels(levels)
                 .with_instances(&self.instances);
             let doms = inf.push_params(params)?;
@@ -406,7 +411,7 @@ impl Session {
         // is ever lifted, keeping indices correct.
         let obligation = {
             let mut e =
-                Infer::with_implicits(self.k.env(), &self.implicits).with_levels(levels);
+                Infer::with_implicits(self.k.env(), &self.implicits).with_src(&self.cur_src).with_levels(levels);
 
             // Push the parameters, collecting their (zonked) domains for the Π.
             let mut param_doms = Vec::new();
@@ -778,8 +783,8 @@ fn try_rewrite(k: &Kernel, doms: &[Term], goal: &Term, fuel: u32) -> Option<Term
 /// `(matched-parameter position, all parameter names, matched parameter name)`. This is
 /// the shape a structurally-recursive function takes.
 fn match_recursion(params: &[Binder], body: &Expr) -> Option<(usize, Vec<String>, String)> {
-    let Expr::Match(scrut, _) = body else { return None };
-    let Expr::Var(p, None) = &**scrut else { return None };
+    let Expr::Match(scrut, _) = body.peel() else { return None };
+    let Expr::Var(p, None) = scrut.peel() else { return None };
     let names: Vec<String> = params.iter().flat_map(|b| b.names.iter().cloned()).collect();
     let pos = names.iter().position(|n| n == p)?;
     Some((pos, names, p.clone()))
@@ -813,10 +818,10 @@ fn cmd_label(cmd: &Command) -> String {
 /// The head name of an application spine `f a b …` (the leftmost `Var`), if any. Used to
 /// find the class an `instance`'s result type belongs to.
 fn expr_head_name(e: &Expr) -> Option<String> {
-    let mut cur = e;
+    let mut cur = e.peel();
     loop {
         match cur {
-            Expr::App(f, _) => cur = f,
+            Expr::App(f, _) => cur = f.peel(),
             Expr::Var(n, _) => return Some(n.clone()),
             _ => return None,
         }

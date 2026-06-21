@@ -56,6 +56,11 @@ pub struct Infer<'a> {
     self_ind: Option<(String, u32)>,
     /// Counter for fresh names generated when desugaring nested `match` patterns.
     fresh_counter: u32,
+    /// The source text, for rendering a caret under the offending sub-term on a type error.
+    src: Option<&'a str>,
+    /// Set once the first (innermost) span-annotated error has had its caret rendered, so
+    /// outer `Spanned` wrappers don't re-annotate the same error.
+    err_annotated: bool,
 }
 
 impl<'a> Infer<'a> {
@@ -74,7 +79,43 @@ impl<'a> Infer<'a> {
             level_params: Vec::new(),
             self_ind: None,
             fresh_counter: 0,
+            src: None,
+            err_annotated: false,
         }
+    }
+
+    /// Supply the source text so type errors can render a caret under the offending sub-term.
+    pub fn with_src(mut self, src: &'a str) -> Self {
+        self.src = Some(src);
+        self
+    }
+
+    /// Annotate an error with a caret at `r`, but only the first (innermost) time — outer
+    /// `Spanned` wrappers around an already-annotated error leave it untouched.
+    fn annotate(&mut self, r: &core::ops::Range<usize>, msg: String) -> String {
+        if self.err_annotated || self.src.is_none() {
+            return msg;
+        }
+        self.err_annotated = true;
+        self.caret(r, msg)
+    }
+
+    /// Render a caret pointing at the source range `r`, appended below `msg`. Produces e.g.
+    /// `<msg>\n  at 3:18\n   | def bad : T := offending\n   |                ^^^^^^^^^`.
+    fn caret(&self, r: &core::ops::Range<usize>, msg: String) -> String {
+        let Some(src) = self.src else { return msg };
+        let (start, end) = (r.start.min(src.len()), r.end.min(src.len()));
+        // Line containing `start`.
+        let line_start = src[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let line_end = src[start..].find('\n').map(|i| start + i).unwrap_or(src.len());
+        let line_no = src[..start].bytes().filter(|&b| b == b'\n').count() + 1;
+        let col = start - line_start + 1;
+        let line_text = &src[line_start..line_end];
+        // Carets under the [start, end) span, clamped to this line.
+        let pad = " ".repeat(start - line_start);
+        let span_end = end.min(line_end);
+        let underline = "^".repeat((span_end.saturating_sub(start)).max(1));
+        format!("{msg}\n  at {line_no}:{col}\n   | {line_text}\n   | {pad}{underline}")
     }
 
     /// Supply the type-class instance registry, enabling instance resolution (`decide` and
@@ -153,6 +194,7 @@ impl<'a> Infer<'a> {
     /// Synthesize `(term, type)`.
     pub fn infer(&mut self, e: &Expr) -> Result<(Term, Term), String> {
         match e {
+            Expr::Spanned(r, inner) => self.infer(inner).map_err(|m| self.annotate(r, m)),
             Expr::Type(n) => Ok((Term::typ(*n), Term::typ(n + 1))),
             Expr::Prop => Ok((Term::prop(), Term::typ(0))),
             Expr::Sort(l) => {
@@ -359,6 +401,9 @@ impl<'a> Infer<'a> {
     /// Check `e` against `expected`, solving holes and unifying.
     pub fn check(&mut self, e: &Expr, expected: &Term) -> Result<Term, String> {
         match e {
+            Expr::Spanned(r, inner) => {
+                self.check(inner, expected).map_err(|m| self.annotate(r, m))
+            }
             // A hole becomes a fresh metavariable *carrying its expected type*, so when
             // it is solved at a use site the type (and any universe level in it) flows
             // back. Unification at its use sites solves it.
@@ -1332,6 +1377,8 @@ pub type RecInfo = HashMap<String, (usize, Vec<String>)>;
 /// recursion discipline; non-structural calls are left as-is (and fail to elaborate,
 /// which is the honest signal that the recursion isn't structural).
 pub fn rewrite_rec_calls(e: &Expr, recs: &RecInfo) -> Expr {
+    // Span wrappers are transparent to the rewrite (and dropped in the rewritten body).
+    let e = e.peel();
     match e {
         Expr::App(..) => {
             let (head, args) = unfold_surface_apps(e);
@@ -1437,6 +1484,8 @@ fn subst_var(e: &Expr, name: &str, repl: &Expr) -> Expr {
     let go = |x: &Expr| subst_var(x, name, repl);
     let bx = |x: &Expr| Box::new(subst_var(x, name, repl));
     match e {
+        // Spans are transparent to substitution (dropped in the rewritten pattern body).
+        Expr::Spanned(_, inner) => go(inner),
         Expr::Var(n, lv) if n == name && lv.is_none() => repl.clone(),
         // Keep the induction-hypothesis reference `<var>.rec` aligned when a pattern
         // variable is renamed to a fresh occurrence (so nested patterns compose with
@@ -1554,13 +1603,15 @@ fn occurs_const(n: &str, t: &Term) -> bool {
     }
 }
 
-/// Collect a curried surface application `((h a) b) …` into `(head, [a, b, …])`.
+/// Collect a curried surface application `((h a) b) …` into `(head, [a, b, …])`. Span
+/// wrappers are peeled at every level, so the returned head and args are span-free and the
+/// callers' structural matches (e.g. recursion-pattern checks) see the bare shapes.
 fn unfold_surface_apps(e: &Expr) -> (&Expr, Vec<&Expr>) {
     let mut args = Vec::new();
-    let mut head = e;
+    let mut head = e.peel();
     while let Expr::App(f, a) = head {
-        args.push(&**a);
-        head = f;
+        args.push(a.peel());
+        head = f.peel();
     }
     args.reverse();
     (head, args)

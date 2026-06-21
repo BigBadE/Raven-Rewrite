@@ -84,6 +84,59 @@ pub enum Expr {
     /// abstracted from the expected type. Only valid in a checking position. This is the
     /// ergonomic fix for pushing a function through a stuck `match`.
     ByCases(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// A source-located wrapper: the inner expression annotated with its byte range in the
+    /// source. The elaborator treats this transparently (it peels through to the inner) but
+    /// records the range so a type error can be pointed at the precise offending sub-term.
+    Spanned(core::ops::Range<usize>, Box<Expr>),
+}
+
+impl Expr {
+    /// Strip any `Spanned` wrappers, returning the underlying expression. Used by every
+    /// structural consumer (pattern matching on the shape of an `Expr`) so spans are
+    /// transparent to elaboration.
+    pub fn peel(&self) -> &Expr {
+        let mut e = self;
+        while let Expr::Spanned(_, inner) = e {
+            e = inner;
+        }
+        e
+    }
+    /// The source byte range of this expression, if it is span-annotated.
+    pub fn span(&self) -> Option<core::ops::Range<usize>> {
+        match self {
+            Expr::Spanned(r, _) => Some(r.clone()),
+            _ => None,
+        }
+    }
+}
+
+/// Deeply remove every `Spanned` wrapper, yielding a span-free clone. Useful for structural
+/// comparison (tests) and for the few consumers that want the bare tree.
+pub fn strip_spans(e: &Expr) -> Expr {
+    let bx = |x: &Expr| Box::new(strip_spans(x));
+    let bnd = |b: &Binder| {
+        Box::new(Binder { names: b.names.clone(), ty: strip_spans(&b.ty), implicit: b.implicit })
+    };
+    match e {
+        Expr::Spanned(_, inner) => strip_spans(inner),
+        Expr::App(f, a) => Expr::App(bx(f), bx(a)),
+        Expr::Lam(b, body) => Expr::Lam(bnd(b), bx(body)),
+        Expr::Pi(b, body) => Expr::Pi(bnd(b), bx(body)),
+        Expr::Arrow(a, b) => Expr::Arrow(bx(a), bx(b)),
+        Expr::EqOp(a, b) => Expr::EqOp(bx(a), bx(b)),
+        Expr::Let(n, ty, v, body) => {
+            Expr::Let(n.clone(), ty.as_ref().map(|t| bx(t)), bx(v), bx(body))
+        }
+        Expr::Match(scrut, arms) => Expr::Match(
+            bx(scrut),
+            arms.iter()
+                .map(|a| MatchArm { pat: a.pat.clone(), body: strip_spans(&a.body) })
+                .collect(),
+        ),
+        Expr::Rewrite(h, body) => Expr::Rewrite(bx(h), bx(body)),
+        Expr::ByCases(s, t, f) => Expr::ByCases(bx(s), bx(t), bx(f)),
+        other => other.clone(),
+    }
 }
 
 /// A `match` pattern: a variable binder (`x`, or `_` for a wildcard) or a constructor
@@ -442,7 +495,33 @@ impl Parser {
         Ok(Binder { names, ty, implicit })
     }
 
+    /// The start byte of the current token (or end-of-input).
+    fn byte_pos(&self) -> usize {
+        self.spans.get(self.pos).map(|s| s.start).unwrap_or(self.src_len)
+    }
+    /// The end byte of the most-recently-consumed token.
+    fn prev_end(&self) -> usize {
+        match self.pos.checked_sub(1).and_then(|i| self.spans.get(i)) {
+            Some(s) => s.end,
+            None => self.byte_pos(),
+        }
+    }
+
     fn app(&mut self) -> Result<Expr, String> {
+        let start = self.byte_pos();
+        let e = self.app_inner()?;
+        let end = self.prev_end();
+        // Annotate the parsed application/atom with its source range so the elaborator can
+        // point a type error at this exact sub-term. Don't double-wrap a bare atom that is
+        // already a span (it isn't — atoms are unspanned), and skip zero-width ranges.
+        if end > start {
+            Ok(Expr::Spanned(start..end, Box::new(e)))
+        } else {
+            Ok(e)
+        }
+    }
+
+    fn app_inner(&mut self) -> Result<Expr, String> {
         let mut e = self.atom()?;
         loop {
             if self.at(&Tok::LParen) {
@@ -980,8 +1059,8 @@ fn apply_params(head: Expr, params: &[Binder]) -> Expr {
 /// bare identifier `requires`/`ensures` to one argument. Returns the keyword and the
 /// argument expression.
 fn as_spec_call(e: &Expr) -> Option<(String, Expr)> {
-    if let Expr::App(f, arg) = e {
-        if let Expr::Var(n, None) = &**f {
+    if let Expr::App(f, arg) = e.peel() {
+        if let Expr::Var(n, None) = f.peel() {
             if n == "requires" || n == "ensures" {
                 return Some((n.clone(), (**arg).clone()));
             }
@@ -1085,7 +1164,7 @@ mod tests {
 
     #[test]
     fn parse_identity() {
-        let e = parse_expr("fun (A : Type) (x : A) => x").unwrap();
+        let e = strip_spans(&parse_expr("fun (A : Type) (x : A) => x").unwrap());
         // fun (A:Type) => fun (x:A) => x
         match e {
             Expr::Lam(b, _) => assert_eq!(b.names, vec!["A".to_string()]),
@@ -1101,7 +1180,7 @@ mod tests {
 
     #[test]
     fn parse_dotted_and_levels() {
-        let e = parse_expr("Eq.{1} Nat Nat.zero Nat.zero").unwrap();
+        let e = strip_spans(&parse_expr("Eq.{1} Nat Nat.zero Nat.zero").unwrap());
         // head is Eq.{1}
         fn head(e: &Expr) -> &Expr {
             match e {
@@ -1121,12 +1200,12 @@ mod tests {
     #[test]
     fn parse_rust_like_call() {
         // add(Nat.zero, x)  ==  ((add Nat.zero) x)
-        let e = parse_expr("add(Nat.zero, x)").unwrap();
-        let expected = parse_expr("add Nat.zero x").unwrap();
+        let e = strip_spans(&parse_expr("add(Nat.zero, x)").unwrap());
+        let expected = strip_spans(&parse_expr("add Nat.zero x").unwrap());
         assert_eq!(e, expected);
         // nested calls
-        let n = parse_expr("Nat.succ(add(x, y))").unwrap();
-        let n2 = parse_expr("Nat.succ (add x y)").unwrap();
+        let n = strip_spans(&parse_expr("Nat.succ(add(x, y))").unwrap());
+        let n2 = strip_spans(&parse_expr("Nat.succ (add x y)").unwrap());
         assert_eq!(n, n2);
     }
 
@@ -1157,7 +1236,7 @@ mod tests {
 
     #[test]
     fn parse_match_expression() {
-        let e = parse_expr("match n { | Nat.zero => a | Nat.succ(k) => f(k) }").unwrap();
+        let e = strip_spans(&parse_expr("match n { | Nat.zero => a | Nat.succ(k) => f(k) }").unwrap());
         match e {
             Expr::Match(scrut, arms) => {
                 assert!(matches!(*scrut, Expr::Var(ref n, _) if n == "n"));
@@ -1168,7 +1247,7 @@ mod tests {
             other => panic!("expected match, got {other:?}"),
         }
         // A nested pattern parses into nested `Pattern::Ctor`s.
-        let n = parse_expr("match e { | Expr.add(Expr.lit(m), b) => m }").unwrap();
+        let n = strip_spans(&parse_expr("match e { | Expr.add(Expr.lit(m), b) => m }").unwrap());
         match n {
             Expr::Match(_, arms) => match &arms[0].pat {
                 Pattern::Ctor(c, subs) => {

@@ -122,6 +122,7 @@ impl<'a> Elaborator<'a> {
     /// Elaborate a surface expression to a core term.
     pub fn elab(&mut self, e: &Expr) -> Result<Term, String> {
         match e {
+            Expr::Spanned(_, inner) => self.elab(inner),
             Expr::Type(n) => Ok(Term::typ(*n)),
             Expr::Prop => Ok(Term::prop()),
             Expr::Sort(l) => Ok(Term::Sort(self.elab_level(l)?)),
