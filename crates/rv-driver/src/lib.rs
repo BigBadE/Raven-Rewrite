@@ -138,10 +138,15 @@ pub fn run_raven(src: &str, with_stdlib: bool, entry: Option<&str>) -> Result<Ra
 pub fn verify_rv(src: &str, entry: Option<&str>) -> Result<RavenReport, String> {
     let mut session = rv_kernel::verify::Session::new();
     rv_kernel::logic::declare_logic(&mut session.k)?;
+    // The Raven proof prelude (Eq combinators, written in `.rv`) is always available.
+    session.run(RAVEN_PRELUDE).map_err(|e| format!("in the standard prelude: {e}"))?;
     session.run(src)?;
     let run = entry.map(|e| session.run_entry(e));
     Ok(RavenReport { verified: session.verified_fns(), open: session.open_fns(), run })
 }
+
+/// The Raven standard proof prelude (`Eq` combinators), written in Raven itself.
+pub const RAVEN_PRELUDE: &str = include_str!("../prelude.rv");
 
 /// Run the pipeline on **real Rust source** (parsed by the `tree-sitter`-based
 /// `rv-rustfe` frontend), then elaborate → borrow-check → discharge → optionally

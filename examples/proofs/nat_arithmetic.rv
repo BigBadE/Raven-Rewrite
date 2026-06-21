@@ -1,0 +1,39 @@
+// Verified arithmetic in Rust-like Raven — the classic `plus` commutativity proof,
+// `rvc --verify`. The `Eq` combinators (`symm`/`trans`/`congr_arg`) come from the standard
+// prelude (crates/rv-driver/prelude.rv).
+
+enum Nat { Zero, Succ(Nat) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n {
+      | Nat::Zero    => m
+      | Nat::Succ(k) => Nat::Succ(plus(k, m))
+    }
+}
+
+fn plus_zero(n: Nat) -> plus(n, Nat::Zero) == n {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(k) => congr_arg(Nat, Nat, Nat::Succ, plus(k, Nat::Zero), k, plus_zero(k))
+    }
+}
+
+fn plus_succ(n: Nat, m: Nat) -> plus(n, Nat::Succ(m)) == Nat::Succ(plus(n, m)) {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Succ(m))
+      | Nat::Succ(k) =>
+          congr_arg(Nat, Nat, Nat::Succ, plus(k, Nat::Succ(m)), Nat::Succ(plus(k, m)), plus_succ(k, m))
+    }
+}
+
+// n + m == m + n, by induction on n. The `Succ` case chains the IH (`plus_comm(k, m)`)
+// with `plus_succ` via `trans`/`symm`.
+fn plus_comm(n: Nat, m: Nat) -> plus(n, m) == plus(m, n) {
+    match n {
+      | Nat::Zero    => symm(Nat, plus(m, Nat::Zero), m, plus_zero(m))
+      | Nat::Succ(k) =>
+          trans(Nat, Nat::Succ(plus(k, m)), Nat::Succ(plus(m, k)), plus(m, Nat::Succ(k)),
+                congr_arg(Nat, Nat, Nat::Succ, plus(k, m), plus(m, k), plus_comm(k, m)),
+                symm(Nat, plus(m, Nat::Succ(k)), Nat::Succ(plus(m, k)), plus_succ(m, k)))
+    }
+}
