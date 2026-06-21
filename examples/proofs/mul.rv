@@ -1,0 +1,33 @@
+// Verified multiplication in Rust-like Raven (`rvc --verify`).
+
+enum Nat { Zero, Succ(Nat) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+fn mul(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => Nat::Zero | Nat::Succ(k) => plus(m, mul(k, m)) }
+}
+
+// n * 0 == 0, by induction on n.
+fn mul_zero(n: Nat) -> mul(n, Nat::Zero) == Nat::Zero {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(k) => mul_zero(k)
+    }
+}
+
+fn plus_zero_lemma(n: Nat) -> plus(n, Nat::Zero) == n {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(k) => congr_arg(Nat, Nat, Nat::Succ, plus(k, Nat::Zero), k, plus_zero_lemma(k))
+    }
+}
+
+// n + (n * 0) == n  — combines mul_zero with plus_zero, showing lemmas compose via `subst`.
+fn plus_mul_zero(n: Nat) -> plus(n, mul(n, Nat::Zero)) == n {
+    subst(Nat, fun (x: Nat) => plus(n, x) == n,
+          Nat::Zero, mul(n, Nat::Zero),
+          symm(Nat, mul(n, Nat::Zero), Nat::Zero, mul_zero(n)),
+          plus_zero_lemma(n))
+}

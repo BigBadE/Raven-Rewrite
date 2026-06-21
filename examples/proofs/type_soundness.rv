@@ -1,0 +1,87 @@
+// Type soundness for a tiny typed expression language, in Rust-like Raven (`rvc --verify`).
+// "A well-typed expression evaluates to a value of the same type" — by induction on the typing
+// derivation, using a canonical-forms inversion (a `TNat`-typed value is a `VNat`).
+
+enum Nat  { Zero, Succ(Nat) }
+enum Bool { BTrue, BFalse }
+enum Ty   { TNat, TBool }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+
+enum Val { VNat(Nat), VBool(Bool) }
+enum Exp { ENat(Nat), EBool(Bool), EAdd(Exp, Exp) }
+
+// Addition of values (factored out so the soundness proof can invert on plain variables).
+fn add_vals(a: Val, b: Val) -> Val {
+    match a {
+      | Val::VNat(m)  =>
+          match b {
+            | Val::VNat(n)  => Val::VNat(plus(m, n))
+            | Val::VBool(c) => Val::VNat(Nat::Zero)
+          }
+      | Val::VBool(c) => Val::VNat(Nat::Zero)
+    }
+}
+
+fn eval(e: Exp) -> Val {
+    match e {
+      | Exp::ENat(n)    => Val::VNat(n)
+      | Exp::EBool(b)   => Val::VBool(b)
+      | Exp::EAdd(x, y) => add_vals(eval(x), eval(y))
+    }
+}
+
+// Typing of expressions and of values.
+enum HasType(e: Exp, t: Ty) -> Prop {
+    TyNat(n: Nat)   where e == Exp::ENat(n),  t == Ty::TNat;
+    TyBool(b: Bool) where e == Exp::EBool(b), t == Ty::TBool;
+    TyAdd(x: Exp, y: Exp, hx: HasType(x, Ty::TNat), hy: HasType(y, Ty::TNat))
+        where e == Exp::EAdd(x, y), t == Ty::TNat;
+}
+enum HasTypeV(v: Val, t: Ty) -> Prop {
+    VtNat(n: Nat)   where v == Val::VNat(n),  t == Ty::TNat;
+    VtBool(b: Bool) where v == Val::VBool(b), t == Ty::TBool;
+}
+
+// Canonical forms: a value typed `TNat` is a `VNat`. (The inversion the `EAdd` case needs.)
+enum IsNat(v: Val) -> Prop { MkNat(n: Nat) where v == Val::VNat(n); }
+
+fn ty_is_nat(t: Ty) -> Prop {
+    match t { | Ty::TNat => True | Ty::TBool => False }
+}
+fn ty_nc(h: Ty::TBool == Ty::TNat) -> False {
+    subst(Ty, ty_is_nat, Ty::TNat, Ty::TBool, symm(Ty, Ty::TBool, Ty::TNat, h), True::intro)
+}
+fn hv_nat(v: Val, t: Ty, h: HasTypeV(v, t)) -> (t == Ty::TNat) -> IsNat(v) {
+    match h {
+      | HasTypeV::VtNat(n)  => fun (et: Ty::TNat == Ty::TNat)  => IsNat::MkNat(n)
+      | HasTypeV::VtBool(b) => fun (et: Ty::TBool == Ty::TNat) =>
+          False::rec(fun (z: False) => IsNat(Val::VBool(b)), ty_nc(et))
+    }
+}
+fn canon_nat(v: Val, h: HasTypeV(v, Ty::TNat)) -> IsNat(v) {
+    hv_nat(v, Ty::TNat, h)(Eq::refl(Ty, Ty::TNat))
+}
+
+// add_vals of two TNat values is a TNat value — inverting on the plain variables `a`, `b`.
+fn sound_add(a: Val, b: Val, ha: HasTypeV(a, Ty::TNat), hb: HasTypeV(b, Ty::TNat))
+    -> HasTypeV(add_vals(a, b), Ty::TNat)
+{
+    match canon_nat(a, ha) {
+      | IsNat::MkNat(m) =>
+          match canon_nat(b, hb) {
+            | IsNat::MkNat(n) => HasTypeV::VtNat(plus(m, n))
+          }
+    }
+}
+
+// SOUNDNESS: a well-typed expression evaluates to a well-typed value, by induction on typing.
+fn soundness(e: Exp, t: Ty, h: HasType(e, t)) -> HasTypeV(eval(e), t) {
+    match h {
+      | HasType::TyNat(n)            => HasTypeV::VtNat(n)
+      | HasType::TyBool(b)           => HasTypeV::VtBool(b)
+      | HasType::TyAdd(x, y, hx, hy) => sound_add(eval(x), eval(y), hx.rec, hy.rec)
+    }
+}

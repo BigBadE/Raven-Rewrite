@@ -45,6 +45,16 @@ fn arith_assoc() {
 }
 
 #[test]
+fn mul() {
+    check("mul.rv");
+}
+
+#[test]
+fn type_soundness() {
+    check("type_soundness.rv");
+}
+
+#[test]
 fn mutual_trees() {
     check("mutual_trees.rv");
     // It also computes: a forest of two leaves has size 2.
