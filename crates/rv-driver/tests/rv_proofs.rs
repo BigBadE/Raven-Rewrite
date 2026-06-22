@@ -40,6 +40,11 @@ fn generic_list_lib() {
 }
 
 #[test]
+fn generic_stdlib() {
+    check("stdlib.rv");
+}
+
+#[test]
 fn bool_logic() {
     check("bool_logic.rv");
 }

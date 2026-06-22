@@ -1,0 +1,119 @@
+// A generic, *proved-once* standard library in Rust-like Raven, built on the new generic
+// `enum` parameters (`<A: Type>`). Object languages reuse these polymorphic types — contexts
+// are `List<Ty>`, variable lookup returns `Option<Ty>`, products pack `Pair<A, B>` — instead
+// of re-deriving a monomorphic copy per language. Every lemma below holds for *all* element
+// types simultaneously. (`rvc --verify`; `congr_arg` from the standard prelude.)
+
+enum Nat { Zero, Succ(Nat) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+
+// ----- Option<A> ---------------------------------------------------------------------------
+
+enum Option<A: Type> { None, Some(A) }
+
+// `map` over an option; the function and both element types are generic.
+fn omap(A: Type, B: Type, f: A -> B, o: Option<A>) -> Option<B> {
+    match o { | Option::None => Option::None(B) | Option::Some(x) => Option::Some(B, f(x)) }
+}
+
+// `omap id == id` pointwise: mapping the identity leaves the option unchanged.
+fn omap_id(A: Type, o: Option<A>) -> omap(A, A, fun (x: A) => x, o) == o {
+    match o {
+      | Option::None    => Eq::refl(Option<A>, Option::None(A))
+      | Option::Some(x) => Eq::refl(Option<A>, Option::Some(A, x))
+    }
+}
+
+// ----- Pair<A, B> --------------------------------------------------------------------------
+
+enum Pair<A: Type, B: Type> { mk(A, B) }
+
+fn fst(A: Type, B: Type, p: Pair<A, B>) -> A { match p { | Pair::mk(a, b) => a } }
+fn snd(A: Type, B: Type, p: Pair<A, B>) -> B { match p { | Pair::mk(a, b) => b } }
+
+// A pair is determined by its projections (surjective pairing), proved by cases on `p`.
+fn pair_eta(A: Type, B: Type, p: Pair<A, B>)
+    -> Pair::mk(A, B, fst(A, B, p), snd(A, B, p)) == p
+{
+    match p { | Pair::mk(a, b) => Eq::refl(Pair<A, B>, Pair::mk(A, B, a, b)) }
+}
+
+// ----- List<A> -----------------------------------------------------------------------------
+
+enum List<A: Type> { Nil, Cons(A, List<A>) }
+
+fn length(A: Type, xs: List<A>) -> Nat {
+    match xs { | List::Nil => Nat::Zero | List::Cons(x, rest) => Nat::Succ(length(A, rest)) }
+}
+
+fn append(A: Type, xs: List<A>, ys: List<A>) -> List<A> {
+    match xs {
+      | List::Nil           => ys
+      | List::Cons(x, rest) => List::Cons(A, x, append(A, rest, ys))
+    }
+}
+
+fn map(A: Type, B: Type, f: A -> B, xs: List<A>) -> List<B> {
+    match xs {
+      | List::Nil           => List::Nil(B)
+      | List::Cons(x, rest) => List::Cons(B, f(x), map(A, B, f, rest))
+    }
+}
+
+// `nth` — generic, total lookup into a list, returning `Option<A>`. The workhorse for
+// de-Bruijn variable lookup in a typing context `List<Ty>`. Recursion is structural on the
+// list and *returns a function of the index*, so the index may decrease independently of the
+// list — the curried/convoy idiom (`nth(A, rest)(j)`).
+fn nth(A: Type, xs: List<A>) -> (Nat -> Option<A>) {
+    match xs {
+      | List::Nil           => fun (i: Nat) => Option::None(A)
+      | List::Cons(x, rest) =>
+          fun (i: Nat) => match i {
+            | Nat::Zero    => Option::Some(A, x)
+            | Nat::Succ(j) => nth(A, rest)(j)
+          }
+    }
+}
+
+// length distributes over append — once, for every element type.
+fn length_append(A: Type, xs: List<A>, ys: List<A>)
+    -> length(A, append(A, xs, ys)) == plus(length(A, xs), length(A, ys))
+{
+    match xs {
+      | List::Nil           => Eq::refl(Nat, length(A, ys))
+      | List::Cons(x, rest) =>
+          congr_arg(Nat, Nat, Nat::Succ,
+                    length(A, append(A, rest, ys)), plus(length(A, rest), length(A, ys)),
+                    length_append(A, rest, ys))
+    }
+}
+
+// `map` preserves length — once, for every pair of element types and every function.
+fn map_length(A: Type, B: Type, f: A -> B, xs: List<A>)
+    -> length(B, map(A, B, f, xs)) == length(A, xs)
+{
+    match xs {
+      | List::Nil           => Eq::refl(Nat, Nat::Zero)
+      | List::Cons(x, rest) =>
+          congr_arg(Nat, Nat, Nat::Succ,
+                    length(B, map(A, B, f, rest)), length(A, rest),
+                    map_length(A, B, f, rest))
+    }
+}
+
+// `map` is functorial: it commutes with `append` (map distributes over concatenation).
+fn map_append(A: Type, B: Type, f: A -> B, xs: List<A>, ys: List<A>)
+    -> map(A, B, f, append(A, xs, ys)) == append(B, map(A, B, f, xs), map(A, B, f, ys))
+{
+    match xs {
+      | List::Nil           => Eq::refl(List<B>, map(A, B, f, ys))
+      | List::Cons(x, rest) =>
+          congr_arg(List<B>, List<B>, fun (t: List<B>) => List::Cons(B, f(x), t),
+                    map(A, B, f, append(A, rest, ys)),
+                    append(B, map(A, B, f, rest), map(A, B, f, ys)),
+                    map_append(A, B, f, rest, ys))
+    }
+}
