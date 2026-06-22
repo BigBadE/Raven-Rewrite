@@ -378,3 +378,15 @@ fn raven_kernel_program_runs() {
     // dbl 2 ≡ 4 = four Succs.
     assert_eq!(report.run.unwrap().unwrap().matches("Succ").count(), 4, "dbl 2 should evaluate to 4");
 }
+
+/// The unified path: one file with a runtime computation AND its proofs, where the kernel is
+/// the single checker — it type-checks every declaration AND evaluates the runtime entry point
+/// to a value (no separate, lenient runtime checker for the modeled fragment).
+#[test]
+fn unified_kernel_checks_and_runs() {
+    let src = include_str!("../../../examples/proofs/unified.rv");
+    let report = rv_driver::verify_rv(src, Some("compute")).expect("front-end ok");
+    assert!(report.all_verified(), "every declaration (runtime + proofs) must check: {report:?}");
+    // `compute` = 2 + 3 evaluates, through the kernel, to 5 = five Succs.
+    assert_eq!(report.run.unwrap().unwrap().matches("Succ").count(), 5, "2 + 3 should evaluate to 5");
+}

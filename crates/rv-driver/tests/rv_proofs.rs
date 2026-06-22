@@ -50,6 +50,14 @@ fn machine_model() {
     check("machine.rv");
 }
 
+/// The partiality membrane modeled as a kernel-checked type: a divergent `Partial<Empty>` is
+/// constructible (Turing-complete) but cannot be forced without a termination witness, so no
+/// `fn () -> Empty` exists. Lets a total kernel admit a partial runtime, soundly.
+#[test]
+fn partial_membrane() {
+    check("partial.rv");
+}
+
 #[test]
 fn bool_logic() {
     check("bool_logic.rv");

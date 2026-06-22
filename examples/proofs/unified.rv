@@ -1,0 +1,37 @@
+// The unified path, in one file: a runtime computation AND its correctness proof, both checked
+// by the single sound checker (the kernel), and the computation *evaluated* by the same kernel.
+//
+//   rvc unified.rv --verify            # the kernel type-checks every declaration
+//   rvc unified.rv --verify --run --entry compute   # ...and evaluates `compute` to a value
+//
+// This is Stage 6 for the *modeled* fragment: no separate, lenient runtime checker — the kernel
+// is the one type system, over types modeled in Raven (here `Nat`/`plus`). The fast native path
+// (compile `plus` to a machine `add`) is the realization layer, trusted at the codegen boundary;
+// the *meaning* is fixed here and proved. (`rvc --verify`.)
+
+enum Nat { Zero, Succ(Nat) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+
+fn two()  -> Nat { Nat::Succ(Nat::Succ(Nat::Zero)) }
+fn three() -> Nat { Nat::Succ(Nat::Succ(Nat::Succ(Nat::Zero))) }
+fn five() -> Nat {
+    Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(Nat::Zero)))))
+}
+
+// The runtime computation: an ordinary `fn` the kernel will both type-check and evaluate.
+fn compute() -> Nat { plus(two(), three()) }
+
+// Its proof, in the SAME file, checked by the SAME kernel: `2 + 3 == 5`, by computation.
+fn compute_correct() -> compute() == five() { Eq::refl(Nat, five()) }
+
+// And a general law about the same `plus`, so the file mixes concrete runtime and proof:
+// `n + 0 == n`, by induction (the kernel's totality checker accepts the structural recursion).
+fn plus_zero(n: Nat) -> plus(n, Nat::Zero) == n {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(k) => congr_arg(Nat, Nat, Nat::Succ, plus(k, Nat::Zero), k, plus_zero(k))
+    }
+}

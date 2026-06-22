@@ -1,0 +1,83 @@
+// Partiality, modeled in Raven as a TYPE — the membrane that lets a Turing-complete runtime
+// live under a total, sound kernel.
+//
+// The kernel must be total: if it admitted unrestricted recursion, `fn bottom() -> False {
+// bottom() }` would prove False and the logic would collapse. A real programming language must
+// be partial (loops, servers, general recursion). The reconciliation is to give a possibly-
+// diverging computation of `A` a DIFFERENT type, `Partial<A>`, rather than `A` itself. Then:
+//
+//   * you may CONSTRUCT a `Partial<A>` freely — including a computation that never halts, so
+//     the language stays Turing-complete; and
+//   * you may EXTRACT an `A` only by supplying a *termination witness* — evidence that the
+//     computation actually produced a value.
+//
+// That asymmetry is a one-way membrane: easy to enter, impossible to leave into the pure logic
+// without proof of termination. It is enforced entirely by ordinary kernel type-checking — no
+// `Div` effect, no kernel growth. `Partial<A>` is just `Nat -> Option<A>` (a fuel-indexed
+// approximation): run it with more fuel to make more progress. (`rvc --verify`.)
+
+enum Nat { Zero, Succ(Nat) }
+enum Option<A: Type> { None, Some(A) }
+
+// A `Type`-level empty type (uninhabited), so it can be an `Option` element. Producing one is
+// as impossible as producing a proof of `False`: `absurd` maps either to anything.
+enum Empty { }
+fn absurd(A: Type, e: Empty) -> A { match e { } }
+
+// `Partial<A> = Nat -> Option<A>` is written directly as the function type below; this is its
+// "has it produced a value yet?" predicate. `is_some(None)` is `False`, `is_some(Some _)` is
+// `True` — so a termination witness for `p` at `fuel` is exactly a proof of `is_some(p(fuel))`.
+fn is_some(A: Type, o: Option<A>) -> Prop {
+    match o { | Option::None => False | Option::Some(x) => True }
+}
+
+// EXTRACT: recover the value from an option, given a proof it is present. The `None` case is
+// impossible — its witness `hh : is_some(None)` is a proof of `False` — so it is discharged by
+// `False`-elimination. (Convoy: the match returns a function of the witness so each arm refines
+// the witness type to `False` / `True`.)
+fn extract(A: Type, o: Option<A>, h: is_some(A, o)) -> A {
+    let go : (hh: is_some(A, o)) -> A :=
+        match o {
+          | Option::None    => fun (hh: False) => False::rec(fun (z: False) => A, hh)
+          | Option::Some(x) => fun (hh: True) => x
+        }
+    in go(h)
+}
+
+// FORCE a partial computation: run it with `fuel`, and — given a termination witness that it
+// produced a value at that fuel — extract the result. There is no `force` without `h`.
+fn force(A: Type, p: Nat -> Option<A>, fuel: Nat, h: is_some(A, p(fuel))) -> A {
+    extract(A, p(fuel), h)
+}
+
+// `now(a)` — the immediately-terminating computation. It produces `a` at every fuel.
+fn now(A: Type, a: A) -> (Nat -> Option<A>) { fun (fuel: Nat) => Option::Some(A, a) }
+
+// `now` always has a value (trivial termination witness), and forcing it returns `a`.
+fn now_is_some(A: Type, a: A, fuel: Nat) -> is_some(A, now(A, a)(fuel)) { True::intro }
+fn force_now(A: Type, a: A, fuel: Nat)
+    -> force(A, now(A, a), fuel, now_is_some(A, a, fuel)) == a
+{
+    Eq::refl(A, a)
+}
+
+// THE MEMBRANE. `diverge` is a computation of `Empty` that never halts: it returns `None` for
+// every fuel. It type-checks and EXISTS — so `Partial<Empty>` is inhabited and the language is
+// Turing-complete — yet it yields no element of `Empty`...
+fn diverge() -> (Nat -> Option<Empty>) { fun (fuel: Nat) => Option::None(Empty) }
+
+// ...because forcing it is impossible: a termination witness for `diverge` at any fuel is a
+// proof of `is_some(None)`, i.e. a proof of `False`. So the ONLY way to "escape" to a real
+// element is to already hold a proof of `False` — which you never will. There is no
+// `fn () -> Empty`. (This `fn` is the conditional statement of that fact; it is vacuous.)
+fn no_escape(fuel: Nat, h: is_some(Empty, diverge()(fuel))) -> False { h }
+
+// Contrast — a *bounded* loop, written with explicit fuel, terminates and so DOES escape:
+// counting down to zero is structural recursion the kernel accepts directly.
+fn countdown(n: Nat) -> Nat { match n { | Nat::Zero => Nat::Zero | Nat::Succ(k) => countdown(k) } }
+fn countdown_halts(n: Nat) -> countdown(n) == Nat::Zero {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(k) => countdown_halts(k)
+    }
+}
