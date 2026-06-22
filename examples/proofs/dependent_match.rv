@@ -32,3 +32,23 @@ enum Lookup(g: Ctx, n: Nat, t: Ty) -> Prop {
 fn no_lookup_in_nil(n: Nat, t: Ty, h: Lookup(Ctx::Nil, n, t)) -> False {
     match h { }
 }
+
+// ---------------------------------------------------------------------------
+// Reachable-arm refinement (the **injectivity solution**).
+// ---------------------------------------------------------------------------
+// Inverting a `Plus` typing recovers `ha : HasTy(a, TNat)` where `a` is the constructor's
+// *own* bound variable — yet the goal asks for `HasTy(x, TNat)`. From the term-index equation
+// `Plus x y == Plus a b`, constructor injectivity gives `x == a`, so `ha` is transported to the
+// goal automatically: the arm body is written in the constructor's frame and the match refines
+// the goal to match. The `TLit` arm is omitted — it is impossible (Lit vs Plus) and discharged.
+fn plus_inv_left(x: Tm, y: Tm, h: HasTy(Tm::Plus(x, y), Ty::TNat)) -> HasTy(x, Ty::TNat) {
+    match h { | HasTy::TPlus(a, b, ha, hb) => ha }
+}
+fn plus_inv_right(x: Tm, y: Tm, h: HasTy(Tm::Plus(x, y), Ty::TNat)) -> HasTy(y, Ty::TNat) {
+    match h { | HasTy::TPlus(a, b, ha, hb) => hb }
+}
+// Both injectivity solutions (`x == a` and `y == b`) compose in one transport chain to retype
+// the swapped sum `Plus y x` (written `Plus b a` in the constructor's frame).
+fn plus_inv_swap(x: Tm, y: Tm, h: HasTy(Tm::Plus(x, y), Ty::TNat)) -> HasTy(Tm::Plus(y, x), Ty::TNat) {
+    match h { | HasTy::TPlus(a, b, ha, hb) => HasTy::TPlus(b, a, hb, ha) }
+}

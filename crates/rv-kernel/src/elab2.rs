@@ -1181,7 +1181,31 @@ impl<'a> Infer<'a> {
             }
         }
         match body {
-            Some(b) => self.check(b, goal),
+            Some(b) => {
+                // Try the plain body check first: existing proofs (which all pass it) are
+                // untouched, so the injectivity-solution below can never perturb them.
+                let cp = self.metas.checkpoint();
+                let obl_keys: Vec<u32> = self.obligations.keys().cloned().collect();
+                match self.check(b, goal) {
+                    Ok(t) => Ok(t),
+                    Err(e0) => {
+                        self.metas.restore(cp.clone());
+                        self.obligations.retain(|k, _| obl_keys.contains(k));
+                        // Fallback: refine the arm via constructor injectivity (a *reachable*
+                        // arm whose body lives in the constructor's bound-variable frame —
+                        // e.g. an inversion handing back `ha : HasTy(a, …)` where the goal
+                        // wants `HasTy(x, …)` and `x == a` follows from the index equation).
+                        match self.try_injectivity(eq_doms, b, goal) {
+                            Ok(Some(t)) => Ok(t),
+                            _ => {
+                                self.metas.restore(cp);
+                                self.obligations.retain(|k, _| obl_keys.contains(k));
+                                Err(e0)
+                            }
+                        }
+                    }
+                }
+            }
             None => Err(format!(
                 "non-exhaustive `match`: no arm for '{cname}' (and it is not impossible at the \
                  scrutinee's indices, so it can't be auto-discharged)"
@@ -1289,6 +1313,268 @@ impl<'a> Infer<'a> {
             Term::cnst(name("False.rec"), vec![goal_lvl]),
             [false_motive, absurd_false],
         )))
+    }
+
+    /// **Injectivity-solution** for a *reachable* arm. Each index equation `Eq J (C s…) (C t…)`
+    /// (same constructor on both sides) decomposes — by constructor injectivity — into field
+    /// equations `Eq J sᵢ tᵢ`. Whenever the constructor side `tᵢ` is a bare bound arm variable
+    /// `Var d` and the scrutinee side `sᵢ = u` is an outer term, that is a *variable solution*
+    /// `Var d := u`. We rewrite the goal into the constructor's bound-variable frame (each `u`
+    /// ↦ `Var d`) — the frame the arm body is written in — check the body there, then transport
+    /// the result back to the original goal along the injectivity proofs (`Eq.rec`). Returns
+    /// `None` (the caller restores the metacontext and reports the plain mismatch) when no usable
+    /// solution exists or the refined check fails.
+    fn try_injectivity(
+        &mut self,
+        eq_doms: &[Term],
+        body: &crate::surface::Expr,
+        goal: &Term,
+    ) -> Result<Option<Term>, String> {
+        struct Sol {
+            d: usize,
+            u: Term,
+            ty: Term,
+            lvl: Level,
+            inj: Term,
+        }
+        let n = eq_doms.len();
+        let mut sols: Vec<Sol> = Vec::new();
+        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for (i, edom) in eq_doms.iter().enumerate() {
+            // Lift to the final arm context (fields + n eqs), as in `discharge_or_check`.
+            let edom = edom.lift((n - i) as isize, 0);
+            let edz = self.metas.zonk(&edom).unwrap_or_else(|_| edom.clone());
+            let (head, args) = edz.unfold_apps();
+            let Term::Const(eq_name, eq_ls) = &head else { continue };
+            if *eq_name != name("Eq") || args.len() != 3 || eq_ls.len() != 1 {
+                continue;
+            }
+            let a_lvl = eq_ls[0].clone();
+            let (a_ty, lhs, rhs) = (args[0].clone(), args[1].clone(), args[2].clone());
+            let lw = self.force_whnf(&lhs);
+            let rw = self.force_whnf(&rhs);
+            let (lh, largs) = lw.unfold_apps();
+            let (rh, rargs) = rw.unfold_apps();
+            let (Term::Const(lc, _), Term::Const(rc, _)) = (&lh, &rh) else { continue };
+            if lc != rc || largs.len() != rargs.len() || largs.is_empty() {
+                continue;
+            }
+            let lc = lc.to_string();
+            let eq_var = n - 1 - i;
+            for (fi, (la, ra)) in largs.iter().zip(rargs.iter()).enumerate() {
+                let Term::Var(d) = ra else { continue };
+                let d = *d;
+                if seen.contains(&d) || occurs_var(la, d) {
+                    continue;
+                }
+                // Field type/level read off the bound variable `Var d`.
+                if d >= self.locals.len() {
+                    continue;
+                }
+                let pos = self.locals.len() - 1 - d;
+                let ftype = self.locals[pos].1.lift((d + 1) as isize, 0);
+                if !is_closed_at(&ftype, 0) {
+                    continue;
+                }
+                let Ok(flvl) =
+                    Checker::new(self.env).infer_sort(&mut self.local_ctx(), &ftype)
+                else {
+                    continue;
+                };
+                let inj = match self.build_inj(
+                    &a_ty, &a_lvl, &lw, &rw, &lc, fi, eq_var, ra, &ftype, &flvl,
+                )? {
+                    Some(t) => t,
+                    None => continue,
+                };
+                seen.insert(d);
+                sols.push(Sol { d, u: la.clone(), ty: ftype, lvl: flvl, inj });
+            }
+        }
+        if sols.is_empty() {
+            return Ok(None);
+        }
+        // Refine the goal into the bound-variable frame and check the body there.
+        let mut refined = goal.clone();
+        for s in &sols {
+            refined = replace_with_var(&refined, &s.u, s.d);
+        }
+        let mut term = match self.check(body, &refined) {
+            Ok(t) => t,
+            Err(_) => return Ok(None),
+        };
+        // Transport back: un-refine one variable at a time (`Var d ↦ u`) along its injectivity
+        // proof. `cur` tracks the type of `term`, starting at the fully-refined goal.
+        let mut cur = refined;
+        for s in &sols {
+            let goal_lvl = self.pi_sort(&cur);
+            // Motive C(b) = cur[Var d ↦ b]: lift `cur` past the two `Eq.rec` binders, then
+            // replace the (shifted) `Var d` with the bound `b` (de Bruijn 1 under both).
+            let g2 = cur.lift(2, 0);
+            let m_body = replace_with_var(&g2, &Term::Var(s.d + 2), 1);
+            let motive = Term::lam(
+                s.ty.clone(),
+                Term::lam(
+                    Term::apps(
+                        Term::cnst(name("Eq"), vec![s.lvl.clone()]),
+                        [s.ty.lift(1, 0), Term::Var(s.d + 1), Term::Var(0)],
+                    ),
+                    m_body,
+                ),
+            );
+            let symm = self.mk_symm(&s.lvl, &s.ty, &s.u, &Term::Var(s.d), &s.inj);
+            term = Term::apps(
+                Term::cnst(name("Eq.rec"), vec![s.lvl.clone(), goal_lvl]),
+                [s.ty.clone(), Term::Var(s.d), motive, term, s.u.clone(), symm],
+            );
+            cur = subst_db_var(&cur, s.d, &s.u);
+        }
+        Ok(Some(term))
+    }
+
+    /// Build `inj : Eq F u (Var d)` — the `fi`-th-field component of constructor `lc`'s
+    /// injectivity applied to the equation hypothesis `heq : Eq A (lc l…) (lc r…)` (whnf'd as
+    /// `lw`/`rw`, `heq` at de Bruijn `eq_var`). Constructs a projection `P : A → F` (via `A`'s
+    /// recursor, returning field `fi` at `lc`, `witness` elsewhere) and transports
+    /// `Eq.refl (P lw)` along `heq` to `Eq F (P lw) (P rw) ≡ Eq F u (Var d)`. Returns `None`
+    /// when `A` is not a usable (param-free, non-mutual) inductive.
+    #[allow(clippy::too_many_arguments)]
+    fn build_inj(
+        &mut self,
+        a_ty: &Term,
+        a_lvl: &Level,
+        lw: &Term,
+        rw: &Term,
+        lc: &str,
+        fi: usize,
+        eq_var: usize,
+        witness: &Term,
+        ftype: &Term,
+        flvl: &Level,
+    ) -> Result<Option<Term>, String> {
+        use crate::env::Decl;
+        let (a_head, _) = self.force_whnf(a_ty).unfold_apps();
+        let Term::Const(a_name, a_levels) = &a_head else { return Ok(None) };
+        let a_name = a_name.to_string();
+        let a_levels = a_levels.clone();
+        let Some(Decl::Inductive(ind)) = self.env.get(&a_name) else { return Ok(None) };
+        let ind = ind.clone();
+        if ind.num_params != 0 || ind.num_indices != 0 {
+            return Ok(None);
+        }
+        let Some(Decl::Recursor(rec)) = self.env.get(&ind.recursor) else { return Ok(None) };
+        let rec = rec.clone();
+        if rec.num_motives != 1 {
+            return Ok(None);
+        }
+        let kinds = self.ctor_rec_kinds(&[a_name.clone()], lc, 0, &a_levels)?;
+        if fi >= kinds.len() {
+            return Ok(None);
+        }
+        // P = λ x:A. A.rec.{a_levels, flvl} (λ_:A. F) minors… x
+        let a_ty_c = Term::cnst(name(&a_name), a_levels.clone());
+        let f_motive = Term::lam(a_ty_c.clone(), ftype.lift(1, 0));
+        let rec_levels: Vec<Level> =
+            a_levels.iter().cloned().chain(std::iter::once(flvl.clone())).collect();
+        let mut t = rec.ty.instantiate_levels(&rec_levels);
+        let Term::Pi(_, _, mbody) = &t else { return Ok(None) };
+        t = mbody.instantiate(&f_motive);
+        let mut minors = Vec::with_capacity(ind.ctors.len());
+        for c in &ind.ctors {
+            let Term::Pi(_, mdom, mrest) = &t else { return Ok(None) };
+            let (arity_doms, _) = peel_all_pis((**mdom).clone());
+            let nb = arity_doms.len();
+            let minor_body = if **c == *lc {
+                // Field `fi` sits at binder position fi + (#recursive fields before fi), since
+                // each recursive field's IH binder immediately follows it.
+                let mut posn = 0usize;
+                for j in 0..fi {
+                    posn += 1 + usize::from(kinds[j]);
+                }
+                Term::Var(nb - 1 - posn)
+            } else {
+                // Unreachable branch (the equation forces `lc` on both sides); any `F` works.
+                witness.lift((nb + 1) as isize, 0)
+            };
+            let mut minor = minor_body;
+            for dd in arity_doms.into_iter().rev() {
+                minor = Term::lam(dd, minor);
+            }
+            let ph = self.metas.fresh();
+            t = mrest.instantiate(&ph);
+            minors.push(minor);
+        }
+        let mut rec_app = Term::cnst(ind.recursor.clone(), rec_levels);
+        rec_app = Term::app(rec_app, f_motive);
+        for mnr in &minors {
+            rec_app = Term::app(rec_app, mnr.clone());
+        }
+        rec_app = Term::app(rec_app, Term::Var(0));
+        let p = Term::lam(a_ty_c, rec_app);
+        // inj = Eq.rec.{a_lvl,0} A lw (λ y _. Eq F (P lw) (P y)) (Eq.refl F (P lw)) rw heq.
+        let eq_motive = Term::lam(
+            a_ty.clone(),
+            Term::lam(
+                Term::apps(
+                    Term::cnst(name("Eq"), vec![a_lvl.clone()]),
+                    [a_ty.lift(1, 0), lw.lift(1, 0), Term::Var(0)],
+                ),
+                Term::apps(
+                    Term::cnst(name("Eq"), vec![flvl.clone()]),
+                    [
+                        ftype.lift(2, 0),
+                        Term::app(p.lift(2, 0), lw.lift(2, 0)),
+                        Term::app(p.lift(2, 0), Term::Var(1)),
+                    ],
+                ),
+            ),
+        );
+        Ok(Some(Term::apps(
+            Term::cnst(name("Eq.rec"), vec![a_lvl.clone(), Level::Zero]),
+            [
+                a_ty.clone(),
+                lw.clone(),
+                eq_motive,
+                Term::apps(
+                    Term::cnst(name("Eq.refl"), vec![flvl.clone()]),
+                    [ftype.clone(), Term::app(p.clone(), lw.clone())],
+                ),
+                rw.clone(),
+                Term::Var(eq_var),
+            ],
+        )))
+    }
+
+    /// `symm e : Eq A y x` from `e : Eq A x y`, built directly on `Eq.rec` (so it needs no
+    /// proof prelude — the kernel unit tests run without one).
+    fn mk_symm(&self, lvl: &Level, a_ty: &Term, x: &Term, y: &Term, e: &Term) -> Term {
+        let motive = Term::lam(
+            a_ty.clone(),
+            Term::lam(
+                Term::apps(
+                    Term::cnst(name("Eq"), vec![lvl.clone()]),
+                    [a_ty.lift(1, 0), x.lift(1, 0), Term::Var(0)],
+                ),
+                Term::apps(
+                    Term::cnst(name("Eq"), vec![lvl.clone()]),
+                    [a_ty.lift(2, 0), Term::Var(1), x.lift(2, 0)],
+                ),
+            ),
+        );
+        Term::apps(
+            Term::cnst(name("Eq.rec"), vec![lvl.clone(), Level::Zero]),
+            [
+                a_ty.clone(),
+                x.clone(),
+                motive,
+                Term::apps(
+                    Term::cnst(name("Eq.refl"), vec![lvl.clone()]),
+                    [a_ty.clone(), x.clone()],
+                ),
+                y.clone(),
+                e.clone(),
+            ],
+        )
     }
 
     /// Compile a `match` on a member of a **mutual** inductive group via its multi-motive
@@ -1900,6 +2186,46 @@ pub(crate) fn replace_with_var(t: &Term, target: &Term, k: usize) -> Term {
         }
     }
     go(t, target, k, 0)
+}
+
+/// Replace the de Bruijn variable `d` (and its shifts under binders) in `t` with `u`
+/// (correspondingly shifted), leaving every other index intact — a *same-context*
+/// substitution (no binder is removed), used by the injectivity-solution to un-refine a goal
+/// one solved variable at a time.
+fn subst_db_var(t: &Term, d: usize, u: &Term) -> Term {
+    fn go(t: &Term, d: usize, u: &Term, depth: usize) -> Term {
+        match t {
+            Term::Var(i) if *i == d + depth => u.lift(depth as isize, 0),
+            Term::Sort(_) | Term::Var(_) | Term::Const(..) | Term::Meta(_) => t.clone(),
+            Term::App(f, a) => Term::app(go(f, d, u, depth), go(a, d, u, depth)),
+            Term::Lam(g, b) => Term::lam(go(g, d, u, depth), go(b, d, u, depth + 1)),
+            Term::Pi(gr, g, b) => {
+                Term::pi_graded(*gr, go(g, d, u, depth), go(b, d, u, depth + 1))
+            }
+            Term::Let(ty, v, b) => Term::let_(
+                go(ty, d, u, depth),
+                go(v, d, u, depth),
+                go(b, d, u, depth + 1),
+            ),
+        }
+    }
+    go(t, d, u, 0)
+}
+
+/// Does the de Bruijn variable `d` (accounting for binder shifts) occur in `t`?
+fn occurs_var(t: &Term, d: usize) -> bool {
+    fn go(t: &Term, d: usize, depth: usize) -> bool {
+        match t {
+            Term::Var(i) => *i == d + depth,
+            Term::Sort(_) | Term::Const(..) | Term::Meta(_) => false,
+            Term::App(f, a) => go(f, d, depth) || go(a, d, depth),
+            Term::Lam(g, b) | Term::Pi(_, g, b) => go(g, d, depth) || go(b, d, depth + 1),
+            Term::Let(x, y, z) => {
+                go(x, d, depth) || go(y, d, depth) || go(z, d, depth + 1)
+            }
+        }
+    }
+    go(t, d, 0)
 }
 
 /// Does the constant `n` occur anywhere in `t`? (Used to spot recursive fields.)
