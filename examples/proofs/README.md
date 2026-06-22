@@ -38,6 +38,7 @@ prelude, [`crates/rv-driver/prelude.rv`](../../crates/rv-driver/prelude.rv), whi
 | `reflect.rv`           | proof by **reflection**: `Decidable`/`decide`/`of_decide_eq_true` + decidable bool equality | `Type`-sorted family, large elimination, no-confusion, certificate convoy |
 | `dependent_match.rv`   | **dependent pattern matching**: impossible arms auto-discharge; reachable arms refine by constructor injectivity | index unification, no-confusion, empty/omitted arms, **injectivity solution** (auto goal-transport) |
 | `cek_machine.rv`       | the CEK abstract machine — **runs** `(λx. x+1) 2 ⟹ 3` | mutual `Val/Env/Kont`, fuelled driver |
+| `cek_safety.rv`      | CEK **machine type safety + adequacy + compiler pipeline** | machine-state typing, progress/preservation over states, adequacy vs the reference semantics |
 | `refinement.rv`        | `safe_pred(2)` — a precondition in the type | **refinement types** (`x: T where p`) with **auto-discharge** |
 
 Nothing here uses special proof syntax: it all reads as recursive Rust functions over `enum`s.

@@ -1,0 +1,845 @@
+// CEK abstract-machine metatheory (type safety + adequacy + compiler pipeline), ported
+// from the cek_*.rvk corpus to the .rv pipeline. Self-contained logic (EqF/TrueF/FalseF/OrF).
+
+// ─────────── cek_prelude ───────────
+
+    -- Logic.
+    inductive TrueF  : Prop | intro : TrueF
+    inductive FalseF : Prop
+    inductive EqF.{u} (A : Sort u) (a : A) : A -> Prop | refl : EqF A a a
+    def EqF.subst.{u} (A : Sort u) (P : A -> Prop) (a : A) (b : A) (h : EqF A a b) (pa : P a)
+      : P b := EqF.rec.{u, 0} A a (fun (x : A) (p : EqF A a x) => P x) pa b h
+    def EqF.symm.{u} (A : Sort u) (a : A) (b : A) (h : EqF A a b) : EqF A b a :=
+      EqF.rec.{u, 0} A a (fun (x : A) (p : EqF A a x) => EqF A x a) (EqF.refl.{u} A a) b h
+    def EqF.trans.{u} (A : Sort u) (a : A) (b : A) (c : A) (h1 : EqF A a b) (h2 : EqF A b c)
+      : EqF A a c := EqF.subst.{u} A (fun (x : A) => EqF A a x) b c h2 h1
+
+    inductive Bool : Type | false : Bool | true : Bool
+    inductive Nat : Type | zero : Nat | succ : Nat -> Nat
+    fn addN(m: Nat) -> (Nat -> Nat) {
+        match m { | Nat.zero => fun (n : Nat) => n | Nat.succ(k) => fun (n : Nat) => Nat.succ(addN(k)(n)) }
+    }
+
+    -- The focused core language (de Bruijn variables; only `lam` binds). The last two
+    -- constructors are the **algebraic effects** layer: `op` performs an operation with a
+    -- payload, and `handle body h` runs `body` under the handler `h : payload -> resume -> r`.
+    inductive Tm : Type
+      | var : Nat -> Tm
+      | lit : Nat -> Tm
+      | lam : Tm -> Tm                -- λ. body          (body refers to the parameter as var 0)
+      | app : Tm -> Tm -> Tm
+      | add : Tm -> Tm -> Tm
+      | ifz : Tm -> Tm -> Tm -> Tm    -- ifz s then else  (branch on whether s evaluates to zero)
+      | op  : Tm -> Tm                -- perform an operation carrying the payload term
+      | handle : Tm -> Tm -> Tm       -- handle body with handler `h : payload -> resume -> r`
+
+// ─────────── cek_machine ───────────
+
+    -- Values, environments, and continuations are ONE mutual inductive group: a value may
+    -- be a closure (capturing an environment) or a reified continuation `vkont` (a
+    -- resumption); an environment is a list of values; a continuation frame may hold values
+    -- and other continuations.
+    mutual {
+      inductive Val : Type
+        | vnat  : Nat -> Val
+        | vclos : Env -> Tm -> Val      -- ⟨ captured env , λ-body ⟩
+        | vkont : Kont -> Val           -- a reified resumption (first-class continuation)
+      inductive Env : Type
+        | enil  : Env
+        | econs : Val -> Env -> Env
+      inductive Kont : Type
+        | kdone : Kont
+        | kapp1 : Env -> Tm -> Kont -> Kont        -- evaluating the function; arg term + env pending
+        | kapp2 : Val -> Kont -> Kont              -- function value in hand; evaluating the argument
+        | kadd1 : Env -> Tm -> Kont -> Kont        -- evaluating the left summand; right term + env pending
+        | kadd2 : Nat -> Kont -> Kont              -- left summand computed; evaluating the right
+        | kifz  : Env -> Tm -> Tm -> Kont -> Kont  -- evaluating the scrutinee; both branches + env pending
+        | kop   : Kont -> Kont                     -- payload of a performed operation is being evaluated
+        | khEval : Tm -> Env -> Kont -> Kont       -- handler being evaluated; its body + env pending
+        | khandle : Val -> Kont -> Kont            -- an installed handler value around the running body
+        | kresume : Val -> Kont -> Kont            -- apply the returned function to this value, then continue
+    }
+
+    -- Environment lookup by de Bruijn index. Recurses on the *index* (a plain `Nat`), so it
+    -- is an ordinary solo recursion even though `Env` is a mutual member.
+    fn lookupEnv(n: Nat) -> (Env -> Val) {
+        match n {
+          | Nat.zero => fun (e : Env) =>
+              match e { | Env.enil => Val.vnat Nat.zero | Env.econs(v, rest) => v }
+          | Nat.succ(m) => fun (e : Env) =>
+              match e { | Env.enil => Val.vnat Nat.zero | Env.econs(v, rest) => lookupEnv(m)(rest) }
+        }
+    }
+
+    -- A machine state: "evaluate C under E with K", "return value V to K", a final answer,
+    -- or stuck (a type error the checker rules out).
+    inductive State : Type
+      | seval  : Tm -> Env -> Kont -> State
+      | sret   : Val -> Kont -> State
+      | sdone  : Val -> State
+      | sstuck : State
+
+    -- HANDLER SEARCH. `walkKont` walks a continuation down to the nearest installed handler
+    -- and fires it: it runs the handler body with the payload bound and the *original*
+    -- continuation (passed as `ko`) reified as the resumption `vkont ko`; the handler then
+    -- runs with the continuation that was below the handler. No handler ⇒ stuck.
+    --
+    -- It must recurse structurally over `Kont` (a mutual member), so it is written as a
+    -- mutual-function bundle over the whole group; `walkVal`/`walkEnv` are the (unused)
+    -- sibling members the bundle requires. Each returns `Kont -> Val -> State`, i.e. it is
+    -- applied to the original continuation `ko` and the payload `pv`.
+    fn walkVal(x: Val) -> (Kont -> (Val -> State)) {
+        match x {
+          | Val.vnat(n)      => fun (ko : Kont) => fun (pv : Val) => State.sstuck
+          | Val.vclos(e, b)  => fun (ko : Kont) => fun (pv : Val) => State.sstuck
+          | Val.vkont(kk)    => fun (ko : Kont) => fun (pv : Val) => State.sstuck
+        }
+    }
+    fn walkEnv(x: Env) -> (Kont -> (Val -> State)) {
+        match x {
+          | Env.enil         => fun (ko : Kont) => fun (pv : Val) => State.sstuck
+          | Env.econs(v, r)  => fun (ko : Kont) => fun (pv : Val) => State.sstuck
+        }
+    }
+    fn walkKont(k: Kont) -> (Kont -> (Val -> State)) {
+        match k {
+          | Kont.kdone => fun (ko : Kont) => fun (pv : Val) => State.sstuck
+          | Kont.khandle(vh, k2) => fun (ko : Kont) => fun (pv : Val) =>
+              match vh {
+                | Val.vclos(hcenv, hb) => State.seval hb (Env.econs pv hcenv) (Kont.kresume (Val.vkont ko) k2)
+                | Val.vnat(n) => State.sstuck
+                | Val.vkont(kk) => State.sstuck
+              }
+          | Kont.kapp1(e, a, k2)     => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.kapp2(vf, k2)       => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.kadd1(e, y, k2)     => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.kadd2(m, k2)        => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.kifz(e, t2, e2, k2) => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.kop(k2)             => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.khEval(b, e, k2)    => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+          | Kont.kresume(rv, k2)     => fun (ko : Kont) => fun (pv : Val) => walkKont(k2)(ko)(pv)
+        }
+    }
+
+    fn isFinal(s: State) -> Bool {
+        match s { | State.sdone(v) => Bool.true | State.sstuck => Bool.true
+                 | State.seval(t, e, k) => Bool.false | State.sret(v, k) => Bool.false }
+    }
+
+    -- THE TRANSITION. One clause per (control shape) and per (continuation frame); a total
+    -- function and a *single* step — no search (the search lives in `walkKont`, invoked once
+    -- per performed operation), no substitution.
+    fn step(s: State) -> State {
+        match s {
+          | State.seval(t, env, k) =>
+              match t {
+                | Tm.var(n)         => State.sret (lookupEnv(n)(env)) k
+                | Tm.lit(n)         => State.sret (Val.vnat n) k
+                | Tm.lam(b)         => State.sret (Val.vclos env b) k
+                | Tm.app(f, a)      => State.seval f env (Kont.kapp1 env a k)
+                | Tm.add(x, y)      => State.seval x env (Kont.kadd1 env y k)
+                | Tm.ifz(c, t2, e2) => State.seval c env (Kont.kifz env t2 e2 k)
+                | Tm.op(a)          => State.seval a env (Kont.kop k)
+                | Tm.handle(b, h)   => State.seval h env (Kont.khEval b env k)
+              }
+          | State.sret(v, k) =>
+              match k {
+                | Kont.kdone => State.sdone v
+                | Kont.kapp1(env, a, k2) => State.seval a env (Kont.kapp2 v k2)
+                | Kont.kapp2(vf, k2) =>
+                    match vf {
+                      | Val.vclos(cenv, body) => State.seval body (Env.econs v cenv) k2
+                      | Val.vkont(kr) => State.sret v kr            -- applying a resumption: jump to it
+                      | Val.vnat(n) => State.sstuck
+                    }
+                | Kont.kadd1(env, y, k2) =>
+                    match v {
+                      | Val.vnat(m) => State.seval y env (Kont.kadd2 m k2)
+                      | Val.vclos(cenv, body) => State.sstuck
+                      | Val.vkont(kk) => State.sstuck
+                    }
+                | Kont.kadd2(m, k2) =>
+                    match v {
+                      | Val.vnat(n) => State.sret (Val.vnat (addN(m)(n))) k2
+                      | Val.vclos(cenv, body) => State.sstuck
+                      | Val.vkont(kk) => State.sstuck
+                    }
+                | Kont.kifz(env, t2, e2, k2) =>
+                    match v {
+                      | Val.vnat(n) => match n { | Nat.zero => State.seval t2 env k2 | Nat.succ(m) => State.seval e2 env k2 }
+                      | Val.vclos(cenv, body) => State.sstuck
+                      | Val.vkont(kk) => State.sstuck
+                    }
+                | Kont.kop(k2) => walkKont(k2)(k2)(v)                -- payload evaluated: find handler, resume = k2
+                | Kont.khEval(body, env2, k2) => State.seval body env2 (Kont.khandle v k2)  -- handler ready; run body
+                | Kont.khandle(vh, k2) => State.sret v k2            -- body finished normally: discard the handler
+                | Kont.kresume(rv, k2) =>
+                    match v {
+                      | Val.vclos(cenv, body) => State.seval body (Env.econs rv cenv) k2  -- apply (λresume. …) to the resumption
+                      | Val.vkont(kr) => State.sret rv kr
+                      | Val.vnat(n) => State.sstuck
+                    }
+              }
+          | State.sdone(v) => State.sdone v
+          | State.sstuck => State.sstuck
+        }
+    }
+
+    -- The fuelled driver: step until the state is final or the fuel runs out.
+    fn run(fuel: Nat) -> (State -> State) {
+        match fuel {
+          | Nat.zero    => fun (s : State) => s
+          | Nat.succ(k) => fun (s : State) =>
+              match isFinal(s) { | Bool.true => s | Bool.false => run(k)(step(s)) }
+        }
+    }
+
+    -- Load a closed term into the initial state (empty environment), and read a number out
+    -- of a final state.
+    def load (t : Tm) : State := State.seval t Env.enil Kont.kdone
+    def evalNat (fuel : Nat) (t : Tm) : Nat :=
+      match run(fuel)(load(t)) {
+        | State.sdone(v) => match v { | Val.vnat(n) => n | Val.vclos(env, b) => Nat.zero | Val.vkont(k) => Nat.zero }
+        | State.sret(v, k) => Nat.zero
+        | State.seval(t2, e, k) => Nat.zero
+        | State.sstuck => Nat.zero
+      }
+
+// ─────────── cek_meta ───────────
+
+    -- Bool no-confusion: `false ≠ true`.
+    def isFalseProp (b : Bool) : Prop := Bool.rec.{1} (fun (_ : Bool) => Prop) TrueF FalseF b
+    def ff_ne_tt (h : EqF.{1} Bool Bool.false Bool.true) : FalseF :=
+      EqF.rec.{1, 0} Bool Bool.false
+        (fun (b : Bool) (_ : EqF.{1} Bool Bool.false b) => isFalseProp b)
+        TrueF.intro Bool.true h
+
+    -- A final state is a fixed point of `step`. For `seval`/`sret`, `isFinal s` computes to
+    -- `false`, so the hypothesis is absurd and the goal follows by `FalseF.rec`.
+    fn step_final(s: State)
+      -> (EqF.{1} Bool (isFinal s) Bool.true -> EqF.{1} State (step s) s) {
+        match s {
+          | State.sdone(v) => fun (h : EqF.{1} Bool (isFinal (State.sdone v)) Bool.true) =>
+              EqF.refl.{1} State (State.sdone v)
+          | State.sstuck => fun (h : EqF.{1} Bool (isFinal State.sstuck) Bool.true) =>
+              EqF.refl.{1} State State.sstuck
+          | State.seval(t, e, k) => fun (h : EqF.{1} Bool (isFinal (State.seval t e k)) Bool.true) =>
+              FalseF.rec.{0}
+                (fun (_ : FalseF) => EqF.{1} State (step (State.seval t e k)) (State.seval t e k))
+                (ff_ne_tt h)
+          | State.sret(v, k) => fun (h : EqF.{1} Bool (isFinal (State.sret v k)) Bool.true) =>
+              FalseF.rec.{0}
+                (fun (_ : FalseF) => EqF.{1} State (step (State.sret v k)) (State.sret v k))
+                (ff_ne_tt h)
+        }
+    }
+
+    -- Running a final state for any amount of fuel leaves it unchanged.
+    fn run_final_fix(n: Nat)
+      -> ((s : State) -> EqF.{1} Bool (isFinal s) Bool.true -> EqF.{1} State (run n s) s) {
+        match n {
+          | Nat.zero => fun (s : State) (h : EqF.{1} Bool (isFinal s) Bool.true) =>
+              EqF.refl.{1} State s
+          | Nat.succ(k) => fun (s : State) (h : EqF.{1} Bool (isFinal s) Bool.true) =>
+              EqF.subst.{1} Bool
+                (fun (b : Bool) =>
+                   EqF.{1} State (match b { | Bool.true => s | Bool.false => run(k)(step(s)) }) s)
+                Bool.true (isFinal s) (EqF.symm.{1} Bool (isFinal s) Bool.true h)
+                (EqF.refl.{1} State s)
+        }
+    }
+
+    -- ===== Driver adequacy: fuel composes, and answers are stable under more fuel. =====
+    -- These make "the machine's result" well-defined: once `run` reaches a final state, no
+    -- amount of extra fuel changes it. (The full machine-vs-small-step *simulation* — that
+    -- the machine computes the answer an independent semantics assigns — is a larger
+    -- development and is NOT proved here.)
+    def congrArg.{u, v} (A : Sort u) (B : Sort v) (f : A -> B) (a : A) (b : A) (h : EqF.{u} A a b)
+      : EqF.{v} B (f a) (f b) :=
+      EqF.subst.{u} A (fun (x : A) => EqF.{v} B (f a) (f x)) a b h (EqF.refl.{v} B (f a))
+
+    inductive Or2 (A : Prop) (B : Prop) : Prop | inl : A -> Or2 A B | inr : B -> Or2 A B
+    def bcases (b : Bool) : Or2 (EqF.{1} Bool b Bool.true) (EqF.{1} Bool b Bool.false) :=
+      Bool.rec.{0} (fun (x : Bool) => Or2 (EqF.{1} Bool x Bool.true) (EqF.{1} Bool x Bool.false))
+        (Or2.inr (EqF.{1} Bool Bool.false Bool.true) (EqF.{1} Bool Bool.false Bool.false) (EqF.refl.{1} Bool Bool.false))
+        (Or2.inl (EqF.{1} Bool Bool.true Bool.true) (EqF.{1} Bool Bool.true Bool.false) (EqF.refl.{1} Bool Bool.true))
+        b
+
+    -- One unfolding of `run` on a non-final state: `run (succ x) s = run x (step s)`.
+    def run_succ_step (x : Nat) (s : State) (hf : EqF.{1} Bool (isFinal s) Bool.false)
+      : EqF.{1} State (run (Nat.succ x) s) (run x (step s)) :=
+      EqF.subst.{1} Bool
+        (fun (b : Bool) =>
+           EqF.{1} State (match b { | Bool.true => s | Bool.false => run(x)(step(s)) }) (run x (step s)))
+        Bool.false (isFinal s) (EqF.symm.{1} Bool (isFinal s) Bool.false hf)
+        (EqF.refl.{1} State (run x (step s)))
+
+    -- FUEL COMPOSITION: run (n + m) s = run m (run n s). By induction on n, splitting on
+    -- whether `s` is already final (then both sides collapse via `run_final_fix`) or not
+    -- (then one `step` is shared and the tail follows by the IH).
+    fn run_compose(n: Nat)
+      -> ((m : Nat) -> (s : State) -> EqF.{1} State (run (addN(n)(m)) s) (run m (run n s))) {
+        match n {
+          | Nat.zero => fun (m : Nat) (s : State) => EqF.refl.{1} State (run m s)
+          | Nat.succ(n2) => fun (m : Nat) (s : State) =>
+              match bcases(isFinal s) {
+                | Or2.inl(htrue) =>
+                    EqF.trans.{1} State (run (addN(Nat.succ(n2))(m)) s) s (run m (run (Nat.succ n2) s))
+                      (run_final_fix (addN(Nat.succ(n2))(m)) s htrue)
+                      (EqF.symm.{1} State (run m (run (Nat.succ n2) s)) s
+                        (EqF.trans.{1} State (run m (run (Nat.succ n2) s)) (run m s) s
+                          (congrArg.{1, 1} State State (fun (x : State) => run m x)
+                             (run (Nat.succ n2) s) s (run_final_fix (Nat.succ n2) s htrue))
+                          (run_final_fix m s htrue)))
+                | Or2.inr(hfalse) =>
+                    EqF.trans.{1} State (run (addN(Nat.succ(n2))(m)) s) (run (addN(n2)(m)) (step s)) (run m (run (Nat.succ n2) s))
+                      (run_succ_step (addN(n2)(m)) s hfalse)
+                      (EqF.trans.{1} State (run (addN(n2)(m)) (step s)) (run m (run n2 (step s))) (run m (run (Nat.succ n2) s))
+                        (run_compose(n2)(m)(step s))
+                        (congrArg.{1, 1} State State (fun (x : State) => run m x)
+                           (run n2 (step s)) (run (Nat.succ n2) s)
+                           (EqF.symm.{1} State (run (Nat.succ n2) s) (run n2 (step s)) (run_succ_step n2 s hfalse))))
+              }
+        }
+    }
+
+    -- ANSWER STABILITY: if `run n s` is final, running `n + m` fuel gives the same answer.
+    def run_stable (n : Nat) (m : Nat) (s : State) (h : EqF.{1} Bool (isFinal (run n s)) Bool.true)
+      : EqF.{1} State (run (addN(n)(m)) s) (run n s) :=
+      EqF.trans.{1} State (run (addN(n)(m)) s) (run m (run n s)) (run n s)
+        (run_compose(n)(m)(s))
+        (run_final_fix m (run n s) h)
+
+// ─────────── cek_safety ───────────
+
+    -- Object types and typing contexts (de Bruijn).
+    inductive Ty : Type | tnat : Ty | tarr : Ty -> Ty -> Ty
+    inductive Ctx : Type | cnil : Ctx | ccons : Ty -> Ctx -> Ctx
+
+    -- de Bruijn lookup in the context.
+    inductive Lookup : Ctx -> Nat -> Ty -> Prop
+      | here  : (G : Ctx) -> (A : Ty) -> Lookup (Ctx.ccons A G) Nat.zero A
+      | there : (G : Ctx) -> (A : Ty) -> (B : Ty) -> (n : Nat)
+                  -> Lookup G n A -> Lookup (Ctx.ccons B G) (Nat.succ n) A
+
+    -- The typing relation for terms (the pure fragment; no rule for op/handle).
+    inductive HasTy : Ctx -> Tm -> Ty -> Prop
+      | tvar : (G : Ctx) -> (n : Nat) -> (A : Ty) -> Lookup G n A -> HasTy G (Tm.var n) A
+      | tlit : (G : Ctx) -> (n : Nat) -> HasTy G (Tm.lit n) Ty.tnat
+      | tlam : (G : Ctx) -> (A : Ty) -> (B : Ty) -> (b : Tm)
+                 -> HasTy (Ctx.ccons A G) b B -> HasTy G (Tm.lam b) (Ty.tarr A B)
+      | tapp : (G : Ctx) -> (f : Tm) -> (a : Tm) -> (A : Ty) -> (B : Ty)
+                 -> HasTy G f (Ty.tarr A B) -> HasTy G a A -> HasTy G (Tm.app f a) B
+      | tadd : (G : Ctx) -> (x : Tm) -> (y : Tm)
+                 -> HasTy G x Ty.tnat -> HasTy G y Ty.tnat -> HasTy G (Tm.add x y) Ty.tnat
+      | tifz : (G : Ctx) -> (c : Tm) -> (t : Tm) -> (e : Tm) -> (A : Ty)
+                 -> HasTy G c Ty.tnat -> HasTy G t A -> HasTy G e A -> HasTy G (Tm.ifz c t e) A
+
+    -- Value typing and environment typing. Indexed *mutual* inductives are unsupported, and
+    -- the pointwise (∀-under-binder) formulation is a W-type (also unsupported). So both
+    -- relations live in ONE non-mutual indexed inductive `HasTyVE` over the sums `VE`
+    -- (Val|Env) and `TC` (Ty|Ctx): a value typing and an environment typing are the two
+    -- injections. The recursive occurrences are finitary and strictly positive. No rule for
+    -- `vkont` — a reified continuation is never well-typed in the pure fragment.
+    inductive VE : Type | injv : Val -> VE | inje : Env -> VE
+    inductive TC : Type | injt : Ty -> TC | injc : Ctx -> TC
+    inductive HasTyVE : VE -> TC -> Prop
+      | vtnat  : (n : Nat) -> HasTyVE (VE.injv (Val.vnat n)) (TC.injt Ty.tnat)
+      | vtclos : (env : Env) -> (G : Ctx) -> (b : Tm) -> (A : Ty) -> (B : Ty)
+                   -> HasTyVE (VE.inje env) (TC.injc G) -> HasTy (Ctx.ccons A G) b B
+                   -> HasTyVE (VE.injv (Val.vclos env b)) (TC.injt (Ty.tarr A B))
+      | etnil  : HasTyVE (VE.inje Env.enil) (TC.injc Ctx.cnil)
+      | etcons : (v : Val) -> (A : Ty) -> (rest : Env) -> (G : Ctx)
+                   -> HasTyVE (VE.injv v) (TC.injt A) -> HasTyVE (VE.inje rest) (TC.injc G)
+                   -> HasTyVE (VE.inje (Env.econs v rest)) (TC.injc (Ctx.ccons A G))
+    def HasTyV (v : Val) (A : Ty) : Prop := HasTyVE (VE.injv v) (TC.injt A)
+    def HasTyE (env : Env) (G : Ctx) : Prop := HasTyVE (VE.inje env) (TC.injc G)
+
+    -- Continuation typing: `HasTyK k A B` means "given a value of type A, the continuation
+    -- k runs to a final answer of type B". One rule per (typable) frame; the effect frames
+    -- kop/khEval/khandle/kresume have no rule.
+    inductive HasTyK : Kont -> Ty -> Ty -> Prop
+      | ktdone : (A : Ty) -> HasTyK Kont.kdone A A
+      | ktapp1 : (env : Env) -> (G : Ctx) -> (a : Tm) -> (C : Ty) -> (D : Ty) -> (B : Ty) -> (k2 : Kont)
+                   -> HasTyE env G -> HasTy G a C -> HasTyK k2 D B
+                   -> HasTyK (Kont.kapp1 env a k2) (Ty.tarr C D) B
+      | ktapp2 : (vf : Val) -> (C : Ty) -> (D : Ty) -> (B : Ty) -> (k2 : Kont)
+                   -> HasTyV vf (Ty.tarr C D) -> HasTyK k2 D B
+                   -> HasTyK (Kont.kapp2 vf k2) C B
+      | ktadd1 : (env : Env) -> (G : Ctx) -> (y : Tm) -> (B : Ty) -> (k2 : Kont)
+                   -> HasTyE env G -> HasTy G y Ty.tnat -> HasTyK k2 Ty.tnat B
+                   -> HasTyK (Kont.kadd1 env y k2) Ty.tnat B
+      | ktadd2 : (m : Nat) -> (B : Ty) -> (k2 : Kont)
+                   -> HasTyK k2 Ty.tnat B -> HasTyK (Kont.kadd2 m k2) Ty.tnat B
+      | ktifz  : (env : Env) -> (G : Ctx) -> (t : Tm) -> (e : Tm) -> (A : Ty) -> (B : Ty) -> (k2 : Kont)
+                   -> HasTyE env G -> HasTy G t A -> HasTy G e A -> HasTyK k2 A B
+                   -> HasTyK (Kont.kifz env t e k2) Ty.tnat B
+
+    -- State typing: a state runs to a final answer of type B. No rule for `sstuck`.
+    inductive HasTyS : State -> Ty -> Prop
+      | stseval : (t : Tm) -> (env : Env) -> (G : Ctx) -> (k : Kont) -> (A : Ty) -> (B : Ty)
+                    -> HasTyE env G -> HasTy G t A -> HasTyK k A B -> HasTyS (State.seval t env k) B
+      | stsret  : (v : Val) -> (k : Kont) -> (A : Ty) -> (B : Ty)
+                    -> HasTyV v A -> HasTyK k A B -> HasTyS (State.sret v k) B
+      | stsdone : (v : Val) -> (B : Ty) -> HasTyV v B -> HasTyS (State.sdone v) B
+
+// ─────────── cek_safety_inv ───────────
+
+
+    -- No-confusion: the VE / TC injections and the Ty constructors are distinct.
+    def veIsV (w : VE) : Prop := match w { | VE.injv(x) => TrueF | VE.inje(y) => FalseF }
+    def ve_nc (e : Env) (v : Val) (h : EqF.{1} VE (VE.inje e) (VE.injv v)) : FalseF :=
+      EqF.subst.{1} VE veIsV (VE.injv v) (VE.inje e) (EqF.symm.{1} VE (VE.inje e) (VE.injv v) h) TrueF.intro
+    def tyIsNat (t : Ty) : Prop := match t { | Ty.tnat => TrueF | Ty.tarr(a, b) => FalseF }
+    def ty_nc (a : Ty) (b : Ty) (h : EqF.{1} Ty (Ty.tarr a b) Ty.tnat) : FalseF :=
+      EqF.subst.{1} Ty tyIsNat Ty.tnat (Ty.tarr a b) (EqF.symm.{1} Ty (Ty.tarr a b) Ty.tnat h) TrueF.intro
+
+    -- Injectivity of the injections and of `tarr`, via projection + congrArg.
+    def unInjv (w : VE) (d : Val) : Val := match w { | VE.injv(x) => x | VE.inje(y) => d }
+    def injv_inj (a : Val) (b : Val) (h : EqF.{1} VE (VE.injv a) (VE.injv b)) : EqF.{1} Val a b :=
+      congrArg.{1, 1} VE Val (fun (w : VE) => unInjv w a) (VE.injv a) (VE.injv b) h
+    def unInjt (w : TC) (d : Ty) : Ty := match w { | TC.injt(x) => x | TC.injc(y) => d }
+    def injt_inj (a : Ty) (b : Ty) (h : EqF.{1} TC (TC.injt a) (TC.injt b)) : EqF.{1} Ty a b :=
+      congrArg.{1, 1} TC Ty (fun (w : TC) => unInjt w a) (TC.injt a) (TC.injt b) h
+    def tarrDom (t : Ty) (d : Ty) : Ty := match t { | Ty.tnat => d | Ty.tarr(a, b) => a }
+    def tarrCod (t : Ty) (d : Ty) : Ty := match t { | Ty.tnat => d | Ty.tarr(a, b) => b }
+    def tarr_inj_dom (a : Ty) (b : Ty) (c : Ty) (d : Ty) (h : EqF.{1} Ty (Ty.tarr a b) (Ty.tarr c d)) : EqF.{1} Ty a c :=
+      congrArg.{1, 1} Ty Ty (fun (t : Ty) => tarrDom t a) (Ty.tarr a b) (Ty.tarr c d) h
+    def tarr_inj_cod (a : Ty) (b : Ty) (c : Ty) (d : Ty) (h : EqF.{1} Ty (Ty.tarr a b) (Ty.tarr c d)) : EqF.{1} Ty b d :=
+      congrArg.{1, 1} Ty Ty (fun (t : Ty) => tarrCod t b) (Ty.tarr a b) (Ty.tarr c d) h
+
+    -- Canonical-form packages (indexed by the value directly).
+    inductive NatInv : Val -> Prop | mkN : (n : Nat) -> NatInv (Val.vnat n)
+    inductive ClosInv : Val -> Ty -> Ty -> Prop
+      | mkC : (cenv : Env) -> (G : Ctx) -> (body : Tm) -> (C : Ty) -> (D : Ty)
+                -> HasTyE cenv G -> HasTy (Ctx.ccons C G) body D -> ClosInv (Val.vclos cenv body) C D
+
+    -- A well-typed value of type `tnat` is a `vnat`.
+    def hvNat (ve : VE) (tc : TC) (h : HasTyVE ve tc)
+      : (v : Val) -> EqF.{1} VE ve (VE.injv v) -> EqF.{1} TC tc (TC.injt Ty.tnat) -> NatInv v :=
+      match h {
+        | HasTyVE.vtnat(n) => fun (v : Val) (ev : EqF.{1} VE (VE.injv (Val.vnat n)) (VE.injv v)) (et : EqF.{1} TC (TC.injt Ty.tnat) (TC.injt Ty.tnat)) =>
+            EqF.subst.{1} Val NatInv (Val.vnat n) v (injv_inj (Val.vnat n) v ev) (NatInv.mkN n)
+        | HasTyVE.vtclos(env, G, b, A, B, he, hb) => fun (v : Val) (ev : EqF.{1} VE (VE.injv (Val.vclos env b)) (VE.injv v)) (et : EqF.{1} TC (TC.injt (Ty.tarr A B)) (TC.injt Ty.tnat)) =>
+            FalseF.rec.{0} (fun (_ : FalseF) => NatInv v) (ty_nc A B (injt_inj (Ty.tarr A B) Ty.tnat et))
+        | HasTyVE.etnil => fun (v : Val) (ev : EqF.{1} VE (VE.inje Env.enil) (VE.injv v)) (et : EqF.{1} TC (TC.injc Ctx.cnil) (TC.injt Ty.tnat)) =>
+            FalseF.rec.{0} (fun (_ : FalseF) => NatInv v) (ve_nc Env.enil v ev)
+        | HasTyVE.etcons(v2, A2, rest, G2, hv2, he2) => fun (v : Val) (ev : EqF.{1} VE (VE.inje (Env.econs v2 rest)) (VE.injv v)) (et : EqF.{1} TC (TC.injc (Ctx.ccons A2 G2)) (TC.injt Ty.tnat)) =>
+            FalseF.rec.{0} (fun (_ : FalseF) => NatInv v) (ve_nc (Env.econs v2 rest) v ev)
+      }
+    def canonNat (v : Val) (h : HasTyV v Ty.tnat) : NatInv v :=
+      hvNat (VE.injv v) (TC.injt Ty.tnat) h v (EqF.refl.{1} VE (VE.injv v)) (EqF.refl.{1} TC (TC.injt Ty.tnat))
+
+    -- A well-typed value of type `tarr C D` is a closure with a well-typed env and body.
+    def hvArr (ve : VE) (tc : TC) (h : HasTyVE ve tc)
+      : (v : Val) -> (C : Ty) -> (D : Ty) -> EqF.{1} VE ve (VE.injv v) -> EqF.{1} TC tc (TC.injt (Ty.tarr C D)) -> ClosInv v C D :=
+      match h {
+        | HasTyVE.vtnat(n) => fun (v : Val) (C : Ty) (D : Ty) (ev : EqF.{1} VE (VE.injv (Val.vnat n)) (VE.injv v)) (et : EqF.{1} TC (TC.injt Ty.tnat) (TC.injt (Ty.tarr C D))) =>
+            FalseF.rec.{0} (fun (_ : FalseF) => ClosInv v C D) (ty_nc C D (EqF.symm.{1} Ty Ty.tnat (Ty.tarr C D) (injt_inj Ty.tnat (Ty.tarr C D) et)))
+        | HasTyVE.vtclos(env, G, b, A, B, he, hb) => fun (v : Val) (C : Ty) (D : Ty) (ev : EqF.{1} VE (VE.injv (Val.vclos env b)) (VE.injv v)) (et : EqF.{1} TC (TC.injt (Ty.tarr A B)) (TC.injt (Ty.tarr C D))) =>
+            EqF.subst.{1} Val (fun (w : Val) => ClosInv w C D) (Val.vclos env b) v (injv_inj (Val.vclos env b) v ev)
+              (EqF.subst.{1} Ty (fun (cc : Ty) => ClosInv (Val.vclos env b) cc D) A C (tarr_inj_dom A B C D (injt_inj (Ty.tarr A B) (Ty.tarr C D) et))
+                (EqF.subst.{1} Ty (fun (dd : Ty) => ClosInv (Val.vclos env b) A dd) B D (tarr_inj_cod A B C D (injt_inj (Ty.tarr A B) (Ty.tarr C D) et))
+                  (ClosInv.mkC env G b A B he hb)))
+        | HasTyVE.etnil => fun (v : Val) (C : Ty) (D : Ty) (ev : EqF.{1} VE (VE.inje Env.enil) (VE.injv v)) (et : EqF.{1} TC (TC.injc Ctx.cnil) (TC.injt (Ty.tarr C D))) =>
+            FalseF.rec.{0} (fun (_ : FalseF) => ClosInv v C D) (ve_nc Env.enil v ev)
+        | HasTyVE.etcons(v2, A2, rest, G2, hv2, he2) => fun (v : Val) (C : Ty) (D : Ty) (ev : EqF.{1} VE (VE.inje (Env.econs v2 rest)) (VE.injv v)) (et : EqF.{1} TC (TC.injc (Ctx.ccons A2 G2)) (TC.injt (Ty.tarr C D))) =>
+            FalseF.rec.{0} (fun (_ : FalseF) => ClosInv v C D) (ve_nc (Env.econs v2 rest) v ev)
+      }
+    def canonArr (v : Val) (C : Ty) (D : Ty) (h : HasTyV v (Ty.tarr C D)) : ClosInv v C D :=
+      hvArr (VE.injv v) (TC.injt (Ty.tarr C D)) h v C D (EqF.refl.{1} VE (VE.injv v)) (EqF.refl.{1} TC (TC.injt (Ty.tarr C D)))
+
+// ─────────── cek_safety_lookup ───────────
+
+    def unInje (w : VE) (d : Env) : Env := match w { | VE.injv(x) => d | VE.inje(y) => y }
+    def inje_inj (a : Env) (b : Env) (h : EqF.{1} VE (VE.inje a) (VE.inje b)) : EqF.{1} Env a b :=
+      congrArg.{1, 1} VE Env (fun (w : VE) => unInje w a) (VE.inje a) (VE.inje b) h
+    def unInjc (w : TC) (d : Ctx) : Ctx := match w { | TC.injt(x) => d | TC.injc(y) => y }
+    def injc_inj (a : Ctx) (b : Ctx) (h : EqF.{1} TC (TC.injc a) (TC.injc b)) : EqF.{1} Ctx a b :=
+      congrArg.{1, 1} TC Ctx (fun (w : TC) => unInjc w a) (TC.injc a) (TC.injc b) h
+    def ctxIsCons (c : Ctx) : Prop := match c { | Ctx.cnil => FalseF | Ctx.ccons(A, G) => TrueF }
+    def ctx_nc (A : Ty) (G : Ctx) (h : EqF.{1} Ctx (Ctx.ccons A G) Ctx.cnil) : FalseF :=
+      EqF.subst.{1} Ctx ctxIsCons (Ctx.ccons A G) Ctx.cnil h TrueF.intro
+    def cconsHd (c : Ctx) (d : Ty) : Ty := match c { | Ctx.cnil => d | Ctx.ccons(A, G) => A }
+    def cconsTl (c : Ctx) (d : Ctx) : Ctx := match c { | Ctx.cnil => d | Ctx.ccons(A, G) => G }
+    def ccons_inj_hd (A : Ty) (G : Ctx) (A2 : Ty) (G2 : Ctx) (h : EqF.{1} Ctx (Ctx.ccons A G) (Ctx.ccons A2 G2)) : EqF.{1} Ty A A2 :=
+      congrArg.{1, 1} Ctx Ty (fun (c : Ctx) => cconsHd c A) (Ctx.ccons A G) (Ctx.ccons A2 G2) h
+    def ccons_inj_tl (A : Ty) (G : Ctx) (A2 : Ty) (G2 : Ctx) (h : EqF.{1} Ctx (Ctx.ccons A G) (Ctx.ccons A2 G2)) : EqF.{1} Ctx G G2 :=
+      congrArg.{1, 1} Ctx Ctx (fun (c : Ctx) => cconsTl c G) (Ctx.ccons A G) (Ctx.ccons A2 G2) h
+
+    -- Invert an environment typed at a non-empty context: it is an `econs` of a typed head
+    -- and a typed tail.
+    inductive EnvConsInv : Env -> Ty -> Ctx -> Prop
+      | mkE : (v : Val) -> (A : Ty) -> (rest : Env) -> (G : Ctx)
+                -> HasTyV v A -> HasTyE rest G -> EnvConsInv (Env.econs v rest) A G
+    def heInv (ve : VE) (tc : TC) (h : HasTyVE ve tc)
+      : (env : Env) -> (A : Ty) -> (G : Ctx) -> EqF.{1} VE ve (VE.inje env) -> EqF.{1} TC tc (TC.injc (Ctx.ccons A G)) -> EnvConsInv env A G :=
+      match h {
+        | HasTyVE.vtnat(n) => fun (env : Env) (A : Ty) (G : Ctx) (ev : EqF.{1} VE (VE.injv (Val.vnat n)) (VE.inje env)) (et : EqF.{1} TC (TC.injt Ty.tnat) (TC.injc (Ctx.ccons A G))) =>
+            FalseF.rec.{0} (fun (_ : FalseF) => EnvConsInv env A G) (ve_nc env (Val.vnat n) (EqF.symm.{1} VE (VE.injv (Val.vnat n)) (VE.inje env) ev))
+        | HasTyVE.vtclos(env2, G2, b, A2, B2, he, hb) => fun (env : Env) (A : Ty) (G : Ctx) (ev : EqF.{1} VE (VE.injv (Val.vclos env2 b)) (VE.inje env)) (et : EqF.{1} TC (TC.injt (Ty.tarr A2 B2)) (TC.injc (Ctx.ccons A G))) =>
+            FalseF.rec.{0} (fun (_ : FalseF) => EnvConsInv env A G) (ve_nc env (Val.vclos env2 b) (EqF.symm.{1} VE (VE.injv (Val.vclos env2 b)) (VE.inje env) ev))
+        | HasTyVE.etnil => fun (env : Env) (A : Ty) (G : Ctx) (ev : EqF.{1} VE (VE.inje Env.enil) (VE.inje env)) (et : EqF.{1} TC (TC.injc Ctx.cnil) (TC.injc (Ctx.ccons A G))) =>
+            FalseF.rec.{0} (fun (_ : FalseF) => EnvConsInv env A G) (ctx_nc A G (EqF.symm.{1} Ctx Ctx.cnil (Ctx.ccons A G) (injc_inj Ctx.cnil (Ctx.ccons A G) et)))
+        | HasTyVE.etcons(v2, A2, rest2, G2, hv2, he2) => fun (env : Env) (A : Ty) (G : Ctx) (ev : EqF.{1} VE (VE.inje (Env.econs v2 rest2)) (VE.inje env)) (et : EqF.{1} TC (TC.injc (Ctx.ccons A2 G2)) (TC.injc (Ctx.ccons A G))) =>
+            EqF.subst.{1} Env (fun (e : Env) => EnvConsInv e A G) (Env.econs v2 rest2) env (inje_inj (Env.econs v2 rest2) env ev)
+              (EqF.subst.{1} Ty (fun (aa : Ty) => EnvConsInv (Env.econs v2 rest2) aa G) A2 A (ccons_inj_hd A2 G2 A G (injc_inj (Ctx.ccons A2 G2) (Ctx.ccons A G) et))
+                (EqF.subst.{1} Ctx (fun (gg : Ctx) => EnvConsInv (Env.econs v2 rest2) A2 gg) G2 G (ccons_inj_tl A2 G2 A G (injc_inj (Ctx.ccons A2 G2) (Ctx.ccons A G) et))
+                  (EnvConsInv.mkE v2 A2 rest2 G2 hv2 he2)))
+      }
+    def envConsInv (env : Env) (A : Ty) (G : Ctx) (h : HasTyE env (Ctx.ccons A G)) : EnvConsInv env A G :=
+      heInv (VE.inje env) (TC.injc (Ctx.ccons A G)) h env A G (EqF.refl.{1} VE (VE.inje env)) (EqF.refl.{1} TC (TC.injc (Ctx.ccons A G)))
+
+    -- Environment lookup respects typing: if `env : G` and `Lookup G n A`, then the n-th
+    -- value `lookupEnv n env` has type `A`. Proved by *induction on the lookup derivation*
+    -- (the `match` exposes `hl.rec` as the induction hypothesis on the tail). The result type
+    -- is the *curried* `(env) -> HasTyE env G -> HasTyV (lookupEnv n env) A`, so the IH lands
+    -- already abstracted over the environment — essential, since the recursion descends into
+    -- the tail environment, which is not a `Lookup` index. The `there` step needs the *convoy
+    -- pattern*: the inner `envConsInv` match abstracts the index `G2`, but the IH's type still
+    -- mentions `G2`, so the match returns a function still expecting the IH (specialised to the
+    -- branch's `G3`), and we feed it `hl.rec` only after the match has refined the environment.
+    def envLookup (G : Ctx) (n : Nat) (A : Ty) (l : Lookup G n A)
+      : (env : Env) -> HasTyE env G -> HasTyV (lookupEnv n env) A :=
+      match l {
+        | Lookup.here(G2, A2) =>
+            fun (env : Env) (he : HasTyE env (Ctx.ccons A2 G2)) =>
+              match (envConsInv env A2 G2 he) {
+                | EnvConsInv.mkE(v, A3, rest, G3, hv, hrest) => hv
+              }
+        | Lookup.there(G2, A2, B2, n2, hl) =>
+            fun (env : Env) (he : HasTyE env (Ctx.ccons B2 G2)) =>
+              let cvy : (ih2 : (e : Env) -> HasTyE e G2 -> HasTyV (lookupEnv n2 e) A2)
+                          -> HasTyV (lookupEnv (Nat.succ n2) env) A2 :=
+                match (envConsInv env B2 G2 he) {
+                  | EnvConsInv.mkE(v, A3, rest, G3, hv, hrest) =>
+                      fun (ih2 : (e : Env) -> HasTyE e G3 -> HasTyV (lookupEnv n2 e) A2) =>
+                        ih2 rest hrest
+                }
+              in cvy (hl.rec)
+      }
+
+
+// ─────────── cek_safety_preserv ───────────
+
+    -- Preservation, `seval` half: recurse on the term-typing derivation. Each arm refines the
+    -- term, `step` fires the matching transition, and the (convoyed) env/continuation typings
+    -- rebuild the successor state's typing. op/handle have no HasTy rule, so they never appear.
+    def preservEval (G : Ctx) (t : Tm) (A : Ty) (env : Env) (k : Kont) (B : Ty)
+      (ht : HasTy G t A)
+      : HasTyE env G -> HasTyK k A B -> HasTyS (step (State.seval t env k)) B :=
+      match ht {
+        | HasTy.tvar(G1, n1, A1, lk) =>
+            fun (he : HasTyE env G1) (hk : HasTyK k A1 B) =>
+              HasTyS.stsret (lookupEnv n1 env) k A1 B (envLookup G1 n1 A1 lk env he) hk
+        | HasTy.tlit(G1, n1) =>
+            fun (he : HasTyE env G1) (hk : HasTyK k Ty.tnat B) =>
+              HasTyS.stsret (Val.vnat n1) k Ty.tnat B (HasTyVE.vtnat n1) hk
+        | HasTy.tlam(G1, A1, B1, b, hb) =>
+            fun (he : HasTyE env G1) (hk : HasTyK k (Ty.tarr A1 B1) B) =>
+              HasTyS.stsret (Val.vclos env b) k (Ty.tarr A1 B1) B
+                (HasTyVE.vtclos env G1 b A1 B1 he hb) hk
+        | HasTy.tapp(G1, f, a, C, D, hf, ha) =>
+            fun (he : HasTyE env G1) (hk : HasTyK k D B) =>
+              HasTyS.stseval f env G1 (Kont.kapp1 env a k) (Ty.tarr C D) B he hf
+                (HasTyK.ktapp1 env G1 a C D B k he ha hk)
+        | HasTy.tadd(G1, x, y, hx, hy) =>
+            fun (he : HasTyE env G1) (hk : HasTyK k Ty.tnat B) =>
+              HasTyS.stseval x env G1 (Kont.kadd1 env y k) Ty.tnat B he hx
+                (HasTyK.ktadd1 env G1 y B k he hy hk)
+        | HasTy.tifz(G1, c, t2, e2, A1, hc, ht2, he2) =>
+            fun (he : HasTyE env G1) (hk : HasTyK k A1 B) =>
+              HasTyS.stseval c env G1 (Kont.kifz env t2 e2 k) Ty.tnat B he hc
+                (HasTyK.ktifz env G1 t2 e2 A1 B k he ht2 he2 hk)
+      }
+
+    -- Preservation, `sret` half: recurse on the continuation-typing derivation. Frames that
+    -- inspect the returned value (kapp2 / kadd1 / kadd2 / kifz) use the canonical forms to
+    -- refine it; `kapp2` needs the convoy pattern twice (closure inversion abstracts both the
+    -- domain and codomain that the residual hypotheses still mention).
+    def preservRet (v : Val) (A : Ty) (k : Kont) (B : Ty) (hk : HasTyK k A B)
+      : HasTyV v A -> HasTyS (step (State.sret v k)) B :=
+      match hk {
+        | HasTyK.ktdone(A1) =>
+            fun (hv : HasTyV v A1) => HasTyS.stsdone v A1 hv
+        | HasTyK.ktapp1(env1, G1, a1, C1, D1, B1, k2, he, ha, hk2) =>
+            fun (hv : HasTyV v (Ty.tarr C1 D1)) =>
+              HasTyS.stseval a1 env1 G1 (Kont.kapp2 v k2) C1 B1 he ha
+                (HasTyK.ktapp2 v C1 D1 B1 k2 hv hk2)
+        | HasTyK.ktapp2(vf1, C1, D1, B1, k2, hvf, hk2) =>
+            fun (hv : HasTyV v C1) =>
+              let cvy : (hv2 : HasTyV v C1) -> (hk3 : HasTyK k2 D1 B1)
+                          -> HasTyS (step (State.sret v (Kont.kapp2 vf1 k2))) B1 :=
+                match (canonArr vf1 C1 D1 hvf) {
+                  | ClosInv.mkC(cenv, G3, body, C3, D3, hcenv, hbody) =>
+                      fun (hv2 : HasTyV v C3) (hk3 : HasTyK k2 D3 B1) =>
+                        HasTyS.stseval body (Env.econs v cenv) (Ctx.ccons C3 G3) k2 D3 B1
+                          (HasTyVE.etcons v C3 cenv G3 hv2 hcenv) hbody hk3
+                }
+              in cvy hv hk2
+        | HasTyK.ktadd1(env1, G1, y1, B1, k2, he, hy, hk2) =>
+            fun (hv : HasTyV v Ty.tnat) =>
+              match (canonNat v hv) {
+                | NatInv.mkN(m) =>
+                    HasTyS.stseval y1 env1 G1 (Kont.kadd2 m k2) Ty.tnat B1 he hy
+                      (HasTyK.ktadd2 m B1 k2 hk2)
+              }
+        | HasTyK.ktadd2(m1, B1, k2, hk2) =>
+            fun (hv : HasTyV v Ty.tnat) =>
+              match (canonNat v hv) {
+                | NatInv.mkN(n) =>
+                    HasTyS.stsret (Val.vnat (addN(m1)(n))) k2 Ty.tnat B1
+                      (HasTyVE.vtnat (addN(m1)(n))) hk2
+              }
+        | HasTyK.ktifz(env1, G1, t2, e2, A1, B1, k2, he, ht2, he2, hk2) =>
+            fun (hv : HasTyV v Ty.tnat) =>
+              match (canonNat v hv) {
+                | NatInv.mkN(n) =>
+                    match n {
+                      | Nat.zero => HasTyS.stseval t2 env1 G1 k2 A1 B1 he ht2 hk2
+                      | Nat.succ(m) => HasTyS.stseval e2 env1 G1 k2 A1 B1 he he2 hk2
+                    }
+              }
+      }
+
+    -- PRESERVATION: one machine step preserves the answer type. (sstuck never appears: it has
+    -- no typing rule, so it is not an arm of the HasTyS derivation we recurse on.)
+    def preservation (s : State) (B : Ty) (h : HasTyS s B) : HasTyS (step s) B :=
+      match h {
+        | HasTyS.stseval(t, env, G, k, A, Bb, he, ht, hk) =>
+            preservEval G t A env k Bb ht he hk
+        | HasTyS.stsret(v, k, A, Bb, hv, hk) =>
+            preservRet v A k Bb hk hv
+        | HasTyS.stsdone(v, Bb, hv) =>
+            HasTyS.stsdone v Bb hv
+      }
+
+    -- PROGRESS (the "not stuck" half): a well-typed state is never `sstuck`. `sstuck` has no
+    -- typing rule, so the typing derivation refines `s` to one of the three real shapes, each
+    -- distinct from `sstuck` by no-confusion on `State`.
+    def stIsStuck (s : State) : Prop :=
+      match s { | State.sstuck => TrueF | State.seval(t, e, k) => FalseF
+               | State.sret(v, k) => FalseF | State.sdone(v) => FalseF }
+    def notStuck (s : State) (B : Ty) (h : HasTyS s B) : EqF.{1} State s State.sstuck -> FalseF :=
+      match h {
+        | HasTyS.stseval(t, env, G, k, A, Bb, he, ht, hk) =>
+            fun (e : EqF.{1} State (State.seval t env k) State.sstuck) =>
+              EqF.subst.{1} State stIsStuck State.sstuck (State.seval t env k)
+                (EqF.symm.{1} State (State.seval t env k) State.sstuck e) TrueF.intro
+        | HasTyS.stsret(v, k, A, Bb, hv, hk) =>
+            fun (e : EqF.{1} State (State.sret v k) State.sstuck) =>
+              EqF.subst.{1} State stIsStuck State.sstuck (State.sret v k)
+                (EqF.symm.{1} State (State.sret v k) State.sstuck e) TrueF.intro
+        | HasTyS.stsdone(v, Bb, hv) =>
+            fun (e : EqF.{1} State (State.sdone v) State.sstuck) =>
+              EqF.subst.{1} State stIsStuck State.sstuck (State.sdone v)
+                (EqF.symm.{1} State (State.sdone v) State.sstuck e) TrueF.intro
+      }
+
+    -- Typing is preserved across the fuelled driver. Induction on the fuel; the step case does
+    -- a *structural* case on the state (so `run`'s `isFinal` guard reduces in each arm: final
+    -- states return themselves; running states take a `step` and appeal to preservation + the
+    -- induction hypothesis `k.rec` on the smaller fuel).
+    def runPreserv (B : Ty) (n : Nat) : (s : State) -> HasTyS s B -> HasTyS (run(n)(s)) B :=
+      match n {
+        | Nat.zero => fun (s : State) (h : HasTyS s B) => h
+        | Nat.succ(k) => fun (s : State) =>
+            match s {
+              | State.sdone(v) => fun (h : HasTyS (State.sdone v) B) => h
+              | State.sstuck => fun (h : HasTyS State.sstuck B) => h
+              | State.seval(t, e, kk) => fun (h : HasTyS (State.seval t e kk) B) =>
+                  k.rec (step (State.seval t e kk)) (preservation (State.seval t e kk) B h)
+              | State.sret(v, kk) => fun (h : HasTyS (State.sret v kk) B) =>
+                  k.rec (step (State.sret v kk)) (preservation (State.sret v kk) B h)
+            }
+      }
+
+    -- TYPE SAFETY: a well-typed program, run for any amount of fuel, never reaches `sstuck`.
+    def neverStuck (n : Nat) (s : State) (B : Ty) (h : HasTyS s B)
+      : EqF.{1} State (run(n)(s)) State.sstuck -> FalseF :=
+      notStuck (run(n)(s)) B (runPreserv B n s h)
+
+    -- No-confusion + injectivity for `sdone`, used to invert a state proved equal to `sdone v`.
+    def isDoneP (s : State) : Prop :=
+      match s { | State.sdone(v) => TrueF | State.sstuck => FalseF
+               | State.seval(t, e, k) => FalseF | State.sret(v, k) => FalseF }
+    def sdoneArg (s : State) (d : Val) : Val :=
+      match s { | State.sdone(v) => v | State.sstuck => d
+               | State.seval(t, e, k) => d | State.sret(v, k) => d }
+    def sdone_inj (a : Val) (b : Val) (h : EqF.{1} State (State.sdone a) (State.sdone b)) : EqF.{1} Val a b :=
+      congrArg.{1, 1} State Val (fun (s : State) => sdoneArg s a) (State.sdone a) (State.sdone b) h
+
+    -- Invert a typed state that is provably `sdone v`: the value carries the state's type.
+    def hsDone (s : State) (B : Ty) (h : HasTyS s B)
+      : (v : Val) -> EqF.{1} State s (State.sdone v) -> HasTyV v B :=
+      match h {
+        | HasTyS.stseval(t, env, G, k, A, Bb, he, ht, hk) =>
+            fun (v : Val) (e : EqF.{1} State (State.seval t env k) (State.sdone v)) =>
+              FalseF.rec.{0} (fun (_ : FalseF) => HasTyV v Bb)
+                (EqF.subst.{1} State isDoneP (State.sdone v) (State.seval t env k)
+                  (EqF.symm.{1} State (State.seval t env k) (State.sdone v) e) TrueF.intro)
+        | HasTyS.stsret(v2, k, A, Bb, hv, hk) =>
+            fun (v : Val) (e : EqF.{1} State (State.sret v2 k) (State.sdone v)) =>
+              FalseF.rec.{0} (fun (_ : FalseF) => HasTyV v Bb)
+                (EqF.subst.{1} State isDoneP (State.sdone v) (State.sret v2 k)
+                  (EqF.symm.{1} State (State.sret v2 k) (State.sdone v) e) TrueF.intro)
+        | HasTyS.stsdone(v2, Bb, hv) =>
+            fun (v : Val) (e : EqF.{1} State (State.sdone v2) (State.sdone v)) =>
+              EqF.subst.{1} Val (fun (w : Val) => HasTyV w Bb) v2 v (sdone_inj v2 v e) hv
+      }
+
+    -- CAPSTONE: if a well-typed program runs (with some fuel) to a final answer `v`, then `v`
+    -- has the program's type. (Type safety, the positive direction: not just "never stuck",
+    -- but "the answer is well-typed".)
+    def answerWellTyped (n : Nat) (s : State) (B : Ty) (v : Val)
+      (h : HasTyS s B) (e : EqF.{1} State (run(n)(s)) (State.sdone v)) : HasTyV v B :=
+      hsDone (run(n)(s)) B (runPreserv B n s h) v e
+
+// ─────────── cek_adequacy ───────────
+
+    -- Declarative big-step evaluation for the pure fragment (environment semantics: closures
+    -- + de Bruijn lookup, exactly as the machine). No rule for op/handle.
+    inductive Eval : Env -> Tm -> Val -> Prop
+      | evar : (env : Env) -> (n : Nat) -> Eval env (Tm.var n) (lookupEnv n env)
+      | elit : (env : Env) -> (n : Nat) -> Eval env (Tm.lit n) (Val.vnat n)
+      | elam : (env : Env) -> (b : Tm) -> Eval env (Tm.lam b) (Val.vclos env b)
+      | eapp : (env : Env) -> (f : Tm) -> (a : Tm) -> (cenv : Env) -> (body : Tm) -> (va : Val) -> (v : Val)
+                 -> Eval env f (Val.vclos cenv body) -> Eval env a va -> Eval (Env.econs va cenv) body v
+                 -> Eval env (Tm.app f a) v
+      | eadd : (env : Env) -> (x : Tm) -> (y : Tm) -> (m : Nat) -> (n : Nat)
+                 -> Eval env x (Val.vnat m) -> Eval env y (Val.vnat n)
+                 -> Eval env (Tm.add x y) (Val.vnat (addN(m)(n)))
+      | eif0 : (env : Env) -> (c : Tm) -> (t : Tm) -> (e : Tm) -> (v : Val)
+                 -> Eval env c (Val.vnat Nat.zero) -> Eval env t v -> Eval env (Tm.ifz c t e) v
+      | eifS : (env : Env) -> (c : Tm) -> (t : Tm) -> (e : Tm) -> (m : Nat) -> (v : Val)
+                 -> Eval env c (Val.vnat (Nat.succ m)) -> Eval env e v -> Eval env (Tm.ifz c t e) v
+
+    -- Reflexive-transitive closure of `step`, with transitivity and a single-step injector.
+    inductive Steps : State -> State -> Prop
+      | srefl : (s : State) -> Steps s s
+      | sstep : (s : State) -> (s2 : State) -> Steps (step s) s2 -> Steps s s2
+    def strans (a : State) (b : State) (c : State) (hab : Steps a b) : Steps b c -> Steps a c :=
+      match hab {
+        | Steps.srefl(s) => fun (hbc : Steps s c) => hbc
+        | Steps.sstep(s, s2, hs) => fun (hbc : Steps s2 c) => Steps.sstep s c (hs.rec hbc)
+      }
+    def step1 (s : State) : Steps s (step s) := Steps.sstep s (step s) (Steps.srefl (step s))
+
+    -- FORWARD SIMULATION (induction on the evaluation derivation; curried over the
+    -- continuation so the IH lands under the pushed frame).
+    def sim (env : Env) (e : Tm) (v : Val) (h : Eval env e v)
+      : (k : Kont) -> Steps (State.seval e env k) (State.sret v k) :=
+      match h {
+        | Eval.evar(env1, n) => fun (k : Kont) => step1 (State.seval (Tm.var n) env1 k)
+        | Eval.elit(env1, n) => fun (k : Kont) => step1 (State.seval (Tm.lit n) env1 k)
+        | Eval.elam(env1, b) => fun (k : Kont) => step1 (State.seval (Tm.lam b) env1 k)
+        | Eval.eapp(env1, f, a, cenv, body, va, v1, hf, ha, hbody) => fun (k : Kont) =>
+            Steps.sstep (State.seval (Tm.app f a) env1 k) (State.sret v1 k)
+              (strans (State.seval f env1 (Kont.kapp1 env1 a k))
+                      (State.sret (Val.vclos cenv body) (Kont.kapp1 env1 a k)) (State.sret v1 k)
+                (hf.rec (Kont.kapp1 env1 a k))
+                (Steps.sstep (State.sret (Val.vclos cenv body) (Kont.kapp1 env1 a k)) (State.sret v1 k)
+                  (strans (State.seval a env1 (Kont.kapp2 (Val.vclos cenv body) k))
+                          (State.sret va (Kont.kapp2 (Val.vclos cenv body) k)) (State.sret v1 k)
+                    (ha.rec (Kont.kapp2 (Val.vclos cenv body) k))
+                    (Steps.sstep (State.sret va (Kont.kapp2 (Val.vclos cenv body) k)) (State.sret v1 k)
+                      (hbody.rec k)))))
+        | Eval.eadd(env1, x, y, m, n, hx, hy) => fun (k : Kont) =>
+            Steps.sstep (State.seval (Tm.add x y) env1 k) (State.sret (Val.vnat (addN(m)(n))) k)
+              (strans (State.seval x env1 (Kont.kadd1 env1 y k))
+                      (State.sret (Val.vnat m) (Kont.kadd1 env1 y k))
+                      (State.sret (Val.vnat (addN(m)(n))) k)
+                (hx.rec (Kont.kadd1 env1 y k))
+                (Steps.sstep (State.sret (Val.vnat m) (Kont.kadd1 env1 y k))
+                             (State.sret (Val.vnat (addN(m)(n))) k)
+                  (strans (State.seval y env1 (Kont.kadd2 m k))
+                          (State.sret (Val.vnat n) (Kont.kadd2 m k))
+                          (State.sret (Val.vnat (addN(m)(n))) k)
+                    (hy.rec (Kont.kadd2 m k))
+                    (Steps.sstep (State.sret (Val.vnat n) (Kont.kadd2 m k))
+                                 (State.sret (Val.vnat (addN(m)(n))) k)
+                      (Steps.srefl (State.sret (Val.vnat (addN(m)(n))) k))))))
+        | Eval.eif0(env1, c, t, e2, v1, hc, ht) => fun (k : Kont) =>
+            Steps.sstep (State.seval (Tm.ifz c t e2) env1 k) (State.sret v1 k)
+              (strans (State.seval c env1 (Kont.kifz env1 t e2 k))
+                      (State.sret (Val.vnat Nat.zero) (Kont.kifz env1 t e2 k)) (State.sret v1 k)
+                (hc.rec (Kont.kifz env1 t e2 k))
+                (Steps.sstep (State.sret (Val.vnat Nat.zero) (Kont.kifz env1 t e2 k)) (State.sret v1 k)
+                  (ht.rec k)))
+        | Eval.eifS(env1, c, t, e2, m, v1, hc, he) => fun (k : Kont) =>
+            Steps.sstep (State.seval (Tm.ifz c t e2) env1 k) (State.sret v1 k)
+              (strans (State.seval c env1 (Kont.kifz env1 t e2 k))
+                      (State.sret (Val.vnat (Nat.succ m)) (Kont.kifz env1 t e2 k)) (State.sret v1 k)
+                (hc.rec (Kont.kifz env1 t e2 k))
+                (Steps.sstep (State.sret (Val.vnat (Nat.succ m)) (Kont.kifz env1 t e2 k)) (State.sret v1 k)
+                  (he.rec k)))
+      }
+
+    -- ADEQUACY: a closed big-step evaluation is realised by the loaded machine, which steps
+    -- all the way to the final answer `sdone v`.
+    def adequacy (e : Tm) (v : Val) (h : Eval Env.enil e v) : Steps (load e) (State.sdone v) :=
+      strans (load e) (State.sret v Kont.kdone) (State.sdone v)
+        (sim Env.enil e v h Kont.kdone)
+        (step1 (State.sret v Kont.kdone))
+
+// ─────────── cek_pipeline ───────────
+
+    -- A first-order source language (de Bruijn). Values are machine values (only `vnat`
+    -- ever arises here, since the language is first-order).
+    inductive Src : Type
+      | svar : Nat -> Src
+      | slit : Nat -> Src
+      | sadd : Src -> Src -> Src
+      | sifz : Src -> Src -> Src -> Src
+      | slet : Src -> Src -> Src        -- let x = e1 in e2   (e2 under the new binder)
+
+    -- Big-step semantics of the source (environment style, matching the machine).
+    inductive EvalSrc : Env -> Src -> Val -> Prop
+      | sevar : (env : Env) -> (n : Nat) -> EvalSrc env (Src.svar n) (lookupEnv n env)
+      | selit : (env : Env) -> (n : Nat) -> EvalSrc env (Src.slit n) (Val.vnat n)
+      | seadd : (env : Env) -> (x : Src) -> (y : Src) -> (m : Nat) -> (n : Nat)
+                  -> EvalSrc env x (Val.vnat m) -> EvalSrc env y (Val.vnat n)
+                  -> EvalSrc env (Src.sadd x y) (Val.vnat (addN(m)(n)))
+      | seif0 : (env : Env) -> (c : Src) -> (t : Src) -> (e : Src) -> (v : Val)
+                  -> EvalSrc env c (Val.vnat Nat.zero) -> EvalSrc env t v
+                  -> EvalSrc env (Src.sifz c t e) v
+      | seifS : (env : Env) -> (c : Src) -> (t : Src) -> (e : Src) -> (m : Nat) -> (v : Val)
+                  -> EvalSrc env c (Val.vnat (Nat.succ m)) -> EvalSrc env e v
+                  -> EvalSrc env (Src.sifz c t e) v
+      | selet : (env : Env) -> (e1 : Src) -> (e2 : Src) -> (v1 : Val) -> (v : Val)
+                  -> EvalSrc env e1 v1 -> EvalSrc (Env.econs v1 env) e2 v
+                  -> EvalSrc env (Src.slet e1 e2) v
+
+    -- The compiler into the CEK term language. `let` becomes an immediately-applied lambda.
+    fn compile(s: Src) -> Tm {
+        match s {
+          | Src.svar(n)        => Tm.var n
+          | Src.slit(n)        => Tm.lit n
+          | Src.sadd(x, y)     => Tm.add (compile(x)) (compile(y))
+          | Src.sifz(c, t, e)  => Tm.ifz (compile(c)) (compile(t)) (compile(e))
+          | Src.slet(e1, e2)   => Tm.app (Tm.lam (compile(e2))) (compile(e1))
+        }
+    }
+
+    -- COMPILER CORRECTNESS (induction on the source-evaluation derivation).
+    def compileCorrect (env : Env) (e : Src) (v : Val) (h : EvalSrc env e v)
+      : Eval env (compile(e)) v :=
+      match h {
+        | EvalSrc.sevar(env1, n) => Eval.evar env1 n
+        | EvalSrc.selit(env1, n) => Eval.elit env1 n
+        | EvalSrc.seadd(env1, x, y, m, n, hx, hy) =>
+            Eval.eadd env1 (compile(x)) (compile(y)) m n hx.rec hy.rec
+        | EvalSrc.seif0(env1, c, t, e2, v1, hc, ht) =>
+            Eval.eif0 env1 (compile(c)) (compile(t)) (compile(e2)) v1 hc.rec ht.rec
+        | EvalSrc.seifS(env1, c, t, e2, m, v1, hc, he) =>
+            Eval.eifS env1 (compile(c)) (compile(t)) (compile(e2)) m v1 hc.rec he.rec
+        | EvalSrc.selet(env1, e1, e2, v1, v2, h1, h2) =>
+            Eval.eapp env1 (Tm.lam (compile(e2))) (compile(e1)) env1 (compile(e2)) v1 v2
+              (Eval.elam env1 (compile(e2))) h1.rec h2.rec
+      }
+
+    -- THE VERIFIED PIPELINE: source big-step ⟹ the machine runs the compiled code to the answer.
+    def pipeline (e : Src) (v : Val) (h : EvalSrc Env.enil e v)
+      : Steps (load (compile(e))) (State.sdone v) :=
+      adequacy (compile(e)) v (compileCorrect Env.enil e v h)
+

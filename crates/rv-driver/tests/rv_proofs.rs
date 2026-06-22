@@ -141,6 +141,14 @@ fn systemf() {
 }
 
 #[test]
+fn cek_safety() {
+    // CEK abstract-machine metatheory ported to the .rv pipeline: machine type safety
+    // (progress + preservation over machine states), adequacy, and the compiler pipeline
+    // theorem, from the cek_*.rvk corpus.
+    check("cek_safety.rv");
+}
+
+#[test]
 fn systemf_safety() {
     // System F PRESERVATION + soundness: the full substitution metatheory — term + type
     // weakening, the parallel-substitution lemma, and the type-substitution lemma
