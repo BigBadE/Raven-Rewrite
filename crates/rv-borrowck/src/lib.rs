@@ -115,7 +115,9 @@ pub fn check(prog: &Program<Lowerable>, syms: &Symbols) -> Vec<BorrowError> {
 /// sound error, never hide one. They do not occur in the test/example corpus.)
 fn is_copy(ty: &Ty) -> bool {
     match ty {
-        Ty::Int | Ty::IntN(_) | Ty::Bool | Ty::Unit => true,
+        // `Float` is a scalar (Copy); `Str` owns a heap buffer, so it MOVES (non-Copy).
+        Ty::Int | Ty::IntN(_) | Ty::Float | Ty::Bool | Ty::Unit => true,
+        Ty::Str => false,
         // `&T` shared refs are freely copyable; `&mut T` is not.
         Ty::Ref { mutable, .. } => !mutable,
         // Non-Copy: ADTs move by value.

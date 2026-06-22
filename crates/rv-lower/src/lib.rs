@@ -104,10 +104,10 @@ pub fn lower(
     let mut funcs = Vec::new();
     // Ordinary functions first, then desugared impl methods.
     for decl in fn_decls {
-        funcs.push(lower_fn(decl, &types, syms)?);
+        funcs.extend(lower_fn(decl, &types, syms)?);
     }
     for (type_name, m, mangled) in planned_methods {
-        funcs.push(lower_method(type_name, m, mangled, &types, syms)?);
+        funcs.extend(lower_method(type_name, m, mangled, &types, syms)?);
     }
     Ok(Program { types: types.defs, funcs })
 }
@@ -117,7 +117,7 @@ fn lower_fn(
     decl: &rv_syntax::ast::FnDecl,
     types: &Types,
     syms: &mut rv_core::Symbols,
-) -> Result<Function<Parsed>, String> {
+) -> Result<Vec<Function<Parsed>>, String> {
     let type_params: Vec<Sym> = decl.generics.iter().map(|g| g.name).collect();
     lower_callable(
         decl.name,
@@ -143,7 +143,7 @@ fn lower_method(
     mangled: Sym,
     types: &Types,
     syms: &mut rv_core::Symbols,
-) -> Result<Function<Parsed>, String> {
+) -> Result<Vec<Function<Parsed>>, String> {
     // The method's own generic parameters scope its signature/body types.
     let type_params: Vec<Sym> = decl.generics.iter().map(|g| g.name).collect();
     let scope: HashSet<Sym> = type_params.iter().copied().collect();
@@ -171,8 +171,9 @@ fn lower_method(
     b.lower_block(&decl.body, syms)?;
     b.finish_with_default_return();
 
+    let lifted = b.take_lifted();
     let (locals, blocks) = b.into_parts();
-    Ok(Function {
+    let mut out = vec![Function {
         name: mangled,
         type_params,
         params,
@@ -183,7 +184,9 @@ fn lower_method(
         locals,
         blocks,
         entry: BlockId_ENTRY,
-    })
+    }];
+    out.extend(lifted);
+    Ok(out)
 }
 
 /// Shared lowering for an ordinary function (and the common path of methods):
@@ -200,7 +203,7 @@ fn lower_callable(
     types: &Types,
     syms: &mut rv_core::Symbols,
     type_params: Vec<Sym>,
-) -> Result<Function<Parsed>, String> {
+) -> Result<Vec<Function<Parsed>>, String> {
     // In-scope type parameters: a parameter type naming one is a `Ty::Param`, not
     // an ADT — so we must NOT track it as a (resolvable) ADT local.
     let scope: HashSet<Sym> = generics.iter().map(|g| g.name).collect();
@@ -217,8 +220,9 @@ fn lower_callable(
     // Ensure every path ends in a Return; append a unit return if it falls off.
     b.finish_with_default_return();
 
+    let lifted = b.take_lifted();
     let (locals, blocks) = b.into_parts();
-    Ok(Function {
+    let mut out = vec![Function {
         name,
         type_params,
         params,
@@ -231,7 +235,9 @@ fn lower_callable(
         locals,
         blocks,
         entry: BlockId_ENTRY,
-    })
+    }];
+    out.extend(lifted);
+    Ok(out)
 }
 
 /// Allocate a local per parameter, register its name, and (when the parameter's

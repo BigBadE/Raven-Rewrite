@@ -238,8 +238,13 @@ pub enum PatBind {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
     Int(i64),
+    Float(f64),
+    Str(String),
     Bool(bool),
     Unit,
+    /// A closure literal `|x, y| body`, lifted to a top-level function at lowering,
+    /// capturing its free variables.
+    Lambda { params: Vec<Sym>, body: Box<Expr> },
     /// A variable reference (includes `result` inside `ensures`).
     Var(Sym),
     /// `f(args)`

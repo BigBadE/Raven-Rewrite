@@ -4,10 +4,13 @@
 //! consumes. Whitespace is insignificant and `//` introduces a line comment.
 
 /// A lexical token.
-#[derive(Clone, Debug, PartialEq, Eq)]
+// Note: not `Eq` because `Float(f64)` is only `PartialEq`. Token comparisons use `==`/`matches!`.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Tok {
     // Literals / identifiers.
     Int(i64),
+    Float(f64),
+    Str(String),
     Ident(String),
 
     // Keywords.
@@ -62,13 +65,14 @@ pub enum Tok {
     Bang,   // !
     Amp,    // & (shared borrow / reference type)
     Question, // ? (error-propagation postfix operator)
+    Pipe,   // | (single bar — closure delimiter)
 
     /// End of input (always the final token).
     Eof,
 }
 
 /// A token tagged with the (1-based) source line it began on, for diagnostics.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SpannedTok {
     pub tok: Tok,
     pub line: u32,
@@ -188,6 +192,7 @@ pub fn lex(src: &str) -> Result<Vec<SpannedTok>, String> {
             '!' => Some(Tok::Bang),
             '&' => Some(Tok::Amp),
             '?' => Some(Tok::Question),
+            '|' => Some(Tok::Pipe),
             _ => None,
         };
         if let Some(t) = single {
@@ -196,11 +201,62 @@ pub fn lex(src: &str) -> Result<Vec<SpannedTok>, String> {
             continue;
         }
 
-        // Integer literals.
+        // String literals: `"..."` with `\n`, `\t`, `\"`, `\\` escapes.
+        if c == '"' {
+            i += 1; // opening quote
+            let mut s = String::new();
+            loop {
+                if i >= bytes.len() {
+                    return Err(format!("line {line}: unterminated string literal"));
+                }
+                let d = bytes[i] as char;
+                if d == '"' {
+                    i += 1; // closing quote
+                    break;
+                }
+                if d == '\\' && i + 1 < bytes.len() {
+                    let e = bytes[i + 1] as char;
+                    s.push(match e {
+                        'n' => '\n',
+                        't' => '\t',
+                        '"' => '"',
+                        '\\' => '\\',
+                        other => other,
+                    });
+                    i += 2;
+                    continue;
+                }
+                if d == '\n' {
+                    line += 1;
+                }
+                s.push(d);
+                i += 1;
+            }
+            push!(Tok::Str(s));
+            continue;
+        }
+
+        // Numeric literals: integer, or float when a `.` is followed by a digit (so `1.5` is a
+        // float but `t.0` / `1..5` keep the `.` as its own token).
         if c.is_ascii_digit() {
             let start = i;
             while i < bytes.len() && (bytes[i] as char).is_ascii_digit() {
                 i += 1;
+            }
+            let is_float = i + 1 < bytes.len()
+                && bytes[i] as char == '.'
+                && (bytes[i + 1] as char).is_ascii_digit();
+            if is_float {
+                i += 1; // consume '.'
+                while i < bytes.len() && (bytes[i] as char).is_ascii_digit() {
+                    i += 1;
+                }
+                let text = &src[start..i];
+                let value: f64 = text
+                    .parse()
+                    .map_err(|_| format!("line {line}: float literal `{text}` out of range"))?;
+                push!(Tok::Float(value));
+                continue;
             }
             let text = &src[start..i];
             let value: i64 = text

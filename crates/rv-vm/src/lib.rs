@@ -18,6 +18,8 @@ use rv_codegen::{BinOpKind as BinOp, Bytecode, CompiledFn, Const, Instr, UnOpKin
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Int(i64),
+    Float(f64),
+    Str(String),
     Bool(bool),
     Unit,
     /// An algebraic data value. `tag` is the enum variant index (0 for structs);
@@ -72,11 +74,19 @@ fn exec_fn(bc: &Bytecode, fn_idx: usize, args: &[Value]) -> Result<Value, String
             .ok_or_else(|| format!("{}: pc {pc} out of bounds", f.name))?;
         match instr {
             Instr::Const(dst, c) => {
-                regs[*dst as usize] = const_to_value(*c);
+                regs[*dst as usize] = const_to_value(c.clone());
                 pc += 1;
             }
             Instr::Move(dst, src) => {
                 regs[*dst as usize] = regs[*src as usize].clone();
+                pc += 1;
+            }
+            Instr::Print(dst, src) => {
+                match &regs[*src as usize] {
+                    Value::Str(s) => println!("{s}"),
+                    other => println!("{other:?}"),
+                }
+                regs[*dst as usize] = Value::Unit;
                 pc += 1;
             }
             Instr::Bin(dst, op, a, b) => {
@@ -286,6 +296,8 @@ fn as_ref(v: &Value) -> Result<usize, String> {
 fn const_to_value(c: Const) -> Value {
     match c {
         Const::Int(i) => Value::Int(i),
+        Const::Float(f) => Value::Float(f),
+        Const::Str(s) => Value::Str(s),
         Const::Bool(b) => Value::Bool(b),
         Const::Unit => Value::Unit,
     }
@@ -294,6 +306,24 @@ fn const_to_value(c: Const) -> Value {
 /// Evaluate a binary op under i64 / bool semantics.
 fn eval_bin(op: BinOp, a: Value, b: Value) -> Result<Value, String> {
     use BinOp::*;
+    // Float arithmetic/comparison: when either operand is a float, compute in f64.
+    if matches!(a, Value::Float(_)) || matches!(b, Value::Float(_)) {
+        let (x, y) = (as_float(&a)?, as_float(&b)?);
+        return Ok(match op {
+            Add => Value::Float(x + y),
+            Sub => Value::Float(x - y),
+            Mul => Value::Float(x * y),
+            Div => Value::Float(x / y),
+            Mod => Value::Float(x % y),
+            Lt => Value::Bool(x < y),
+            Le => Value::Bool(x <= y),
+            Gt => Value::Bool(x > y),
+            Ge => Value::Bool(x >= y),
+            Eq => Value::Bool(x == y),
+            Ne => Value::Bool(x != y),
+            other => return Err(format!("operator {other:?} is not defined on floats")),
+        });
+    }
     match op {
         Add | Sub | Mul | Div | Mod => {
             let (x, y) = (as_int(a)?, as_int(b)?);
@@ -365,6 +395,14 @@ fn as_bool(v: Value) -> Result<bool, String> {
     match v {
         Value::Bool(b) => Ok(b),
         other => Err(format!("expected Bool, got {other:?}")),
+    }
+}
+
+fn as_float(v: &Value) -> Result<f64, String> {
+    match v {
+        Value::Float(f) => Ok(*f),
+        Value::Int(i) => Ok(*i as f64),
+        other => Err(format!("expected Float, got {other:?}")),
     }
 }
 

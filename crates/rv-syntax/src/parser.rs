@@ -706,6 +706,35 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Ok(Expr::Int(n))
             }
+            Tok::Float(f) => {
+                self.bump();
+                Ok(Expr::Float(f))
+            }
+            Tok::Str(s) => {
+                self.bump();
+                Ok(Expr::Str(s))
+            }
+            // A closure literal `|x, y| body` (or `|| body`).
+            Tok::Pipe => {
+                self.bump();
+                let mut params = Vec::new();
+                if self.peek() != &Tok::Pipe {
+                    loop {
+                        params.push(self.ident("as a closure parameter")?);
+                        // An optional `: Type` annotation is accepted and erased (closures are
+                        // type-erased; the body is checked structurally).
+                        if self.eat(&Tok::Colon) {
+                            let _ = self.parse_type()?;
+                        }
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&Tok::Pipe, "to close the closure parameter list")?;
+                let body = Box::new(self.parse_expr()?);
+                Ok(Expr::Lambda { params, body })
+            }
             Tok::True => {
                 self.bump();
                 Ok(Expr::Bool(true))

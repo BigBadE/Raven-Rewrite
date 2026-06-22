@@ -40,6 +40,8 @@ pub enum Instr {
     Un(u32, UnOp, u32),
     /// `dst <- callee(args...)`. `callee` indexes [`Bytecode::funcs`].
     Call(u32, usize, Vec<u32>),
+    /// Built-in `print`: write the value in `src` to stdout; `dst <- Unit`.
+    Print(u32, u32),
     /// `dst <- closure of fn `fn_idx` capturing the values in `capture_regs``.
     /// Builds a first-class `Value::Closure`; `fn_idx` indexes [`Bytecode::funcs`].
     MakeClosure(u32, usize, Vec<u32>),
@@ -301,7 +303,7 @@ impl FnBuilder<'_> {
             Operand::Copy(place) => self.place_reg(place),
             Operand::Const(c) => {
                 let r = self.fresh();
-                self.code.push(Instr::Const(r, *c));
+                self.code.push(Instr::Const(r, c.clone()));
                 r
             }
         }
@@ -435,7 +437,7 @@ impl FnBuilder<'_> {
     fn lower_rvalue(&mut self, dst: u32, rvalue: &RValue) {
         match rvalue {
             RValue::Use(op) => match op {
-                Operand::Const(c) => self.code.push(Instr::Const(dst, *c)),
+                Operand::Const(c) => self.code.push(Instr::Const(dst, c.clone())),
                 Operand::Copy(place) => {
                     let src = self.place_reg(place);
                     if src != dst {
@@ -456,6 +458,11 @@ impl FnBuilder<'_> {
             }
             RValue::Call(callee, args) => {
                 let arg_regs: Vec<u32> = args.iter().map(|a| self.operand_reg(a)).collect();
+                // The built-in `print(x)` writes its argument and evaluates to `()`.
+                if self.syms.resolve(*callee) == "print" && arg_regs.len() == 1 {
+                    self.code.push(Instr::Print(dst, arg_regs[0]));
+                    return;
+                }
                 let idx = *self
                     .name_to_index
                     .get(self.syms.resolve(*callee))

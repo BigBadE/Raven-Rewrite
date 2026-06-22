@@ -65,6 +65,10 @@ pub enum Ty {
     /// (i64-range) integer; `IntN` additionally carries a width so the verifier
     /// can emit *width-specific* overflow bounds.
     IntN(IntTy),
+    /// 64-bit float (`f64`). Opaque to the linear-arithmetic solver.
+    Float,
+    /// An immutable string (`String`). Opaque to the solver.
+    Str,
     Bool,
     Unit,
     Tuple(Vec<Ty>),

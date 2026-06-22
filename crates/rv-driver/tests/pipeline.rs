@@ -39,6 +39,30 @@ fn refinement_precondition_discharges_div() {
     assert!(report.obligations.iter().any(|o| o.origin.contains("division")));
 }
 
+/// Stage 4 executable surface: float literals + f64 arithmetic run on the VM.
+#[test]
+fn float_arithmetic_runs() {
+    let src = "fn main() -> f64 { let a: f64 = 1.5; let b: f64 = 2.0; return a + b; }";
+    let report = run_pipeline(src, Some("main")).expect("front-end ok");
+    assert_eq!(report.run, Some(Ok(Value::Float(3.5))));
+}
+
+/// Stage 4: string literals flow as values.
+#[test]
+fn string_literal_runs() {
+    let src = r#"fn main() -> String { return "hi"; }"#;
+    let report = run_pipeline(src, Some("main")).expect("front-end ok");
+    assert_eq!(report.run, Some(Ok(Value::Str("hi".to_string()))));
+}
+
+/// Stage 4: a closure capturing a local, lifted and called indirectly.
+#[test]
+fn closure_capture_runs() {
+    let src = "fn main() -> i64 { let k: i64 = 10; let f = |x: i64| x + k; return f(5); }";
+    let report = run_pipeline(src, Some("main")).expect("front-end ok");
+    assert_eq!(report.run, Some(Ok(Value::Int(15))));
+}
+
 /// Type soundness: a `bool` body under an `-> i64` signature is a static type error
 /// (the executable checker enforces primitive return types, not just structure).
 #[test]

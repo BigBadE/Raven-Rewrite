@@ -102,6 +102,13 @@ pub fn lower_term(e: &Expr, syms: &mut Symbols, ctx: &SpecCtx) -> Result<Term, S
         Expr::Try(_) => {
             Err("the `?` operator is not allowed in specifications".to_string())
         }
+        // Floats, strings, and closures are opaque to the first-order spec logic.
+        Expr::Float(_) | Expr::Str(_) => {
+            Err("float/string literals are not allowed in specifications".to_string())
+        }
+        Expr::Lambda { .. } => {
+            Err("closures are not allowed in specifications".to_string())
+        }
     }
 }
 

@@ -266,6 +266,11 @@ fn type_of_rvalue(
                 // sized `IntN`, so is the result (used to pick overflow bounds).
                 // Bitwise/shift ops are integer-typed too (no overflow obligation
                 // is emitted for them — that check is gated on `Add|Sub|Mul`).
+                // Float arithmetic: if either operand is a float, the result is a float (no
+                // overflow obligation — floats are opaque to the linear solver).
+                Add | Sub | Mul | Div | Mod if matches!(ta, Ty::Float) || matches!(tb, Ty::Float) => {
+                    Ok(Ty::Float)
+                }
                 Add | Sub | Mul | Div | Mod | BitAnd | BitOr | BitXor | Shl | Shr => {
                     int_result_ty(&ta, &tb).ok_or_else(|| "arithmetic on non-integers".to_string())
                 }
@@ -276,7 +281,9 @@ fn type_of_rvalue(
                 }
                 Eq | Ne => Ok(Ty::Bool),
                 Lt | Le | Gt | Ge => {
-                    if int_like(&ta) && int_like(&tb) {
+                    if (int_like(&ta) && int_like(&tb))
+                        || (matches!(ta, Ty::Float) || matches!(tb, Ty::Float))
+                    {
                         Ok(Ty::Bool)
                     } else {
                         Err("comparison on non-integers".to_string())
@@ -372,6 +379,8 @@ fn type_of_operand(
 ) -> Result<Ty, String> {
     Ok(match op {
         Operand::Const(Const::Int(_)) => Ty::Int,
+        Operand::Const(Const::Float(_)) => Ty::Float,
+        Operand::Const(Const::Str(_)) => Ty::Str,
         Operand::Const(Const::Bool(_)) => Ty::Bool,
         Operand::Const(Const::Unit) => Ty::Unit,
         Operand::Copy(place) => {
@@ -958,15 +967,19 @@ impl VcGen<'_> {
             RValue::Bin(op, a, b) => {
                 let ta = self.term_of_operand(a, state);
                 let tb = self.term_of_operand(b, state);
+                // Float arithmetic carries no integer obligations (floats are opaque, no
+                // division-by-zero / overflow checks in the linear-integer logic).
+                let is_float = matches!(self.operand_ty(a), Ty::Float)
+                    || matches!(self.operand_ty(b), Ty::Float);
                 // DIVISION SAFETY: divisor must be non-zero.
-                if matches!(op, BinOp::Div | BinOp::Mod) {
+                if !is_float && matches!(op, BinOp::Div | BinOp::Mod) {
                     let nonzero = Prop::Holds(Term::bin(BinOp::Ne, tb.clone(), Term::Int(0)));
                     self.emit(state.path.clone(), nonzero, "division by zero");
                 }
                 // OVERFLOW SAFETY: a checked `+`/`-`/`*` result must stay within
                 // its integer type's range (width-specific for `IntN`). The
                 // `wrapping_*` opt-out (RValue::WrappingBin) skips this.
-                if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
+                if !is_float && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
                     let (lo, hi) = self.overflow_range(a, b);
                     self.emit_overflow(&Term::bin(*op, ta.clone(), tb.clone()), lo, hi, state);
                 }
@@ -1089,6 +1102,10 @@ impl VcGen<'_> {
             Operand::Const(Const::Int(n)) => Term::Int(*n),
             Operand::Const(Const::Bool(b)) => Term::Bool(*b),
             Operand::Const(Const::Unit) => Term::Int(0),
+            // Floats/strings are opaque to the linear solver: a fresh variable, so no two
+            // literals are provably equal (sound: never proves a false fact about them).
+            Operand::Const(Const::Float(_)) => Term::Var(self.fresh_var("$float")),
+            Operand::Const(Const::Str(_)) => Term::Var(self.fresh_var("$str")),
             Operand::Copy(place) if !place.proj.is_empty() => {
                 if let [Proj::Field(n)] = place.proj.as_slice() {
                     if let Some(base) = state.env.get(&place.local).cloned() {
@@ -1221,6 +1238,8 @@ impl VcGen<'_> {
     fn operand_ty(&self, op: &Operand) -> Ty {
         match op {
             Operand::Const(Const::Int(_)) => Ty::Int,
+            Operand::Const(Const::Float(_)) => Ty::Float,
+            Operand::Const(Const::Str(_)) => Ty::Str,
             Operand::Const(Const::Bool(_)) => Ty::Bool,
             Operand::Const(Const::Unit) => Ty::Unit,
             Operand::Copy(place) => {

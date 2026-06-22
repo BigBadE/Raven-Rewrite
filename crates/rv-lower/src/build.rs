@@ -41,6 +41,11 @@ pub struct FnBuilder<'a> {
     /// parameter types and from struct-literal / enum-ctor initializers. Used to
     /// resolve field access (`s.f`) and the variant payloads bound in `match`.
     local_adt: HashMap<LocalId, Sym>,
+    /// Top-level functions lifted out of closure literals encountered while lowering
+    /// this body (lambda lifting). Drained by the caller into the program's function list.
+    lifted: Vec<rv_ir::Function<Parsed>>,
+    /// Monotonic counter for fresh lifted-closure names within this body.
+    closure_ctr: u32,
 }
 
 impl<'a> FnBuilder<'a> {
@@ -55,7 +60,14 @@ impl<'a> FnBuilder<'a> {
             names: HashMap::new(),
             types,
             local_adt: HashMap::new(),
+            lifted: Vec::new(),
+            closure_ctr: 0,
         }
+    }
+
+    /// Drain the functions lifted out of closure literals in this body.
+    pub fn take_lifted(&mut self) -> Vec<rv_ir::Function<Parsed>> {
+        std::mem::take(&mut self.lifted)
     }
 
     /// Record that local `id` holds a value of ADT type `adt` (best-effort).
@@ -139,6 +151,19 @@ impl<'a> FnBuilder<'a> {
                 id: self.cur_id,
                 stmts,
                 term: Terminator::Return(Operand::Const(Const::Unit)),
+            });
+            self.diverged = true;
+        }
+    }
+
+    /// Close the current block by returning the value in `id` (used for a lifted closure body).
+    pub fn return_local(&mut self, id: LocalId) {
+        if !self.diverged {
+            let stmts = std::mem::take(&mut self.cur_stmts);
+            self.blocks.push(Block {
+                id: self.cur_id,
+                stmts,
+                term: Terminator::Return(Operand::Copy(Place::local(id))),
             });
             self.diverged = true;
         }
@@ -629,6 +654,15 @@ impl<'a> FnBuilder<'a> {
                 Ok(RValue::Un(*op, oa))
             }
             Expr::Call { func, args } => {
+                // If the callee name is a bound LOCAL, it holds a closure value: this is an
+                // indirect call (`f(x)` where `let f = |..| ..`), lowered to `CallClosure`.
+                if let Some(&local) = self.names.get(func) {
+                    let mut ops = Vec::with_capacity(args.len());
+                    for arg in args {
+                        ops.push(self.lower_operand(arg, syms)?);
+                    }
+                    return Ok(RValue::CallClosure(Operand::Copy(Place::local(local)), ops));
+                }
                 // Wrapping intrinsics `wrapping_add(a, b)` etc. opt out of the
                 // checked-overflow obligation (lower to `RValue::WrappingBin`).
                 if let Some(op) = wrapping_builtin(syms.resolve(*func)) {
@@ -674,9 +708,68 @@ impl<'a> FnBuilder<'a> {
                 let kind = if *mutable { BorrowKind::Mut } else { BorrowKind::Shared };
                 Ok(RValue::Ref(kind, place))
             }
+            // A closure literal `|params| body`: capture its free variables, lift the body to a
+            // fresh top-level function (params = captures ++ closure params), and build a
+            // `Closure` value carrying the captured operands.
+            Expr::Lambda { params, body } => self.lower_lambda(params, body, syms),
             // Atoms / parenthesized values.
             _ => Ok(RValue::Use(self.lower_operand(e, syms)?)),
         }
+    }
+
+    /// Lower a closure literal by lambda-lifting. Free variables of the body (those not bound by
+    /// the closure's own parameters) become leading parameters of a generated top-level function
+    /// and are captured by value at the closure site.
+    fn lower_lambda(
+        &mut self,
+        params: &[Sym],
+        body: &Expr,
+        syms: &mut Symbols,
+    ) -> Result<RValue, String> {
+        // Free variables of the body, minus the closure's parameters, that are bound as locals
+        // in the enclosing scope (the values to capture), in deterministic order.
+        let mut bound: std::collections::HashSet<Sym> = params.iter().copied().collect();
+        let mut frees: Vec<Sym> = Vec::new();
+        free_vars(body, &mut bound, &mut frees);
+        let captures: Vec<Sym> =
+            frees.into_iter().filter(|s| self.names.contains_key(s)).collect();
+
+        // A fresh, unmangleable name for the lifted function.
+        let name = syms.intern(&format!("__closure_{}", self.closure_ctr));
+        self.closure_ctr += 1;
+
+        // Build the lifted function in its own builder: locals = captures ++ params, body
+        // lowered to a returned value.
+        let mut b = FnBuilder::new(self.types);
+        let mut fparams = Vec::with_capacity(captures.len() + params.len());
+        for s in captures.iter().chain(params.iter()) {
+            let id = b.new_local(Some(*s));
+            b.bind(*s, id);
+            fparams.push(id);
+        }
+        let ret_local = b.expr_to_local(body, syms)?;
+        b.return_local(ret_local);
+        let nested = b.take_lifted(); // closures nested inside this one
+        let (locals, blocks) = b.into_parts();
+        self.lifted.extend(nested);
+        self.lifted.push(rv_ir::Function {
+            name,
+            type_params: Vec::new(),
+            params: fparams,
+            ret: None,
+            pre: rv_core::Prop::True,
+            post: rv_core::Prop::True,
+            locals,
+            blocks,
+            entry: BlockId(0),
+        });
+
+        // The capture operands, read from the enclosing scope.
+        let cap_ops: Vec<Operand> = captures
+            .iter()
+            .map(|s| Operand::Copy(Place::local(self.names[s])))
+            .collect();
+        Ok(RValue::Closure(name, cap_ops))
     }
 
     /// Lower a struct literal `S { f: e, ... }`: evaluate each field expression to
@@ -903,6 +996,8 @@ impl<'a> FnBuilder<'a> {
     fn lower_operand(&mut self, e: &Expr, syms: &mut Symbols) -> Result<Operand, String> {
         match e {
             Expr::Int(n) => Ok(Operand::Const(Const::Int(*n))),
+            Expr::Float(f) => Ok(Operand::Const(Const::Float(*f))),
+            Expr::Str(s) => Ok(Operand::Const(Const::Str(s.clone()))),
             Expr::Bool(b) => Ok(Operand::Const(Const::Bool(*b))),
             Expr::Unit => Ok(Operand::Const(Const::Unit)),
             Expr::Var(s) => {
@@ -933,6 +1028,7 @@ impl<'a> FnBuilder<'a> {
             | Expr::MethodCall { .. }
             | Expr::StructLit { .. }
             | Expr::EnumCtor { .. }
+            | Expr::Lambda { .. }
             | Expr::Ref { .. } => {
                 let tmp = self.new_local(None);
                 let rvalue = self.lower_rvalue(e, syms)?;
@@ -958,4 +1054,49 @@ fn wrapping_builtin(name: &str) -> Option<BinOp> {
         "wrapping_rem" => BinOp::Mod,
         _ => return None,
     })
+}
+
+/// Collect the free variables of `e` (those used but not in `bound`), in first-use order,
+/// without duplicates. `bound` is updated in place when descending under a nested closure's
+/// parameters. Used by closure lambda-lifting to decide what to capture.
+fn free_vars(e: &Expr, bound: &mut std::collections::HashSet<rv_core::Sym>, out: &mut Vec<rv_core::Sym>) {
+    match e {
+        Expr::Var(s) => {
+            if !bound.contains(s) && !out.contains(s) {
+                out.push(*s);
+            }
+        }
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Unit => {}
+        Expr::Call { args, .. } | Expr::EnumCtor { args, .. } => {
+            for a in args {
+                free_vars(a, bound, out);
+            }
+        }
+        Expr::Bin(_, a, b) => {
+            free_vars(a, bound, out);
+            free_vars(b, bound, out);
+        }
+        Expr::Un(_, a) | Expr::Field { base: a, .. } | Expr::Deref(a) | Expr::Try(a)
+        | Expr::Ref { expr: a, .. } => free_vars(a, bound, out),
+        Expr::MethodCall { recv, args, .. } => {
+            free_vars(recv, bound, out);
+            for a in args {
+                free_vars(a, bound, out);
+            }
+        }
+        Expr::StructLit { fields, .. } => {
+            for (_, fe) in fields {
+                free_vars(fe, bound, out);
+            }
+        }
+        Expr::Lambda { params, body } => {
+            // A nested closure binds its own parameters; collect frees of the body under them,
+            // then remove the inner params (they are not free in the outer scope).
+            let added: Vec<rv_core::Sym> = params.iter().filter(|p| bound.insert(**p)).copied().collect();
+            free_vars(body, bound, out);
+            for p in added {
+                bound.remove(&p);
+            }
+        }
+    }
 }

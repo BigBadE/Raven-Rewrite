@@ -171,9 +171,11 @@ pub enum Operand {
     Const(Const),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Const {
     Int(i64),
+    Float(f64),
+    Str(String),
     Bool(bool),
     Unit,
 }
