@@ -1,0 +1,39 @@
+// A *polymorphic* verified list library in Rust-like Raven, using generic `enum`
+// parameters (`List<A>`). The same proof — `length (append xs ys) == length xs + length ys`
+// — now holds for lists of *any* element type, instead of being copied per element type as
+// the monomorphic `NatList` version in `list.rv` had to be. (`rvc --verify`.)
+
+enum Nat { Zero, Succ(Nat) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+
+// One generic list type, parameterised by its element type `A`.
+enum List<A: Type> { Nil, Cons(A, List<A>) }
+
+// `length` is element-type-agnostic: the parameter `A` is threaded explicitly.
+fn length(A: Type, xs: List<A>) -> Nat {
+    match xs { | List::Nil => Nat::Zero | List::Cons(x, rest) => Nat::Succ(length(A, rest)) }
+}
+
+fn append(A: Type, xs: List<A>, ys: List<A>) -> List<A> {
+    match xs {
+      | List::Nil           => ys
+      | List::Cons(x, rest) => List::Cons(A, x, append(A, rest, ys))
+    }
+}
+
+// length distributes over append — proved once, for every element type `A`, by induction
+// on the first list. (`congr_arg` from the standard prelude.)
+fn length_append(A: Type, xs: List<A>, ys: List<A>)
+    -> length(A, append(A, xs, ys)) == plus(length(A, xs), length(A, ys))
+{
+    match xs {
+      | List::Nil           => Eq::refl(Nat, length(A, ys))
+      | List::Cons(x, rest) =>
+          congr_arg(Nat, Nat, Nat::Succ,
+                    length(A, append(A, rest, ys)), plus(length(A, rest), length(A, ys)),
+                    length_append(A, rest, ys))
+    }
+}

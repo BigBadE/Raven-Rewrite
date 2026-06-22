@@ -260,6 +260,14 @@ enum Tok {
     RBrace,
     #[token("+")]
     Plus,
+    // Angle brackets delimit generic parameters: declaration `enum List<A> {…}` and
+    // type application `List<Nat>`. There is no `<`/`>` comparison operator in this
+    // language, so a bare `<` is unambiguously the start of a generic argument list.
+    // (`->`/`=>`/`==` are their own longer tokens, so a standalone `>` never conflicts.)
+    #[token("<")]
+    LAngle,
+    #[token(">")]
+    RAngle,
     #[token("fun")]
     KwFun,
     #[token("forall")]
@@ -544,6 +552,22 @@ impl Parser {
                     }
                 }
                 self.expect(&Tok::RParen)?;
+            } else if self.at(&Tok::LAngle) {
+                // Rust-like generic type application: `List<A>`, `Map<K, V>`,
+                // `Vec<A>` etc. apply the type former to each argument in turn —
+                // identical lowering to a call, but reads as Rust generics. Nested
+                // `Option<List<A>>` lexes the closing `>>` as two `>` tokens.
+                self.bump();
+                if !self.at(&Tok::RAngle) {
+                    loop {
+                        let arg = self.expr()?;
+                        e = Expr::App(Box::new(e), Box::new(arg));
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&Tok::RAngle)?;
             } else if self.at_atom_start() {
                 // Bare juxtaposition `f a b` (the Lean-like core still uses this).
                 let arg = self.atom()?;
@@ -818,6 +842,29 @@ impl Parser {
         self.expect(&Tok::KwEnum)?;
         let name = self.ident()?;
         let levels = self.level_decl()?;
+        // Optional generic parameters `<A: Type, B: Type>` (Rust-style). Parameters are
+        // *uniform*: bound once, fixed across every constructor's conclusion, and in scope
+        // in field/index types. They become the inductive's `num_params` — which is what
+        // lets a parameterised `Prop` (`And`/`Or`/`Decidable`) large-eliminate. Indices,
+        // by contrast, are the `(...)` binders below and may vary per constructor.
+        let mut params: Vec<Binder> = Vec::new();
+        if self.eat(&Tok::LAngle) {
+            if !self.at(&Tok::RAngle) {
+                loop {
+                    let mut names = vec![self.ident()?];
+                    while matches!(self.peek(), Some(Tok::Ident(_))) {
+                        names.push(self.ident()?);
+                    }
+                    self.expect(&Tok::Colon)?;
+                    let ty = self.expr()?;
+                    params.push(Binder { names, ty, implicit: false });
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.expect(&Tok::RAngle)?;
+        }
         // Optional index binders `(i0: T0, i1: T1, ...)` — these are the inductive's indices.
         let mut indices: Vec<(String, Expr)> = Vec::new();
         if self.eat(&Tok::LParen) {
@@ -892,6 +939,12 @@ impl Parser {
             // fields, concluding `Name idx0' … idxN'` (pinned indices use their `where` value).
             let pin = |nm: &str| pinned.iter().find(|(k, _)| k == nm).map(|(_, e)| e.clone());
             let mut concl = Expr::Var(name.clone(), None);
+            // Uniform parameters come first in the conclusion `Name p0 … pK i0 … iN`.
+            for p in &params {
+                for n in &p.names {
+                    concl = Expr::App(Box::new(concl), Box::new(Expr::Var(n.clone(), None)));
+                }
+            }
             for (iname, _) in &indices {
                 let arg = pin(iname).unwrap_or_else(|| Expr::Var(iname.clone(), None));
                 concl = Expr::App(Box::new(concl), Box::new(arg));
@@ -915,7 +968,7 @@ impl Parser {
             let _ = self.eat(&Tok::Comma) || self.eat(&Tok::Semi); // optional separator
         }
         self.expect(&Tok::RBrace)?;
-        Ok(Command::Inductive { name, levels, params: Vec::new(), result, ctors })
+        Ok(Command::Inductive { name, levels, params, result, ctors })
     }
 
     fn command(&mut self) -> Result<Command, String> {

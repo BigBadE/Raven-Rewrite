@@ -35,6 +35,11 @@ fn list_lib() {
 }
 
 #[test]
+fn generic_list_lib() {
+    check("generic_list.rv");
+}
+
+#[test]
 fn bool_logic() {
     check("bool_logic.rv");
 }

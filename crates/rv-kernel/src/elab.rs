@@ -392,4 +392,47 @@ mod tests {
         assert_eq!(k.env().get("FalseP.rec").unwrap().num_levels(), 1);
         assert_eq!(k.env().get("Bit.rec").unwrap().num_levels(), 0);
     }
+
+    /// Rust-style generic parameters on `enum` (`enum List<A> { … }`) become the
+    /// inductive's `num_params`. Constructors thread the parameter, field/return types
+    /// use `List<A>`, and—crucially—a *parameterised* single-constructor `Prop`
+    /// large-eliminates (its `rec` carries the extra universe param), so `And`-style
+    /// connectives are now writeable with real parameters rather than indices.
+    #[test]
+    fn generic_enum_parameters() {
+        let mut k = Kernel::new();
+        run_program(
+            &mut k,
+            "enum Nat { Zero, Succ(Nat) }\n\
+             enum Lst<A: Type> { nil, cons(A, Lst<A>) }",
+        )
+        .expect("a polymorphic list should declare");
+
+        match k.env().get("Lst").unwrap() {
+            crate::env::Decl::Inductive(i) => {
+                assert_eq!(i.num_params, 1, "the <A> parameter is a param, not an index");
+                assert_eq!(i.num_indices, 0);
+            }
+            _ => panic!("Lst should be an inductive"),
+        }
+
+        // The parameter threads through constructors and recursion (`Lst::cons(A, …)`,
+        // a length function over any element type).
+        run_program(
+            &mut k,
+            "def len.{} (A : Type) (xs : Lst A) : Nat := \
+               Lst.rec.{1} A (fun (_ : Lst A) => Nat) Nat.Zero \
+                 (fun (h : A) (t : Lst A) (ih : Nat) => Nat.Succ ih) xs",
+        )
+        .expect("a generic length should type-check");
+
+        // A parameterised single-constructor `Prop` large-eliminates.
+        run_program(&mut k, "enum AndP<a: Prop, b: Prop> -> Prop { mk(x: a, y: b) }")
+            .expect("parameterised And should declare");
+        assert_eq!(
+            k.env().get("AndP.rec").unwrap().num_levels(),
+            1,
+            "a single-ctor Prop *parameter* type must still large-eliminate"
+        );
+    }
 }
