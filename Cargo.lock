@@ -395,8 +395,10 @@ dependencies = [
 name = "rv-driver"
 version = "0.1.0"
 dependencies = [
+ "rv-core",
  "rv-db",
  "rv-kernel",
+ "rv-syntax",
  "rv-vm",
 ]
 

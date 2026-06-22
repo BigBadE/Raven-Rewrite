@@ -552,8 +552,10 @@ impl<'a> Parser<'a> {
             lhs = Expr::Apply { callee: Box::new(lhs), args };
         }
         // Equality proposition `a == b` (the `b` may itself be an application).
+        // Struct literals are disabled so a following `{` opens the function body, not a
+        // `rhs { … }` struct literal.
         if self.eat(&Tok::EqEq) {
-            let mut rhs = self.parse_unary()?;
+            let mut rhs = self.with_no_struct_lit(|p| p.parse_unary())?;
             while self.peek() == &Tok::LParen {
                 self.bump();
                 let args = self.parse_args()?;

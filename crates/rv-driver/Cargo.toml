@@ -11,3 +11,7 @@ rv-db.workspace = true
 rv-vm.workspace = true
 # The dependent-type-theory kernel + its Raven surface (the verified-Raven path).
 rv-kernel.workspace = true
+# The single front-end parser. Its AST is translated to kernel Commands (the `unify`
+# module) so the proof path no longer re-parses text with a second parser.
+rv-syntax.workspace = true
+rv-core.workspace = true

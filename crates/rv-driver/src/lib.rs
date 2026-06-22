@@ -19,6 +19,8 @@
 
 pub use rv_vm::Value;
 
+pub mod unify;
+
 /// The outcome of one verification obligation.
 #[derive(Debug)]
 pub struct ObligationResult {
@@ -118,6 +120,24 @@ pub fn verify_rv(src: &str, entry: Option<&str>) -> Result<RavenReport, String> 
     // The Raven proof prelude (Eq combinators, written in `.rv`) is always available.
     session.run(RAVEN_PRELUDE).map_err(|e| format!("in the standard prelude: {e}"))?;
     session.run(src)?;
+    let run = entry.map(|e| session.run_entry(e));
+    Ok(RavenReport { verified: session.verified_fns(), open: session.open_fns(), run })
+}
+
+/// Verify a Raven `.rv` program through the **unified front-end**: the single
+/// `rv-syntax` parser produces the one AST, which [`unify::module_to_commands`]
+/// translates into kernel [`Command`](rv_kernel::surface::Command)s — no second text
+/// parser. Semantics match [`verify_rv`] (same prelude, same kernel), but the proof
+/// path now shares the executable surface's lexer+parser.
+pub fn verify_rv_unified(src: &str, entry: Option<&str>) -> Result<RavenReport, String> {
+    let mut syms = rv_core::Symbols::new();
+    let module = rv_syntax::parse(src, &mut syms)?;
+    let cmds = unify::module_to_commands(&module, &syms)?;
+    let mut session = rv_kernel::verify::Session::new();
+    rv_kernel::logic::declare_logic(&mut session.k)?;
+    session.run(RAVEN_PRELUDE).map_err(|e| format!("in the standard prelude: {e}"))?;
+    session.set_source(src);
+    session.run_commands(cmds)?;
     let run = entry.map(|e| session.run_entry(e));
     Ok(RavenReport { verified: session.verified_fns(), open: session.open_fns(), run })
 }
