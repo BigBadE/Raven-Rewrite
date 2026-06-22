@@ -240,3 +240,43 @@ fn progress_closed(e: FExp, t: FTy, d: FHasTy(FCtx::Nil, e, t))
   -> Or(Value(e), Exists(FExp, fun (e2: FExp) => Step(e, e2))) {
     progress(FCtx::Nil, e, t, d)(Eq::refl(FCtx, FCtx::Nil))
 }
+
+// ===== Inversions (recover sub-derivations behind a known head shape) =====
+fn lam_inv(g: FCtx, a0: FTy, body: FExp, dom: FTy, cod: FTy,
+           h: FHasTy(g, FExp::ELam(a0, body), FTy::TArrow(dom, cod))) -> FHasTy(FCtx::Cons(dom, g), body, cod) {
+    match h { | FHasTy::FTLam(gg, a2, body2, b2, hb) => hb }
+}
+fn tlam_inv(g: FCtx, body: FExp, big: FTy, h: FHasTy(g, FExp::ETLam(body), FTy::TAll(big)))
+  -> FHasTy(shiftCtx(g), body, big) {
+    match h { | FHasTy::FTTLam(gg, body2, b2, hb) => hb }
+}
+fn app_inv(g: FCtx, f: FExp, x: FExp, big: FTy, h: FHasTy(g, FExp::EApp(f, x), big))
+  -> Exists(FTy, fun (a0: FTy) => And(FHasTy(g, f, FTy::TArrow(a0, big)), FHasTy(g, x, a0))) {
+    match h {
+      | FHasTy::FTApp(gg, ff, arg, a2, b2, hf, ha) =>
+          Exists::intro(FTy, fun (a0: FTy) => And(FHasTy(gg, ff, FTy::TArrow(a0, b2)), FHasTy(gg, arg, a0)),
+            a2, And::intro(FHasTy(gg, ff, FTy::TArrow(a2, b2)), FHasTy(gg, arg, a2), hf, ha))
+    }
+}
+fn etapp_fn(e: FExp) -> FExp { match e { | FExp::ETApp(f, t) => f | FExp::EVar(n) => e | FExp::ENat(n) => e | FExp::ELam(a, b) => e | FExp::EApp(f, x) => e | FExp::ETLam(b) => e } }
+fn etapp_ty(e: FExp) -> FTy { match e { | FExp::ETApp(f, t) => t | FExp::EVar(n) => FTy::TNat | FExp::ENat(n) => FTy::TNat | FExp::ELam(a, b) => FTy::TNat | FExp::EApp(f, x) => FTy::TNat | FExp::ETLam(b) => FTy::TNat } }
+fn tapp_inv(g: FCtx, e: FExp, big: FTy, h: FHasTy(g, e, big))
+  -> (f: FExp) -> (t0: FTy) -> (e == FExp::ETApp(f, t0))
+  -> Exists(FTy, fun (b: FTy) => And(FHasTy(g, f, FTy::TAll(b)), big == tsubst(b)(Nat::Zero)(t0))) {
+    match h {
+      | FHasTy::FTVar(gg, n, ty, hl)            => fun (f: FExp) (t0: FTy) (heq: FExp::EVar(n) == FExp::ETApp(f, t0)) => match heq { }
+      | FHasTy::FTNat(gg, n)                    => fun (f: FExp) (t0: FTy) (heq: FExp::ENat(n) == FExp::ETApp(f, t0)) => match heq { }
+      | FHasTy::FTLam(gg, a2, body2, b2, hb)    => fun (f: FExp) (t0: FTy) (heq: FExp::ELam(a2, body2) == FExp::ETApp(f, t0)) => match heq { }
+      | FHasTy::FTApp(gg, ff2, arg2, a2, b2, hf2, ha2) => fun (f: FExp) (t0: FTy) (heq: FExp::EApp(ff2, arg2) == FExp::ETApp(f, t0)) => match heq { }
+      | FHasTy::FTTLam(gg, body2, b2, hb)       => fun (f: FExp) (t0: FTy) (heq: FExp::ETLam(body2) == FExp::ETApp(f, t0)) => match heq { }
+      | FHasTy::FTTApp(gg, ff, b2, ty2, hf) =>
+          fun (f: FExp) (t0: FTy) (heq: FExp::ETApp(ff, ty2) == FExp::ETApp(f, t0)) =>
+            Exists::intro(FTy, fun (b: FTy) => And(FHasTy(gg, f, FTy::TAll(b)), tsubst(b2)(Nat::Zero)(ty2) == tsubst(b)(Nat::Zero)(t0)),
+              b2, And::intro(FHasTy(gg, f, FTy::TAll(b2)), tsubst(b2)(Nat::Zero)(ty2) == tsubst(b2)(Nat::Zero)(t0),
+                    subst(FExp, fun (z: FExp) => FHasTy(gg, z, FTy::TAll(b2)), ff, f,
+                          congr_arg(FExp, FExp, etapp_fn, FExp::ETApp(ff, ty2), FExp::ETApp(f, t0), heq), hf),
+                    subst(FTy, fun (z: FTy) => tsubst(b2)(Nat::Zero)(ty2) == tsubst(b2)(Nat::Zero)(z), ty2, t0,
+                          congr_arg(FExp, FTy, etapp_ty, FExp::ETApp(ff, ty2), FExp::ETApp(f, t0), heq),
+                          Eq::refl(FTy, tsubst(b2)(Nat::Zero)(ty2)))))
+    }
+}
