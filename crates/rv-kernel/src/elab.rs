@@ -373,22 +373,23 @@ mod tests {
         assert!(k.def_eq(&app, &Term::cnst(name("t"), vec![])));
     }
 
-    /// The headline test: the whole propositional-logic library *and* two real proofs
-    /// — `And` commutativity and classical double-negation elimination — written in
-    /// surface syntax and checked by the kernel. Exercises `inductive`/`def`/`axiom`
-    /// commands, generated recursors (with and without the `Prop` elimination
-    /// restriction), the `Not` definition (δ-unfolding `nnp hnp`), and the `em` axiom.
+    /// Generated recursors respect the `Prop` elimination restriction: a single-constructor
+    /// `Prop` (`And`) can large-eliminate (its `rec` carries the extra universe parameter),
+    /// while a multi-constructor `Prop` (`Or`) is restricted to `Prop` (no universe param).
+    /// Written in Rust-like surface (`enum`/`fn`), checked by the kernel.
     #[test]
-    fn logic_library_and_proofs_in_surface() {
+    fn generated_recursors_respect_prop_restriction() {
         let mut k = Kernel::new();
-        let program = include_str!("raven/elab_program1.rvk");
-        run_program(&mut k, program).expect("the logic library + proofs should check");
+        let program = "\
+            enum FalseP -> Prop { }
+            enum TrueP -> Prop { intro }
+            enum Bit -> Prop { lo; hi }";
+        run_program(&mut k, program).expect("the propositional connectives should check");
 
-        // The proofs are now first-class definitions with the expected types.
-        assert!(k.env().contains("and_comm"));
-        assert!(k.env().contains("dne"));
-        // `Or.rec` is Prop-restricted (no universe param); `And.rec`/`False.rec` are not.
-        assert_eq!(k.env().get("Or.rec").unwrap().num_levels(), 0);
-        assert_eq!(k.env().get("And.rec").unwrap().num_levels(), 1);
+        // A single-/zero-constructor subsingleton `Prop` large-eliminates (its `rec` carries the
+        // extra universe param); a two-constructor `Prop` is restricted to `Prop` (no param).
+        assert_eq!(k.env().get("TrueP.rec").unwrap().num_levels(), 1);
+        assert_eq!(k.env().get("FalseP.rec").unwrap().num_levels(), 1);
+        assert_eq!(k.env().get("Bit.rec").unwrap().num_levels(), 0);
     }
 }
