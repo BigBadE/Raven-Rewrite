@@ -867,21 +867,23 @@ fn branch_path_condition_is_used() {
 /// A Raven kernel-surface program verifies through the dependent kernel: a `match`-
 /// defined recursive function plus a spec proved automatically by computation, all on
 /// top of the preloaded standard library.
+/// A Rust-like `.rv` proof program with an `ensures` spec, verified through the kernel.
 #[test]
 fn raven_kernel_program_verifies() {
     let src = r#"
+        enum Nat { Zero, Succ(Nat) }
         fn dbl(n: Nat) -> Nat {
             match n {
-              | Nat.zero    => Nat.zero
-              | Nat.succ(k) => Nat.succ(Nat.succ(k.rec))
+              | Nat::Zero    => Nat::Zero
+              | Nat::Succ(k) => Nat::Succ(Nat::Succ(k.rec))
             }
         }
         fn dbl_two(u: Nat) -> Nat {
-            ensures(result == Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.zero)))));
-            dbl(Nat.succ(Nat.succ(Nat.zero)))
+            ensures(result == Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(Nat::Zero)))));
+            dbl(Nat::Succ(Nat::Succ(Nat::Zero)))
         }
     "#;
-    let report = rv_driver::verify_raven(src, true).expect("front-end ok");
+    let report = rv_driver::verify_rv(src, None).expect("front-end ok");
     assert!(report.all_verified(), "dbl 2 ≡ 4 should verify: {report:?}");
     assert!(report.verified.contains(&"dbl_two".to_string()));
 }
@@ -890,27 +892,30 @@ fn raven_kernel_program_verifies() {
 #[test]
 fn raven_kernel_false_spec_stays_open() {
     let src = r#"
+        enum Nat { Zero, Succ(Nat) }
         fn wrong(x: Nat) -> Nat {
-            ensures(result == Nat.succ(x));
+            ensures(result == Nat::Succ(x));
             x
         }
     "#;
-    let report = rv_driver::verify_raven(src, true).expect("front-end ok");
+    let report = rv_driver::verify_rv(src, None).expect("front-end ok");
     assert!(!report.all_verified(), "a false spec must not verify");
     assert!(report.open.contains(&"wrong".to_string()));
 }
 
-/// The kernel surface as a *compiler*, not just a verifier: a parameterless `answer`
-/// is evaluated to its canonical value through the driver's run path.
+/// The surface as a *compiler*, not just a verifier: a parameterless `answer` is evaluated to
+/// its canonical value through the driver's run path.
 #[test]
 fn raven_kernel_program_runs() {
     let src = r#"
+        enum Nat { Zero, Succ(Nat) }
         fn dbl(n: Nat) -> Nat {
-            match n { | Nat.zero => Nat.zero | Nat.succ(k) => Nat.succ(Nat.succ(k.rec)) }
+            match n { | Nat::Zero => Nat::Zero | Nat::Succ(k) => Nat::Succ(Nat::Succ(k.rec)) }
         }
-        fn answer() -> Nat { dbl(Nat.succ(Nat.succ(Nat.zero))) }
+        fn answer() -> Nat { dbl(Nat::Succ(Nat::Succ(Nat::Zero))) }
     "#;
-    let report = rv_driver::run_raven(src, true, Some("answer")).expect("front-end ok");
+    let report = rv_driver::verify_rv(src, Some("answer")).expect("front-end ok");
     assert!(report.all_verified());
-    assert_eq!(report.run.unwrap().unwrap(), "4", "dbl 2 should evaluate to 4");
+    // dbl 2 ≡ 4 = four Succs.
+    assert_eq!(report.run.unwrap().unwrap().matches("Succ").count(), 4, "dbl 2 should evaluate to 4");
 }

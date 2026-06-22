@@ -107,29 +107,6 @@ impl RavenReport {
     }
 }
 
-/// Verify a Raven kernel-surface program: elaborate every command through the trusted
-/// [`rv_kernel`] kernel and report which `fn` obligations were discharged. `Err` is a
-/// front-end / type error (an ill-formed program); a *well-formed but unproved* `fn`
-/// shows up in [`RavenReport::open`], not as `Err`.
-///
-/// When `with_stdlib` is set, the [`rv_kernel::stdlib`] prelude (Bool/Nat/List/… and
-/// their operations) is loaded first, so the program can build on it.
-pub fn verify_raven(src: &str, with_stdlib: bool) -> Result<RavenReport, String> {
-    run_raven(src, with_stdlib, None)
-}
-
-/// Verify and optionally **run** a Raven kernel-surface program: if `entry` names a
-/// parameterless definition, it is evaluated (normalised) and rendered. This is the
-/// kernel surface as a *compiler* — it verifies and computes, not merely checks.
-pub fn run_raven(src: &str, with_stdlib: bool, entry: Option<&str>) -> Result<RavenReport, String> {
-    let mut session = rv_kernel::verify::Session::new();
-    if with_stdlib {
-        rv_kernel::stdlib::load(&mut session)?;
-    }
-    session.run(src)?;
-    let run = entry.map(|e| session.run_entry(e));
-    Ok(RavenReport { verified: session.verified_fns(), open: session.open_fns(), run })
-}
 
 /// Verify a Raven `.rv` program through the dependent kernel, loading only the **logic**
 /// prelude (`Eq`, `And`/`Or`/`False`, `Not`/`Iff`) — *not* the full stdlib — so a `.rv` file

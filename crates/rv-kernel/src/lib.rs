@@ -43,7 +43,6 @@ pub mod logic;
 pub mod mutual;
 pub mod nbe;
 pub mod reduce;
-pub mod stdlib;
 pub mod surface;
 pub mod term;
 pub mod unify;

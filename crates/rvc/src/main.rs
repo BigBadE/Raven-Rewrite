@@ -59,10 +59,6 @@ fn main() -> ExitCode {
         let entry_opt = if run { Some(entry.as_str()) } else { None };
         return verify_rv_file(&srcs[0], entry_opt);
     }
-    if paths.iter().any(|p| p.ends_with(".rvk")) {
-        let entry_opt = if run { Some(entry.as_str()) } else { None };
-        return run_kernel(&paths, &srcs, entry_opt);
-    }
 
     // `.rs` files go through the real-Rust (tree-sitter) frontend (multiple files
     // compile together as one program); a single `.rv` file goes through the
@@ -158,39 +154,3 @@ fn verify_rv_file(src: &str, entry: Option<&str>) -> ExitCode {
     }
 }
 
-fn run_kernel(paths: &[String], srcs: &[String], entry: Option<&str>) -> ExitCode {
-    if paths.len() != 1 {
-        eprintln!("error: exactly one .rvk file is supported at a time");
-        return ExitCode::FAILURE;
-    }
-    let report = match rv_driver::run_raven(&srcs[0], true, entry) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    println!("=== verification (kernel) ===");
-    for n in &report.verified {
-        println!("  ✓ {n}");
-    }
-    for n in &report.open {
-        println!("  ✗ {n} (open)");
-    }
-    let verified = report.all_verified();
-    println!("{}", if verified { "VERIFIED" } else { "NOT VERIFIED" });
-    if let Some(run_result) = &report.run {
-        match run_result {
-            Ok(v) => println!("=== run ===\n  {} = {v}", entry.unwrap_or("?")),
-            Err(e) => {
-                eprintln!("runtime error: {e}");
-                return ExitCode::FAILURE;
-            }
-        }
-    }
-    if verified {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    }
-}
