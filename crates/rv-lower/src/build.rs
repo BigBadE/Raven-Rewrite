@@ -1043,6 +1043,7 @@ impl<'a> FnBuilder<'a> {
             Expr::MatchExpr { .. }
             | Expr::Fun { .. }
             | Expr::Forall { .. }
+            | Expr::LetIn { .. }
             | Expr::Arrow(..)
             | Expr::Apply { .. }
             | Expr::TypeUniv(_)

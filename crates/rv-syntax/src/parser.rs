@@ -124,6 +124,23 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Like [`Self::ident`], but also accepts the `true`/`false` keyword tokens as a
+    /// (constructor / variant) name — proof enums such as `enum Bool { false, true }`
+    /// reuse those spellings, which the kernel treats as ordinary dotted-name parts.
+    fn variant_name(&mut self, ctx: &str) -> Result<rv_core::Sym, String> {
+        match self.peek() {
+            Tok::True => {
+                self.bump();
+                Ok(self.syms.intern("true"))
+            }
+            Tok::False => {
+                self.bump();
+                Ok(self.syms.intern("false"))
+            }
+            _ => self.ident(ctx),
+        }
+    }
+
     /// Expect an identifier and intern it, returning its `Sym`.
     fn ident(&mut self, ctx: &str) -> Result<rv_core::Sym, String> {
         match self.peek().clone() {
@@ -217,33 +234,82 @@ impl<'a> Parser<'a> {
         Ok(StructDecl { name, generics, fields })
     }
 
-    /// `enum_decl := "enum" IDENT "{" ( variant ("," ...)* ","? )? "}"`
-    /// `variant   := IDENT ( "(" type ("," type)* ")" )?`
+    /// `enum_decl := "enum" IDENT generics? indices? ("->" type)? "{" variant* "}"`
+    /// `indices   := "(" IDENT ":" type ("," ...)* ")"`            (relation indices)
+    /// `variant   := IDENT field_list? where_clause? ((";"|",")?)`
+    /// `field_list:= "(" field ("," field)* ")"`,  `field := (IDENT ":")? type`
+    /// `where_clause := "where" IDENT "==" expr ("," ...)*`
     fn parse_enum(&mut self) -> Result<EnumDecl, String> {
         self.expect(&Tok::Enum, "to start an enum")?;
         let name = self.ident("as enum name")?;
         let generics = self.parse_generics()?;
-        self.expect(&Tok::LBrace, "to open enum variants")?;
-        let mut variants = Vec::new();
-        while self.peek() != &Tok::RBrace && self.peek() != &Tok::Eof {
-            let vname = self.ident("as variant name")?;
-            let mut field_tys = Vec::new();
-            if self.eat(&Tok::LParen) {
+        // Optional GADT index binders `(i0: T0, …)` — these make the enum a relation.
+        let mut indices = Vec::new();
+        if self.peek() == &Tok::LParen {
+            self.bump();
+            if self.peek() != &Tok::RParen {
                 loop {
-                    field_tys.push(self.parse_type()?);
+                    let iname = self.ident("as relation index name")?;
+                    self.expect(&Tok::Colon, "after relation index name")?;
+                    let ity = self.parse_type()?;
+                    indices.push(Param { name: iname, ty: ity });
                     if !self.eat(&Tok::Comma) {
                         break;
                     }
                 }
-                self.expect(&Tok::RParen, "after variant field types")?;
             }
-            variants.push(VariantDecl { name: vname, fields: field_tys });
-            if !self.eat(&Tok::Comma) {
-                break;
+            self.expect(&Tok::RParen, "after relation indices")?;
+        }
+        // Optional result sort `-> Prop` / `-> Type`.
+        let result_sort = if self.eat(&Tok::Arrow) { Some(self.parse_type()?) } else { None };
+        self.expect(&Tok::LBrace, "to open enum variants")?;
+        let mut variants = Vec::new();
+        while self.peek() != &Tok::RBrace && self.peek() != &Tok::Eof {
+            let vname = self.variant_name("as variant name")?;
+            let mut field_tys = Vec::new();
+            let mut field_names = Vec::new();
+            if self.eat(&Tok::LParen) {
+                if self.peek() != &Tok::RParen {
+                    loop {
+                        // A named field `name: Ty` (lookahead `IDENT :`) or a positional `Ty`.
+                        let named = matches!(self.peek(), Tok::Ident(_))
+                            && self.pos + 1 < self.toks.len()
+                            && self.toks[self.pos + 1].tok == Tok::Colon;
+                        if named {
+                            let fname = self.ident("as field name")?;
+                            self.expect(&Tok::Colon, "after field name")?;
+                            field_names.push(Some(fname));
+                            field_tys.push(self.parse_type()?);
+                        } else {
+                            field_names.push(None);
+                            field_tys.push(self.parse_type()?);
+                        }
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&Tok::RParen, "after variant fields")?;
             }
+            // Optional `where i == e, …` pinning the conclusion's indices.
+            let mut pins = Vec::new();
+            if self.eat_kw("where") {
+                loop {
+                    let iname = self.ident("as a pinned index name")?;
+                    self.expect(&Tok::EqEq, "in a `where` index pin")?;
+                    let value = self.with_no_struct_lit(|p| p.parse_expr())?;
+                    pins.push((iname, value));
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+            }
+            variants.push(VariantDecl { name: vname, fields: field_tys, field_names, pins });
+            // Variants are separated by `,` or `;` (both optional before `}`).
+            let _ = self.eat(&Tok::Comma) || self.eat(&Tok::Semi);
         }
         self.expect(&Tok::RBrace, "to close enum variants")?;
-        Ok(EnumDecl { name, generics, variants })
+        Ok(EnumDecl { name, generics, indices, result_sort, variants })
     }
 
     /// `fn_decl := "fn" IDENT generics? "(" params? ")" ("->" type)? clause* block`
@@ -451,12 +517,34 @@ impl<'a> Parser<'a> {
             let inner = self.parse_type()?;
             return Ok(Ty::Ref { mutable, inner: Box::new(inner) });
         }
-        // A parenthesized type may be `()` (unit), a grouped type, or — proof fragment —
+        // A parenthesized type may be `()` (unit), a dependent binder group
+        // `(x y : T) -> rest` (a `Pi`/`forall` type), a grouped type, or — proof fragment —
         // a function type written in parens `(Nat -> Option<A>)`.
         if self.peek() == &Tok::LParen {
             self.bump();
             if self.eat(&Tok::RParen) {
                 return Ok(Ty::Unit);
+            }
+            // Detect a dependent binder group: `( IDENT+ : … )`.
+            let mut j = self.pos;
+            while matches!(self.toks.get(j).map(|t| &t.tok), Some(Tok::Ident(_))) {
+                j += 1;
+            }
+            if j > self.pos && self.toks.get(j).map(|t| &t.tok) == Some(&Tok::Colon) {
+                // `(x y … : T) -> rest` → a dependent function type binding x, y, … : T.
+                let mut names = Vec::new();
+                while matches!(self.peek(), Tok::Ident(_)) {
+                    names.push(self.ident("as a dependent binder name")?);
+                }
+                self.expect(&Tok::Colon, "in a dependent binder group")?;
+                let bty = self.parse_type()?;
+                self.expect(&Tok::RParen, "after a dependent binder group")?;
+                self.expect(&Tok::Arrow, "after a dependent binder `(x : T)`")?;
+                let bty_e = self.ty_to_expr(bty)?;
+                let rest = self.parse_type()?;
+                let body = self.ty_to_expr(rest)?;
+                let params = names.into_iter().map(|n| (n, Box::new(bty_e.clone()))).collect();
+                return Ok(Ty::Term(Box::new(Expr::Forall { params, body: Box::new(body) })));
             }
             let inner = self.parse_type()?;
             self.expect(&Tok::RParen, "to close a parenthesized type")?;
@@ -484,6 +572,22 @@ impl<'a> Parser<'a> {
             Tok::Ident(name) => {
                 self.bump();
                 let base = self.syms.intern(&name);
+                // A `::` makes this a constructor-path *value* used in a type-expression
+                // (a proposition like `Nat::Zero == Nat::Succ(b)`): parse the ctor and
+                // continue as a type-expression.
+                if self.peek() == &Tok::ColonColon {
+                    self.bump();
+                    let variant = self.variant_name("as enum variant in a type")?;
+                    let args = if self.eat(&Tok::LParen) {
+                        let a = self.parse_args()?;
+                        self.expect(&Tok::RParen, "after enum constructor arguments")?;
+                        a
+                    } else {
+                        Vec::new()
+                    };
+                    let e = Expr::EnumCtor { enum_name: base, variant, args };
+                    return self.type_expr_tail(e);
+                }
                 // A `<` immediately after the name opens a generic argument list.
                 if self.eat(&Tok::Lt) {
                     let mut args = Vec::new();
@@ -636,7 +740,15 @@ impl<'a> Parser<'a> {
         let mut i = self.pos + 1; // skip `match`
         while i < self.toks.len() {
             match self.toks[i].tok {
-                Tok::LBrace => return matches!(self.toks.get(i + 1).map(|t| &t.tok), Some(Tok::Pipe)),
+                // A `|`-led arm list is the proof/expression form; an *empty* `match s { }`
+                // is an absurd elimination, also an expression (executable matches are
+                // never empty).
+                Tok::LBrace => {
+                    return matches!(
+                        self.toks.get(i + 1).map(|t| &t.tok),
+                        Some(Tok::Pipe) | Some(Tok::RBrace)
+                    )
+                }
                 Tok::Eof => return false,
                 _ => i += 1,
             }
@@ -652,19 +764,95 @@ impl<'a> Parser<'a> {
             && self.toks[self.pos + 1].tok == Tok::Eq
     }
 
-    /// `"let" IDENT (":" type)? "=" expr ";"`
+    /// `"let" IDENT (":" type)? "=" expr ";"` (executable statement) — or, in the proof
+    /// fragment, a let-*expression* `"let" IDENT (":" type)? ":=" expr "in" expr` (the whole
+    /// body's tail). The two are told apart by the assignment operator: `=` is a statement,
+    /// `:=` a proof let-expression.
     fn parse_let(&mut self) -> Result<Stmt, String> {
         self.expect(&Tok::Let, "to start a let binding")?;
         let name = self.ident("as let binding name")?;
-        let ty = if self.eat(&Tok::Colon) {
+        // A `:` that is *not* the start of `:=` introduces a type annotation.
+        let has_ann = self.peek() == &Tok::Colon
+            && self.toks.get(self.pos + 1).map(|t| &t.tok) != Some(&Tok::Eq);
+        let ty = if has_ann {
+            self.bump();
             Some(self.parse_type()?)
         } else {
             None
         };
+        // Proof let-expression: `:= init in body`.
+        if self.peek() == &Tok::Colon
+            && self.toks.get(self.pos + 1).map(|t| &t.tok) == Some(&Tok::Eq)
+        {
+            self.bump();
+            self.bump(); // consume `:=`
+            let init = self.parse_expr()?;
+            self.expect_kw("in", "after a `let … :=` proof binding")?;
+            let body = self.parse_expr()?;
+            let ty_e = ty.map(|t| self.ty_to_expr(t)).transpose()?;
+            return Ok(Stmt::Return(Some(Expr::LetIn {
+                name,
+                ty: ty_e.map(Box::new),
+                init: Box::new(init),
+                body: Box::new(body),
+            })));
+        }
         self.expect(&Tok::Eq, "in let binding")?;
         let init = self.parse_expr()?;
         self.expect(&Tok::Semi, "after let binding")?;
         Ok(Stmt::Let { name, ty, init })
+    }
+
+    /// A let-*expression* in expression position: `let x (: T)? := init in body`.
+    fn parse_let_in_expr(&mut self) -> Result<Expr, String> {
+        self.expect(&Tok::Let, "to start a let-expression")?;
+        let name = self.ident("as let-expression binding name")?;
+        let has_ann = self.peek() == &Tok::Colon
+            && self.toks.get(self.pos + 1).map(|t| &t.tok) != Some(&Tok::Eq);
+        let ty = if has_ann {
+            self.bump();
+            Some(Box::new(self.ty_to_expr_via_type()?))
+        } else {
+            None
+        };
+        if !self.eat_assign() {
+            return Err(format!("line {}: expected `:=` or `=` in a let-expression", self.line()));
+        }
+        let init = self.parse_expr()?;
+        self.expect_kw("in", "after a `let … :=` binding")?;
+        let body = self.parse_expr()?;
+        Ok(Expr::LetIn { name, ty, init: Box::new(init), body: Box::new(body) })
+    }
+
+    /// Parse a type and immediately convert it to the equivalent proof-fragment expression.
+    fn ty_to_expr_via_type(&mut self) -> Result<Expr, String> {
+        let t = self.parse_type()?;
+        self.ty_to_expr(t)
+    }
+
+    /// Consume an assignment operator `:=` (proof) or `=` (executable); report success.
+    fn eat_assign(&mut self) -> bool {
+        if self.peek() == &Tok::Colon
+            && self.toks.get(self.pos + 1).map(|t| &t.tok) == Some(&Tok::Eq)
+        {
+            self.bump();
+            self.bump();
+            true
+        } else if self.peek() == &Tok::Eq {
+            self.bump();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Expect the contextual keyword identifier `word`.
+    fn expect_kw(&mut self, word: &str, ctx: &str) -> Result<(), String> {
+        if self.eat_kw(word) {
+            Ok(())
+        } else {
+            Err(format!("line {}: expected `{word}` {ctx}, found {:?}", self.line(), self.peek()))
+        }
     }
 
     /// `IDENT "=" expr ";"`
@@ -741,7 +929,7 @@ impl<'a> Parser<'a> {
         }
         let enum_name = self.ident("as enum name in pattern")?;
         self.expect(&Tok::ColonColon, "between enum and variant in pattern")?;
-        let variant = self.ident("as variant name in pattern")?;
+        let variant = self.variant_name("as variant name in pattern")?;
         let mut binds = Vec::new();
         if self.eat(&Tok::LParen) {
             loop {
@@ -972,6 +1160,10 @@ impl<'a> Parser<'a> {
         if self.peek() == &Tok::Match {
             return self.parse_match_expr();
         }
+        // A let-expression in expression position (`let x := e in body`).
+        if self.peek() == &Tok::Let {
+            return self.parse_let_in_expr();
+        }
         // Proof-fragment keyword atoms (matched by spelling).
         if self.peek_kw("fun") {
             return self.parse_fun();
@@ -1074,7 +1266,7 @@ impl<'a> Parser<'a> {
                     Ok(Expr::Call { func: sym, args })
                 } else if self.eat(&Tok::ColonColon) {
                     // Enum constructor `Enum::Variant` or `Enum::Variant(args)`.
-                    let variant = self.ident("as enum variant")?;
+                    let variant = self.variant_name("as enum variant")?;
                     let args = if self.eat(&Tok::LParen) {
                         let a = self.parse_args()?;
                         self.expect(&Tok::RParen, "after enum constructor arguments")?;

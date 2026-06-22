@@ -106,21 +106,34 @@ pub struct FieldDecl {
     pub ty: Ty,
 }
 
-/// An `enum Name<G...> { V0, V1(T), ... }` declaration.
+/// An `enum Name<G...> { V0, V1(T), ... }` declaration. In the proof fragment an
+/// enum may additionally be an **indexed relation**:
+/// `enum R<G…>(i0: T0, …) -> Prop { C(f: T, …) where i == e, …; … }`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EnumDecl {
     pub name: Sym,
     /// Generic type parameters (`enum Option<T> {..}`); empty if non-generic.
     pub generics: Vec<GenericParam>,
+    /// Index binders `(i0: T0, …)` of a relation (GADT indices); empty for plain data.
+    pub indices: Vec<Param>,
+    /// The result sort `-> Prop` / `-> Type`; `None` defaults to `Type` (data) or, when
+    /// there are indices, `Prop` (a relation).
+    pub result_sort: Option<Ty>,
     pub variants: Vec<VariantDecl>,
 }
 
-/// A single enum variant: a name plus zero or more tuple-style field types.
-/// A unit variant has an empty `fields` vector.
+/// A single enum variant: a name plus zero or more field types. A unit variant has an
+/// empty `fields` vector. For relations, fields may be **named** (`field_names`, parallel
+/// to `fields`) and the conclusion's indices pinned by `where` clauses (`pins`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct VariantDecl {
     pub name: Sym,
     pub fields: Vec<Ty>,
+    /// Parallel to `fields`: the field's name, or `None` for a positional field. Empty for
+    /// plain data variants (all positional).
+    pub field_names: Vec<Option<Sym>>,
+    /// `where i == e, …` clauses pinning the conclusion's indices (relations only).
+    pub pins: Vec<(Sym, Expr)>,
 }
 
 /// A `trait Name { fn sig; ... }` declaration. Traits are pure surface sugar:
@@ -321,6 +334,9 @@ pub enum Expr {
     Fun { params: Vec<(Sym, Option<Box<Expr>>)>, body: Box<Expr> },
     /// `forall x : T, body` — a dependent function *type* (kernel `Pi`).
     Forall { params: Vec<(Sym, Box<Expr>)>, body: Box<Expr> },
+    /// A let-*expression* `let x (: T)? := init in body` (kernel `Let`), distinct from the
+    /// statement-level [`Stmt::Let`] — the form proof terms use (`:=` and `in`).
+    LetIn { name: Sym, ty: Option<Box<Expr>>, init: Box<Expr>, body: Box<Expr> },
     /// A function/arrow type `A -> B` written in expression position.
     Arrow(Box<Expr>, Box<Expr>),
     /// The universe `Type` / `Type n`.

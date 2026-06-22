@@ -68,9 +68,10 @@ impl Tr<'_> {
         }
     }
 
-    /// A plain data `enum Name<G…> { V0, V1(T…), … }` → a `Type`-valued inductive whose
-    /// constructors take their field types and conclude in `Name G…`. Mirrors the
-    /// construction the kernel's own `enum` parser performs.
+    /// A data `enum Name<G…> { … }` or an indexed relation
+    /// `enum R<G…>(i: T…) -> Prop { C(f: T…) where i == e; … }` → an inductive. Mirrors the
+    /// construction the kernel's own `enum` parser performs (uniform params, then indices in
+    /// the conclusion; each constructor binds its unpinned indices and fields).
     fn enum_decl(&self, e: &ast::EnumDecl) -> Result<Command, String> {
         let name = self.name(e.name);
         // Generic parameters become uniform `(G : Type)` parameters of the inductive.
@@ -79,21 +80,62 @@ impl Tr<'_> {
             .iter()
             .map(|g| Binder { names: vec![self.name(g.name)], ty: KExpr::Type(0), implicit: false })
             .collect();
-        // The conclusion `Name G0 G1 …`.
-        let mut concl = KExpr::Var(name.clone(), None);
-        for g in &e.generics {
-            concl = KExpr::App(Box::new(concl), Box::new(KExpr::Var(self.name(g.name), None)));
-        }
-        // Each variant `V(T0, …, Tn)` → constructor type `T0 -> … -> Tn -> Name G…`.
+        // Index binders `(i : T)` and the result sort.
+        let indices: Vec<(String, KExpr)> = e
+            .indices
+            .iter()
+            .map(|p| Ok((self.name(p.name), self.ty(&p.ty)?)))
+            .collect::<Result<_, String>>()?;
+        let result_sort = match &e.result_sort {
+            Some(t) => self.ty(t)?,
+            None if indices.is_empty() => KExpr::Type(0),
+            None => KExpr::Prop,
+        };
+        // Type former: `T0 -> … -> Tn -> Sort`.
+        let result = indices
+            .iter()
+            .rev()
+            .fold(result_sort, |acc, (_, ity)| KExpr::Arrow(Box::new(ity.clone()), Box::new(acc)));
+
         let mut ctors = Vec::new();
         for v in &e.variants {
-            let mut cty = concl.clone();
-            for fty in v.fields.iter().rev() {
-                cty = KExpr::Arrow(Box::new(self.ty(fty)?), Box::new(cty));
+            // `where` pins for this constructor.
+            let pins: Vec<(String, KExpr)> = v
+                .pins
+                .iter()
+                .map(|(k, val)| Ok((self.name(*k), self.expr(val)?)))
+                .collect::<Result<_, String>>()?;
+            let pin = |nm: &str| pins.iter().find(|(k, _)| k == nm).map(|(_, e)| e.clone());
+            // Conclusion `Name params… indices…` (pinned indices use their `where` value).
+            let mut concl = KExpr::Var(name.clone(), None);
+            for g in &e.generics {
+                concl = KExpr::App(Box::new(concl), Box::new(KExpr::Var(self.name(g.name), None)));
             }
+            for (iname, _) in &indices {
+                let arg = pin(iname).unwrap_or_else(|| KExpr::Var(iname.clone(), None));
+                concl = KExpr::App(Box::new(concl), Box::new(arg));
+            }
+            // Binders, outermost-first: unpinned indices, then fields (named or positional).
+            let mut binders: Vec<(Option<String>, KExpr)> = Vec::new();
+            for (iname, ity) in &indices {
+                if pin(iname).is_none() {
+                    binders.push((Some(iname.clone()), ity.clone()));
+                }
+            }
+            for (i, fty) in v.fields.iter().enumerate() {
+                let fname = v.field_names.get(i).and_then(|n| n.map(|s| self.name(s)));
+                binders.push((fname, self.ty(fty)?));
+            }
+            let cty = binders.into_iter().rev().fold(concl, |acc, (nm, ty)| match nm {
+                Some(n) => KExpr::Pi(
+                    Box::new(Binder { names: vec![n], ty, implicit: false }),
+                    Box::new(acc),
+                ),
+                None => KExpr::Arrow(Box::new(ty), Box::new(acc)),
+            });
             ctors.push((self.name(v.name), cty));
         }
-        Ok(Command::Inductive { name, levels: vec![], params, result: KExpr::Type(0), ctors })
+        Ok(Command::Inductive { name, levels: vec![], params, result, ctors })
     }
 
     /// A function declaration. A proof `fn` (return type a proposition / `Type`, body a
@@ -227,6 +269,25 @@ impl Tr<'_> {
                 }
                 acc
             }
+            Expr::LetIn { name, ty, init, body } => KExpr::Let(
+                self.name(*name),
+                ty.as_ref().map(|t| self.expr(t)).transpose()?.map(Box::new),
+                Box::new(self.expr(init)?),
+                Box::new(self.expr(body)?),
+            ),
+            // `recv.method(args)` in the proof fragment is application of the dotted name
+            // `recv.method` (e.g. the IH `hf.rec(gnil)`).
+            Expr::MethodCall { recv, method, args } => {
+                let callee = match self.expr(recv)? {
+                    KExpr::Var(n, None) => KExpr::Var(format!("{n}.{}", self.name(*method)), None),
+                    _ => {
+                        return Err("a proof-fragment method call must be on a dotted name \
+                                    (e.g. `h.rec(..)`)"
+                            .to_string())
+                    }
+                };
+                self.apply(callee, args)?
+            }
             Expr::Arrow(a, b) => KExpr::Arrow(Box::new(self.expr(a)?), Box::new(self.expr(b)?)),
             Expr::TypeUniv(n) => KExpr::Type(*n),
             Expr::Prop => KExpr::Prop,
@@ -234,6 +295,16 @@ impl Tr<'_> {
             Expr::Rewrite { eqn, body } => {
                 KExpr::Rewrite(Box::new(self.expr(eqn)?), Box::new(self.expr(body)?))
             }
+            // `h.rec` — the structural-recursion induction hypothesis on a recursive field,
+            // and other dotted projections, are dotted names in the kernel.
+            Expr::Field { base, field } => match self.expr(base)? {
+                KExpr::Var(n, None) => KExpr::Var(format!("{n}.{}", self.name(*field)), None),
+                _ => {
+                    return Err("only a dotted name projection (e.g. `h.rec`) is supported in \
+                                the proof fragment"
+                        .to_string())
+                }
+            },
             Expr::Decide => KExpr::Decide,
             Expr::ByCases { scrut, tbody, fbody } => KExpr::ByCases(
                 Box::new(self.expr(scrut)?),
