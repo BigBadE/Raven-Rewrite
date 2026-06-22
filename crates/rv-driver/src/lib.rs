@@ -115,13 +115,25 @@ impl RavenReport {
 /// is self-contained and brings its own data types (`enum`s) and proofs. This is the unified
 /// `.rv` surface's proof/verification path; obligations are discharged by the kernel.
 pub fn verify_rv(src: &str, entry: Option<&str>) -> Result<RavenReport, String> {
+    // The proof path now runs entirely through the **single** `rv-syntax` parser: the
+    // prelude and the program are parsed by one lexer+parser and translated to kernel
+    // Commands (see `unify`). The kernel re-checks every term.
     let mut session = rv_kernel::verify::Session::new();
     rv_kernel::logic::declare_logic(&mut session.k)?;
-    // The Raven proof prelude (Eq combinators, written in `.rv`) is always available.
-    session.run(RAVEN_PRELUDE).map_err(|e| format!("in the standard prelude: {e}"))?;
-    session.run(src)?;
+    run_unified(&mut session, RAVEN_PRELUDE).map_err(|e| format!("in the standard prelude: {e}"))?;
+    run_unified(&mut session, src)?;
     let run = entry.map(|e| session.run_entry(e));
     Ok(RavenReport { verified: session.verified_fns(), open: session.open_fns(), run })
+}
+
+/// Parse `src` with the single `rv-syntax` parser, translate to kernel commands, and run
+/// them on `session` (setting the source for span diagnostics).
+fn run_unified(session: &mut rv_kernel::verify::Session, src: &str) -> Result<(), String> {
+    let mut syms = rv_core::Symbols::new();
+    let module = rv_syntax::parse(src, &mut syms)?;
+    let cmds = unify::module_to_commands(&module, &syms)?;
+    session.set_source(src);
+    session.run_commands(cmds)
 }
 
 /// Verify a Raven `.rv` program through the **unified front-end**: the single
@@ -130,16 +142,7 @@ pub fn verify_rv(src: &str, entry: Option<&str>) -> Result<RavenReport, String> 
 /// parser. Semantics match [`verify_rv`] (same prelude, same kernel), but the proof
 /// path now shares the executable surface's lexer+parser.
 pub fn verify_rv_unified(src: &str, entry: Option<&str>) -> Result<RavenReport, String> {
-    let mut syms = rv_core::Symbols::new();
-    let module = rv_syntax::parse(src, &mut syms)?;
-    let cmds = unify::module_to_commands(&module, &syms)?;
-    let mut session = rv_kernel::verify::Session::new();
-    rv_kernel::logic::declare_logic(&mut session.k)?;
-    session.run(RAVEN_PRELUDE).map_err(|e| format!("in the standard prelude: {e}"))?;
-    session.set_source(src);
-    session.run_commands(cmds)?;
-    let run = entry.map(|e| session.run_entry(e));
-    Ok(RavenReport { verified: session.verified_fns(), open: session.open_fns(), run })
+    verify_rv(src, entry)
 }
 
 /// The Raven standard proof prelude (`Eq` combinators), written in Raven itself.

@@ -195,6 +195,16 @@ impl Tr<'_> {
         }
         for p in value {
             out.push(Binder { names: vec![self.name(p.name)], ty: self.ty(&p.ty)?, implicit: false });
+            // A refinement `x: T where p` desugars to an extra *implicit* proof binder
+            // `_: p`, which the elaborator auto-inserts and tries to discharge at call sites
+            // (mirrors the kernel surface's own refinement desugaring).
+            if let Some(pred) = &p.refinement {
+                out.push(Binder {
+                    names: vec![format!("{}__ref", self.name(p.name))],
+                    ty: self.expr(pred)?,
+                    implicit: true,
+                });
+            }
         }
         Ok(out)
     }

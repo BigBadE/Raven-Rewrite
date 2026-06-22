@@ -256,7 +256,7 @@ impl<'a> Parser<'a> {
                     let iname = self.ident("as relation index name")?;
                     self.expect(&Tok::Colon, "after relation index name")?;
                     let ity = self.parse_type()?;
-                    indices.push(Param { name: iname, ty: ity });
+                    indices.push(Param { name: iname, ty: ity, refinement: None });
                     if !self.eat(&Tok::Comma) {
                         break;
                     }
@@ -524,7 +524,13 @@ impl<'a> Parser<'a> {
             let name = self.ident("as parameter name")?;
             self.expect(&Tok::Colon, "after parameter name")?;
             let ty = self.parse_type()?;
-            params.push(Param { name, ty });
+            // An optional refinement `where p` (a precondition on this parameter).
+            let refinement = if self.eat_kw("where") {
+                Some(self.with_no_struct_lit(|p| p.parse_expr())?)
+            } else {
+                None
+            };
+            params.push(Param { name, ty, refinement });
             if !self.eat(&Tok::Comma) {
                 break;
             }
@@ -656,8 +662,10 @@ impl<'a> Parser<'a> {
                 ))
             }
         };
-        // Proof continuation: a `(`/`==`/`->` turns the base into a type-expression.
-        if matches!(self.peek(), Tok::LParen | Tok::EqEq | Tok::Arrow) {
+        // Proof continuation: a `(`/`==`/`->` or a juxtaposed atom (`native_add a b`) turns
+        // the base into a type-expression.
+        if matches!(self.peek(), Tok::LParen | Tok::EqEq | Tok::Arrow) || self.is_juxt_atom_start()
+        {
             let e = self.ty_to_expr(base)?;
             return self.type_expr_tail(e);
         }
@@ -690,28 +698,17 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parse the tail of a proof type-expression whose head `lhs` is already in hand:
-    /// zero or more applications `(args)`, then an optional `== rhs`, then an optional
-    /// right-associative arrow `-> rest`. Returns the whole thing as [`Ty::Term`].
-    fn type_expr_tail(&mut self, mut lhs: Expr) -> Result<Ty, String> {
-        // Application: `head(arg, …)` (and chained `head(a)(b)`).
-        while self.peek() == &Tok::LParen {
-            self.bump();
-            let args = self.parse_args()?;
-            self.expect(&Tok::RParen, "after type-level application arguments")?;
-            lhs = Expr::Apply { callee: Box::new(lhs), args };
-        }
-        // Equality proposition `a == b` (the `b` may itself be an application).
-        // Struct literals are disabled so a following `{` opens the function body, not a
-        // `rhs { … }` struct literal.
+    /// Parse the tail of a proof type-expression whose head `lhs` is already in hand: an
+    /// application spine (paren-applications `(args)` and ML-style juxtaposition `f a b`),
+    /// then an optional `== rhs`, then an optional right-associative arrow `-> rest`.
+    /// Returns the whole thing as [`Ty::Term`].
+    fn type_expr_tail(&mut self, lhs: Expr) -> Result<Ty, String> {
+        let mut lhs = self.parse_app_spine(lhs)?;
+        // Equality proposition `a == b` (the `b` is itself an application spine). Struct
+        // literals are disabled so a following `{` opens the function body, not a struct lit.
         if self.eat(&Tok::EqEq) {
-            let mut rhs = self.with_no_struct_lit(|p| p.parse_unary())?;
-            while self.peek() == &Tok::LParen {
-                self.bump();
-                let args = self.parse_args()?;
-                self.expect(&Tok::RParen, "after type-level application arguments")?;
-                rhs = Expr::Apply { callee: Box::new(rhs), args };
-            }
+            let rhs_head = self.with_no_struct_lit(|p| p.parse_unary())?;
+            let rhs = self.parse_app_spine(rhs_head)?;
             lhs = Expr::Bin(BinOp::Eq, Box::new(lhs), Box::new(rhs));
         }
         // Right-associative function arrow `A -> B`.
@@ -721,6 +718,56 @@ impl<'a> Parser<'a> {
             lhs = Expr::Arrow(Box::new(lhs), Box::new(rhs_e));
         }
         Ok(Ty::Term(Box::new(lhs)))
+    }
+
+    /// Parse an application spine onto `head`: paren-applications `head(a, …)` (chained
+    /// `head(a)(b)`) and ML-style juxtaposition `head a b` (proof fragment — e.g. an `axiom`
+    /// type `native_add a b == plus a b`).
+    fn parse_app_spine(&mut self, mut head: Expr) -> Result<Expr, String> {
+        loop {
+            if self.peek() == &Tok::LParen {
+                self.bump();
+                let args = self.parse_args()?;
+                self.expect(&Tok::RParen, "after type-level application arguments")?;
+                head = Expr::Apply { callee: Box::new(head), args };
+            } else if self.is_juxt_atom_start() {
+                let atom = self.parse_juxt_atom()?;
+                head = Expr::Apply { callee: Box::new(head), args: vec![atom] };
+            } else {
+                break;
+            }
+        }
+        Ok(head)
+    }
+
+    /// Does the current token start a juxtaposition argument (an identifier that is not a
+    /// contextual keyword)? Used only inside proof type-expressions.
+    fn is_juxt_atom_start(&self) -> bool {
+        matches!(self.peek(), Tok::Ident(n)
+            if !matches!(n.as_str(),
+                "where" | "in" | "fun" | "forall" | "Type" | "Prop"
+                | "by_decide" | "rewrite" | "by_cases" | "mut"
+                // item-level keywords end the spine (the next declaration begins)
+                | "axiom" | "def" | "instance" | "mutual"))
+    }
+
+    /// Parse a single juxtaposition argument: an identifier `x` or a constructor path
+    /// `Enum::Variant(args?)`.
+    fn parse_juxt_atom(&mut self) -> Result<Expr, String> {
+        let s = self.ident("as a juxtaposed argument")?;
+        if self.eat(&Tok::ColonColon) {
+            let variant = self.variant_name("as enum variant in a juxtaposed argument")?;
+            let args = if self.eat(&Tok::LParen) {
+                let a = self.parse_args()?;
+                self.expect(&Tok::RParen, "after enum constructor arguments")?;
+                a
+            } else {
+                Vec::new()
+            };
+            Ok(Expr::EnumCtor { enum_name: s, variant, args })
+        } else {
+            Ok(Expr::Var(s))
+        }
     }
 
     // ---- grammar: statements / blocks --------------------------------------

@@ -361,8 +361,9 @@ fn raven_kernel_program_verifies() {
               | Nat::Succ(k) => Nat::Succ(Nat::Succ(k.rec))
             }
         }
-        fn dbl_two(u: Nat) -> Nat {
-            ensures(result == Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(Nat::Zero)))));
+        fn dbl_two(u: Nat) -> Nat
+            ensures result == Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(Nat::Zero))));
+        {
             dbl(Nat::Succ(Nat::Succ(Nat::Zero)))
         }
     "#;
@@ -376,8 +377,9 @@ fn raven_kernel_program_verifies() {
 fn raven_kernel_false_spec_stays_open() {
     let src = r#"
         enum Nat { Zero, Succ(Nat) }
-        fn wrong(x: Nat) -> Nat {
-            ensures(result == Nat::Succ(x));
+        fn wrong(x: Nat) -> Nat
+            ensures result == Nat::Succ(x);
+        {
             x
         }
     "#;

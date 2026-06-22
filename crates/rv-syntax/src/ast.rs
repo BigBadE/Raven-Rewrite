@@ -205,11 +205,14 @@ pub struct FnDecl {
     pub body: Block,
 }
 
-/// A single function parameter `name: ty`.
+/// A single function parameter `name: ty`, optionally refined `name: ty where p`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Param {
     pub name: Sym,
     pub ty: Ty,
+    /// A refinement predicate `where p` (a precondition that may mention the parameter).
+    /// `None` for an ordinary parameter.
+    pub refinement: Option<Expr>,
 }
 
 /// A braced sequence of statements.
