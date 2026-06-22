@@ -84,9 +84,12 @@ a standing requirement for ints/refs/effects/partiality.
   (`unified.rv`).
 - ✅ Generic `enum` parameters, proved-once generic stdlib, reflection — the proof surface.
 - ✅ Executable surface Stage 4: strings, floats, closures, `print` run on the VM.
+- ✅ One parser: `rv-syntax` is the single lexer+parser for all `.rv` source. The proof path
+  (`verify_rv`/`rvc`) translates its AST to kernel commands (`rv-driver/src/unify.rs`) instead
+  of re-parsing; all 28 proof files + the prelude verify through it. A translation bug can only
+  *reject* a proof (the kernel re-checks every term), never accept an unsound one.
 - ⏳ Frontier: executable algebraic effects (`effect`/`uses`/`handle` + a VM handler stack with
-  resumption); unify the executable and proof *parsers* so one file mixes runtime syntax and
-  proof syntax (the remaining half of Stage 6 — the type system is already unified).
+  resumption).
 
 The discipline in one line: **grow the realization layer and the `.rv` libraries, never the
 kernel.**

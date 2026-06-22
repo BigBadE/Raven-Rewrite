@@ -223,9 +223,14 @@ dependent work, so we front it with Rust-like syntax and migrate the embedded pr
   executable `effect`/`uses`/`handle` surface + runtime handler dispatch are still to do.)*
 - **Stage 6 — unify the two backends under QTT** so a single `.rv` file mixes runtime code
   and erased proofs, split automatically by grade. *(The unified type system is demonstrated —
-  the kernel both checks AND runs the modeled fragment, see `examples/proofs/unified.rv`. A
-  single file mixing the executable runtime syntax with proof syntax additionally needs the two
-  surface parsers unified.)*
+  the kernel both checks AND runs the modeled fragment, see `examples/proofs/unified.rv`.)*
+  **The two surface parsers are now unified: `rv-syntax` is the single lexer+parser for all
+  `.rv` source.** The executable fragment lowers to `rv-lower`→VM as before; the proof
+  fragment is translated from the same AST into kernel commands (`rv-driver/src/unify.rs`) and
+  checked by the kernel — `verify_rv`/`rvc` no longer use a second text parser, and the whole
+  proof corpus + prelude verify through the one parser. (The kernel keeps an internal
+  text parser only for its own unit tests, which exercise raw `Sort u`/`.{u}` universe syntax
+  the language surface doesn't expose; it is no longer a language front-end.)
 - **Stage 7 — kernel growth** (indexed-mutual, coinduction) only as specific proofs demand.
 
 The trust discipline behind all of this — model machine types/refs/effects/partiality in `.rv`
