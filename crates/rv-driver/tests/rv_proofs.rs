@@ -133,6 +133,14 @@ fn stlc_preservation() {
 }
 
 #[test]
+fn systemf() {
+    // System F (polymorphic λ-calculus): the typing relation over type/term de Bruijn
+    // binders + PROGRESS (a closed well-typed term is a value or steps), via canonical forms
+    // (curried-value convoy) and the `Exists`/`Or` step witness. Preservation builds on this.
+    check("systemf.rv");
+}
+
+#[test]
 fn mutual_trees() {
     check("mutual_trees.rv");
     // It also computes: a forest of two leaves has size 2.

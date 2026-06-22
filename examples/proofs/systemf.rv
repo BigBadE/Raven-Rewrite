@@ -1,0 +1,242 @@
+// System F (polymorphic λ-calculus) type safety in Rust-like Raven.
+enum Nat  { Zero, Succ(Nat) }
+enum Bool { True, False }
+
+enum FTy {
+    TVar(Nat),                 // type variable (de Bruijn)
+    TNat,                      // base type (observable)
+    TArrow(FTy, FTy),
+    TAll(FTy),                 // ∀. body
+}
+enum FExp {
+    EVar(Nat),
+    ENat(Nat),
+    ELam(FTy, FExp),           // λ(_:A). body
+    EApp(FExp, FExp),
+    ETLam(FExp),               // Λ. body
+    ETApp(FExp, FTy),          // e [T]
+}
+enum FCtx { Nil, Cons(FTy, FCtx) }
+
+fn ltNat(a: Nat) -> (Nat -> Bool) {
+    match a {
+      | Nat::Zero    => fun (b: Nat) => match b { | Nat::Zero => Bool::False | Nat::Succ(m) => Bool::True }
+      | Nat::Succ(k) => fun (b: Nat) => match b { | Nat::Zero => Bool::False | Nat::Succ(m) => ltNat(k)(m) }
+    }
+}
+fn predN(n: Nat) -> Nat { match n { | Nat::Zero => Nat::Zero | Nat::Succ(m) => m } }
+fn eqNat(a: Nat) -> (Nat -> Bool) {
+    match a {
+      | Nat::Zero    => fun (b: Nat) => match b { | Nat::Zero => Bool::True  | Nat::Succ(m) => Bool::False }
+      | Nat::Succ(k) => fun (b: Nat) => match b { | Nat::Zero => Bool::False | Nat::Succ(m) => eqNat(k)(m) }
+    }
+}
+
+// Type-variable shifting and substitution (curried on the structural type argument).
+fn tshift(t: FTy) -> (Nat -> FTy) {
+    match t {
+      | FTy::TVar(n)      => fun (c: Nat) => match ltNat(n)(c) { | Bool::True => FTy::TVar(n) | Bool::False => FTy::TVar(Nat::Succ(n)) }
+      | FTy::TNat         => fun (c: Nat) => FTy::TNat
+      | FTy::TArrow(a, b) => fun (c: Nat) => FTy::TArrow(tshift(a)(c), tshift(b)(c))
+      | FTy::TAll(a)      => fun (c: Nat) => FTy::TAll(tshift(a)(Nat::Succ(c)))
+    }
+}
+fn tsubstVar(j: Nat, s: FTy, n: Nat) -> FTy {
+    match eqNat(n)(j) {
+      | Bool::True  => s
+      | Bool::False => match ltNat(j)(n) { | Bool::True => FTy::TVar(predN(n)) | Bool::False => FTy::TVar(n) }
+    }
+}
+fn tsubst(t: FTy) -> (Nat -> (FTy -> FTy)) {
+    match t {
+      | FTy::TVar(n)      => fun (j: Nat) => fun (s: FTy) => tsubstVar(j, s, n)
+      | FTy::TNat         => fun (j: Nat) => fun (s: FTy) => FTy::TNat
+      | FTy::TArrow(a, b) => fun (j: Nat) => fun (s: FTy) => FTy::TArrow(tsubst(a)(j)(s), tsubst(b)(j)(s))
+      | FTy::TAll(a)      => fun (j: Nat) => fun (s: FTy) => FTy::TAll(tsubst(a)(Nat::Succ(j))(tshift(s)(Nat::Zero)))
+    }
+}
+fn shiftCtx(g: FCtx) -> FCtx {
+    match g { | FCtx::Nil => FCtx::Nil | FCtx::Cons(t, rest) => FCtx::Cons(tshift(t)(Nat::Zero), shiftCtx(rest)) }
+}
+
+// Term/type substitution into terms (curried on the structural term argument).
+fn eshiftTm(e: FExp) -> (Nat -> FExp) {
+    match e {
+      | FExp::EVar(n)     => fun (c: Nat) => match ltNat(n)(c) { | Bool::True => FExp::EVar(n) | Bool::False => FExp::EVar(Nat::Succ(n)) }
+      | FExp::ENat(n)     => fun (c: Nat) => FExp::ENat(n)
+      | FExp::ELam(a, b)  => fun (c: Nat) => FExp::ELam(a, eshiftTm(b)(Nat::Succ(c)))
+      | FExp::EApp(f, x)  => fun (c: Nat) => FExp::EApp(eshiftTm(f)(c), eshiftTm(x)(c))
+      | FExp::ETLam(b)    => fun (c: Nat) => FExp::ETLam(eshiftTm(b)(c))
+      | FExp::ETApp(f, t) => fun (c: Nat) => FExp::ETApp(eshiftTm(f)(c), t)
+    }
+}
+fn eshiftTy(e: FExp) -> (Nat -> FExp) {
+    match e {
+      | FExp::EVar(n)     => fun (c: Nat) => FExp::EVar(n)
+      | FExp::ENat(n)     => fun (c: Nat) => FExp::ENat(n)
+      | FExp::ELam(a, b)  => fun (c: Nat) => FExp::ELam(tshift(a)(c), eshiftTy(b)(c))
+      | FExp::EApp(f, x)  => fun (c: Nat) => FExp::EApp(eshiftTy(f)(c), eshiftTy(x)(c))
+      | FExp::ETLam(b)    => fun (c: Nat) => FExp::ETLam(eshiftTy(b)(Nat::Succ(c)))
+      | FExp::ETApp(f, t) => fun (c: Nat) => FExp::ETApp(eshiftTy(f)(c), tshift(t)(c))
+    }
+}
+fn esubstVar(j: Nat, v: FExp, n: Nat) -> FExp {
+    match eqNat(n)(j) {
+      | Bool::True  => v
+      | Bool::False => match ltNat(j)(n) { | Bool::True => FExp::EVar(predN(n)) | Bool::False => FExp::EVar(n) }
+    }
+}
+fn esubstTm(e: FExp) -> (Nat -> (FExp -> FExp)) {
+    match e {
+      | FExp::EVar(n)     => fun (j: Nat) => fun (v: FExp) => esubstVar(j, v, n)
+      | FExp::ENat(n)     => fun (j: Nat) => fun (v: FExp) => FExp::ENat(n)
+      | FExp::ELam(a, b)  => fun (j: Nat) => fun (v: FExp) => FExp::ELam(a, esubstTm(b)(Nat::Succ(j))(eshiftTm(v)(Nat::Zero)))
+      | FExp::EApp(f, x)  => fun (j: Nat) => fun (v: FExp) => FExp::EApp(esubstTm(f)(j)(v), esubstTm(x)(j)(v))
+      | FExp::ETLam(b)    => fun (j: Nat) => fun (v: FExp) => FExp::ETLam(esubstTm(b)(j)(eshiftTy(v)(Nat::Zero)))
+      | FExp::ETApp(f, t) => fun (j: Nat) => fun (v: FExp) => FExp::ETApp(esubstTm(f)(j)(v), t)
+    }
+}
+fn esubstTy(e: FExp) -> (Nat -> (FTy -> FExp)) {
+    match e {
+      | FExp::EVar(n)     => fun (j: Nat) => fun (s: FTy) => FExp::EVar(n)
+      | FExp::ENat(n)     => fun (j: Nat) => fun (s: FTy) => FExp::ENat(n)
+      | FExp::ELam(a, b)  => fun (j: Nat) => fun (s: FTy) => FExp::ELam(tsubst(a)(j)(s), esubstTy(b)(j)(s))
+      | FExp::EApp(f, x)  => fun (j: Nat) => fun (s: FTy) => FExp::EApp(esubstTy(f)(j)(s), esubstTy(x)(j)(s))
+      | FExp::ETLam(b)    => fun (j: Nat) => fun (s: FTy) => FExp::ETLam(esubstTy(b)(Nat::Succ(j))(tshift(s)(Nat::Zero)))
+      | FExp::ETApp(f, t) => fun (j: Nat) => fun (s: FTy) => FExp::ETApp(esubstTy(f)(j)(s), tsubst(t)(j)(s))
+    }
+}
+
+enum FLookup(g: FCtx, n: Nat, t: FTy) -> Prop {
+    Here(gg: FCtx, ty: FTy)                                  where g == FCtx::Cons(ty, gg), n == Nat::Zero, t == ty;
+    There(gg: FCtx, ty0: FTy, k: Nat, ty: FTy, h: FLookup(gg, k, ty))
+        where g == FCtx::Cons(ty0, gg), n == Nat::Succ(k), t == ty;
+}
+enum FHasTy(g: FCtx, e: FExp, t: FTy) -> Prop {
+    FTVar(gg: FCtx, n: Nat, ty: FTy, h: FLookup(gg, n, ty))  where g == gg, e == FExp::EVar(n), t == ty;
+    FTNat(gg: FCtx, n: Nat)                                  where g == gg, e == FExp::ENat(n), t == FTy::TNat;
+    FTLam(gg: FCtx, a: FTy, body: FExp, b: FTy, h: FHasTy(FCtx::Cons(a, gg), body, b))
+        where g == gg, e == FExp::ELam(a, body), t == FTy::TArrow(a, b);
+    FTApp(gg: FCtx, f: FExp, arg: FExp, a: FTy, b: FTy, hf: FHasTy(gg, f, FTy::TArrow(a, b)), ha: FHasTy(gg, arg, a))
+        where g == gg, e == FExp::EApp(f, arg), t == b;
+    FTTLam(gg: FCtx, body: FExp, b: FTy, h: FHasTy(shiftCtx(gg), body, b))
+        where g == gg, e == FExp::ETLam(body), t == FTy::TAll(b);
+    FTTApp(gg: FCtx, f: FExp, b: FTy, ty: FTy, hf: FHasTy(gg, f, FTy::TAll(b)))
+        where g == gg, e == FExp::ETApp(f, ty), t == tsubst(b)(Nat::Zero)(ty);
+}
+
+enum Value(e: FExp) -> Prop {
+    VNat(n: Nat)            where e == FExp::ENat(n);
+    VLam(a: FTy, b: FExp)   where e == FExp::ELam(a, b);
+    VTLam(b: FExp)          where e == FExp::ETLam(b);
+}
+enum Step(t: FExp, u: FExp) -> Prop {
+    SAppL(f: FExp, f2: FExp, a: FExp, h: Step(f, f2))   where t == FExp::EApp(f, a), u == FExp::EApp(f2, a);
+    SAppR(f: FExp, a: FExp, a2: FExp, h: Step(a, a2))   where t == FExp::EApp(f, a), u == FExp::EApp(f, a2);
+    SBeta(a: FTy, b: FExp, v: FExp)
+        where t == FExp::EApp(FExp::ELam(a, b), v), u == esubstTm(b)(Nat::Zero)(v);
+    STApp(f: FExp, f2: FExp, ty: FTy, h: Step(f, f2))   where t == FExp::ETApp(f, ty), u == FExp::ETApp(f2, ty);
+    STBeta(b: FExp, ty: FTy)
+        where t == FExp::ETApp(FExp::ETLam(b), ty), u == esubstTy(b)(Nat::Zero)(ty);
+}
+
+// Empty-context lookup is absurd.
+fn is_nil(g: FCtx) -> Prop { match g { | FCtx::Nil => True | FCtx::Cons(ty, gg) => False } }
+fn cons_ne_nil(ty: FTy, gg: FCtx, h: FCtx::Cons(ty, gg) == FCtx::Nil) -> False {
+    subst(FCtx, is_nil, FCtx::Nil, FCtx::Cons(ty, gg), symm(FCtx, FCtx::Cons(ty, gg), FCtx::Nil, h), True::intro)
+}
+fn flookup_nil_absurd(g: FCtx, n: Nat, t: FTy, h: FLookup(g, n, t)) -> (g == FCtx::Nil) -> False {
+    match h {
+      | FLookup::Here(gg, ty)               => fun (e: FCtx::Cons(ty, gg) == FCtx::Nil)  => cons_ne_nil(ty, gg, e)
+      | FLookup::There(gg, ty0, k, ty, hk)  => fun (e: FCtx::Cons(ty0, gg) == FCtx::Nil) => cons_ne_nil(ty0, gg, e)
+    }
+}
+
+// Canonical forms: a value of arrow type is a λ; of ∀ type is a Λ (any context). The value
+// hypothesis is curried into the return type so matching `df` refines it per-arm: type-clash
+// arms (FTNat/FTTLam) auto-discharge, non-value heads are refuted by the empty `match vf {}`.
+fn canon_arrow(g: FCtx, f: FExp, a: FTy, b: FTy, df: FHasTy(g, f, FTy::TArrow(a, b)))
+  -> Value(f) -> Exists(FTy, fun (a0: FTy) => Exists(FExp, fun (b0: FExp) => f == FExp::ELam(a0, b0))) {
+    match df {
+      | FHasTy::FTVar(gg, n, ty, h)            => fun (vf: Value(FExp::EVar(n))) => match vf { }
+      | FHasTy::FTLam(gg, a2, body, b2, h)     => fun (vf: Value(FExp::ELam(a2, body))) =>
+          Exists::intro(FTy, fun (a0: FTy) => Exists(FExp, fun (b0: FExp) => FExp::ELam(a2, body) == FExp::ELam(a0, b0)),
+            a2, Exists::intro(FExp, fun (b0: FExp) => FExp::ELam(a2, body) == FExp::ELam(a2, b0),
+                  body, Eq::refl(FExp, FExp::ELam(a2, body))))
+      | FHasTy::FTApp(gg, ff, arg, a2, b2, hf, ha)  => fun (vf: Value(FExp::EApp(ff, arg))) => match vf { }
+      | FHasTy::FTTApp(gg, ff, b2, ty2, hf)         => fun (vf: Value(FExp::ETApp(ff, ty2))) => match vf { }
+    }
+}
+fn canon_all(g: FCtx, f: FExp, b: FTy, df: FHasTy(g, f, FTy::TAll(b)))
+  -> Value(f) -> Exists(FExp, fun (b0: FExp) => f == FExp::ETLam(b0)) {
+    match df {
+      | FHasTy::FTVar(gg, n, ty, h)            => fun (vf: Value(FExp::EVar(n))) => match vf { }
+      | FHasTy::FTApp(gg, ff, arg, a2, b2, hf, ha)  => fun (vf: Value(FExp::EApp(ff, arg))) => match vf { }
+      | FHasTy::FTTLam(gg, body, b2, h)        => fun (vf: Value(FExp::ETLam(body))) =>
+          Exists::intro(FExp, fun (b0: FExp) => FExp::ETLam(body) == FExp::ETLam(b0),
+            body, Eq::refl(FExp, FExp::ETLam(body)))
+      | FHasTy::FTTApp(gg, ff, b2, ty2, hf)         => fun (vf: Value(FExp::ETApp(ff, ty2))) => match vf { }
+    }
+}
+
+// PROGRESS: a well-typed term in the empty context is a value or it steps (stated over an
+// arbitrary context with a `g == Nil` hypothesis, so the induction has a variable to refine).
+fn progress(g: FCtx, e: FExp, t: FTy, d: FHasTy(g, e, t))
+  -> (g == FCtx::Nil) -> Or(Value(e), Exists(FExp, fun (e2: FExp) => Step(e, e2))) {
+    match d {
+      | FHasTy::FTVar(gg, n, ty, h) => fun (gnil: gg == FCtx::Nil) =>
+          False::rec(fun (z: False) => Or(Value(FExp::EVar(n)), Exists(FExp, fun (e2: FExp) => Step(FExp::EVar(n), e2))),
+            flookup_nil_absurd(gg, n, ty, h)(gnil))
+      | FHasTy::FTNat(gg, n) => fun (gnil: gg == FCtx::Nil) =>
+          Or::inl(Value(FExp::ENat(n)), Exists(FExp, fun (e2: FExp) => Step(FExp::ENat(n), e2)), Value::VNat(n))
+      | FHasTy::FTLam(gg, a, body, b, h) => fun (gnil: gg == FCtx::Nil) =>
+          Or::inl(Value(FExp::ELam(a, body)), Exists(FExp, fun (e2: FExp) => Step(FExp::ELam(a, body), e2)), Value::VLam(a, body))
+      | FHasTy::FTTLam(gg, body, b, h) => fun (gnil: gg == FCtx::Nil) =>
+          Or::inl(Value(FExp::ETLam(body)), Exists(FExp, fun (e2: FExp) => Step(FExp::ETLam(body), e2)), Value::VTLam(body))
+      | FHasTy::FTApp(gg, f, arg, a, b, hf, ha) => fun (gnil: gg == FCtx::Nil) =>
+          match hf.rec(gnil) {
+            | Or::inr(sf) =>
+                match sf {
+                  | Exists::intro(f2, stf) =>
+                      Or::inr(Value(FExp::EApp(f, arg)), Exists(FExp, fun (e2: FExp) => Step(FExp::EApp(f, arg), e2)),
+                        Exists::intro(FExp, fun (e2: FExp) => Step(FExp::EApp(f, arg), e2),
+                          FExp::EApp(f2, arg), Step::SAppL(f, f2, arg, stf)))
+                }
+            | Or::inl(vf) =>
+                match canon_arrow(gg, f, a, b, hf)(vf) {
+                  | Exists::intro(a0, rest) =>
+                      match rest {
+                        | Exists::intro(b0, feq) =>
+                            Or::inr(Value(FExp::EApp(f, arg)), Exists(FExp, fun (e2: FExp) => Step(FExp::EApp(f, arg), e2)),
+                              subst(FExp, fun (ff: FExp) => Exists(FExp, fun (e2: FExp) => Step(FExp::EApp(ff, arg), e2)),
+                                FExp::ELam(a0, b0), f, symm(FExp, f, FExp::ELam(a0, b0), feq),
+                                Exists::intro(FExp, fun (e2: FExp) => Step(FExp::EApp(FExp::ELam(a0, b0), arg), e2),
+                                  esubstTm(b0)(Nat::Zero)(arg), Step::SBeta(a0, b0, arg))))
+                      }
+                }
+          }
+      | FHasTy::FTTApp(gg, f, b, ty, hf) => fun (gnil: gg == FCtx::Nil) =>
+          match hf.rec(gnil) {
+            | Or::inr(sf) =>
+                match sf {
+                  | Exists::intro(f2, stf) =>
+                      Or::inr(Value(FExp::ETApp(f, ty)), Exists(FExp, fun (e2: FExp) => Step(FExp::ETApp(f, ty), e2)),
+                        Exists::intro(FExp, fun (e2: FExp) => Step(FExp::ETApp(f, ty), e2),
+                          FExp::ETApp(f2, ty), Step::STApp(f, f2, ty, stf)))
+                }
+            | Or::inl(vf) =>
+                match canon_all(gg, f, b, hf)(vf) {
+                  | Exists::intro(b0, feq) =>
+                      Or::inr(Value(FExp::ETApp(f, ty)), Exists(FExp, fun (e2: FExp) => Step(FExp::ETApp(f, ty), e2)),
+                        subst(FExp, fun (ff: FExp) => Exists(FExp, fun (e2: FExp) => Step(FExp::ETApp(ff, ty), e2)),
+                          FExp::ETLam(b0), f, symm(FExp, f, FExp::ETLam(b0), feq),
+                          Exists::intro(FExp, fun (e2: FExp) => Step(FExp::ETApp(FExp::ETLam(b0), ty), e2),
+                            esubstTy(b0)(Nat::Zero)(ty), Step::STBeta(b0, ty))))
+                }
+          }
+    }
+}
+fn progress_closed(e: FExp, t: FTy, d: FHasTy(FCtx::Nil, e, t))
+  -> Or(Value(e), Exists(FExp, fun (e2: FExp) => Step(e, e2))) {
+    progress(FCtx::Nil, e, t, d)(Eq::refl(FCtx, FCtx::Nil))
+}
