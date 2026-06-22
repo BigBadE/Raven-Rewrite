@@ -141,6 +141,15 @@ fn systemf() {
 }
 
 #[test]
+fn systemf_safety() {
+    // System F PRESERVATION + soundness: the full substitution metatheory — term + type
+    // weakening, the parallel-substitution lemma, and the type-substitution lemma
+    // (tysubst_preserves) — culminating in `preservation` (a well-typed term that steps stays
+    // well-typed). Ported from the systemf_*.rvk corpus to the .rv pipeline.
+    check("systemf_safety.rv");
+}
+
+#[test]
 fn mutual_trees() {
     check("mutual_trees.rv");
     // It also computes: a forest of two leaves has size 2.
