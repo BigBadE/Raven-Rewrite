@@ -106,6 +106,24 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Is the current token the identifier `word`? (Proof-fragment keywords —
+    /// `fun`, `Type`, `Prop`, `rewrite`, `decide`, `by_cases`, `forall`, `axiom`,
+    /// `def` — are matched by spelling rather than reserved as lexer tokens, so they
+    /// stay usable as ordinary identifiers elsewhere.)
+    fn peek_kw(&self, word: &str) -> bool {
+        matches!(self.peek(), Tok::Ident(n) if n == word)
+    }
+
+    /// Consume the identifier `word` if present; report whether it was.
+    fn eat_kw(&mut self, word: &str) -> bool {
+        if self.peek_kw(word) {
+            self.bump();
+            true
+        } else {
+            false
+        }
+    }
+
     /// Expect an identifier and intern it, returning its `Sym`.
     fn ident(&mut self, ctx: &str) -> Result<rv_core::Sym, String> {
         match self.peek().clone() {
@@ -132,10 +150,14 @@ impl<'a> Parser<'a> {
                 Tok::Enum => items.push(Item::Enum(self.parse_enum()?)),
                 Tok::Trait => items.push(Item::Trait(self.parse_trait()?)),
                 Tok::Impl => items.push(Item::Impl(self.parse_impl()?)),
+                // Proof-fragment items, matched by spelling (no reserved keyword token):
+                // `axiom name(..) : T` and `def name(..) : T = e`.
+                Tok::Ident(w) if w == "axiom" => items.push(Item::Axiom(self.parse_axiom()?)),
+                Tok::Ident(w) if w == "def" => items.push(Item::Def(self.parse_def()?)),
                 other => {
                     return Err(format!(
-                        "line {}: expected an item (`fn`, `struct`, `enum`, `trait`, or `impl`), \
-                         found {other:?}",
+                        "line {}: expected an item (`fn`, `struct`, `enum`, `trait`, `impl`, \
+                         `axiom`, or `def`), found {other:?}",
                         self.line()
                     ))
                 }
@@ -242,6 +264,44 @@ impl<'a> Parser<'a> {
         let (requires, ensures) = self.parse_spec_clauses()?;
         let body = self.parse_block()?;
         Ok(FnDecl { name, generics, params, ret, requires, ensures, body })
+    }
+
+    /// `axiom_decl := "axiom" IDENT generics? ("(" params? ")")? ":" type`
+    /// (proof fragment). The leading `axiom` identifier has not yet been consumed.
+    fn parse_axiom(&mut self) -> Result<AxiomDecl, String> {
+        self.eat_kw("axiom");
+        let name = self.ident("as axiom name")?;
+        let generics = self.parse_generics()?;
+        let params = if self.eat(&Tok::LParen) {
+            let p = self.parse_params()?;
+            self.expect(&Tok::RParen, "after axiom parameters")?;
+            p
+        } else {
+            Vec::new()
+        };
+        self.expect(&Tok::Colon, "before axiom type")?;
+        let ty = self.parse_type()?;
+        Ok(AxiomDecl { name, generics, params, ty })
+    }
+
+    /// `def_decl := "def" IDENT generics? ("(" params? ")")? ":" type "=" expr`
+    /// (proof fragment). The leading `def` identifier has not yet been consumed.
+    fn parse_def(&mut self) -> Result<DefDecl, String> {
+        self.eat_kw("def");
+        let name = self.ident("as def name")?;
+        let generics = self.parse_generics()?;
+        let params = if self.eat(&Tok::LParen) {
+            let p = self.parse_params()?;
+            self.expect(&Tok::RParen, "after def parameters")?;
+            p
+        } else {
+            Vec::new()
+        };
+        self.expect(&Tok::Colon, "before def type")?;
+        let ty = self.parse_type()?;
+        self.expect(&Tok::Eq, "before def body")?;
+        let body = self.parse_expr()?;
+        Ok(DefDecl { name, generics, params, ty, body })
     }
 
     /// `clause* := ("requires" expr ";" | "ensures" expr ";")*` in any order.
@@ -360,9 +420,30 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
-    /// `type := "&" "mut"? type | "i64" | "bool" | "()" | IDENT`
-    /// (an `IDENT` is a named ADT; a leading `&`/`&mut` forms a reference type).
+    /// `type := "&" "mut"? type | "i64" | "bool" | "()" | IDENT generic? | type_expr`
+    ///
+    /// Executable types (`i64`, `bool`, `()`, `&mut T`, `Option<i64>`) parse exactly as
+    /// before. In the **proof fragment** a type position may instead hold a dependent
+    /// type-expression — a proposition `a == b`, a function type `A -> B`, a universe
+    /// `Type`/`Prop`, or a type-level application `Eval(env, e, v)` — which is captured as
+    /// [`Ty::Term`]. The two are distinguished purely by what follows the base type:
+    /// executable types are never followed by `(`, `==`, or `->`.
     fn parse_type(&mut self) -> Result<Ty, String> {
+        // Universes (`Type`, `Type n`, `Prop`) — proof fragment, matched by spelling.
+        if self.peek_kw("Type") {
+            self.bump();
+            let n = if let Tok::Int(n) = self.peek().clone() {
+                self.bump();
+                n as u32
+            } else {
+                0
+            };
+            return self.type_expr_tail(Expr::TypeUniv(n));
+        }
+        if self.peek_kw("Prop") {
+            self.bump();
+            return self.type_expr_tail(Expr::Prop);
+        }
         // Reference type: `&T` or `&mut T`. `mut` arrives from the lexer as an
         // ordinary identifier, so we test its spelling rather than a keyword token.
         if self.eat(&Tok::Amp) {
@@ -370,15 +451,32 @@ impl<'a> Parser<'a> {
             let inner = self.parse_type()?;
             return Ok(Ty::Ref { mutable, inner: Box::new(inner) });
         }
-        match self.peek().clone() {
+        // A parenthesized type may be `()` (unit), a grouped type, or — proof fragment —
+        // a function type written in parens `(Nat -> Option<A>)`.
+        if self.peek() == &Tok::LParen {
+            self.bump();
+            if self.eat(&Tok::RParen) {
+                return Ok(Ty::Unit);
+            }
+            let inner = self.parse_type()?;
+            self.expect(&Tok::RParen, "to close a parenthesized type")?;
+            // A `->`/`==`/application after the closing paren continues a type-expression.
+            return if matches!(self.peek(), Tok::Arrow | Tok::EqEq | Tok::LParen) {
+                let e = self.ty_to_expr(inner)?;
+                self.type_expr_tail(e)
+            } else {
+                Ok(inner)
+            };
+        }
+        let base = match self.peek().clone() {
             // `i64` and `bool` arrive as identifiers from the lexer.
             Tok::Ident(name) if name == "i64" => {
                 self.bump();
-                Ok(Ty::I64)
+                Ty::I64
             }
             Tok::Ident(name) if name == "bool" => {
                 self.bump();
-                Ok(Ty::Bool)
+                Ty::Bool
             }
             // Any other identifier names a user-defined struct/enum, an optional
             // generic application (`Base<arg, ...>`), or — resolved at lowering —
@@ -396,21 +494,81 @@ impl<'a> Parser<'a> {
                         }
                     }
                     self.expect(&Tok::Gt, "to close generic type arguments")?;
-                    Ok(Ty::Generic { base, args })
+                    Ty::Generic { base, args }
                 } else {
-                    Ok(Ty::Adt(base))
+                    Ty::Adt(base)
                 }
             }
-            Tok::LParen => {
-                self.bump();
-                self.expect(&Tok::RParen, "to complete the unit type `()`")?;
-                Ok(Ty::Unit)
+            other => {
+                return Err(format!(
+                    "line {}: expected a type (`i64`, `bool`, `()`, or a type name), found {other:?}",
+                    self.line()
+                ))
             }
-            other => Err(format!(
-                "line {}: expected a type (`i64`, `bool`, `()`, or a type name), found {other:?}",
-                self.line()
-            )),
+        };
+        // Proof continuation: a `(`/`==`/`->` turns the base into a type-expression.
+        if matches!(self.peek(), Tok::LParen | Tok::EqEq | Tok::Arrow) {
+            let e = self.ty_to_expr(base)?;
+            return self.type_expr_tail(e);
         }
+        Ok(base)
+    }
+
+    /// Convert an already-parsed simple [`Ty`] back into the equivalent proof-fragment
+    /// [`Expr`], so a type-expression continuation (`== …`, `-> …`, application) can be
+    /// parsed on top of it. Only the forms reachable in the proof fragment are handled.
+    fn ty_to_expr(&mut self, ty: Ty) -> Result<Expr, String> {
+        Ok(match ty {
+            Ty::Adt(s) | Ty::Param(s) => Expr::Var(s),
+            Ty::Generic { base, args } => {
+                // `Base<a, b>` as a type-level application `Base a b`.
+                let mut callee = Expr::Var(base);
+                let mut eargs = Vec::new();
+                for a in args {
+                    eargs.push(self.ty_to_expr(a)?);
+                }
+                callee = Expr::Apply { callee: Box::new(callee), args: eargs };
+                callee
+            }
+            Ty::Term(e) => *e,
+            other => {
+                return Err(format!(
+                    "line {}: this type cannot appear in a dependent type-expression: {other:?}",
+                    self.line()
+                ))
+            }
+        })
+    }
+
+    /// Parse the tail of a proof type-expression whose head `lhs` is already in hand:
+    /// zero or more applications `(args)`, then an optional `== rhs`, then an optional
+    /// right-associative arrow `-> rest`. Returns the whole thing as [`Ty::Term`].
+    fn type_expr_tail(&mut self, mut lhs: Expr) -> Result<Ty, String> {
+        // Application: `head(arg, …)` (and chained `head(a)(b)`).
+        while self.peek() == &Tok::LParen {
+            self.bump();
+            let args = self.parse_args()?;
+            self.expect(&Tok::RParen, "after type-level application arguments")?;
+            lhs = Expr::Apply { callee: Box::new(lhs), args };
+        }
+        // Equality proposition `a == b` (the `b` may itself be an application).
+        if self.eat(&Tok::EqEq) {
+            let mut rhs = self.parse_unary()?;
+            while self.peek() == &Tok::LParen {
+                self.bump();
+                let args = self.parse_args()?;
+                self.expect(&Tok::RParen, "after type-level application arguments")?;
+                rhs = Expr::Apply { callee: Box::new(rhs), args };
+            }
+            lhs = Expr::Bin(BinOp::Eq, Box::new(lhs), Box::new(rhs));
+        }
+        // Right-associative function arrow `A -> B`.
+        if self.eat(&Tok::Arrow) {
+            let rhs = self.parse_type()?;
+            let rhs_e = self.ty_to_expr(rhs)?;
+            lhs = Expr::Arrow(Box::new(lhs), Box::new(rhs_e));
+        }
+        Ok(Ty::Term(Box::new(lhs)))
     }
 
     // ---- grammar: statements / blocks --------------------------------------
@@ -431,6 +589,14 @@ impl<'a> Parser<'a> {
             Tok::Let => self.parse_let(),
             Tok::If => self.parse_if(),
             Tok::While => self.parse_while(),
+            // A proof-style `match` (arms led by `|`, expression bodies) is the
+            // value-producing tail of a functional body; parse it as an expression and
+            // treat it as an implicit return. An executable `match` (block arms) stays a
+            // statement.
+            Tok::Match if self.match_is_expr() => {
+                let e = self.parse_match_expr()?;
+                Ok(Stmt::Return(Some(e)))
+            }
             Tok::Match => self.parse_match(),
             Tok::Return => self.parse_return(),
             Tok::Assert => self.parse_assert(),
@@ -449,10 +615,31 @@ impl<'a> Parser<'a> {
                     self.expect(&Tok::Semi, "after assignment")?;
                     return Ok(Stmt::DerefAssign { place: e, value });
                 }
+                // A trailing expression with no `;` before the closing `}` is the block's
+                // *tail* (Rust-style implicit return) — the form functional/proof bodies
+                // use (`fn two() -> Nat { Nat::Succ(Nat::Zero) }`).
+                if self.peek() == &Tok::RBrace {
+                    return Ok(Stmt::Return(Some(e)));
+                }
                 self.expect(&Tok::Semi, "after expression statement")?;
                 Ok(Stmt::Expr(e))
             }
         }
+    }
+
+    /// Lookahead at a `match`: do its arms begin with `|` (the proof/expression form)?
+    /// The scrutinee is parsed with struct literals disabled, so the first `{` after
+    /// `match` opens the arm list; we then check whether a `|` leads the arms.
+    fn match_is_expr(&self) -> bool {
+        let mut i = self.pos + 1; // skip `match`
+        while i < self.toks.len() {
+            match self.toks[i].tok {
+                Tok::LBrace => return matches!(self.toks.get(i + 1).map(|t| &t.tok), Some(Tok::Pipe)),
+                Tok::Eof => return false,
+                _ => i += 1,
+            }
+        }
+        false
     }
 
     /// Lookahead: is the current `IDENT` immediately followed by a `=` (and not
@@ -614,6 +801,73 @@ impl<'a> Parser<'a> {
         Ok(Stmt::Panic(arg))
     }
 
+    // ---- grammar: proof-fragment expression forms --------------------------
+
+    /// `match scrut { ("|"? pattern "=>" expr)+ }` as an **expression** (the form proofs
+    /// and functional bodies use): each arm body is an expression, not a block, and arms
+    /// may be separated (and optionally led) by `|`.
+    fn parse_match_expr(&mut self) -> Result<Expr, String> {
+        self.expect(&Tok::Match, "to start a match expression")?;
+        let scrut = self.with_no_struct_lit(|p| p.parse_expr())?;
+        self.expect(&Tok::LBrace, "to open match arms")?;
+        let mut arms = Vec::new();
+        while self.peek() != &Tok::RBrace && self.peek() != &Tok::Eof {
+            self.eat(&Tok::Pipe); // optional leading/separating `|`
+            let pat = self.parse_pattern()?;
+            self.expect(&Tok::FatArrow, "after match pattern")?;
+            let body = self.parse_expr()?;
+            arms.push((pat, body));
+            self.eat(&Tok::Comma); // arms may also be comma-separated
+        }
+        self.expect(&Tok::RBrace, "to close match arms")?;
+        Ok(Expr::MatchExpr { scrut: Box::new(scrut), arms })
+    }
+
+    /// `fun binder+ "=>" body` — a dependent lambda. Each binder is `(name : type)` or a
+    /// bare `name`.
+    fn parse_fun(&mut self) -> Result<Expr, String> {
+        self.eat_kw("fun");
+        let mut params = Vec::new();
+        while self.peek() != &Tok::FatArrow {
+            if self.eat(&Tok::LParen) {
+                let name = self.ident("as a fun parameter")?;
+                let ty = if self.eat(&Tok::Colon) {
+                    let t = self.parse_type()?;
+                    Some(Box::new(self.ty_to_expr(t)?))
+                } else {
+                    None
+                };
+                self.expect(&Tok::RParen, "after a fun parameter")?;
+                params.push((name, ty));
+            } else if matches!(self.peek(), Tok::Ident(_)) {
+                let name = self.ident("as a fun parameter")?;
+                params.push((name, None));
+            } else {
+                break;
+            }
+        }
+        self.expect(&Tok::FatArrow, "after fun parameters")?;
+        let body = self.parse_expr()?;
+        Ok(Expr::Fun { params, body: Box::new(body) })
+    }
+
+    /// `forall binder+ "," body` — a dependent function *type*.
+    fn parse_forall(&mut self) -> Result<Expr, String> {
+        self.eat_kw("forall");
+        let mut params = Vec::new();
+        while self.peek() != &Tok::Comma {
+            self.expect(&Tok::LParen, "to open a forall binder")?;
+            let name = self.ident("as a forall binder")?;
+            self.expect(&Tok::Colon, "after a forall binder name")?;
+            let t = self.parse_type()?;
+            self.expect(&Tok::RParen, "after a forall binder")?;
+            params.push((name, Box::new(self.ty_to_expr(t)?)));
+        }
+        self.expect(&Tok::Comma, "after forall binders")?;
+        let body = self.parse_expr()?;
+        Ok(Expr::Forall { params, body: Box::new(body) })
+    }
+
     // ---- grammar: expressions (precedence climbing) ------------------------
 
     /// Entry point for expressions.
@@ -689,6 +943,15 @@ impl<'a> Parser<'a> {
                 } else {
                     e = Expr::Field { base: Box::new(e), field: name };
                 }
+            } else if self.peek() == &Tok::LParen {
+                // General application `callee(args)` (proof fragment, higher-order:
+                // `lookup(k)(rest)`). The first-order `IDENT(args)` form is handled in
+                // `parse_primary`; this picks up any *further* application of a
+                // non-identifier callee.
+                self.bump();
+                let args = self.parse_args()?;
+                self.expect(&Tok::RParen, "after application arguments")?;
+                e = Expr::Apply { callee: Box::new(e), args };
             } else if self.eat(&Tok::Question) {
                 // Error-propagation postfix operator `expr?`.
                 e = Expr::Try(Box::new(e));
@@ -700,7 +963,63 @@ impl<'a> Parser<'a> {
     }
 
     /// `primary := INT | "true" | "false" | "()" | IDENT | IDENT "(" args? ")" | "(" expr ")"`
+    /// plus the proof-fragment atoms (`match` as an expression, `fun`, `forall`, `Type`,
+    /// `Prop`, `_`, `rewrite`, `decide`, `by_cases`).
     fn parse_primary(&mut self) -> Result<Expr, String> {
+        // Match as an *expression* (value-producing, `| pat => expr` arms).
+        if self.peek() == &Tok::Match {
+            return self.parse_match_expr();
+        }
+        // Proof-fragment keyword atoms (matched by spelling).
+        if self.peek_kw("fun") {
+            return self.parse_fun();
+        }
+        if self.peek_kw("forall") {
+            return self.parse_forall();
+        }
+        if self.peek_kw("Type") {
+            self.bump();
+            let n = if let Tok::Int(n) = self.peek().clone() {
+                self.bump();
+                n as u32
+            } else {
+                0
+            };
+            return Ok(Expr::TypeUniv(n));
+        }
+        if self.peek_kw("Prop") {
+            self.bump();
+            return Ok(Expr::Prop);
+        }
+        if self.peek_kw("decide") {
+            self.bump();
+            return Ok(Expr::Decide);
+        }
+        if self.peek_kw("rewrite") {
+            self.bump();
+            let eqn = self.parse_expr()?;
+            self.expect(&Tok::FatArrow, "after `rewrite <eqn>`")?;
+            let body = self.parse_expr()?;
+            return Ok(Expr::Rewrite { eqn: Box::new(eqn), body: Box::new(body) });
+        }
+        if self.peek_kw("by_cases") {
+            self.bump();
+            let scrut = self.with_no_struct_lit(|p| p.parse_expr())?;
+            self.expect(&Tok::FatArrow, "after `by_cases <scrut>`")?;
+            let tbody = self.parse_expr()?;
+            self.expect(&Tok::Pipe, "between `by_cases` branches")?;
+            let fbody = self.parse_expr()?;
+            return Ok(Expr::ByCases {
+                scrut: Box::new(scrut),
+                tbody: Box::new(tbody),
+                fbody: Box::new(fbody),
+            });
+        }
+        // A hole `_` (an inference variable in the proof fragment).
+        if matches!(self.peek(), Tok::Ident(n) if n == "_") {
+            self.bump();
+            return Ok(Expr::Hole);
+        }
         match self.peek().clone() {
             Tok::Int(n) => {
                 self.bump();

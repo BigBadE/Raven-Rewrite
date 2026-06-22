@@ -68,6 +68,13 @@ impl Session {
         Self::default()
     }
 
+    /// Set the source string used for span diagnostics. The unified front-end calls this
+    /// with the original `.rv` text before feeding translated [`Command`]s to
+    /// [`Session::run_commands`].
+    pub fn set_source(&mut self, src: &str) {
+        self.cur_src = src.to_string();
+    }
+
     /// Parse and run a program (commands plus `fn`/`prove`).
     ///
     /// Recursive functions are detected and compiled automatically: a `fn` that matches
@@ -78,6 +85,18 @@ impl Session {
     pub fn run(&mut self, src: &str) -> Result<(), String> {
         self.cur_src = src.to_string();
         let cmds = surface::parse_program_spanned(src)?;
+        self.run_commands(cmds)
+    }
+
+    /// Run a pre-parsed command stream. This is the integration point for the **unified
+    /// front-end**: the single `rv-syntax` parser translates its AST into [`Command`]s
+    /// (see `rv-driver`'s `unify` module) and feeds them here, so the proof/verify path no
+    /// longer needs this module's own text parser. The kernel re-checks every elaborated
+    /// term, so a translation bug can only *reject* a proof, never accept an unsound one.
+    ///
+    /// `cur_src` should already be set by the caller (to the original source) for span
+    /// diagnostics; callers feeding translated commands may set it to the `.rv` source.
+    pub fn run_commands(&mut self, cmds: Vec<(Command, (usize, usize))>) -> Result<(), String> {
         let mut pending: Vec<Command> = Vec::new();
         let mut pending_group: Option<Vec<String>> = None;
         let mut group_loc = String::new();

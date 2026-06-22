@@ -1038,6 +1038,21 @@ impl<'a> FnBuilder<'a> {
                 }
                 Ok(Operand::Copy(Place::local(tmp)))
             }
+            // Proof-fragment expression forms never reach the executable lowering
+            // (proof declarations route to the kernel).
+            Expr::MatchExpr { .. }
+            | Expr::Fun { .. }
+            | Expr::Forall { .. }
+            | Expr::Arrow(..)
+            | Expr::Apply { .. }
+            | Expr::TypeUniv(_)
+            | Expr::Prop
+            | Expr::Hole
+            | Expr::Rewrite { .. }
+            | Expr::Decide
+            | Expr::ByCases { .. } => {
+                Err("proof-fragment expression cannot be lowered to executable IR".into())
+            }
         }
     }
 }
@@ -1098,5 +1113,7 @@ fn free_vars(e: &Expr, bound: &mut std::collections::HashSet<rv_core::Sym>, out:
                 bound.remove(&p);
             }
         }
+        // Proof-fragment expression forms never appear in executable closure bodies.
+        _ => {}
     }
 }

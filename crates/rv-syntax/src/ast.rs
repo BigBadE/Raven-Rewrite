@@ -23,11 +23,39 @@ pub enum Item {
     Trait(TraitDecl),
     /// An `impl Type { methods }` or `impl Trait for Type { methods }` block.
     Impl(ImplDecl),
+
+    // --- proof fragment (route to the kernel, not to rv-lower) ---
+    /// `axiom name(params) : Type` — an assumed constant (no body). Used by the
+    /// realization layer to name the model↔native trust assumptions.
+    Axiom(AxiomDecl),
+    /// `def name(params) : Type = body` — a checked definition (a `fn` whose body is
+    /// a single expression; kept distinct so type-level `def`s read naturally).
+    Def(DefDecl),
+}
+
+/// An `axiom name(params) : ty` declaration (proof fragment).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AxiomDecl {
+    pub name: Sym,
+    pub generics: Vec<GenericParam>,
+    pub params: Vec<Param>,
+    pub ty: Ty,
+}
+
+/// A `def name(params) : ty = body` declaration (proof fragment).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DefDecl {
+    pub name: Sym,
+    pub generics: Vec<GenericParam>,
+    pub params: Vec<Param>,
+    pub ty: Ty,
+    pub body: Expr,
 }
 
 /// Surface type annotations: `i64`, `bool`, `()`, a named ADT, a reference, a
 /// generic type application, or a bare generic type parameter.
-#[derive(Clone, Debug, PartialEq, Eq)]
+// Not `Eq`: `Ty::Term` embeds an `Expr`, which carries `f64` (only `PartialEq`).
+#[derive(Clone, Debug, PartialEq)]
 pub enum Ty {
     I64,
     Bool,
@@ -45,6 +73,12 @@ pub enum Ty {
     /// never produces this directly (it can't tell a param from an ADT name);
     /// lowering rewrites a matching `Ty::Adt` into this form.
     Param(Sym),
+    /// A *dependent* type given by an arbitrary expression: a proposition
+    /// (`a == b`), a type-level application (`Eval(env, e, v)`), a universe
+    /// (`Type`/`Prop`), or a function type (`Nat -> Option<A>`). Produced only in
+    /// the proof fragment of the unified grammar; the executable lowering never
+    /// sees one (proof declarations route to the kernel, not to `rv-lower`).
+    Term(Box<Expr>),
 }
 
 /// A generic type parameter with optional trait bounds: `T` or `T: Trait0 + Trait1`.
@@ -249,6 +283,10 @@ pub enum Expr {
     Var(Sym),
     /// `f(args)`
     Call { func: Sym, args: Vec<Expr> },
+    /// General application `callee(args)` where the callee is an arbitrary
+    /// expression (higher-order: `lookup(k)(rest)`, `diverge()(fuel)`). Produced in
+    /// the proof fragment; the executable surface uses the first-order [`Expr::Call`].
+    Apply { callee: Box<Expr>, args: Vec<Expr> },
     /// A binary operation.
     Bin(BinOp, Box<Expr>, Box<Expr>),
     /// A unary operation.
@@ -271,4 +309,30 @@ pub enum Expr {
     /// enum, it evaluates to the success payload, or early-returns the failure
     /// variant from the enclosing function.
     Try(Box<Expr>),
+
+    // --- proof fragment (the unified grammar; these reach the kernel, not the VM) ---
+    /// `match scrut { | Pat => expr | … }` as an **expression** (value-producing,
+    /// expression arms), distinct from the statement-level [`Stmt::Match`] whose
+    /// arms are blocks. This is the form proofs and functional bodies use.
+    MatchExpr { scrut: Box<Expr>, arms: Vec<(Pattern, Expr)> },
+    /// A dependent lambda `fun x y => body` (kernel `fun`). Each parameter may carry
+    /// an optional type annotation `fun (x: T) => …`. Distinct from the runtime
+    /// closure [`Expr::Lambda`] (`|x| body`): `Fun` lowers to a kernel `Lam`.
+    Fun { params: Vec<(Sym, Option<Box<Expr>>)>, body: Box<Expr> },
+    /// `forall x : T, body` — a dependent function *type* (kernel `Pi`).
+    Forall { params: Vec<(Sym, Box<Expr>)>, body: Box<Expr> },
+    /// A function/arrow type `A -> B` written in expression position.
+    Arrow(Box<Expr>, Box<Expr>),
+    /// The universe `Type` / `Type n`.
+    TypeUniv(u32),
+    /// The universe `Prop`.
+    Prop,
+    /// A hole `_`, solved by the kernel elaborator's inference.
+    Hole,
+    /// `rewrite h => body` — rewrite the goal by the equation `h`, then prove `body`.
+    Rewrite { eqn: Box<Expr>, body: Box<Expr> },
+    /// `decide` — discharge a decidable goal by reflection.
+    Decide,
+    /// `by_cases scrut => tbody | fbody` — split the goal on a `Bool` scrutinee.
+    ByCases { scrut: Box<Expr>, tbody: Box<Expr>, fbody: Box<Expr> },
 }

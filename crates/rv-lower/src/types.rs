@@ -300,5 +300,8 @@ pub(crate) fn resolve_ty(ty: &AstTy, scope: &HashSet<Sym>) -> CoreTy {
         AstTy::Ref { mutable, inner } => {
             CoreTy::Ref { mutable: *mutable, inner: Box::new(resolve_ty(inner, scope)) }
         }
+        // A dependent type-expression only ever appears in the proof fragment, which
+        // routes to the kernel and never reaches executable type resolution.
+        AstTy::Term(_) => CoreTy::Unit,
     }
 }

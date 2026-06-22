@@ -109,6 +109,9 @@ pub fn lower_term(e: &Expr, syms: &mut Symbols, ctx: &SpecCtx) -> Result<Term, S
         Expr::Lambda { .. } => {
             Err("closures are not allowed in specifications".to_string())
         }
+        // Proof-fragment expression forms are not first-order spec terms (they route
+        // to the kernel, not the spec solver).
+        _ => Err("proof-fragment expressions are not allowed in specifications".to_string()),
     }
 }
 

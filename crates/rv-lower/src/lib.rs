@@ -46,6 +46,9 @@ pub fn lower(
             Item::Fn(f) => fn_decls.push(f),
             Item::Trait(t) => trait_decls.push(t),
             Item::Impl(i) => impl_decls.push(i),
+            // Proof-fragment items (`axiom`/`def`) route to the kernel, not to the
+            // executable IR; the lowering pipeline ignores them.
+            Item::Axiom(_) | Item::Def(_) => {}
         }
     }
 
