@@ -25,7 +25,6 @@ rv-codegen = { path = "crates/rv-codegen" }
 rv-vm      = { path = "crates/rv-vm" }
 rv-borrow  = { path = "crates/rv-borrow" }
 rv-borrowck = { path = "crates/rv-borrowck" }
-rv-rustfe  = { path = "crates/rv-rustfe" }
 rv-db      = { path = "crates/rv-db" }
 rv-driver  = { path = "crates/rv-driver" }
 

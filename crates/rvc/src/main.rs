@@ -1,11 +1,11 @@
 //! `rvc` — the raven-v3 compiler CLI.
 //!
-//! Usage: `rvc <file.rv | file.rs | file.rvk ...> [--run] [--entry NAME]`
-//!   parse → lower → infer → verify (always), then optionally compile + run.
-//!   Multiple `.rs` files are compiled together as one program (modules).
-//!   A `.rvk` file is a **Raven kernel-surface** program: it is elaborated and
-//!   verified through the dependent-type-theory kernel (`fn … requires/ensures`,
-//!   `match`, dependent types), with the standard prelude preloaded.
+//! Usage: `rvc <file.rv> [--run] [--verify] [--entry NAME]`
+//!   The default path lowers the executable fragment (parse → lower → infer →
+//!   verify), then optionally compiles + runs it on the VM.
+//!   `--verify` instead checks the file through the dependent-type-theory kernel
+//!   (`fn … requires/ensures`, `match`, dependent types, proofs-as-functions),
+//!   with the logic prelude preloaded — the verified-Raven path.
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -25,7 +25,7 @@ fn main() -> ExitCode {
                 }
             }
             "-h" | "--help" => {
-                eprintln!("usage: rvc <file.rv | file.rs ...> [--run] [--verify] [--entry NAME]");
+                eprintln!("usage: rvc <file.rv> [--run] [--verify] [--entry NAME]");
                 return ExitCode::SUCCESS;
             }
             other => paths.push(other.to_string()),
@@ -33,7 +33,7 @@ fn main() -> ExitCode {
     }
 
     if paths.is_empty() {
-        eprintln!("usage: rvc <file.rv | file.rs ...> [--run] [--verify] [--entry NAME]");
+        eprintln!("usage: rvc <file.rv> [--run] [--verify] [--entry NAME]");
         return ExitCode::FAILURE;
     }
     // Read every input file.
@@ -48,9 +48,8 @@ fn main() -> ExitCode {
         }
     }
 
-    // `--verify` (or a `.rvk` file) verifies a `.rv`/`.rvk` program through the dependent
-    // kernel. `--verify` uses the self-contained `.rv` path (logic prelude only, the file
-    // brings its own data + proofs); `.rvk` uses the stdlib-preloaded kernel path.
+    // `--verify` checks a `.rv` program through the dependent kernel (logic prelude
+    // only — the file brings its own data + proofs): the verified-Raven path.
     if verify {
         if paths.len() != 1 {
             eprintln!("error: --verify takes exactly one file");
@@ -60,17 +59,13 @@ fn main() -> ExitCode {
         return verify_rv_file(&srcs[0], entry_opt);
     }
 
-    // `.rs` files go through the real-Rust (tree-sitter) frontend (multiple files
-    // compile together as one program); a single `.rv` file goes through the
-    // toy/salsa frontend.
+    // The default executable path: a single `.rv` file through the Raven pipeline.
+    if paths.len() != 1 {
+        eprintln!("error: the executable path takes exactly one `.rv` file (use --verify for proofs)");
+        return ExitCode::FAILURE;
+    }
     let entry_opt = if run { Some(entry.as_str()) } else { None };
-    let any_rust = paths.iter().any(|p| p.ends_with(".rs"));
-    let pipeline = if any_rust {
-        let refs: Vec<&str> = srcs.iter().map(|s| s.as_str()).collect();
-        rv_driver::run_rust_modules_pipeline(&refs, entry_opt)
-    } else {
-        rv_driver::run_pipeline(&srcs[0], entry_opt)
-    };
+    let pipeline = rv_driver::run_pipeline(&srcs[0], entry_opt);
     let report = match pipeline {
         Ok(r) => r,
         Err(e) => {

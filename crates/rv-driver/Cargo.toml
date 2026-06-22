@@ -5,16 +5,9 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
-# The toy-frontend pipeline runs as a salsa query graph in rv-db; the driver
+# The Raven executable pipeline runs as a salsa query graph in rv-db; the driver
 # delegates to it and keeps rv-vm for the public `Value` re-export.
 rv-db.workspace = true
 rv-vm.workspace = true
-# The real-Rust frontend path runs the stages directly (not yet salsa-wrapped).
-rv-core.workspace = true
-rv-rustfe.workspace = true
-rv-infer.workspace = true
-rv-borrowck.workspace = true
-rv-solve.workspace = true
-rv-codegen.workspace = true
 # The dependent-type-theory kernel + its Raven surface (the verified-Raven path).
 rv-kernel.workspace = true
