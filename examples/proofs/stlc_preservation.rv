@@ -1,9 +1,11 @@
-// STLC preservation (the substitution lemma) in Rust-like Raven — the metatheory half of the
+// STLC PRESERVATION (full type-safety half) in Rust-like Raven — the metatheory of the
 // kernel-surface `stlc.rs`, built autosubst-style: typing is stable under any well-typed
 // *renaming* (weakening) and any well-typed *substitution*, and beta is the special case.
-// Self-contained (re-declares the language). `rvc --verify`.
+// `preservation` (bottom): a well-typed term that steps stays well-typed at the same type,
+// for the full small-step relation (beta + application congruences). Self-contained
+// (re-declares the language). `rvc --verify`.
 //
-// Part 1 of 2: renamings + the weakening (renaming-stability) lemma.
+// Part 1: renamings + the weakening (renaming-stability) lemma.
 
 enum Nat  { Zero, Succ(Nat) }
 enum Ty   { Base, Arrow(Ty, Ty) }
@@ -176,3 +178,110 @@ fn sub_lemma(g: Ctx, t: Tm, ty: Ty, h: HasTy(g, t, ty))
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// Part 3: the PRESERVATION theorem (beta), via injectivity-based inversion.
+// ---------------------------------------------------------------------------
+
+// Single-variable substitution `body[0 := arg]`.
+fn subst0(arg: Tm) -> (Nat -> Tm) {
+    fun (n: Nat) => match n { | Nat::Zero => arg | Nat::Succ(m) => Tm::Var(m) }
+}
+
+// `subst0 arg` models `Cons a g → g` when `arg : a` in `g` (the typing substitution behind
+// beta). Inversion on the lookup in the extended context, manual `cons_inj` threading.
+fn sub0_inv(ctx: Ctx, n: Nat, ss: Ty, hl: Lookup(ctx, n, ss))
+    -> (a: Ty) -> (g: Ctx) -> (arg: Tm) -> (ctx == Ctx::Cons(a, g)) -> HasTy(g, arg, a)
+    -> HasTy(g, subst0(arg)(n), ss) {
+    match hl {
+      | Lookup::Here(gg, ty) =>
+          fun (a: Ty) (g: Ctx) (arg: Tm) (e: Ctx::Cons(ty, gg) == Ctx::Cons(a, g)) (ha: HasTy(g, arg, a)) =>
+            subst(Ty, fun (x: Ty) => HasTy(g, arg, x), a, ty,
+                  symm(Ty, ty, a, cons_inj_head(ty, gg, a, g, e)), ha)
+      | Lookup::There(gg, ty0, k, ty, hk) =>
+          fun (a: Ty) (g: Ctx) (arg: Tm) (e: Ctx::Cons(ty0, gg) == Ctx::Cons(a, g)) (ha: HasTy(g, arg, a)) =>
+            HasTy::TVar(g, k, ty,
+              subst(Ctx, fun (x: Ctx) => Lookup(x, k, ty), gg, g,
+                    cons_inj_tail(ty0, gg, a, g, e), hk))
+    }
+}
+fn subst0_models(g: Ctx, a: Ty, arg: Tm, ha: HasTy(g, arg, a))
+    -> (n: Nat) -> (ss: Ty) -> Lookup(Ctx::Cons(a, g), n, ss) -> HasTy(g, subst0(arg)(n), ss) {
+    fun (n: Nat) (ss: Ty) (hl: Lookup(Ctx::Cons(a, g), n, ss)) =>
+        sub0_inv(Ctx::Cons(a, g), n, ss, hl)(a, g, arg, Eq::refl(Ctx, Ctx::Cons(a, g)), ha)
+}
+
+// Inversions (injectivity-solution): recover sub-derivations behind a known head shape.
+fn lam_inv(g: Ctx, a: Ty, body: Tm, dom: Ty, cod: Ty,
+           h: HasTy(g, Tm::Lam(a, body), Ty::Arrow(dom, cod))) -> HasTy(Ctx::Cons(dom, g), body, cod) {
+    match h { | HasTy::TLam(gg, a2, body2, b2, hb) => hb }
+}
+fn app_inv(g: Ctx, f: Tm, x: Tm, B: Ty, h: HasTy(g, Tm::App(f, x), B))
+    -> Exists(Ty, fun (dom: Ty) => And(HasTy(g, f, Ty::Arrow(dom, B)), HasTy(g, x, dom))) {
+    match h {
+      | HasTy::TApp(gg, f2, x2, a2, b2, hf, hx) =>
+          Exists::intro(Ty,
+            fun (dom: Ty) => And(HasTy(gg, f2, Ty::Arrow(dom, b2)), HasTy(gg, x2, dom)),
+            a2,
+            And::intro(HasTy(gg, f2, Ty::Arrow(a2, b2)), HasTy(gg, x2, a2), hf, hx))
+    }
+}
+
+// Beta typing: applying the substitution lemma with the singleton substitution.
+fn beta_general(g: Ctx, dom: Ty, body: Tm, arg: Tm, cod: Ty,
+    hbody: HasTy(Ctx::Cons(dom, g), body, cod), harg: HasTy(g, arg, dom))
+    -> HasTy(g, sub(body)(subst0(arg)), cod) {
+    sub_lemma(Ctx::Cons(dom, g), body, cod, hbody)(g)(subst0(arg))(subst0_models(g, dom, arg, harg))
+}
+
+// PRESERVATION (beta step): a typed redex stays typed after one beta reduction.
+fn beta_preservation(g: Ctx, a: Ty, body: Tm, arg: Tm, B: Ty,
+    h: HasTy(g, Tm::App(Tm::Lam(a, body), arg), B)) -> HasTy(g, sub(body)(subst0(arg)), B) {
+    match app_inv(g, Tm::Lam(a, body), arg, B, h) {
+      | Exists::intro(dom, hand) =>
+          match hand {
+            | And::intro(hf, hx) =>
+                beta_general(g, dom, body, arg, B, lam_inv(g, a, body, dom, B, hf), hx)
+          }
+    }
+}
+
+// Full small-step reduction: beta + the two application congruences.
+enum Step(t: Tm, u: Tm) -> Prop {
+    SBeta(a: Ty, body: Tm, arg: Tm)
+        where t == Tm::App(Tm::Lam(a, body), arg), u == sub(body)(subst0(arg));
+    SApp1(f: Tm, f2: Tm, x: Tm, h: Step(f, f2))
+        where t == Tm::App(f, x), u == Tm::App(f2, x);
+    SApp2(f: Tm, x: Tm, x2: Tm, h: Step(x, x2))
+        where t == Tm::App(f, x), u == Tm::App(f, x2);
+}
+
+// PRESERVATION: a well-typed term that steps stays well-typed at the same type. Induction on
+// the step (a Π-valued motive carries the typing), beta via `beta_preservation`, congruences
+// by inverting the application typing, recursing, and re-applying `TApp`.
+fn preservation(g: Ctx, t: Tm, u: Tm, hstep: Step(t, u))
+    -> (B: Ty) -> HasTy(g, t, B) -> HasTy(g, u, B) {
+    match hstep {
+      | Step::SBeta(a, body, arg) =>
+          fun (B: Ty) (h: HasTy(g, Tm::App(Tm::Lam(a, body), arg), B)) =>
+            beta_preservation(g, a, body, arg, B, h)
+      | Step::SApp1(f, f2, x, hf) =>
+          fun (B: Ty) (h: HasTy(g, Tm::App(f, x), B)) =>
+            match app_inv(g, f, x, B, h) {
+              | Exists::intro(dom, hand) =>
+                  match hand {
+                    | And::intro(hfun, harg) =>
+                        HasTy::TApp(g, f2, x, dom, B, hf.rec(Ty::Arrow(dom, B))(hfun), harg)
+                  }
+            }
+      | Step::SApp2(f, x, x2, hx) =>
+          fun (B: Ty) (h: HasTy(g, Tm::App(f, x), B)) =>
+            match app_inv(g, f, x, B, h) {
+              | Exists::intro(dom, hand) =>
+                  match hand {
+                    | And::intro(hfun, harg) =>
+                        HasTy::TApp(g, f, x2, dom, B, hfun, hx.rec(dom)(harg))
+                  }
+            }
+    }
+}

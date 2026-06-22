@@ -126,8 +126,9 @@ fn dependent_match() {
 
 #[test]
 fn stlc_preservation() {
-    // The autosubst substitution lemma (weakening + sub_lemma) — the hard core of STLC
-    // preservation, in Rust-like .rv. (Final inversion-based assembly is WIP.)
+    // Full STLC preservation in Rust-like .rv: the autosubst substitution lemma (weakening +
+    // sub_lemma) plus the `preservation` theorem — a well-typed term that steps stays
+    // well-typed — for beta + application congruences, via injectivity-based inversion.
     check("stlc_preservation.rv");
 }
 

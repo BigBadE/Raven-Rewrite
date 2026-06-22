@@ -32,6 +32,7 @@ prelude, [`crates/rv-driver/prelude.rv`](../../crates/rv-driver/prelude.rv), whi
 | `le_trans.rv`          | transitivity of `<=` | **inversion + convoy + index-changing recursion** |
 | `typed_arith.rv`       | **full type safety** (progress + preservation) for TAPL ch.8 typed arithmetic | indexed typing + small-step relations, canonical forms, structural typing inversion, injectivity, IH convoy |
 | `stlc.rv`              | the simply-typed **λ-calculus** (de Bruijn): typing over contexts + **progress** | real capture-avoiding substitution (curried `tm_lift`/`tm_subst`), empty-context lookup absurdity |
+| `stlc_preservation.rv` | STLC **preservation** (full type-safety half): well-typed + steps ⟹ well-typed, for beta + congruences | autosubst weakening + **substitution lemma**, **injectivity-based inversion** (`lam_inv`/`app_inv` via `Exists`), Π-valued IH |
 | `reflect.rv`           | proof by **reflection**: `Decidable`/`decide`/`of_decide_eq_true` + decidable bool equality | `Type`-sorted family, large elimination, no-confusion, certificate convoy |
 | `dependent_match.rv`   | **dependent pattern matching**: impossible arms auto-discharge; reachable arms refine by constructor injectivity | index unification, no-confusion, empty/omitted arms, **injectivity solution** (auto goal-transport) |
 | `cek_machine.rv`       | the CEK abstract machine — **runs** `(λx. x+1) 2 ⟹ 3` | mutual `Val/Env/Kont`, fuelled driver |

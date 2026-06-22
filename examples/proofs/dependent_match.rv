@@ -52,3 +52,28 @@ fn plus_inv_right(x: Tm, y: Tm, h: HasTy(Tm::Plus(x, y), Ty::TNat)) -> HasTy(y, 
 fn plus_inv_swap(x: Tm, y: Tm, h: HasTy(Tm::Plus(x, y), Ty::TNat)) -> HasTy(Tm::Plus(y, x), Ty::TNat) {
     match h { | HasTy::TPlus(a, b, ha, hb) => HasTy::TPlus(b, a, hb, ha) }
 }
+
+// ---------------------------------------------------------------------------
+// Over-determined existential (a λ-calculus inversion with binders).
+// ---------------------------------------------------------------------------
+// Inverting a function typing is the case where one bound existential is pinned by *two*
+// index equations: the λ's domain `a2` is fixed both by the term index (`Lam a2 body2 ==
+// Lam a body` ⟹ `a2 == a`) and by the type index (`Arrow a2 b2 == Arrow dom cod` ⟹ `a2 ==
+// dom`). The solver picks the binding whose term actually occurs in the goal (`dom`), so the
+// recovered body typing `hb : HasTy(Cons(a2, gg), body2, b2)` lands on the goal
+// `HasTy(Cons(dom, g), body, cod)` — the inversion STLC preservation needs.
+enum LTy  { LBase, LArrow(LTy, LTy) }
+enum LTm  { LVar(Nat), LLam(LTy, LTm), LApp(LTm, LTm) }
+enum LCtx { LNil, LCons(LTy, LCtx) }
+enum Typed(g: LCtx, e: LTm, t: LTy) -> Prop {
+    TyLam(gg: LCtx, a: LTy, body: LTm, b: LTy, hb: Typed(LCtx::LCons(a, gg), body, b))
+        where g == gg, e == LTm::LLam(a, body), t == LTy::LArrow(a, b);
+    TyApp(gg: LCtx, f: LTm, x: LTm, a: LTy, b: LTy,
+          hf: Typed(gg, f, LTy::LArrow(a, b)), hx: Typed(gg, x, a))
+        where g == gg, e == LTm::LApp(f, x), t == b;
+}
+fn lam_inv(g: LCtx, a: LTy, body: LTm, dom: LTy, cod: LTy,
+           h: Typed(g, LTm::LLam(a, body), LTy::LArrow(dom, cod)))
+    -> Typed(LCtx::LCons(dom, g), body, cod) {
+    match h { | Typed::TyLam(gg, a2, body2, b2, hb) => hb }
+}

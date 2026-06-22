@@ -1338,8 +1338,12 @@ impl<'a> Infer<'a> {
             inj: Term,
         }
         let n = eq_doms.len();
-        let mut sols: Vec<Sol> = Vec::new();
-        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        // First collect *all* candidate solutions `Var d := u` from every field of every
+        // same-constructor index equation. A bound existential can be pinned by more than one
+        // equation (e.g. a λ's domain `a2` is fixed both by the term index `Lam a body` and the
+        // type index `Arrow a2 b`); each gives a different outer term `u`, and we want the one
+        // that actually appears in the goal — so we do NOT dedup on `d` here.
+        let mut cands: Vec<Sol> = Vec::new();
         for (i, edom) in eq_doms.iter().enumerate() {
             // Lift to the final arm context (fields + n eqs), as in `discharge_or_check`.
             let edom = edom.lift((n - i) as isize, 0);
@@ -1364,7 +1368,7 @@ impl<'a> Infer<'a> {
             for (fi, (la, ra)) in largs.iter().zip(rargs.iter()).enumerate() {
                 let Term::Var(d) = ra else { continue };
                 let d = *d;
-                if seen.contains(&d) || occurs_var(la, d) {
+                if occurs_var(la, d) {
                     continue;
                 }
                 // Field type/level read off the bound variable `Var d`.
@@ -1387,17 +1391,25 @@ impl<'a> Infer<'a> {
                     Some(t) => t,
                     None => continue,
                 };
-                seen.insert(d);
-                sols.push(Sol { d, u: la.clone(), ty: ftype, lvl: flvl, inj });
+                cands.push(Sol { d, u: la.clone(), ty: ftype, lvl: flvl, inj });
             }
+        }
+        // Greedily refine the goal: for each candidate whose outer term `u` still occurs in the
+        // (progressively refined) goal, name it by the bound variable `Var d`. One solution per
+        // `d` (distinct vars, distinct occurrences) keeps the transport unambiguous.
+        let mut sols: Vec<Sol> = Vec::new();
+        let mut used: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut refined = goal.clone();
+        for c in cands {
+            if used.contains(&c.d) || !occurs_term(&refined, &c.u) {
+                continue;
+            }
+            refined = replace_with_var(&refined, &c.u, c.d);
+            used.insert(c.d);
+            sols.push(c);
         }
         if sols.is_empty() {
             return Ok(None);
-        }
-        // Refine the goal into the bound-variable frame and check the body there.
-        let mut refined = goal.clone();
-        for s in &sols {
-            refined = replace_with_var(&refined, &s.u, s.d);
         }
         let mut term = match self.check(body, &refined) {
             Ok(t) => t,
@@ -2210,6 +2222,27 @@ fn subst_db_var(t: &Term, d: usize, u: &Term) -> Term {
         }
     }
     go(t, d, u, 0)
+}
+
+/// Does `target` occur as a subterm of `t` (matching the de Bruijn shift convention of
+/// [`replace_with_var`], so it agrees with what that abstraction would rewrite)?
+fn occurs_term(t: &Term, target: &Term) -> bool {
+    fn go(t: &Term, target: &Term, depth: usize) -> bool {
+        if *t == target.lift(depth as isize, 0) {
+            return true;
+        }
+        match t {
+            Term::Sort(_) | Term::Var(_) | Term::Const(..) | Term::Meta(_) => false,
+            Term::App(f, a) => go(f, target, depth) || go(a, target, depth),
+            Term::Lam(d, b) | Term::Pi(_, d, b) => {
+                go(d, target, depth) || go(b, target, depth + 1)
+            }
+            Term::Let(x, y, z) => {
+                go(x, target, depth) || go(y, target, depth) || go(z, target, depth + 1)
+            }
+        }
+    }
+    go(t, target, 0)
 }
 
 /// Does the de Bruijn variable `d` (accounting for binder shifts) occur in `t`?
