@@ -34,18 +34,10 @@ prelude, [`crates/rv-driver/prelude.rv`](../../crates/rv-driver/prelude.rv), whi
 | `stlc.rv`              | the simply-typed **λ-calculus** (de Bruijn): typing over contexts + **progress** | real capture-avoiding substitution (curried `tm_lift`/`tm_subst`), empty-context lookup absurdity |
 | `stlc_preservation.rv` | STLC **preservation** (full type-safety half): well-typed + steps ⟹ well-typed, for beta + congruences | autosubst weakening + **substitution lemma**, **injectivity-based inversion** (`lam_inv`/`app_inv` via `Exists`), Π-valued IH |
 | `systemf.rv`           | **System F** (polymorphic λ-calculus, type + term de Bruijn): typing relation + **progress** | type/term/type-into-term substitution, canonical forms (curried-value convoy), `Or`/`Exists` step witness |
-| `systemf_safety.rv`    | System F **preservation** + soundness: well-typed + steps ⟹ well-typed | full substitution metatheory — term/type **weakening**, parallel-substitution lemma, **type-substitution lemma**, `tshift`/`tsubst` self-commutation |
 | `reflect.rv`           | proof by **reflection**: `Decidable`/`decide`/`of_decide_eq_true` + decidable bool equality | `Type`-sorted family, large elimination, no-confusion, certificate convoy |
 | `dependent_match.rv`   | **dependent pattern matching**: impossible arms auto-discharge; reachable arms refine by constructor injectivity | index unification, no-confusion, empty/omitted arms, **injectivity solution** (auto goal-transport) |
 | `cek_machine.rv`       | the CEK abstract machine — **runs** `(λx. x+1) 2 ⟹ 3` | mutual `Val/Env/Kont`, fuelled driver |
-| `cek_safety.rv`      | CEK **machine type safety + adequacy + compiler pipeline** | machine-state typing, progress/preservation over states, adequacy vs the reference semantics |
 | `refinement.rv`        | `safe_pred(2)` — a precondition in the type | **refinement types** (`x: T where p`) with **auto-discharge** |
-| `stdlib.rv`            | the verified standard library (Nat/Bool/List + lemmas) | ported kernel-surface corpus |
-| `typedlang.rv`         | a typed object language: decidable checker + **completeness** | ported kernel-surface corpus |
-| `objlang.rv`           | object language + a verified pass | ported kernel-surface corpus |
-| `reflect_kernel.rv`    | the reflection prelude (`Decidable`/`decide`) + demo | ported kernel-surface corpus |
-| `elab_demo.rv`         | an elaboration demo | ported kernel-surface corpus |
-| `stlc_kernel.rv`       | the **full kernel-surface STLC**: decidable checker + completeness, safety scaffold, step lemmas, progress, and the (~95KB) **preservation** | ported kernel-surface corpus |
 
 Nothing here uses special proof syntax: it all reads as recursive Rust functions over `enum`s.
 The design is described in [`docs/raven-language.md`](../../docs/raven-language.md).

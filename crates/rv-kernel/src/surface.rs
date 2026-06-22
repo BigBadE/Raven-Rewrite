@@ -1198,9 +1198,10 @@ fn as_spec_call(e: &Expr) -> Option<(String, Expr)> {
     None
 }
 
-/// Build `Eq.trans _ _ _ _ h1 h2` (universe + the four explicit `T a b c` args inferred).
+/// Build `trans _ _ _ _ h1 h2` (the Rust-like proof-prelude transitivity combinator, with the
+/// four explicit `T a b c` args inferred from holes).
 fn eq_trans_apply(h1: Expr, h2: Expr) -> Expr {
-    let head = Expr::Var("Eq.trans".to_string(), None);
+    let head = Expr::Var("trans".to_string(), None);
     let args = [Expr::Hole, Expr::Hole, Expr::Hole, Expr::Hole, h1, h2];
     args.into_iter().fold(head, |f, a| Expr::App(Box::new(f), Box::new(a)))
 }

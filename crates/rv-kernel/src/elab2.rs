@@ -567,13 +567,15 @@ impl<'a> Infer<'a> {
         let motive = Term::lam(ty_a.clone(), motive_body.clone());
         let new_goal = motive_body.instantiate(&b);
         let sub = self.check(body, &new_goal)?;
-        // result : motive a (= expected) via `Eq.subst A motive b a (symm h) (sub : motive b)`.
+        // result : motive a (= expected) via the Rust-like proof prelude:
+        // `subst A motive b a (symm A a b h) (sub : motive b)`.
+        let _ = lvl;
         let symm = Term::apps(
-            Term::cnst(name("Eq.symm"), vec![lvl.clone()]),
+            Term::cnst(name("symm"), vec![]),
             [ty_a.clone(), a.clone(), b.clone(), eqn_t],
         );
         Ok(Term::apps(
-            Term::cnst(name("Eq.subst"), vec![lvl]),
+            Term::cnst(name("subst"), vec![]),
             [ty_a, motive, b, a, symm, sub],
         ))
     }

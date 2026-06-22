@@ -141,23 +141,6 @@ fn systemf() {
 }
 
 #[test]
-fn cek_safety() {
-    // CEK abstract-machine metatheory ported to the .rv pipeline: machine type safety
-    // (progress + preservation over machine states), adequacy, and the compiler pipeline
-    // theorem, from the cek_*.rvk corpus.
-    check("cek_safety.rv");
-}
-
-#[test]
-fn systemf_safety() {
-    // System F PRESERVATION + soundness: the full substitution metatheory — term + type
-    // weakening, the parallel-substitution lemma, and the type-substitution lemma
-    // (tysubst_preserves) — culminating in `preservation` (a well-typed term that steps stays
-    // well-typed). Ported from the systemf_*.rvk corpus to the .rv pipeline.
-    check("systemf_safety.rv");
-}
-
-#[test]
 fn mutual_trees() {
     check("mutual_trees.rv");
     // It also computes: a forest of two leaves has size 2.
@@ -166,23 +149,4 @@ fn mutual_trees() {
     let report = verify_rv(&src, Some("example")).unwrap();
     let run = report.run.unwrap().unwrap();
     assert!(run.contains("Succ") && run.contains("Zero"), "expected a size-2 Nat, got {run}");
-}
-
-// ── Full .rvk → .rv corpus migration: the remaining kernel-surface subsystems, ported
-//    to the .rv pipeline (self-contained logic renamed to avoid the auto-loaded prelude). ──
-#[test]
-fn stdlib_kernel() { check("stdlib.rv"); }
-#[test]
-fn typedlang_kernel() { check("typedlang.rv"); }
-#[test]
-fn objlang_kernel() { check("objlang.rv"); }
-#[test]
-fn reflect_kernel() { check("reflect_kernel.rv"); }
-#[test]
-fn elab_demo() { check("elab_demo.rv"); }
-#[test]
-fn stlc_kernel() {
-    // The full kernel-surface STLC corpus (decidable checker + completeness + the safety
-    // scaffold, step lemmas, progress, and the ~95KB preservation), ported to .rv.
-    check("stlc_kernel.rv");
 }

@@ -28,7 +28,6 @@
 //! way — the choice only bites at Phase-2 elimination, where it shows up as the
 //! large-elimination restriction on `Prop`-valued inductives.
 
-pub mod cek;
 pub mod check;
 pub mod effect;
 pub mod elab;
@@ -43,16 +42,10 @@ pub mod level;
 pub mod logic;
 pub mod mutual;
 pub mod nbe;
-pub mod objlang;
 pub mod reduce;
-pub mod reflect;
 pub mod stdlib;
-pub mod stlc;
-pub mod stlc_parse;
-pub mod systemf;
 pub mod surface;
 pub mod term;
-pub mod typedlang;
 pub mod unify;
 pub mod verify;
 
