@@ -1,0 +1,212 @@
+// Ported from the kernel-surface corpus to the .rv pipeline. Self-contained logic.
+
+// --- typedlang_prelude ---
+
+    -- Logical scaffolding.
+    inductive TrueF  : Prop | intro : TrueF
+    inductive FalseF : Prop
+    inductive EqF.{u} (A : Sort u) (a : A) : A -> Prop | refl : EqF A a a
+
+    def EqF.subst.{u} (A : Sort u) (P : A -> Prop) (a : A) (b : A) (h : EqF A a b) (pa : P a)
+      : P b := EqF.rec.{u, 0} A a (fun (x : A) (p : EqF A a x) => P x) pa b h
+    def EqF.symm.{u} (A : Sort u) (a : A) (b : A) (h : EqF A a b) : EqF A b a :=
+      EqF.rec.{u, 0} A a (fun (x : A) (p : EqF A a x) => EqF A x a) (EqF.refl.{u} A a) b h
+    def EqF.trans.{u} (A : Sort u) (a : A) (b : A) (c : A) (h1 : EqF A a b) (h2 : EqF A b c)
+      : EqF A a c := EqF.subst.{u} A (fun (x : A) => EqF A a x) b c h2 h1
+
+    -- Booleans and conjunction-as-computation.
+    inductive Bool : Type | false : Bool | true : Bool
+
+    fn and(x: Bool, y: Bool) -> Bool {
+        match x { | Bool.true => y | Bool.false => Bool.false }
+    }
+
+    -- Bool no-confusion: false and true are distinct (the kernel proves this via the
+    -- recursor; we need it to discharge the impossible branches of the soundness proof).
+    def isFalseProp (b : Bool) : Prop := Bool.rec.{1} (fun (_ : Bool) => Prop) TrueF FalseF b
+    def ff_ne_tt (h : EqF.{1} Bool Bool.false Bool.true) : FalseF :=
+      EqF.rec.{1, 0} Bool Bool.false
+        (fun (b : Bool) (_ : EqF.{1} Bool Bool.false b) => isFalseProp b)
+        TrueF.intro Bool.true h
+
+    -- And-elimination, both projections (used to take apart the checker's conjunctions).
+    def and_left (x : Bool) (y : Bool) : EqF.{1} Bool (and x y) Bool.true -> EqF.{1} Bool x Bool.true :=
+      match x {
+        | Bool.true  => fun (h : EqF.{1} Bool (and Bool.true y) Bool.true) => EqF.refl.{1} Bool Bool.true
+        | Bool.false => fun (h : EqF.{1} Bool (and Bool.false y) Bool.true) => h
+      }
+    def and_right (x : Bool) (y : Bool) : EqF.{1} Bool (and x y) Bool.true -> EqF.{1} Bool y Bool.true :=
+      match x {
+        | Bool.true  => fun (h : EqF.{1} Bool (and Bool.true y) Bool.true) => h
+        | Bool.false => fun (h : EqF.{1} Bool (and Bool.false y) Bool.true) =>
+            FalseF.rec.{0} (fun (_ : FalseF) => EqF.{1} Bool y Bool.true) (ff_ne_tt h)
+      }
+    -- And-introduction (used by completeness to assemble the checker's conjunction).
+    def and_true (x : Bool) (y : Bool)
+      : EqF.{1} Bool x Bool.true -> EqF.{1} Bool y Bool.true -> EqF.{1} Bool (and x y) Bool.true :=
+      match x {
+        | Bool.true  => fun (hx : EqF.{1} Bool Bool.true Bool.true)
+                            (hy : EqF.{1} Bool y Bool.true) => hy
+        | Bool.false => fun (hx : EqF.{1} Bool Bool.false Bool.true)
+                            (hy : EqF.{1} Bool y Bool.true) => hx
+      }
+
+    -- Naturals (literals for the object language).
+    inductive Nat : Type | zero : Nat | succ : Nat -> Nat
+
+    -- The object-language types and their decidable equality.
+    inductive Ty : Type | tnat : Ty | tbool : Ty
+
+    def isTnatProp (t : Ty) : Prop := Ty.rec.{1} (fun (_ : Ty) => Prop) TrueF FalseF t
+    def tnat_ne_tbool (h : EqF.{1} Ty Ty.tnat Ty.tbool) : FalseF :=
+      EqF.rec.{1, 0} Ty Ty.tnat
+        (fun (t : Ty) (_ : EqF.{1} Ty Ty.tnat t) => isTnatProp t)
+        TrueF.intro Ty.tbool h
+    def isTboolProp (t : Ty) : Prop := Ty.rec.{1} (fun (_ : Ty) => Prop) FalseF TrueF t
+    def tbool_ne_tnat (h : EqF.{1} Ty Ty.tbool Ty.tnat) : FalseF :=
+      EqF.rec.{1, 0} Ty Ty.tbool
+        (fun (t : Ty) (_ : EqF.{1} Ty Ty.tbool t) => isTboolProp t)
+        TrueF.intro Ty.tnat h
+
+    fn tyeq(x: Ty, y: Ty) -> Bool {
+        match x {
+          | Ty.tnat  => match y { | Ty.tnat => Bool.true  | Ty.tbool => Bool.false }
+          | Ty.tbool => match y { | Ty.tnat => Bool.false | Ty.tbool => Bool.true  }
+        }
+    }
+
+    -- `tyeq` is a sound decider for `Ty` equality: tyeq x y = true → x = y. The two
+    -- mismatched cases are impossible (tyeq computes to false), discharged by no-confusion.
+    def tyeq_sound (x : Ty) (y : Ty) : EqF.{1} Bool (tyeq x y) Bool.true -> EqF.{1} Ty x y :=
+      match x {
+        | Ty.tnat => match y {
+            | Ty.tnat  => fun (h : EqF.{1} Bool (tyeq Ty.tnat Ty.tnat) Bool.true) =>
+                EqF.refl.{1} Ty Ty.tnat
+            | Ty.tbool => fun (h : EqF.{1} Bool (tyeq Ty.tnat Ty.tbool) Bool.true) =>
+                FalseF.rec.{0} (fun (_ : FalseF) => EqF.{1} Ty Ty.tnat Ty.tbool) (ff_ne_tt h)
+          }
+        | Ty.tbool => match y {
+            | Ty.tnat  => fun (h : EqF.{1} Bool (tyeq Ty.tbool Ty.tnat) Bool.true) =>
+                FalseF.rec.{0} (fun (_ : FalseF) => EqF.{1} Ty Ty.tbool Ty.tnat) (ff_ne_tt h)
+            | Ty.tbool => fun (h : EqF.{1} Bool (tyeq Ty.tbool Ty.tbool) Bool.true) =>
+                EqF.refl.{1} Ty Ty.tbool
+          }
+      }
+
+    -- Converse fact for completeness: if a type *is* `tnat`, the decider says so.
+    def tyeq_true_of (t : Ty) (h : EqF.{1} Ty t Ty.tnat) : EqF.{1} Bool (tyeq t Ty.tnat) Bool.true :=
+      EqF.subst.{1} Ty (fun (s : Ty) => EqF.{1} Bool (tyeq s Ty.tnat) Bool.true) Ty.tnat t
+        (EqF.symm.{1} Ty t Ty.tnat h) (EqF.refl.{1} Bool Bool.true)
+
+// --- typedlang_lang ---
+
+    -- A tiny typed expression language: numeric and boolean literals, and addition
+    -- (which requires both operands to be numeric). `eadd` is the one former that can
+    -- be ill-typed — addition of a boolean is a type error.
+    inductive Exp : Type
+      | enat  : Nat -> Exp
+      | ebool : Bool -> Exp
+      | eadd  : Exp -> Exp -> Exp
+
+    -- The typing RELATION — the specification of "well typed", as an inductive judgment.
+    -- `HasTy e T` is inhabited exactly when `e` has type `T`.
+    inductive HasTy : Exp -> Ty -> Prop
+      | tnat  : (n : Nat)  -> HasTy (Exp.enat n) Ty.tnat
+      | tbool : (b : Bool) -> HasTy (Exp.ebool b) Ty.tbool
+      | tadd  : (a : Exp) -> (b : Exp)
+                  -> HasTy a Ty.tnat -> HasTy b Ty.tnat
+                  -> HasTy (Exp.eadd a b) Ty.tnat
+
+    -- The CHECKER, part 1: the inferred type (junk-free on well-typed terms; on an
+    -- ill-typed `eadd` it still says `tnat`, but `ok` below will reject it).
+    fn synth(e: Exp) -> Ty {
+        match e {
+          | Exp.enat(n)    => Ty.tnat
+          | Exp.ebool(b)   => Ty.tbool
+          | Exp.eadd(a, b) => Ty.tnat
+        }
+    }
+
+    -- The CHECKER, part 2: the well-typedness decision. An `eadd` is well typed iff both
+    -- subterms are well typed AND both synthesize `tnat`.
+    fn ok(e: Exp) -> Bool {
+        match e {
+          | Exp.enat(n)    => Bool.true
+          | Exp.ebool(b)   => Bool.true
+          | Exp.eadd(a, b) =>
+              and(and(ok(a), ok(b)),
+                  and(tyeq(synth(a), Ty.tnat), tyeq(synth(b), Ty.tnat)))
+        }
+    }
+
+    -- THE SOUNDNESS THEOREM, proved in Raven by structural recursion on `e`:
+    --   ok e = true  →  HasTy e (synth e).
+    -- The checker's verdict implies a real typing derivation in the independent relation.
+    -- Each `eadd` step takes the conjunction `ok` produced apart with `and_left`/
+    -- `and_right`, turns the `tyeq … = true` facts into type equalities with `tyeq_sound`,
+    -- applies the induction hypotheses (`ok_sound(a)`, `ok_sound(b)`) to type the
+    -- subterms, and transports them to `tnat` with `EqF.subst` to build `HasTy.tadd`.
+    fn ok_sound(e: Exp) -> (EqF.{1} Bool (ok(e)) Bool.true -> HasTy e (synth(e))) {
+        match e {
+          | Exp.enat(n)  => fun (h : EqF.{1} Bool (ok(Exp.enat(n))) Bool.true) => HasTy.tnat n
+          | Exp.ebool(b) => fun (h : EqF.{1} Bool (ok(Exp.ebool(b))) Bool.true) => HasTy.tbool b
+          | Exp.eadd(a, b) => fun (h : EqF.{1} Bool (ok(Exp.eadd(a, b))) Bool.true) =>
+              HasTy.tadd a b
+                (EqF.subst.{1} Ty (fun (T : Ty) => HasTy a T) (synth(a)) Ty.tnat
+                   (tyeq_sound (synth(a)) Ty.tnat
+                      (and_left (tyeq(synth(a), Ty.tnat)) (tyeq(synth(b), Ty.tnat))
+                         (and_right (and(ok(a), ok(b)))
+                                    (and(tyeq(synth(a), Ty.tnat), tyeq(synth(b), Ty.tnat))) h)))
+                   (ok_sound(a)
+                      (and_left (ok(a)) (ok(b))
+                         (and_left (and(ok(a), ok(b)))
+                                   (and(tyeq(synth(a), Ty.tnat), tyeq(synth(b), Ty.tnat))) h))))
+                (EqF.subst.{1} Ty (fun (T : Ty) => HasTy b T) (synth(b)) Ty.tnat
+                   (tyeq_sound (synth(b)) Ty.tnat
+                      (and_right (tyeq(synth(a), Ty.tnat)) (tyeq(synth(b), Ty.tnat))
+                         (and_right (and(ok(a), ok(b)))
+                                    (and(tyeq(synth(a), Ty.tnat), tyeq(synth(b), Ty.tnat))) h)))
+                   (ok_sound(b)
+                      (and_right (ok(a)) (ok(b))
+                         (and_left (and(ok(a), ok(b)))
+                                   (and(tyeq(synth(a), Ty.tnat), tyeq(synth(b), Ty.tnat))) h))))
+        }
+    }
+
+    -- COMPLETENESS, part 1: the checker's inferred type AGREES with the relation. Proved
+    -- by induction on the typing DERIVATION (matching on `d`): every constructor pins the
+    -- type, so each case is `refl`.
+    def synth_complete (e : Exp) (T : Ty) (d : HasTy e T) : EqF.{1} Ty (synth(e)) T :=
+      match d {
+        | HasTy.tnat(n)            => EqF.refl.{1} Ty Ty.tnat
+        | HasTy.tbool(b)           => EqF.refl.{1} Ty Ty.tbool
+        | HasTy.tadd(a, b, da, db) => EqF.refl.{1} Ty Ty.tnat
+      }
+
+    -- COMPLETENESS, part 2: anything the relation accepts, the checker accepts —
+    --   HasTy e T → ok e = true,
+    -- by induction on the derivation. The `tadd` case reassembles the conjunction `ok`
+    -- computes from the induction hypotheses (`da.rec`, `db.rec` give `ok a`/`ok b = true`)
+    -- and `synth_complete` (each subterm really does synthesize `tnat`).
+    def ok_complete (e : Exp) (T : Ty) (d : HasTy e T) : EqF.{1} Bool (ok(e)) Bool.true :=
+      match d {
+        | HasTy.tnat(n)  => EqF.refl.{1} Bool Bool.true
+        | HasTy.tbool(b) => EqF.refl.{1} Bool Bool.true
+        | HasTy.tadd(a, b, da, db) =>
+            and_true (and(ok(a), ok(b)))
+                     (and(tyeq(synth(a), Ty.tnat), tyeq(synth(b), Ty.tnat)))
+              (and_true (ok(a)) (ok(b)) da.rec db.rec)
+              (and_true (tyeq(synth(a), Ty.tnat)) (tyeq(synth(b), Ty.tnat))
+                 (tyeq_true_of (synth(a)) (synth_complete a Ty.tnat da))
+                 (tyeq_true_of (synth(b)) (synth_complete b Ty.tnat db)))
+      }
+
+    -- The headline completeness statement, contrapositive form: a term the checker
+    -- REJECTS (`ok e = false`) is genuinely untypable — it has NO typing in the relation,
+    -- for any type. (`ok e = true` from `ok_complete` would contradict `ok e = false`.)
+    def ok_false_not_welltyped (e : Exp) (T : Ty)
+        (hf : EqF.{1} Bool (ok(e)) Bool.false) (d : HasTy e T) : FalseF :=
+      ff_ne_tt (EqF.trans.{1} Bool Bool.false (ok(e)) Bool.true
+                  (EqF.symm.{1} Bool (ok(e)) Bool.false hf)
+                  (ok_complete e T d))
+

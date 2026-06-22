@@ -40,6 +40,12 @@ prelude, [`crates/rv-driver/prelude.rv`](../../crates/rv-driver/prelude.rv), whi
 | `cek_machine.rv`       | the CEK abstract machine — **runs** `(λx. x+1) 2 ⟹ 3` | mutual `Val/Env/Kont`, fuelled driver |
 | `cek_safety.rv`      | CEK **machine type safety + adequacy + compiler pipeline** | machine-state typing, progress/preservation over states, adequacy vs the reference semantics |
 | `refinement.rv`        | `safe_pred(2)` — a precondition in the type | **refinement types** (`x: T where p`) with **auto-discharge** |
+| `stdlib.rv`            | the verified standard library (Nat/Bool/List + lemmas) | ported kernel-surface corpus |
+| `typedlang.rv`         | a typed object language: decidable checker + **completeness** | ported kernel-surface corpus |
+| `objlang.rv`           | object language + a verified pass | ported kernel-surface corpus |
+| `reflect_kernel.rv`    | the reflection prelude (`Decidable`/`decide`) + demo | ported kernel-surface corpus |
+| `elab_demo.rv`         | an elaboration demo | ported kernel-surface corpus |
+| `stlc_kernel.rv`       | the **full kernel-surface STLC**: decidable checker + completeness, safety scaffold, step lemmas, progress, and the (~95KB) **preservation** | ported kernel-surface corpus |
 
 Nothing here uses special proof syntax: it all reads as recursive Rust functions over `enum`s.
 The design is described in [`docs/raven-language.md`](../../docs/raven-language.md).

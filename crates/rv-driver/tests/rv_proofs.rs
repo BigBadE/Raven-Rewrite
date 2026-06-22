@@ -167,3 +167,22 @@ fn mutual_trees() {
     let run = report.run.unwrap().unwrap();
     assert!(run.contains("Succ") && run.contains("Zero"), "expected a size-2 Nat, got {run}");
 }
+
+// ── Full .rvk → .rv corpus migration: the remaining kernel-surface subsystems, ported
+//    to the .rv pipeline (self-contained logic renamed to avoid the auto-loaded prelude). ──
+#[test]
+fn stdlib_kernel() { check("stdlib.rv"); }
+#[test]
+fn typedlang_kernel() { check("typedlang.rv"); }
+#[test]
+fn objlang_kernel() { check("objlang.rv"); }
+#[test]
+fn reflect_kernel() { check("reflect_kernel.rv"); }
+#[test]
+fn elab_demo() { check("elab_demo.rv"); }
+#[test]
+fn stlc_kernel() {
+    // The full kernel-surface STLC corpus (decidable checker + completeness + the safety
+    // scaffold, step lemmas, progress, and the ~95KB preservation), ported to .rv.
+    check("stlc_kernel.rv");
+}

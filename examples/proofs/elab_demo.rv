@@ -1,0 +1,28 @@
+// Ported from the kernel-surface corpus to the .rv pipeline. Self-contained logic.
+
+// --- elab_program1 ---
+
+            inductive TrueF : Prop | intro : TrueF
+            inductive FalseF : Prop
+            inductive AndF (a : Prop) (b : Prop) : Prop
+              | intro : a -> b -> AndF a b
+            inductive OrF (a : Prop) (b : Prop) : Prop
+              | inl : a -> OrF a b
+              | inr : b -> OrF a b
+
+            def NotF (p : Prop) : Prop := p -> FalseF
+
+            axiom em (p : Prop) : OrF p (NotF p)
+
+            -- AndF is commutative.
+            def and_comm (a : Prop) (b : Prop) (h : AndF a b) : AndF b a :=
+              AndF.rec.{0} a b (fun (_ : AndF a b) => AndF b a)
+                (fun (ha : a) (hb : b) => AndF.intro b a hb ha) h
+
+            -- Double-negation elimination, classically.
+            def dne (p : Prop) (nnp : NotF (NotF p)) : p :=
+              OrF.rec p (NotF p) (fun (_ : OrF p (NotF p)) => p)
+                (fun (hp : p) => hp)
+                (fun (hnp : NotF p) => FalseF.rec.{0} (fun (_ : FalseF) => p) (nnp hnp))
+                (em p)
+        
