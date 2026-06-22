@@ -171,6 +171,10 @@ impl<'a> Parser<'a> {
                 // `axiom name(..) : T` and `def name(..) : T = e`.
                 Tok::Ident(w) if w == "axiom" => items.push(Item::Axiom(self.parse_axiom()?)),
                 Tok::Ident(w) if w == "def" => items.push(Item::Def(self.parse_def()?)),
+                Tok::Ident(w) if w == "instance" => {
+                    items.push(Item::Instance(self.parse_instance()?))
+                }
+                Tok::Ident(w) if w == "mutual" => items.push(self.parse_mutual()?),
                 other => {
                     return Err(format!(
                         "line {}: expected an item (`fn`, `struct`, `enum`, `trait`, `impl`, \
@@ -365,9 +369,51 @@ impl<'a> Parser<'a> {
         };
         self.expect(&Tok::Colon, "before def type")?;
         let ty = self.parse_type()?;
-        self.expect(&Tok::Eq, "before def body")?;
+        if !self.eat_assign() {
+            return Err(format!("line {}: expected `:=` or `=` before def body", self.line()));
+        }
         let body = self.parse_expr()?;
         Ok(DefDecl { name, generics, params, ty, body })
+    }
+
+    /// `instance_decl := "instance" IDENT generics? ("(" params? ")")? ":" type ":=" expr`.
+    fn parse_instance(&mut self) -> Result<DefDecl, String> {
+        self.eat_kw("instance");
+        let name = self.ident("as instance name")?;
+        let generics = self.parse_generics()?;
+        let params = if self.eat(&Tok::LParen) {
+            let p = self.parse_params()?;
+            self.expect(&Tok::RParen, "after instance parameters")?;
+            p
+        } else {
+            Vec::new()
+        };
+        self.expect(&Tok::Colon, "before instance type")?;
+        let ty = self.parse_type()?;
+        if !self.eat_assign() {
+            return Err(format!("line {}: expected `:=` or `=` before instance body", self.line()));
+        }
+        let body = self.parse_expr()?;
+        Ok(DefDecl { name, generics, params, ty, body })
+    }
+
+    /// `mutual_block := "mutual" "{" enum_decl* "}"` — mutually-referential inductives.
+    fn parse_mutual(&mut self) -> Result<Item, String> {
+        self.eat_kw("mutual");
+        self.expect(&Tok::LBrace, "to open a mutual block")?;
+        let mut enums = Vec::new();
+        while self.peek() != &Tok::RBrace && self.peek() != &Tok::Eof {
+            if self.peek() != &Tok::Enum {
+                return Err(format!(
+                    "line {}: a `mutual` block may only contain `enum` declarations, found {:?}",
+                    self.line(),
+                    self.peek()
+                ));
+            }
+            enums.push(self.parse_enum()?);
+        }
+        self.expect(&Tok::RBrace, "to close a mutual block")?;
+        Ok(Item::Mutual(enums))
     }
 
     /// `clause* := ("requires" expr ";" | "ensures" expr ";")*` in any order.
@@ -1142,6 +1188,19 @@ impl<'a> Parser<'a> {
                 let args = self.parse_args()?;
                 self.expect(&Tok::RParen, "after application arguments")?;
                 e = Expr::Apply { callee: Box::new(e), args };
+            } else if self.peek() == &Tok::Lt && matches!(e, Expr::Var(_) | Expr::EnumCtor { .. }) {
+                // A type-application `Name<T, …>` used as a *value* in the proof fragment
+                // (e.g. `Eq::refl(Option<A>, …)`). Disambiguated from the `<` comparison
+                // operator by speculative parse: a clean `< type,… >` is a type application;
+                // anything else restores and lets `<` parse as comparison.
+                let save = self.pos;
+                match self.try_turbofish() {
+                    Some(args) => e = Expr::Apply { callee: Box::new(e), args },
+                    None => {
+                        self.pos = save;
+                        break;
+                    }
+                }
             } else if self.eat(&Tok::Question) {
                 // Error-propagation postfix operator `expr?`.
                 e = Expr::Try(Box::new(e));
@@ -1150,6 +1209,29 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(e)
+    }
+
+    /// Speculatively parse a turbofish-free generic argument list `< type (, type)* >` used
+    /// as a *value* (proof fragment). Returns the arguments as expressions, or `None` if the
+    /// tokens are not a clean generic list (the caller then treats `<` as comparison).
+    fn try_turbofish(&mut self) -> Option<Vec<Expr>> {
+        if !self.eat(&Tok::Lt) {
+            return None;
+        }
+        let mut args = Vec::new();
+        loop {
+            let ty = self.parse_type().ok()?;
+            args.push(self.ty_to_expr(ty).ok()?);
+            if self.eat(&Tok::Comma) {
+                continue;
+            }
+            break;
+        }
+        if self.eat(&Tok::Gt) {
+            Some(args)
+        } else {
+            None
+        }
     }
 
     /// `primary := INT | "true" | "false" | "()" | IDENT | IDENT "(" args? ")" | "(" expr ")"`
@@ -1185,7 +1267,7 @@ impl<'a> Parser<'a> {
             self.bump();
             return Ok(Expr::Prop);
         }
-        if self.peek_kw("decide") {
+        if self.peek_kw("by_decide") {
             self.bump();
             return Ok(Expr::Decide);
         }

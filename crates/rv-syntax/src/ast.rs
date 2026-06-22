@@ -31,6 +31,11 @@ pub enum Item {
     /// `def name(params) : Type = body` — a checked definition (a `fn` whose body is
     /// a single expression; kept distinct so type-level `def`s read naturally).
     Def(DefDecl),
+    /// `instance name(params) : Class args := body` — a `def` additionally registered for
+    /// type-class instance resolution.
+    Instance(DefDecl),
+    /// `mutual { enum … enum … }` — a block of mutually-referential inductives.
+    Mutual(Vec<EnumDecl>),
 }
 
 /// An `axiom name(params) : ty` declaration (proof fragment).

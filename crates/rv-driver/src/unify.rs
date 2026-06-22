@@ -43,6 +43,16 @@ impl Tr<'_> {
         format!("{}.{}", self.syms.resolve(a), self.syms.resolve(b))
     }
 
+    /// The kind of a generic parameter, from its bound: `<p: Prop>` → `Prop`, otherwise
+    /// `Type` (incl. the unbounded `<A>` and `<A: Type>`).
+    fn generic_kind(&self, g: &ast::GenericParam) -> KExpr {
+        if g.bounds.iter().any(|b| self.syms.resolve(*b) == "Prop") {
+            KExpr::Prop
+        } else {
+            KExpr::Type(0)
+        }
+    }
+
     // ---- items --------------------------------------------------------------
 
     fn item(&self, item: &Item) -> Result<Command, String> {
@@ -62,6 +72,17 @@ impl Tr<'_> {
                 params: self.params(&a.generics, &a.params)?,
                 ty: self.ty(&a.ty)?,
             }),
+            Item::Instance(d) => Ok(Command::Instance {
+                name: self.name(d.name),
+                levels: vec![],
+                params: self.params(&d.generics, &d.params)?,
+                ty: self.ty(&d.ty)?,
+                body: self.expr(&d.body)?,
+            }),
+            Item::Mutual(enums) => {
+                let members = enums.iter().map(|e| self.enum_decl(e)).collect::<Result<_, _>>()?;
+                Ok(Command::Mutual(members))
+            }
             Item::Struct(_) | Item::Trait(_) | Item::Impl(_) => Err(format!(
                 "this item form is not yet supported in the unified proof front-end: {item:?}"
             )),
@@ -78,7 +99,11 @@ impl Tr<'_> {
         let params: Vec<Binder> = e
             .generics
             .iter()
-            .map(|g| Binder { names: vec![self.name(g.name)], ty: KExpr::Type(0), implicit: false })
+            .map(|g| Binder {
+                names: vec![self.name(g.name)],
+                ty: self.generic_kind(g),
+                implicit: false,
+            })
             .collect();
         // Index binders `(i : T)` and the result sort.
         let indices: Vec<(String, KExpr)> = e
@@ -162,7 +187,11 @@ impl Tr<'_> {
     fn params(&self, generics: &[ast::GenericParam], value: &[ast::Param]) -> Result<Vec<Binder>, String> {
         let mut out = Vec::new();
         for g in generics {
-            out.push(Binder { names: vec![self.name(g.name)], ty: KExpr::Type(0), implicit: true });
+            out.push(Binder {
+                names: vec![self.name(g.name)],
+                ty: self.generic_kind(g),
+                implicit: true,
+            });
         }
         for p in value {
             out.push(Binder { names: vec![self.name(p.name)], ty: self.ty(&p.ty)?, implicit: false });
