@@ -822,10 +822,46 @@ impl<'a> Infer<'a> {
         for (l, a) in indices.iter().enumerate() {
             motive_body = replace_with_var(&motive_body, &a.lift(m as isize + 1, 0), m - l);
         }
+        // **Dependent pattern matching.** When every index domain is closed, wrap the motive
+        // body in a telescope of index equations `Eq Jⱼ idxⱼ iⱼ`. Each arm then receives proofs
+        // connecting the scrutinee's *actual* indices to the constructor's index expressions —
+        // enough to auto-discharge impossible arms (constructor clash, via no-confusion). The
+        // recursor is fed `Eq.refl` for each. Gated to closed domains so `Jⱼ` needs no lifting;
+        // otherwise we keep the plain motive (no equations), exactly as before.
+        let idx_levels: Option<Vec<Level>> = if m > 0
+            && !arm_uses_rec(arms)
+            && index_doms.iter().all(|d| is_closed_at(d, 0))
+        {
+            let mut lv = Vec::with_capacity(m);
+            let mut ok = true;
+            for jd in &index_doms {
+                match Checker::new(self.env).infer_sort(&mut self.local_ctx(), jd) {
+                    Ok(l) => lv.push(l),
+                    Err(_) => { ok = false; break; }
+                }
+            }
+            if ok { Some(lv) } else { None }
+        } else {
+            None
+        };
+        let num_eqs = if let Some(levels) = &idx_levels {
+            let mut tele = motive_body.lift(m as isize, 0);
+            for j in (0..m).rev() {
+                let dom = Term::apps(
+                    Term::cnst(name("Eq"), vec![levels[j].clone()]),
+                    [index_doms[j].clone(), indices[j].lift((m + 1 + j) as isize, 0), Term::Var(m)],
+                );
+                tele = Term::pi(dom, tele);
+            }
+            motive_body = tele;
+            m
+        } else {
+            0
+        };
         // Assemble: λ i₀ … iₘ₋₁ (s : I params i…). M.
         let mut motive = Term::lam(ind_app, motive_body);
-        for d in index_doms.into_iter().rev() {
-            motive = Term::lam(d, motive);
+        for d in index_doms.iter().rev() {
+            motive = Term::lam(d.clone(), motive);
         }
 
         // 6. Peel the recursor's own type, substituting params then the motive, to obtain
@@ -849,17 +885,23 @@ impl<'a> Infer<'a> {
                 return Err("recursor type: expected a minor-premise Π".into());
             };
             let minor_ty = (**mdom).clone();
+            // A missing arm is allowed only when the constructor is impossible at the
+            // scrutinee's indices (auto-discharged in `build_minor`); otherwise it errors
+            // non-exhaustive there.
             let arm = arms
                 .iter()
-                .find(|a| a.pat.as_flat().is_some_and(|(c, _)| c == &**cname))
-                .ok_or_else(|| format!("non-exhaustive `match`: no arm for '{cname}'"))?;
+                .find(|a| a.pat.as_flat().is_some_and(|(c, _)| c == &**cname));
+            if arm.is_none() && num_eqs == 0 {
+                return Err(format!("non-exhaustive `match`: no arm for '{cname}'"));
+            }
             let minor =
-                self.build_minor(&[ind_name.to_string()], ls, k, cname, &minor_ty, arm)?;
+                self.build_minor(&[ind_name.to_string()], ls, k, cname, &minor_ty, arm, num_eqs)?;
             t = mbody.instantiate(&minor);
             minors.push(minor);
         }
 
-        // 7. Assemble: I.rec.{rec_levels} params… motive minors… indices… scrutinee.
+        // 7. Assemble: I.rec.{rec_levels} params… motive minors… indices… scrutinee, then a
+        //    `Eq.refl` for each index equation (cancelling the motive's telescope back to R).
         let mut call = Term::cnst(ind.recursor.clone(), rec_levels);
         for p in &params {
             call = Term::app(call, p.clone());
@@ -872,6 +914,17 @@ impl<'a> Infer<'a> {
             call = Term::app(call, a.clone());
         }
         call = Term::app(call, e_term);
+        if let Some(levels) = &idx_levels {
+            for j in 0..m {
+                call = Term::app(
+                    call,
+                    Term::apps(
+                        Term::cnst(name("Eq.refl"), vec![levels[j].clone()]),
+                        [index_doms[j].clone(), indices[j].clone()],
+                    ),
+                );
+            }
+        }
         Ok((call, r_ty))
     }
 
@@ -983,7 +1036,7 @@ impl<'a> Infer<'a> {
                     .iter()
                     .find(|a| a.pat.as_flat().is_some_and(|(c, _)| c == &**cname))
                     .ok_or_else(|| format!("'{}' has no arm for '{cname}'", mem.def_name))?;
-                let minor = self.build_minor(group, &minfo[s].ls, k, cname, &minor_ty, arm)?;
+                let minor = self.build_minor(group, &minfo[s].ls, k, cname, &minor_ty, Some(arm), 0)?;
                 t = mbody.instantiate(&minor);
                 minors.push(minor);
             }
@@ -1020,17 +1073,28 @@ impl<'a> Infer<'a> {
         k: usize,
         cname: &str,
         minor_ty: &Term,
-        arm: &crate::surface::MatchArm,
+        arm: Option<&crate::surface::MatchArm>,
+        num_eqs: usize,
     ) -> Result<Term, String> {
         let kinds = self.ctor_rec_kinds(group, cname, k, ls)?;
-        let (_, vars) = arm.pat.as_flat().ok_or("`match` arm is not a flat pattern")?;
-        if vars.len() != kinds.len() {
-            return Err(format!(
-                "pattern '{cname}' binds {} field(s) but the constructor has {}",
-                vars.len(),
-                kinds.len()
-            ));
-        }
+        // A present arm supplies the field names; an *omitted* arm (allowed only when the
+        // constructor is impossible at the scrutinee's indices, auto-discharged below) gets
+        // fresh names.
+        let fresh_names: Vec<String> = (0..kinds.len()).map(|i| format!("{cname}.x{i}")).collect();
+        let vars: Vec<&str> = match arm {
+            Some(a) => {
+                let (_, vs) = a.pat.as_flat().ok_or("`match` arm is not a flat pattern")?;
+                if vs.len() != kinds.len() {
+                    return Err(format!(
+                        "pattern '{cname}' binds {} field(s) but the constructor has {}",
+                        vs.len(),
+                        kinds.len()
+                    ));
+                }
+                vs
+            }
+            None => fresh_names.iter().map(|s| s.as_str()).collect(),
+        };
         let mut t = minor_ty.clone();
         let mut doms: Vec<Term> = Vec::new();
         let mut pushed = 0usize;
@@ -1054,8 +1118,28 @@ impl<'a> Infer<'a> {
                 t = (**ihbody).clone();
             }
         }
+        // With a dependent-pattern-matching motive, `num_eqs` index-equation hypotheses
+        // (`Eq Jⱼ idxⱼ ceⱼ`) come after the fields; bind them, then `t` β-reduces to the
+        // (refined) goal. An impossible arm — one whose constructor's index can't equal the
+        // scrutinee's — is auto-discharged from a conflicting equation (no-confusion).
+        let mut eq_doms: Vec<Term> = Vec::with_capacity(num_eqs);
+        if num_eqs > 0 {
+            // `t` is the un-reduced redex `motive ce… (ctor app)`; whnf exposes its `Π eqs. R`.
+            t = self.force_whnf(&t);
+        }
+        for i in 0..num_eqs {
+            let Term::Pi(_, edom, ebody) = &t else {
+                return Err(format!("minor for '{cname}': expected an index-equation Π"));
+            };
+            let edom = (**edom).clone();
+            eq_doms.push(edom.clone());
+            doms.push(edom.clone());
+            self.push_local(&format!("{cname}.eq{i}"), edom);
+            pushed += 1;
+            t = (**ebody).clone();
+        }
         // `t` is now the conclusion `motive (ctor params fields)` (β-reduces to R).
-        let body = self.check(&arm.body, &t);
+        let body = self.discharge_or_check(cname, &eq_doms, arm.map(|a| &a.body), &t);
         for _ in 0..pushed {
             self.pop_local();
         }
@@ -1064,6 +1148,147 @@ impl<'a> Infer<'a> {
             lam = Term::lam(d, lam);
         }
         Ok(lam)
+    }
+
+    /// Either auto-discharge the arm (if some index equation is between distinct constructors —
+    /// the arm is unreachable, proved via no-confusion) or elaborate the body against the goal.
+    /// `eq_doms[i]` is the i-th equation's type `Eq A lhs rhs`; the bound hypothesis is the
+    /// local `…eq{i}`, at de Bruijn `num_eqs-1-i` from the innermost binder. A `None` body means
+    /// the arm was *omitted* — it must be auto-dischargeable, else the match is non-exhaustive.
+    fn discharge_or_check(
+        &mut self,
+        cname: &str,
+        eq_doms: &[Term],
+        body: Option<&crate::surface::Expr>,
+        goal: &Term,
+    ) -> Result<Term, String> {
+        let n = eq_doms.len();
+        for (i, edom) in eq_doms.iter().enumerate() {
+            // `eq_doms[i]` was captured at its binding depth (fields + i); lift it to the final
+            // context (fields + n) where the absurd term is built and the hypotheses live.
+            let edom = edom.lift((n - i) as isize, 0);
+            let edz = self.metas.zonk(&edom).unwrap_or_else(|_| edom.clone());
+            let (head, args) = edz.unfold_apps();
+            let Term::Const(eq_name, eq_ls) = &head else { continue };
+            if *eq_name != name("Eq") || args.len() != 3 || eq_ls.len() != 1 {
+                continue;
+            }
+            let (a_ty, lhs, rhs) = (args[0].clone(), args[1].clone(), args[2].clone());
+            let lw = self.force_whnf(&lhs);
+            let rw = self.force_whnf(&rhs);
+            if let Some(absurd) = self.conflict_absurd(&a_ty, &lw, &rw, n - 1 - i, &eq_ls[0], goal)? {
+                return Ok(absurd);
+            }
+        }
+        match body {
+            Some(b) => self.check(b, goal),
+            None => Err(format!(
+                "non-exhaustive `match`: no arm for '{cname}' (and it is not impossible at the \
+                 scrutinee's indices, so it can't be auto-discharged)"
+            )),
+        }
+    }
+
+    /// If `lhs`/`rhs` are applications of **distinct constructors** of the same (parameter-free)
+    /// inductive, the equation hypothesis `…eq` (at de Bruijn `eq_var`) is absurd: build a
+    /// discriminator `P : A → Prop` (via `A.rec`) that is `True` at `lhs`'s head and `False` at
+    /// `rhs`'s, transport `True.intro : P lhs` to `P rhs ≡ False` along the equation, and
+    /// `False.rec` into the goal. Returns `None` when the heads aren't distinct constructors.
+    fn conflict_absurd(
+        &mut self,
+        a_ty: &Term,
+        lhs: &Term,
+        rhs: &Term,
+        eq_var: usize,
+        eq_lvl: &Level,
+        goal: &Term,
+    ) -> Result<Option<Term>, String> {
+        use crate::env::Decl;
+        let (lh, _) = lhs.unfold_apps();
+        let (rh, _) = rhs.unfold_apps();
+        let (Term::Const(lc, _), Term::Const(rc, _)) = (&lh, &rh) else { return Ok(None) };
+        if lc == rc {
+            return Ok(None);
+        }
+        // The equation's type former must be a parameter-free inductive, and both heads its ctors.
+        let (a_head, _) = self.force_whnf(a_ty).unfold_apps();
+        let Term::Const(a_name, a_levels) = &a_head else { return Ok(None) };
+        let Some(Decl::Inductive(ind)) = self.env.get(a_name) else { return Ok(None) };
+        let ind = ind.clone();
+        if ind.num_params != 0 || ind.num_indices != 0 {
+            return Ok(None);
+        }
+        if !ind.ctors.iter().any(|c| c == lc) || !ind.ctors.iter().any(|c| c == rc) {
+            return Ok(None);
+        }
+        let Some(Decl::Recursor(rec)) = self.env.get(&ind.recursor) else { return Ok(None) };
+        let rec = rec.clone();
+        if rec.num_motives != 1 {
+            return Ok(None); // mutual — skip
+        }
+        // Discriminator P = λ x:A. A.rec.{levels,1} (λ_:A. Prop) minors… x, where the minor for
+        // `lc` is `λ fields…. True` and every other is `λ fields…. False`.
+        let a_ty_c = Term::cnst(a_name.clone(), a_levels.clone());
+        let prop_motive = Term::lam(a_ty_c.clone(), Term::prop());
+        let rec_levels: Vec<Level> = a_levels
+            .iter()
+            .cloned()
+            .chain(std::iter::once(Level::of_nat(1)))
+            .collect();
+        // Walk the recursor type to read each minor's arity (with params absent, motive set).
+        let mut t = rec.ty.instantiate_levels(&rec_levels);
+        let Term::Pi(_, _, mbody) = &t else { return Ok(None) };
+        t = mbody.instantiate(&prop_motive);
+        let mut minors = Vec::with_capacity(ind.ctors.len());
+        for c in &ind.ctors {
+            let Term::Pi(_, mdom, mrest) = &t else { return Ok(None) };
+            let (arity_doms, _) = peel_all_pis((**mdom).clone());
+            let val = if c == lc { Term::cnst(name("True"), vec![]) } else { Term::cnst(name("False"), vec![]) };
+            let mut minor = val;
+            for d in arity_doms.into_iter().rev() {
+                minor = Term::lam(d, minor);
+            }
+            // advance past this minor premise
+            let minor_ph = self.metas.fresh();
+            t = mrest.instantiate(&minor_ph);
+            minors.push(minor);
+        }
+        // P = λ x. A.rec.{rec_levels} (λ_.Prop) minors… x
+        let mut rec_app = Term::cnst(ind.recursor.clone(), rec_levels);
+        rec_app = Term::app(rec_app, prop_motive.clone());
+        for mnr in &minors {
+            rec_app = Term::app(rec_app, mnr.clone());
+        }
+        rec_app = Term::app(rec_app, Term::Var(0));
+        let p = Term::lam(a_ty_c.clone(), rec_app);
+        // absurd : P rhs (≡ False), via Eq.rec.{eq_lvl,0} A lhs (λ y _. P y) True.intro rhs heq.
+        let eq_motive = Term::lam(
+            a_ty.clone(),
+            Term::lam(
+                Term::apps(Term::cnst(name("Eq"), vec![eq_lvl.clone()]), [a_ty.lift(1, 0), lhs.lift(1, 0), Term::Var(0)]),
+                Term::app(p.lift(2, 0), Term::Var(1)),
+            ),
+        );
+        let absurd_false = Term::apps(
+            Term::cnst(name("Eq.rec"), vec![eq_lvl.clone(), Level::Zero]),
+            [
+                a_ty.clone(),
+                lhs.clone(),
+                eq_motive,
+                Term::cnst(name("True.intro"), vec![]),
+                rhs.clone(),
+                Term::Var(eq_var),
+            ],
+        );
+        let goal_z = self.metas.zonk(goal).unwrap_or_else(|_| goal.clone());
+        let goal_lvl = Checker::new(self.env)
+            .infer_sort(&mut self.local_ctx(), &goal_z)
+            .map_err(|e| format!("conflict-discharge: goal sort: {e}"))?;
+        let false_motive = Term::lam(Term::cnst(name("False"), vec![]), goal_z.lift(1, 0));
+        Ok(Some(Term::apps(
+            Term::cnst(name("False.rec"), vec![goal_lvl]),
+            [false_motive, absurd_false],
+        )))
     }
 
     /// Compile a `match` on a member of a **mutual** inductive group via its multi-motive
@@ -1163,7 +1388,7 @@ impl<'a> Infer<'a> {
                         .iter()
                         .find(|a| a.pat.as_flat().is_some_and(|(c, _)| c == &**cname))
                         .ok_or_else(|| format!("non-exhaustive `match`: no arm for '{cname}'"))?;
-                    self.build_minor(&group, ls, k, cname, &minor_ty, arm)?
+                    self.build_minor(&group, ls, k, cname, &minor_ty, Some(arm), 0)?
                 } else {
                     self.build_dummy_minor(&group, ls, k, cname, &minor_ty)?
                 };
@@ -1685,6 +1910,48 @@ fn occurs_const(n: &str, t: &Term) -> bool {
         Term::Lam(d, b) | Term::Pi(_, d, b) => occurs_const(n, d) || occurs_const(n, b),
         Term::Let(x, y, z) => occurs_const(n, x) || occurs_const(n, y) || occurs_const(n, z),
         Term::Sort(_) | Term::Var(_) | Term::Meta(_) => false,
+    }
+}
+
+/// Does any `match` arm use a structural-recursion induction hypothesis (`<field>.rec`)?
+/// The dependent-pattern-matching index-equation telescope pollutes those IHs (they would gain
+/// the outer-index equations), so it is only applied to *pure case analysis* — matches that
+/// don't recurse. (Inversions, which is where the refinement is wanted, never use `.rec`.)
+fn arm_uses_rec(arms: &[crate::surface::MatchArm]) -> bool {
+    arms.iter().any(|a| expr_uses_dot_rec(&a.body))
+}
+fn expr_uses_dot_rec(e: &crate::surface::Expr) -> bool {
+    use crate::surface::Expr::*;
+    match e {
+        Var(s, _) => s.ends_with(".rec"),
+        App(a, b) | Arrow(a, b) | EqOp(a, b) | Rewrite(a, b) => {
+            expr_uses_dot_rec(a) || expr_uses_dot_rec(b)
+        }
+        Lam(b, body) | Pi(b, body) => expr_uses_dot_rec(&b.ty) || expr_uses_dot_rec(body),
+        Let(_, ty, v, body) => {
+            ty.as_ref().is_some_and(|t| expr_uses_dot_rec(t))
+                || expr_uses_dot_rec(v)
+                || expr_uses_dot_rec(body)
+        }
+        Match(s, arms) => expr_uses_dot_rec(s) || arm_uses_rec(arms),
+        ByCases(a, b, c) => expr_uses_dot_rec(a) || expr_uses_dot_rec(b) || expr_uses_dot_rec(c),
+        Spanned(_, inner) => expr_uses_dot_rec(inner),
+        Type(_) | Prop | Sort(_) | Hole | Decide => false,
+    }
+}
+
+/// A term with no free (de Bruijn) variables — a closed type. Used to gate the
+/// dependent-pattern-matching index-equation telescope to simple (non-dependent) index
+/// domains, where the equation `Eq Jⱼ idxⱼ iⱼ` needs no lifting of `Jⱼ`.
+fn is_closed_at(t: &Term, depth: usize) -> bool {
+    match t {
+        Term::Var(i) => *i < depth,
+        Term::Sort(_) | Term::Const(..) | Term::Meta(_) => true,
+        Term::App(f, a) => is_closed_at(f, depth) && is_closed_at(a, depth),
+        Term::Lam(d, b) | Term::Pi(_, d, b) => is_closed_at(d, depth) && is_closed_at(b, depth + 1),
+        Term::Let(x, y, z) => {
+            is_closed_at(x, depth) && is_closed_at(y, depth) && is_closed_at(z, depth + 1)
+        }
     }
 }
 

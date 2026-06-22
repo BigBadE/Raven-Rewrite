@@ -120,6 +120,11 @@ fn reflect() {
 }
 
 #[test]
+fn dependent_match() {
+    check("dependent_match.rv");
+}
+
+#[test]
 fn stlc_preservation() {
     // The autosubst substitution lemma (weakening + sub_lemma) — the hard core of STLC
     // preservation, in Rust-like .rv. (Final inversion-based assembly is WIP.)

@@ -1,0 +1,34 @@
+// Dependent pattern matching with index unification (`rvc --verify`). When a `match` arm's
+// constructor indices can't equal the scrutinee's actual indices, the arm is **auto-discharged**
+// (proved unreachable by no-confusion) — impossible cases need no hand-written refutation, and a
+// fully-impossible scrutinee yields `False` directly via an empty `match`.
+
+enum Nat { Zero, Succ(Nat) }
+enum Ty  { TNat, TBool }
+enum Tm  { Lit(Nat), Plus(Tm, Tm) }
+enum Ctx { Nil, Cons(Ty, Ctx) }
+
+enum HasTy(e: Tm, t: Ty) -> Prop {
+    TLit(n: Nat) where e == Tm::Lit(n), t == Ty::TNat;
+    TPlus(a: Tm, b: Tm, ha: HasTy(a, Ty::TNat), hb: HasTy(b, Ty::TNat))
+        where e == Tm::Plus(a, b), t == Ty::TNat;
+}
+
+// A literal is never `TBool` (TLit forces TNat — a type-index clash) and is never a `Plus`
+// (a term-index clash). Both constructors are impossible, so this empty match type-checks:
+// each arm is discharged by no-confusion. No manual discriminator anywhere.
+fn lit_not_bool(h: HasTy(Tm::Lit(Nat::Zero), Ty::TBool)) -> False {
+    match h { }
+}
+
+// Variable lookup in the empty context is absurd: both `Lookup` constructors require a `Cons`
+// context, which clashes with `Nil`. Auto-discharged.
+enum Lookup(g: Ctx, n: Nat, t: Ty) -> Prop {
+    Here(gg: Ctx, ty: Ty)
+        where g == Ctx::Cons(ty, gg), n == Nat::Zero, t == ty;
+    There(gg: Ctx, ty0: Ty, k: Nat, ty: Ty, h: Lookup(gg, k, ty))
+        where g == Ctx::Cons(ty0, gg), n == Nat::Succ(k), t == ty;
+}
+fn no_lookup_in_nil(n: Nat, t: Ty, h: Lookup(Ctx::Nil, n, t)) -> False {
+    match h { }
+}
