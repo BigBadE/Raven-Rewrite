@@ -45,6 +45,11 @@ fn generic_stdlib() {
 }
 
 #[test]
+fn decide_reflection() {
+    check("decide_demo.rv");
+}
+
+#[test]
 fn bool_logic() {
     check("bool_logic.rv");
 }

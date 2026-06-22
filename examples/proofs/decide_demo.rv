@@ -1,0 +1,44 @@
+// The `by_decide` reflection tactic, end-to-end in Rust-like Raven. `by_decide` discharges a
+// goal `p` by (1) resolving a `Decidable<p>` instance, (2) *computing* its decision, and
+// (3) reflecting a `true` result back into a proof via `of_decide_eq_true` — no hand-written
+// proof term. Here `Decidable` is a generic `enum` (the proposition is a real parameter), and
+// the decision procedure / instance below are all the surface needs. (`rvc --verify`.)
+
+enum Bool { false, true }
+
+// `Decidable<p>` : a decision carries either a proof of `p` (`IsTrue`) or a refutation
+// (`IsFalse`). `p` is a uniform parameter, so the recursor large-eliminates to compute a Bool.
+enum Decidable<p: Prop> -> Type {
+    IsFalse(np: p -> False);
+    IsTrue(hp: p);
+}
+
+// Read a decision off as a Bool (large elimination: `Decidable` lives in `Type`).
+fn decide(p: Prop, d: Decidable<p>) -> Bool {
+    match d { | Decidable::IsFalse(np) => Bool::false | Decidable::IsTrue(hp) => Bool::true }
+}
+
+// Bool no-confusion: `false` and `true` are distinct.
+fn is_false_b(b: Bool) -> Prop { match b { | Bool::false => True | Bool::true => False } }
+fn ff_ne_tt(h: Bool::false == Bool::true) -> False {
+    subst(Bool, is_false_b, Bool::false, Bool::true, h, True::intro)
+}
+
+// The reflection linchpin: a `true` decision certificate yields a proof of `p`. The equation
+// `decide p d == true` mentions `d`, so it is convoyed through the match on `d`.
+fn of_decide_eq_true(p: Prop, d: Decidable<p>, h: decide(p, d) == Bool::true) -> p {
+    let go : (he: decide(p, d) == Bool::true) -> p :=
+        match d {
+          | Decidable::IsFalse(np) => fun (he: Bool::false == Bool::true) =>
+              False::rec(fun (z: False) => p, ff_ne_tt(he))
+          | Decidable::IsTrue(hp) => fun (he: Bool::true == Bool::true) => hp
+        }
+    in go(h)
+}
+
+// An instance the resolver can find: `True` is decidable (it just holds).
+instance decTrue : Decidable<True> := Decidable::IsTrue(True, True::intro)
+
+// `by_decide` resolves `decTrue`, computes `decide True decTrue == true`, and reflects it
+// back into an actual proof of `True` — the whole point of decision-procedure reflection.
+fn trivially_true() -> True { by_decide }
