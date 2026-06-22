@@ -42,6 +42,14 @@ fn decide_reflection() {
     check("decide_demo.rv");
 }
 
+/// Machine types (Bool algebra, a 1-bit wrapping adder proved equal to mod-2 arithmetic,
+/// signed-int negation) modeled in Raven and kernel-checked — the kernel gains no native
+/// machine support. Demonstrates the unified trust architecture.
+#[test]
+fn machine_model() {
+    check("machine.rv");
+}
+
 #[test]
 fn bool_logic() {
     check("bool_logic.rv");

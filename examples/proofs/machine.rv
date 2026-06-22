@@ -1,0 +1,106 @@
+// Machine types, MODELED IN RAVEN — not built into the kernel.
+//
+// This file is the concrete demonstration of the unified trust architecture: the runtime
+// language's primitive types (booleans, words, signed integers, their arithmetic, and even
+// *overflow*) are ordinary `enum`s and `fn`s, and their laws are ordinary theorems the kernel
+// checks. The kernel gains NOTHING — no `i64`, no wraparound, no native ops. It stays the tiny
+// dependent core; everything machine-shaped is a definition compiled down to inductives and
+// functions it already understands.
+//
+// The one thing that is NOT proved here, and cannot be, is the *realization*: that the VM's
+// native machine `add` computes the same function as the modeled `wadd` below. That link lives
+// at the codegen boundary as an explicit, auditable assumption (see docs/trust-architecture.md),
+// outside the kernel — exactly where every verified system (Lean's `@[extern]`, CompCert's
+// trusted I/O) puts it. Grow the realization layer, never the kernel. (`rvc --verify`.)
+
+enum Bool { false, true }
+enum Nat  { Zero, Succ(Nat) }
+
+// ----- Boolean algebra: defined, with laws proved -----------------------------------------
+
+fn bnot(b: Bool) -> Bool { match b { | Bool::false => Bool::true | Bool::true => Bool::false } }
+
+fn xor(a: Bool, b: Bool) -> Bool {
+    match a { | Bool::false => b | Bool::true => bnot(b) }
+}
+
+// Negation is an involution — `!!b == b`, by case analysis (the kernel computes each branch).
+fn bnot_bnot(b: Bool) -> bnot(bnot(b)) == b {
+    match b {
+      | Bool::false => Eq::refl(Bool, Bool::false)
+      | Bool::true  => Eq::refl(Bool, Bool::true)
+    }
+}
+
+// `!(x ⊕ y) == (!x) ⊕ y` — the lemma that lets negation move through the wrapping adder.
+fn xor_bnot_l(x: Bool, y: Bool) -> bnot(xor(x, y)) == xor(bnot(x), y) {
+    match x {
+      | Bool::false => Eq::refl(Bool, bnot(y))
+      | Bool::true  => bnot_bnot(y)
+    }
+}
+
+// ----- A 1-bit machine word: wrapping addition is a DEFINITION, proved correct ------------
+//
+// A 1-bit word is a `Bool`; its "value mod 2" of an arbitrary `Nat` is the parity bit. The
+// 1-bit *wrapping* adder is `xor`. The theorem `wrap_add_correct` proves that this overflowing
+// hardware-style adder agrees with the mathematical spec "reduce the true sum mod 2" — i.e.
+// overflow is not magic, it is modular arithmetic, and we can prove it.
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+
+// `bit(n)` = n mod 2 (the low bit), defined by toggling down the unary numeral.
+fn bit(n: Nat) -> Bool {
+    match n { | Nat::Zero => Bool::false | Nat::Succ(k) => bnot(bit(k)) }
+}
+
+// THE correctness theorem for 1-bit wrapping addition:
+//   bit(a + b)  ==  bit(a) ⊕ bit(b)
+// "the low bit of the (possibly overflowing) sum equals the xor of the low bits" — by
+// induction on `a`. The `Succ` step threads the IH through `bnot` (a congruence) and then
+// slides `bnot` across the `xor` via `xor_bnot_l`.
+fn wrap_add_correct(a: Nat, b: Nat) -> bit(plus(a, b)) == xor(bit(a), bit(b)) {
+    match a {
+      | Nat::Zero    => Eq::refl(Bool, bit(b))
+      | Nat::Succ(k) =>
+          trans(Bool,
+                bnot(bit(plus(k, b))),
+                bnot(xor(bit(k), bit(b))),
+                xor(bnot(bit(k)), bit(b)),
+                congr_arg(Bool, Bool, bnot, bit(plus(k, b)), xor(bit(k), bit(b)),
+                          wrap_add_correct(k, b)),
+                xor_bnot_l(bit(k), bit(b)))
+    }
+}
+
+// ----- Signed integers, modeled (the standard Pos / NegSucc encoding) ----------------------
+//
+// `Int` is `Pos(n) = n` or `NegSucc(n) = -(n+1)` — a faithful model of the signed integers
+// with no kernel support whatsoever. Negation is defined; we prove it is an involution.
+
+enum Int { Pos(Nat), NegSucc(Nat) }
+
+fn pred_nat(n: Nat) -> Int {
+    match n { | Nat::Zero => Int::NegSucc(Nat::Zero) | Nat::Succ(k) => Int::Pos(k) }
+}
+
+fn ineg(x: Int) -> Int {
+    match x {
+      | Int::Pos(n)     => match n { | Nat::Zero => Int::Pos(Nat::Zero) | Nat::Succ(k) => Int::NegSucc(k) }
+      | Int::NegSucc(n) => Int::Pos(Nat::Succ(n))
+    }
+}
+
+// `-(-x) == x` for every integer, by case analysis (the `Pos` case splits on zero vs successor).
+fn ineg_ineg(x: Int) -> ineg(ineg(x)) == x {
+    match x {
+      | Int::Pos(n) =>
+          match n {
+            | Nat::Zero    => Eq::refl(Int, Int::Pos(Nat::Zero))
+            | Nat::Succ(k) => Eq::refl(Int, Int::Pos(Nat::Succ(k)))
+          }
+      | Int::NegSucc(n) => Eq::refl(Int, Int::NegSucc(n))
+    }
+}
