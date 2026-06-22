@@ -217,12 +217,21 @@ dependent work, so we front it with Rust-like syntax and migrate the embedded pr
   crates load them from disk instead of string literals. *All Raven code lives in `.rv`.*
 - **Stage 3 — refinement types + auto-discharge**: `where` on types, flow-sensitive
   refinement, `requires`/`ensures` as type-level refinements, routed to `rv-solve`.
-- **Stage 4 — executable language fills the gaps**: strings + `print`, floats, closures, a
-  `.rv` prelude.
-- **Stage 5 — effect rows + handlers** on the CBPV layer.
+- **Stage 4 — executable language fills the gaps** *(done)*: strings + `print`, floats, and
+  closures (`|x| body` with capture, lambda-lifted) all run on the VM.
+- **Stage 5 — effect rows + handlers** on the CBPV layer. *(Kernel CBPV layer present; the
+  executable `effect`/`uses`/`handle` surface + runtime handler dispatch are still to do.)*
 - **Stage 6 — unify the two backends under QTT** so a single `.rv` file mixes runtime code
-  and erased proofs, split automatically by grade.
+  and erased proofs, split automatically by grade. *(The unified type system is demonstrated —
+  the kernel both checks AND runs the modeled fragment, see `examples/proofs/unified.rv`. A
+  single file mixing the executable runtime syntax with proof syntax additionally needs the two
+  surface parsers unified.)*
 - **Stage 7 — kernel growth** (indexed-mutual, coinduction) only as specific proofs demand.
+
+The trust discipline behind all of this — model machine types/refs/effects/partiality in `.rv`
+and compile down to the tiny kernel, never growing it — is written up in
+[`trust-architecture.md`](trust-architecture.md), with worked, kernel-checked examples
+(`machine.rv`, `heap.rv`, `word.rv`, `partial.rv`, `realization.rv`).
 
 Soundness is preserved throughout: new surface and lowering live *outside* the trust base, so
 any bug is a rejected program, never an unsound "verified".

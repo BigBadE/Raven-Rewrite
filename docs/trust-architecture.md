@@ -74,11 +74,19 @@ a standing requirement for ints/refs/effects/partiality.
 ## 5. Status
 
 - ✅ Rust frontend removed — one source language, `.rv`.
-- ✅ Modeling pattern demonstrated and kernel-checked (`machine.rv`): no kernel growth.
+- ✅ Modeling pattern demonstrated and kernel-checked, no kernel growth: `machine.rv` (bool
+  algebra, 1-bit wrapping adder proved = mod-2), `word.rv` (the wrapping adder is a commutative
+  group), `heap.rv` (McCarthy read-over-write laws for `Addr -> Option<Val>`).
+- ✅ `partial.rv`: the partiality membrane as a *type* — a divergent `Partial<Empty>` is
+  constructible but unforceable, so a total kernel hosts a Turing-complete runtime, soundly.
+- ✅ `realization.rv`: the realization trust list made explicit (the model↔native `axiom`s).
+- ✅ The unified type system: the kernel both **checks and evaluates** the modeled fragment
+  (`unified.rv`).
 - ✅ Generic `enum` parameters, proved-once generic stdlib, reflection — the proof surface.
-- ⏳ Frontier: model `iN`/`uN` and the heap fully; route the runtime fragment's type-checking
-  through the kernel + models (Stage 6 QTT unification); enumerate the realization axioms as a
-  checked list; add the `Partial<A>` library.
+- ✅ Executable surface Stage 4: strings, floats, closures, `print` run on the VM.
+- ⏳ Frontier: executable algebraic effects (`effect`/`uses`/`handle` + a VM handler stack with
+  resumption); unify the executable and proof *parsers* so one file mixes runtime syntax and
+  proof syntax (the remaining half of Stage 6 — the type system is already unified).
 
 The discipline in one line: **grow the realization layer and the `.rv` libraries, never the
 kernel.**
