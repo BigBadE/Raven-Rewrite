@@ -1,0 +1,58 @@
+// The realization layer, made EXPLICIT and auditable.
+//
+// Everything else in examples/proofs/ is *proved*. This file is the opposite: it enumerates
+// the small set of assumptions that are *trusted* — the links between a modeled operation
+// (a Raven definition, with proved laws) and the native machine operation that the codegen
+// backend emits in its place for speed. These are `axiom`s: the kernel accepts them without
+// proof, so each one is a visible, greppable trust commitment. The honesty claim of the whole
+// system is "the trust base = the kernel + exactly the axioms in files like this one" — so
+// keeping the list short and explicit is the point. (`rvc --verify` accepts the axioms.)
+//
+// Audit rule: `grep '^axiom' examples/proofs/realization.rv` is the complete realization
+// trust list for the modeled fragment. Every such axiom should pair a proved model function
+// with the native op that replaces it, and assert they compute the same result.
+
+enum Nat  { Zero, Succ(Nat) }
+enum Bool { false, true }
+
+// ---- the MODEL side: ordinary defined functions (their laws are proved elsewhere) ---------
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+fn bnot(b: Bool) -> Bool { match b { | Bool::false => Bool::true | Bool::true => Bool::false } }
+
+// ---- the NATIVE side: opaque operations the VM/codegen provides (declared, not defined) ----
+//
+// `axiom` here means "the kernel knows this constant exists and has this type, but nothing
+// about how it computes." It stands for the machine instruction.
+
+axiom native_add : Nat -> Nat -> Nat
+axiom native_not : Bool -> Bool
+
+// ---- the REALIZATION axioms: the trusted bridge (model == native), explicit and countable --
+//
+// Each asserts that running the fast native op gives the same answer as the proved model.
+// THIS is the part that a verified-compiler effort (CompCert-style) would later discharge,
+// shrinking the trust list to empty. Until then, these are the assumptions.
+
+axiom realize_add : (a : Nat) -> (b : Nat) -> native_add a b == plus a b
+axiom realize_not : (b : Bool) -> native_not b == bnot b
+
+// A consumer can rely on the bridge transparently: a fact proved about the MODEL transfers to
+// the NATIVE op by rewriting with the realization axiom. (Demonstrates the axioms are usable,
+// not just declared.) Here: `native_not (native_not b) == b`, via `realize_not` twice + the
+// proved model involution `bnot (bnot b) == b`.
+fn bnot_bnot(b: Bool) -> bnot(bnot(b)) == b {
+    match b { | Bool::false => Eq::refl(Bool, Bool::false) | Bool::true => Eq::refl(Bool, Bool::true) }
+}
+fn native_not_not(b: Bool) -> native_not(native_not(b)) == b {
+    // native_not (native_not b) == native_not (bnot b)   [realize_not on the inner]
+    //                           == bnot (bnot b)          [realize_not on the outer]
+    //                           == b                      [proved model law]
+    trans(Bool, native_not(native_not(b)), bnot(bnot(b)), b,
+          trans(Bool, native_not(native_not(b)), native_not(bnot(b)), bnot(bnot(b)),
+                congr_arg(Bool, Bool, native_not, native_not(b), bnot(b), realize_not(b)),
+                realize_not(bnot(b))),
+          bnot_bnot(b))
+}

@@ -1,0 +1,59 @@
+// A mutable heap, MODELED IN RAVEN as a pure function `Addr -> Option<Val>`, with the classic
+// McCarthy read-over-write laws PROVED. This is how references / `&mut` are given meaning
+// without any kernel notion of mutable state: the store is a value, `write` returns an updated
+// store, and the laws that make pointer reasoning sound are theorems. (`rvc --verify`.)
+//
+//   read (write h a v) a == Some v                    -- you read back what you wrote
+//   read (write h a v) b == read h b   (when b ≠ a)   -- a write elsewhere is invisible
+
+enum Nat { Zero, Succ(Nat) }
+enum Bool { false, true }
+enum Option<A: Type> { None, Some(A) }
+
+// Decidable address equality (addresses are `Nat`), and its reflexivity. Curried so the
+// structural recursion is on the first address and the second may vary independently.
+fn beq(a: Nat) -> (Nat -> Bool) {
+    match a {
+      | Nat::Zero    => fun (b: Nat) => match b { | Nat::Zero => Bool::true  | Nat::Succ(k) => Bool::false }
+      | Nat::Succ(j) => fun (b: Nat) => match b { | Nat::Zero => Bool::false | Nat::Succ(k) => beq(j)(k) }
+    }
+}
+
+fn beq_refl(a: Nat) -> beq(a)(a) == Bool::true {
+    match a {
+      | Nat::Zero    => Eq::refl(Bool, Bool::true)
+      | Nat::Succ(j) => beq_refl(j)
+    }
+}
+
+// The heap and its operations. `Heap<A> = Nat -> Option<A>`; `write` shadows address `a`.
+fn read(A: Type, h: Nat -> Option<A>, addr: Nat) -> Option<A> { h(addr) }
+
+fn write(A: Type, h: Nat -> Option<A>, a: Nat, v: A) -> (Nat -> Option<A>) {
+    fun (q: Nat) => match beq(q)(a) { | Bool::true => Option::Some(A, v) | Bool::false => h(q) }
+}
+
+// READ-OVER-WRITE (same address): reading the just-written address yields the written value.
+// `read (write h a v) a` reduces to `match beq(a)(a) { true => Some v | false => h(a) }`; since
+// `beq(a)(a) == true`, transport the trivial `match true => Some v` proof back along it.
+fn read_write_same(A: Type, h: Nat -> Option<A>, a: Nat, v: A)
+    -> read(A, write(A, h, a, v), a) == Option::Some(A, v)
+{
+    subst(Bool,
+          fun (x: Bool) => (match x { | Bool::true => Option::Some(A, v) | Bool::false => h(a) }) == Option::Some(A, v),
+          Bool::true, beq(a)(a),
+          symm(Bool, beq(a)(a), Bool::true, beq_refl(a)),
+          Eq::refl(Option<A>, Option::Some(A, v)))
+}
+
+// READ-OVER-WRITE (other address): a write to `a` is invisible when reading `b ≠ a`. The
+// disequality is supplied as the computational fact `beq(b)(a) == false`.
+fn read_write_other(A: Type, h: Nat -> Option<A>, a: Nat, b: Nat, v: A, hb: beq(b)(a) == Bool::false)
+    -> read(A, write(A, h, a, v), b) == read(A, h, b)
+{
+    subst(Bool,
+          fun (x: Bool) => (match x { | Bool::true => Option::Some(A, v) | Bool::false => h(b) }) == h(b),
+          Bool::false, beq(b)(a),
+          symm(Bool, beq(b)(a), Bool::false, hb),
+          Eq::refl(Option<A>, h(b)))
+}

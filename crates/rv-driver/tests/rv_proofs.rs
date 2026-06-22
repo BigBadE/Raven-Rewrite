@@ -58,6 +58,27 @@ fn partial_membrane() {
     check("partial.rv");
 }
 
+/// The realization layer made explicit: the trusted model↔native `axiom`s, with a proof that a
+/// model law transfers to the native op through them. The complete realization trust list.
+#[test]
+fn realization_axioms() {
+    check("realization.rv");
+}
+
+/// A mutable heap modeled as `Addr -> Option<Val>` with the McCarthy read-over-write laws
+/// proved — how references get meaning with no kernel notion of mutable state.
+#[test]
+fn heap_laws() {
+    check("heap.rv");
+}
+
+/// A bounded machine word: the 1-bit wrapping adder proved to be a commutative group
+/// (identity, self-inverse, commutativity, associativity) — overflow arithmetic's algebra.
+#[test]
+fn word_algebra() {
+    check("word.rv");
+}
+
 #[test]
 fn bool_logic() {
     check("bool_logic.rv");

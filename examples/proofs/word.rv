@@ -1,0 +1,54 @@
+// Bounded machine words, MODELED IN RAVEN: the 1-bit word and its WRAPPING adder (`xor`), with
+// the algebraic structure of overflow arithmetic PROVED — it is a commutative group: closed,
+// associative, commutative, with identity `0` and every element its own inverse (`x + x = 0`,
+// i.e. wrapping `1 + 1 = 0`). This is the verified meaning a native 1-bit `add` realizes; the
+// same shape (`mod 2^n`) generalizes to wider words. (`rvc --verify`.)
+
+enum Bool { false, true }
+
+fn bnot(b: Bool) -> Bool { match b { | Bool::false => Bool::true | Bool::true => Bool::false } }
+
+fn bnot_bnot(b: Bool) -> bnot(bnot(b)) == b {
+    match b { | Bool::false => Eq::refl(Bool, Bool::false) | Bool::true => Eq::refl(Bool, Bool::true) }
+}
+
+// The 1-bit wrapping adder: `xor`. (`xor(true, true) == false` — the overflow carry is dropped.)
+fn wadd(a: Bool, b: Bool) -> Bool { match a { | Bool::false => b | Bool::true => bnot(b) } }
+
+// Identity: `x + 0 == x` (0 = false). On the left it is definitional; on the right needs a case.
+fn wadd_id_r(b: Bool) -> wadd(b, Bool::false) == b {
+    match b { | Bool::false => Eq::refl(Bool, Bool::false) | Bool::true => Eq::refl(Bool, Bool::true) }
+}
+
+// Self-inverse: `x + x == 0` — wrapping `1 + 1` overflows to `0`.
+fn wadd_inv(b: Bool) -> wadd(b, b) == Bool::false {
+    match b { | Bool::false => Eq::refl(Bool, Bool::false) | Bool::true => Eq::refl(Bool, Bool::false) }
+}
+
+// Commutativity: `a + b == b + a`, by case analysis on both bits.
+fn wadd_comm(a: Bool, b: Bool) -> wadd(a, b) == wadd(b, a) {
+    match a {
+      | Bool::false =>
+          match b { | Bool::false => Eq::refl(Bool, Bool::false) | Bool::true => Eq::refl(Bool, Bool::true) }
+      | Bool::true =>
+          match b { | Bool::false => Eq::refl(Bool, Bool::true) | Bool::true => Eq::refl(Bool, Bool::false) }
+    }
+}
+
+// Associativity: `(a + b) + c == a + (b + c)`, by case analysis on `a` then `b` (the `c` bit
+// is carried symbolically — each branch reduces both sides to the same function of `c`).
+fn wadd_assoc(a: Bool, b: Bool, c: Bool) -> wadd(wadd(a, b), c) == wadd(a, wadd(b, c)) {
+    match a {
+      | Bool::false =>
+          match b {
+            | Bool::false => Eq::refl(Bool, c)
+            | Bool::true  => Eq::refl(Bool, bnot(c))
+          }
+      | Bool::true =>
+          match b {
+            | Bool::false => Eq::refl(Bool, bnot(c))
+            // LHS = c, RHS = bnot(bnot c): wrapping `1+1=0` makes the carry cancel.
+            | Bool::true  => symm(Bool, bnot(bnot(c)), c, bnot_bnot(c))
+          }
+    }
+}
