@@ -104,6 +104,19 @@ fn map_length(A: Type, B: Type, f: A -> B, xs: List<A>)
     }
 }
 
+// `append` is associative — once, for every element type, by induction on the first list.
+fn append_assoc(A: Type, xs: List<A>, ys: List<A>, zs: List<A>)
+    -> append(A, append(A, xs, ys), zs) == append(A, xs, append(A, ys, zs))
+{
+    match xs {
+      | List::Nil           => Eq::refl(List<A>, append(A, ys, zs))
+      | List::Cons(x, rest) =>
+          congr_arg(List<A>, List<A>, fun (l: List<A>) => List::Cons(A, x, l),
+                    append(A, append(A, rest, ys), zs), append(A, rest, append(A, ys, zs)),
+                    append_assoc(A, rest, ys, zs))
+    }
+}
+
 // `map` is functorial: it commutes with `append` (map distributes over concatenation).
 fn map_append(A: Type, B: Type, f: A -> B, xs: List<A>, ys: List<A>)
     -> map(A, B, f, append(A, xs, ys)) == append(B, map(A, B, f, xs), map(A, B, f, ys))

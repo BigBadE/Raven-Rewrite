@@ -29,16 +29,9 @@ fn compiler_correctness() {
     check("compiler_correctness.rv");
 }
 
-#[test]
-fn list_lib() {
-    check("list.rv");
-}
-
-#[test]
-fn generic_list_lib() {
-    check("generic_list.rv");
-}
-
+// The generic `stdlib.rv` subsumes the old monomorphic `list.rv` / `list_map.rv` /
+// `append_assoc.rv`: it proves length_append, map_length, map_append and append_assoc once,
+// for *every* element type.
 #[test]
 fn generic_stdlib() {
     check("stdlib.rv");
@@ -72,16 +65,6 @@ fn type_soundness() {
 #[test]
 fn optimizer() {
     check("optimizer.rv");
-}
-
-#[test]
-fn list_map() {
-    check("list_map.rv");
-}
-
-#[test]
-fn append_assoc() {
-    check("append_assoc.rv");
 }
 
 #[test]

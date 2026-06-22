@@ -20,9 +20,8 @@ prelude, [`crates/rv-driver/prelude.rv`](../../crates/rv-driver/prelude.rv), whi
 | `arith_assoc.rv`       | associativity of `+` | induction |
 | `mul.rv`               | `n * 0 == 0`, lemma composition | induction, `subst` |
 | `bool_logic.rv`        | `not_not`, `and_false` | case analysis |
-| `list.rv`              | `length (xs ++ ys) == len xs + len ys` | induction |
-| `append_assoc.rv`      | `(xs ++ ys) ++ zs == xs ++ (ys ++ zs)` | induction |
-| `list_map.rv`          | `length (map f xs) == length xs` | induction, **higher-order** `f` |
+| `stdlib.rv`            | a **generic, proved-once** library: `Option`/`Pair`/`List` with `length`/`append`/`map`/`nth`, and the lemmas `length_append`, `map_length`, `map_append`, `append_assoc`, `pair_eta` | **generic `enum<A>` parameters** — every lemma holds for *all* element types; the convoy/curried `nth` |
+| `decide_demo.rv`       | `by_decide` discharges `True` by reflection | **generic `Decidable<p>`**, instance resolution, `of_decide_eq_true` certificate convoy |
 | `optimizer.rv`         | `eval (opt e) == eval e` (constant folding) | induction, `trans`/`congr_arg` |
 | `indexed_relation.rv`  | `Plus` (graph of `+`) + structural induction | **indexed `enum`**, `.rec` |
 | `mutual_trees.rv`      | `Tree`/`Forest` sizes (computes) | **mutual `enum`s**, mutual recursion |
