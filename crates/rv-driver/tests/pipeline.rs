@@ -39,6 +39,16 @@ fn refinement_precondition_discharges_div() {
     assert!(report.obligations.iter().any(|o| o.origin.contains("division")));
 }
 
+/// Type soundness: a `bool` body under an `-> i64` signature is a static type error
+/// (the executable checker enforces primitive return types, not just structure).
+#[test]
+fn bool_body_under_int_return_is_rejected() {
+    assert!(verify("fn main() -> i64 { return true; }").is_err());
+    assert!(verify("fn f() -> bool { return 3; }").is_err());
+    // ...but a correct bool-returning function is fine.
+    assert!(verify("fn p(x: i64) -> bool { return x > 0; }").is_ok());
+}
+
 /// Soundness guard: a division with no precondition must NOT verify (x could be 0).
 #[test]
 fn unguarded_division_is_not_verified() {

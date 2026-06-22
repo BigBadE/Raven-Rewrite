@@ -181,6 +181,14 @@ fn infer_function(
         }
     }
 
+    // Soundness: if the signature *declared* a return type, the body must agree with it.
+    // We enforce this conservatively — only between *primitive scalars* — so a `bool` body
+    // under an `-> i64` signature (and vice versa) is rejected, while ADT/ref/opaque returns
+    // (whose operand type may be defaulted) are left to the existing lenient inference.
+    if let Some(declared) = &f.ret {
+        check_scalar_return(&ret, declared)?;
+    }
+
     // Any local still unknown defaults to `Int` (the pragmatic default for the slice;
     // a local with no defining assignment we can pin is treated as a numeric).
     let locals = f
@@ -452,6 +460,31 @@ fn int_result_ty(a: &Ty, b: &Ty) -> Option<Ty> {
         (Ty::IntN(w), _) | (_, Ty::IntN(w)) => Some(Ty::IntN(*w)),
         _ => Some(Ty::Int),
     }
+}
+
+/// Classify a type as a primitive scalar: `Some(true)` = boolean, `Some(false)` =
+/// integer-family (`Int`/`IntN`). Everything else (ADT, ref, unit, fn, param) is `None`.
+fn scalar_kind(t: &Ty) -> Option<bool> {
+    match t {
+        Ty::Bool => Some(true),
+        Ty::Int | Ty::IntN(_) => Some(false),
+        _ => None,
+    }
+}
+
+/// Reject a primitive-scalar return mismatch (the `bool` body / `-> i64` signature bug).
+/// Only fires when *both* the body's type and the declared type are primitive scalars and
+/// they disagree on the boolean/integer axis — `Int` vs `IntN` stays compatible, and any
+/// non-scalar (ADT/ref/opaque) is left to the lenient inference path.
+fn check_scalar_return(actual: &Ty, declared: &Ty) -> Result<(), String> {
+    if let (Some(a), Some(d)) = (scalar_kind(actual), scalar_kind(declared)) {
+        if a != d {
+            return Err(format!(
+                "type error in return type: signature declares {declared:?}, but the body returns {actual:?}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn check(got: &Ty, want: &Ty, ctx: &str) -> Result<(), String> {

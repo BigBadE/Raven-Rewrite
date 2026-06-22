@@ -126,6 +126,7 @@ fn lower_fn(
         &decl.requires,
         &decl.ensures,
         &decl.body,
+        decl.ret.as_ref(),
         types,
         syms,
         type_params,
@@ -175,7 +176,8 @@ fn lower_method(
         name: mangled,
         type_params,
         params,
-        ret: None,
+        // Declared return annotation (if any), for the body-vs-signature check in inference.
+        ret: decl.ret.as_ref().map(|t| types::resolve_ty(t, &scope)),
         pre,
         post,
         locals,
@@ -194,6 +196,7 @@ fn lower_callable(
     requires: &[AstExpr],
     ensures: &[AstExpr],
     body: &AstBlock,
+    ret_ann: Option<&rv_syntax::ast::Ty>,
     types: &Types,
     syms: &mut rv_core::Symbols,
     type_params: Vec<Sym>,
@@ -219,7 +222,10 @@ fn lower_callable(
         name,
         type_params,
         params,
-        ret: None, // Parsed phase: no type yet.
+        // Record the *declared* return annotation (if any) so inference can check the
+        // body against it — most importantly to reject a primitive mismatch like a
+        // `bool` body under an `-> i64` signature. `None` = unannotated (inferred).
+        ret: ret_ann.map(|t| types::resolve_ty(t, &scope)),
         pre,
         post,
         locals,
