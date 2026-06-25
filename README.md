@@ -20,7 +20,8 @@ source ──parse──▶ AST ──lower──▶ IR<Parsed> ──elaborate�
 cargo run -p rvc -- examples/div.rv --run     # VERIFIED, then main() = Int(5)
 cargo run -p rvc -- examples/recip.rv         # VERIFIED  (x > 0 ⟹ x != 0, via linear arithmetic)
 cargo run -p rvc -- examples/unsafe_div.rv    # NOT VERIFIED  (100/x with no precondition)
-cargo test                                    # 218 tests across the workspace
+cargo run -p rvc -- examples/mixed.rv --run   # one file: a kernel-checked theorem + a VM-run main()
+cargo test                                    # 344 tests across the workspace
 ```
 
 ## Crates (dependencies point downward; see `ARCHITECTURE.md`)
@@ -42,7 +43,7 @@ cargo test                                    # 218 tests across the workspace
 | `rv-db` | **salsa** incremental engine: source input + memoized, dependency-tracked pipeline queries | — |
 | `rv-kernel` | **dependent-type-theory kernel** + its Rust-like `.rv` surface (the verified-Raven proof path) | **trusted** |
 | `rv-driver` | pipeline orchestration: the executable `.rv` path via salsa, the verified `.rv` path via the kernel | — |
-| `rvc` | CLI (`rvc f.rv [--run]` to execute, `rvc f.rv --verify` to prove) | — |
+| `rvc` | CLI: `rvc f.rv [--run]` runs ONE unified pipeline — executable items verified by `rv-solve` (+ run on the VM) and proof items checked by the kernel, merged into one report (`--verify` just suppresses the run) | — |
 
 ## Design properties realized here
 
@@ -69,10 +70,17 @@ desugared to functions + resolved calls).
 Effects: **`panic`** (aborts the path), **`Result`/`Option` enums**, and the **`?` operator**
 (desugared to match + early-return).
 
-The **verified-Raven path** (`rvc f.rv --verify`) checks the same `.rv` surface through the
+The **verified-Raven path** checks the same `.rv` surface through the
 dependent kernel: `enum`s (data, indexed relations, generics `<A>`), proofs-as-functions,
 `requires`/`ensures`, refinement types, `match`/recursion compiled to recursors, and the
-reflection tactics. See `examples/proofs/` for the verified-math corpus.
+reflection tactics. See `examples/proofs/` for the verified-math corpus. As of the **unified
+driver**, this path is no longer a separate invocation: `rvc f.rv` classifies each item by
+fragment and routes executable items to `rv-solve`+VM and proof items to the kernel in one
+pass, so a single file can mix runtime code and proofs (`examples/mixed.rv`). Proofs erase to
+zero bytes at runtime (QTT proof irrelevance), and a proof-fragment entry point is erased,
+compiled to bytecode, and **run on the same VM** as executable code — recursors (including
+mutual groups like the CEK machine's Val/Env/Kont) compile to tag-switching functions and
+lambdas curry to closures (`rvc examples/proofs/cek_machine.rv --run --entry answer` → 3).
 
 **Array & `Vec` bounds are checked.** Every `a[i]` / `v[i]` (read or write) emits a bounds
 obligation (`0 <= i < len`): a fixed array against its static length, a `Vec` against its

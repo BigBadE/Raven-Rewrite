@@ -231,6 +231,40 @@ dependent work, so we front it with Rust-like syntax and migrate the embedded pr
   proof corpus + prelude verify through the one parser. (The kernel keeps an internal
   text parser only for its own unit tests, which exercise raw `Sort u`/`.{u}` universe syntax
   the language surface doesn't expose; it is no longer a language front-end.)
+
+  **Unified driver (one invocation, both backends).** `rvc f.rv` now runs a *single*
+  pipeline over one file. [`rv_syntax::classify`](../crates/rv-syntax/src/fragment.rs) splits
+  each item by fragment — executable, proof, or *shared* (a data type both backends need) —
+  and `rv_driver::analyze_unified` routes them: the executable fragment to the salsa pipeline
+  + `rv-solve` (run on the VM), the proof fragment to the dependent kernel, merged into one
+  report. `--verify` is no longer a separate pipeline — it only suppresses the run. A single
+  file may carry a runtime `main` *and* an inductive theorem and verify both at once
+  (`examples/mixed.rv`, `examples/shared_type.rv`).
+  - *Contract routing*: a `fn`'s spec goes to whichever backend owns it — a scalar spec
+    (`y != 0`, `p.v != 0`) stays on `rv-solve`; a dependent spec (`result == Nat::Succ(x)`)
+    is a kernel obligation.
+  - *Grade-driven erasure*: proofs erase to **nothing** by proof irrelevance (a term whose
+    type is a `Prop`), so they cost zero bytes at runtime while the computational core
+    survives as runtime code (`rv-kernel/src/erase.rs`; surfaced in the report's erasure
+    line). This is what makes "verification is type-checking, execution runs only the code"
+    literally hold.
+  - *Native execution on the VM*: a proof-fragment entry point is **erased and compiled to
+    bytecode** (`rv-driver/src/erased_vm.rs`) and run on `rv-vm` — the same engine as the
+    executable fragment. The compiler exploits two facts: all `match`/recursion is in
+    recursors (so def bodies are straight-line λ-calculus), and recursors are structural — a
+    switch on the constructor tag that calls the matching minor with each field followed by its
+    induction hypothesis (`sibling_recursor(motives, minors, field)`), exactly mirroring the
+    kernel's ι-rule. **Mutual** groups are handled: each member's recursor is synthesized with
+    all the group's motives and minors and cross-calls its siblings on recursive fields of
+    sibling types. Lambdas are curried to unary VM closures, so application is one argument at
+    a time and never mismatches arity. `examples/proofs/unified.rv`'s `compute = 2 + 3` runs
+    to `5`, and the CEK machine's `answer = (\x. x+1) 2` (mutual Val/Env/Kont + higher-order
+    closures) runs to `3` — both natively on the bytecode VM.
+  - *One value model + cross-check*: native execution and the kernel's trusted reducer both
+    yield the same `rv_vm::Value` (the driver asserts agreement in tests), flowing through one
+    `run` channel. Only **indexed** recursors (Prop relations, which are not runtime-evaluated)
+    remain on the NbE bridge as a safety net; every runtime entry in the corpus executes
+    natively on the VM. The executable and dependent fragments now share one reduction engine.
 - **Stage 7 — kernel growth** (indexed-mutual, coinduction) only as specific proofs demand.
 
 The trust discipline behind all of this — model machine types/refs/effects/partiality in `.rv`

@@ -78,6 +78,19 @@ impl<'a> Eraser<'a> {
         (0..i).filter(|&k| self.binders[n - 1 - k].1).count()
     }
 
+    /// Is `expected` a proposition — i.e. does its type normalize to `Prop` (`Sort 0`)?
+    /// A term of such a type is proof-irrelevant and erases to nothing. Returns `false`
+    /// if the sort cannot be inferred (then ordinary erasure proceeds), so this can only
+    /// ever *drop* genuine proofs, never keep one that should be runtime.
+    fn expected_is_prop(&self, expected: &Term) -> bool {
+        match Checker::new(self.env).infer(&mut self.ctx(), expected) {
+            Ok(sort) => {
+                matches!(self.reducer().whnf(&sort), Term::Sort(l) if matches!(l.normalize(), crate::Level::Zero))
+            }
+            Err(_) => false,
+        }
+    }
+
     /// The grade-bearing type of a spine head.
     fn head_type(&self, head: &Term) -> Result<Term, String> {
         match head {
@@ -97,6 +110,14 @@ impl<'a> Eraser<'a> {
     }
 
     fn erase(&mut self, t: &Term, expected: &Term) -> Result<Erased, String> {
+        // Proof irrelevance: if `t`'s type is a proposition (`expected : Prop`), then `t`
+        // is a *proof* and carries no runtime content — erase it to nothing. This is the
+        // QTT/`Prop` erasure rule: proofs (and proof-returning functions, whose Π-type
+        // lands back in `Prop` by impredicativity) cost zero bytes at runtime, which is
+        // what justifies checking them in the kernel and running only what is left.
+        if self.expected_is_prop(expected) {
+            return Ok(Erased::Opaque);
+        }
         match t {
             // ζ: erase through a `let` by substitution.
             Term::Let(_, v, b) => self.erase(&b.instantiate(v), expected),

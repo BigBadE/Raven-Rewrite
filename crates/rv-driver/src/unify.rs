@@ -21,8 +21,15 @@ use rv_syntax::ast::{self, Expr, Item, Module, Pattern, Stmt, Ty};
 /// [`rv_kernel::verify::Session::set_source`].
 pub fn module_to_commands(m: &Module, syms: &Symbols) -> Result<Vec<(Command, (usize, usize))>, String> {
     let t = Tr { syms };
+    let frags = rv_syntax::classify(m);
     let mut out = Vec::new();
-    for item in &m.items {
+    for (item, frag) in m.items.iter().zip(&frags) {
+        // Only the proof fragment (and shared data types) is translated to kernel
+        // commands; executable-only items (`struct`/`trait`/`impl`, runtime `fn`s) are
+        // skipped — they are handled by the executable pipeline.
+        if !frag.is_proof() {
+            continue;
+        }
         out.push((t.item(item)?, (0, 0)));
     }
     Ok(out)

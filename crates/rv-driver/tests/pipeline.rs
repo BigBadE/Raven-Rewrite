@@ -416,3 +416,149 @@ fn unified_kernel_checks_and_runs() {
     // `compute` = 2 + 3 evaluates, through the kernel, to 5 = five Succs.
     assert_eq!(report.run.unwrap().unwrap().matches("Succ").count(), 5, "2 + 3 should evaluate to 5");
 }
+
+/// Stage A — the unified driver: ONE `.rv` file whose executable fragment is verified by
+/// `rv-solve` and run on the VM, while its proof fragment is checked by the dependent
+/// kernel, all in a single `analyze_unified` call with one merged report.
+#[test]
+fn unified_driver_routes_both_fragments() {
+    let src = include_str!("../../../examples/mixed.rv");
+    let report = rv_driver::analyze_unified(src, Some("main")).expect("front-end ok");
+
+    // Executable side: rv-solve discharged the scalar obligations, no borrow errors.
+    assert!(report.borrow_errors.is_empty());
+    assert!(report.obligations.iter().all(|o| o.ok()), "exec obligations: {report:?}");
+    assert!(report.obligations.iter().any(|o| o.origin.contains("division")));
+
+    // Proof side: the kernel checked the inductive theorem `plus_zero`.
+    assert!(report.proof_open.is_empty(), "no open proof goals: {report:?}");
+    assert!(report.proof_verified.iter().any(|n| n == "plus_zero"));
+
+    // Whole file verifies, and the executable entry runs on the VM.
+    assert!(report.all_verified());
+    assert_eq!(report.run.unwrap().unwrap(), Value::Int(5));
+}
+
+/// A false dependent spec in a mixed file must fail the *whole* file (soundness across the
+/// merge: the kernel obligation is part of `all_verified`).
+#[test]
+fn unified_driver_false_proof_fails_file() {
+    let src = r#"
+        enum Nat { Zero, Succ(Nat) }
+        fn wrong(x: Nat) -> Nat
+            ensures result == Nat::Succ(x);
+        { x }
+        fn main() -> i64 { return 1; }
+    "#;
+    let report = rv_driver::analyze_unified(src, Some("main")).expect("front-end ok");
+    assert!(!report.all_verified(), "a false dependent spec must sink the file: {report:?}");
+    assert!(report.proof_open.iter().any(|n| n == "wrong"));
+}
+
+/// Stage B — one data type shared across both backends: the kernel reasons about `Nat`
+/// inductively while the VM pattern-matches and runs over the *same* type, and the
+/// fn-level contract routing sends scalar specs to `rv-solve`, dependent specs to the
+/// kernel — all in one merged report.
+#[test]
+fn unified_driver_shares_a_type_across_backends() {
+    let src = include_str!("../../../examples/shared_type.rv");
+    let report = rv_driver::analyze_unified(src, Some("main")).expect("front-end ok");
+    assert!(report.all_verified(), "shared-type file must verify whole: {report:?}");
+    assert!(report.proof_verified.iter().any(|n| n == "plus_zero"));
+    assert_eq!(report.run.unwrap().unwrap(), Value::Int(2));
+}
+
+/// Stage C — QTT grade-driven erasure: a proof erases to NOTHING (proof irrelevance),
+/// while a computational definition survives as runtime code. This is what makes
+/// "verification is type-checking, then execution runs only the code" literally true:
+/// the proof costs zero bytes.
+#[test]
+fn unified_driver_erases_proofs_to_nothing() {
+    let report = rv_driver::verify_rv(include_str!("../../../examples/mixed.rv"), None)
+        .expect("front-end ok");
+    assert!(report.proofs_erased.contains(&"plus_zero".to_string()), "{report:?}");
+    assert!(report.runtime_defs.contains(&"plus".to_string()), "{report:?}");
+    // A proof is never kept as runtime code, and a runtime def is never dropped as a proof.
+    assert!(!report.runtime_defs.contains(&"plus_zero".to_string()));
+    assert!(!report.proofs_erased.contains(&"plus".to_string()));
+}
+
+/// Stage D — one value model: a *proof-fragment* entry point, evaluated through the kernel,
+/// is bridged to the SAME `rv_vm::Value` the VM produces for the executable fragment, and
+/// flows through the unified report's `run` channel (not a separate string path).
+#[test]
+fn unified_driver_proof_entry_yields_vm_value() {
+    // `compute = 2 + 3` over `Nat` — a proof-fragment computation.
+    let report = rv_driver::analyze_unified(
+        include_str!("../../../examples/proofs/unified.rv"),
+        Some("compute"),
+    )
+    .expect("front-end ok");
+    assert!(report.all_verified());
+
+    // The entry result is a genuine VM value: `Nat` as nested `Adt` (tag 1 = Succ, 0 = Zero),
+    // five deep — structurally identical to what the VM builds for the same data.
+    let mut v = report.run.expect("ran").expect("value");
+    let mut succs = 0;
+    while let Value::Adt { tag: 1, fields } = v {
+        succs += 1;
+        v = fields.into_iter().next().expect("Succ field");
+    }
+    assert!(matches!(v, Value::Adt { tag: 0, .. }), "bottoms out at Zero");
+    assert_eq!(succs, 5, "2 + 3 = 5");
+}
+
+#[test]
+fn stage_d_native_vm_compiles_and_runs() {
+    // `compute = 2 + 3` over Nat, run on the BYTECODE VM (no NbE fallback).
+    let v = rv_driver::vm_eval(include_str!("../../../examples/proofs/unified.rv"), "compute")
+        .expect("erased->bytecode compile+run");
+    let mut v = v;
+    let mut succs = 0;
+    while let rv_driver::Value::Adt { tag: 1, fields } = v {
+        succs += 1; v = fields.into_iter().next().unwrap();
+    }
+    assert!(matches!(v, rv_driver::Value::Adt { tag: 0, .. }));
+    assert_eq!(succs, 5, "native VM: 2 + 3 = 5");
+}
+
+/// Stage D — **mutual recursors run natively** on the bytecode VM. The CEK machine's
+/// Val/Env/Kont are one mutual group with higher-order closures (`lookup : Nat -> Env -> Val`);
+/// the erased→bytecode compiler synthesizes each group recursor (cross-calling siblings on
+/// recursive fields) and curries lambdas, so `answer = (\x. x+1) 2` evaluates to `3` directly
+/// on the VM — no NbE fallback.
+#[test]
+fn stage_d_mutual_recursors_run_natively() {
+    let src = include_str!("../../../examples/proofs/cek_machine.rv");
+    // The native compiler handles it (no fallback needed)...
+    let native = rv_driver::vm_eval(src, "answer").expect("mutual recursor compiles to bytecode");
+    // ...and the unified driver agrees.
+    let report = rv_driver::analyze_unified(src, Some("answer")).expect("front-end ok");
+    assert_eq!(report.run.expect("ran").expect("value"), native, "VM and driver agree");
+    let mut v = native;
+    let mut succs = 0;
+    while let Value::Adt { tag: 1, fields } = v {
+        succs += 1;
+        v = fields.into_iter().next().unwrap();
+    }
+    assert!(matches!(v, Value::Adt { tag: 0, .. }));
+    assert_eq!(succs, 3, "(\\x. x+1) 2 = 3");
+}
+
+/// Stage D — soundness cross-check: native bytecode execution agrees with the kernel's
+/// trusted reducer for every runnable proof-fragment entry. If the erased→bytecode compiler
+/// ever diverged from the kernel's semantics, this would catch it.
+#[test]
+fn stage_d_native_agrees_with_kernel() {
+    let cases: &[(&str, &str)] = &[
+        (include_str!("../../../examples/proofs/unified.rv"), "compute"),
+        (include_str!("../../../examples/proofs/cek_machine.rv"), "answer"),
+        (include_str!("../../../examples/proofs/refinement.rv"), "example"),
+        (include_str!("../../../examples/proofs/refinement.rv"), "also"),
+    ];
+    for (src, entry) in cases {
+        let native = rv_driver::vm_eval(src, entry).expect("native compile+run");
+        let kernel = rv_driver::nbe_eval(src, entry).expect("kernel eval");
+        assert_eq!(native, kernel, "native VM disagrees with kernel for `{entry}`");
+    }
+}

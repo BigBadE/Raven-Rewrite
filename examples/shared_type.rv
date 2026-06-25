@@ -1,0 +1,30 @@
+// Stage B — one data type, both backends. `enum Nat` is *shared*: the executable
+// `to_int` pattern-matches and recurses on it (compiled + run on the VM), while `plus`
+// and the theorem `plus_zero` reason about the very same type through the dependent
+// kernel. One `rvc examples/shared_type.rv --run` checks both and runs `main()` to 2.
+
+enum Nat { Zero, Succ(Nat) }
+
+// Proof fragment → kernel.
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+fn plus_zero(n: Nat) -> plus(n, Nat::Zero) == n {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(k) => congr_arg(Nat, Nat, Nat::Succ, plus(k, Nat::Zero), k, plus_zero(k))
+    }
+}
+
+// Executable fragment → VM. Matches the SAME shared `Nat`. `wrapping_add` opts out of the
+// overflow obligation (the count cannot overflow in practice).
+fn to_int(n: Nat) -> i64 {
+    match n {
+      Nat::Zero    => { return 0; }
+      Nat::Succ(k) => { return wrapping_add(1, to_int(k)); }
+    }
+}
+fn main() -> i64 {
+    let two: Nat = Nat::Succ(Nat::Succ(Nat::Zero));
+    return to_int(two);
+}

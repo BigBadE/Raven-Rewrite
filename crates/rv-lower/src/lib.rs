@@ -39,15 +39,22 @@ pub fn lower(
     let mut fn_decls = Vec::new();
     let mut trait_decls = Vec::new();
     let mut impl_decls = Vec::new();
-    for item in &module.items {
+    // Classify items once: the proof fragment (relations, proof `fn`s, `def`/`axiom`/…)
+    // routes to the kernel, not to the executable IR, so the lowering pipeline skips it.
+    // Shared data types and executable items are kept.
+    let frags = rv_syntax::classify(module);
+    for (item, frag) in module.items.iter().zip(&frags) {
+        if !frag.is_executable() {
+            continue;
+        }
         match item {
             Item::Struct(s) => struct_decls.push(s),
             Item::Enum(e) => enum_decls.push(e),
             Item::Fn(f) => fn_decls.push(f),
             Item::Trait(t) => trait_decls.push(t),
             Item::Impl(i) => impl_decls.push(i),
-            // Proof-fragment items (`axiom`/`def`/`instance`/`mutual`) route to the kernel,
-            // not to the executable IR; the lowering pipeline ignores them.
+            // Proof-fragment items never satisfy `is_executable`; this is unreachable,
+            // but keeps the match exhaustive.
             Item::Axiom(_) | Item::Def(_) | Item::Instance(_) | Item::Mutual(_) => {}
         }
     }

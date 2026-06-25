@@ -1,0 +1,41 @@
+// One `.rv` file, BOTH backends, ONE invocation — the unified path (Stage A).
+//
+//   rvc examples/mixed.rv --run
+//
+// `rvc` classifies each item by fragment and routes it:
+//   * `enum Nat`     — a shared data type, available to both backends;
+//   * `plus`         — a functional definition, reasoned about by the kernel;
+//   * `plus_zero`    — a THEOREM (its return *type* is the proposition), checked by the
+//                      dependent kernel: `n + 0 == n`, by induction;
+//   * `div` / `main` — executable code, its `requires y != 0` discharged by `rv-solve`
+//                      and the body compiled + run on the VM.
+//
+// A single run reports the kernel verdict AND the executable obligations, then executes
+// `main()` to `Int(5)`.
+
+enum Nat { Zero, Succ(Nat) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+
+// THEOREM (proof fragment → kernel): n + 0 == n, by induction on n.
+fn plus_zero(n: Nat) -> plus(n, Nat::Zero) == n {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(k) => congr_arg(Nat, Nat, Nat::Succ, plus(k, Nat::Zero), k, plus_zero(k))
+    }
+}
+
+// Executable fragment → rv-solve (the `y != 0` precondition) + the VM.
+fn div(x: i64, y: i64) -> i64
+  requires y != 0;
+{
+  return x / y;
+}
+
+fn main() -> i64 {
+  let a: i64 = 10;
+  assert a != 0;
+  return div(a, 2);
+}

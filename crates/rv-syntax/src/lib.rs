@@ -5,9 +5,11 @@
 //! [`rv_core::Symbols`] so the same symbol table threads through lowering.
 
 pub mod ast;
+pub mod fragment;
 mod lexer;
 mod parser;
 
+pub use fragment::{classify, Fragment};
 use parser::Parser;
 use rv_core::Symbols;
 

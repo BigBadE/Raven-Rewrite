@@ -9,6 +9,9 @@ license.workspace = true
 # delegates to it and keeps rv-vm for the public `Value` re-export.
 rv-db.workspace = true
 rv-vm.workspace = true
+# Bytecode types for Stage D: the driver compiles erased kernel terms to `rv-codegen`
+# bytecode and runs them on the VM (the dependent fragment's native execution path).
+rv-codegen.workspace = true
 # The dependent-type-theory kernel + its Raven surface (the verified-Raven path).
 rv-kernel.workspace = true
 # The single front-end parser. Its AST is translated to kernel Commands (the `unify`

@@ -48,25 +48,16 @@ fn main() -> ExitCode {
         }
     }
 
-    // `--verify` checks a `.rv` program through the dependent kernel (logic prelude
-    // only — the file brings its own data + proofs): the verified-Raven path.
-    if verify {
-        if paths.len() != 1 {
-            eprintln!("error: --verify takes exactly one file");
-            return ExitCode::FAILURE;
-        }
-        let entry_opt = if run { Some(entry.as_str()) } else { None };
-        return verify_rv_file(&srcs[0], entry_opt);
-    }
-
-    // The default executable path: a single `.rv` file through the Raven pipeline.
+    // One unified pipeline over a single `.rv` file: the executable fragment is
+    // verified by `rv-solve` (and runs on the VM); the proof fragment is checked by the
+    // dependent kernel. `--verify` no longer selects a separate pipeline — it just means
+    // "check, don't run" (it suppresses `--run`).
     if paths.len() != 1 {
-        eprintln!("error: the executable path takes exactly one `.rv` file (use --verify for proofs)");
+        eprintln!("error: rvc takes exactly one `.rv` file");
         return ExitCode::FAILURE;
     }
-    let entry_opt = if run { Some(entry.as_str()) } else { None };
-    let pipeline = rv_driver::run_pipeline(&srcs[0], entry_opt);
-    let report = match pipeline {
+    let entry_opt = if run && !verify { Some(entry.as_str()) } else { None };
+    let report = match rv_driver::analyze_unified(&srcs[0], entry_opt) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: {e}");
@@ -80,10 +71,28 @@ fn main() -> ExitCode {
             println!("  ✗ {e}");
         }
     }
-    println!("=== verification ({} obligations) ===", report.obligations.len());
-    for o in &report.obligations {
-        let mark = if o.ok() { "✓" } else { "✗" };
-        println!("  {mark} {}", o.origin);
+    if !report.obligations.is_empty() {
+        println!("=== verification ({} obligations) ===", report.obligations.len());
+        for o in &report.obligations {
+            let mark = if o.ok() { "✓" } else { "✗" };
+            println!("  {mark} {}", o.origin);
+        }
+    }
+    if !report.proof_verified.is_empty() || !report.proof_open.is_empty() {
+        println!("=== verification (kernel) ===");
+        for n in &report.proof_verified {
+            println!("  ✓ {n}");
+        }
+        for n in &report.proof_open {
+            println!("  ✗ {n} (open)");
+        }
+    }
+    if !report.proofs_erased.is_empty() || !report.runtime_defs.is_empty() {
+        println!(
+            "=== erasure (QTT) ===  {} proof(s) → 0 bytes, {} runtime def(s) kept",
+            report.proofs_erased.len(),
+            report.runtime_defs.len()
+        );
     }
     let verified = report.all_verified();
     println!(
@@ -104,44 +113,16 @@ fn main() -> ExitCode {
             }
         }
     }
-
-    if verified {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    }
-}
-
-/// Verify (and optionally run) `.rvk` Raven kernel-surface files through the
-/// dependent-type-theory kernel. The standard prelude is preloaded, so programs may use
-/// `Bool`/`Nat`/`List`/… freely.
-/// Verify a unified `.rv` program (data + proofs) through the dependent kernel.
-fn verify_rv_file(src: &str, entry: Option<&str>) -> ExitCode {
-    let report = match rv_driver::verify_rv(src, entry) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    println!("=== verification (kernel) ===");
-    for n in &report.verified {
-        println!("  ✓ {n}");
-    }
-    for n in &report.open {
-        println!("  ✗ {n} (open)");
-    }
-    let verified = report.all_verified();
-    println!("{}", if verified { "VERIFIED" } else { "NOT VERIFIED" });
-    if let Some(run_result) = &report.run {
+    if let Some(run_result) = report.proof_run {
         match run_result {
-            Ok(v) => println!("=== run ===\n  {} = {v}", entry.unwrap_or("?")),
+            Ok(v) => println!("=== run (kernel) ===\n  {entry} = {v}"),
             Err(e) => {
                 eprintln!("runtime error: {e}");
                 return ExitCode::FAILURE;
             }
         }
     }
+
     if verified {
         ExitCode::SUCCESS
     } else {
