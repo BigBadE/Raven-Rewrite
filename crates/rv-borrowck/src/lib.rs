@@ -55,30 +55,35 @@
 //! that only manifests on a second loop iteration (under-reporting, never a false
 //! positive). Documented limitation, acceptable for a first pass.
 //!
-//! ## Borrow-lifetime heuristic (precision)
+//! ## Borrow lifetimes (NLL-style, liveness-driven)
 //!
-//! Borrows are **block-scoped**: a borrow created by `Ref` in a block is active
-//! for the remainder of that block (so it can conflict with later statements /
-//! the terminator in the same block) and is then *released at the end of the
-//! block*. We do **not** propagate active borrows across block boundaries.
+//! A borrow lives **exactly as long as the reference local that holds it is
+//! live** — the non-lexical-lifetime rule. We precompute liveness of every local
+//! with a standard backward dataflow fixpoint ([`Liveness`]), then during the
+//! forward walk a borrow ends the moment its reference local goes dead: at the
+//! reference's last use within a block (statement-granular, via
+//! [`live_after_each`]) and across block boundaries (a borrow whose reference is
+//! live-out carries into successors; one that is not is released at the edge).
 //!
-//! Rationale: this is the simplest lifetime that (a) catches the intended
-//! conflicts — two `&mut` of the same local in one straight-line block, a `&mut`
-//! while a `&` is live, a move while borrowed — and (b) provably never fires a
-//! false positive on borrow-free code (the existing valid example programs use no
-//! `&` at all, so every local's borrow set stays empty throughout). It is
-//! deliberately conservative *downward*: a borrow whose reference genuinely
-//! escapes its creating block is under-checked rather than over-reported. A real
-//! NLL implementation would compute liveness of the reference local and end the
-//! borrow at its last use; that is future work.
+//! Consequences, both directions:
+//! * **More precise than block-scoping upward.** A `&mut` created while a `&` is
+//!   only live in a *later* block now conflicts (the shared borrow is carried
+//!   across the edge). The old block-scoped approximation missed this.
+//! * **More precise than block-scoping downward.** An unused borrow
+//!   (`let _r = &mut a;` with `_r` never read) ends immediately, so a subsequent
+//!   borrow of the same local is *not* a conflict — matching real `rustc` NLL.
+//!
+//! Exclusion itself is not a lifetime rule but an algebraic one: at any point the
+//! permission lent out of a local is the [`FracPerm`] composition of its live
+//! borrows, and a new borrow is legal iff that composition stays valid (`≤ 1`).
 //!
 //! ## Not handled (honest scope)
 //!
-//! * No liveness-based borrow ends (block-scoped approximation, see above).
 //! * No reborrow / two-phase borrow reasoning; a `&place` through a `Deref` still
 //!   attributes to the *root* local conservatively.
-//! * No cross-block borrow propagation, so borrows held across a `Goto`/`Branch`
-//!   are not enforced past the split.
+//! * At a control-flow join reached by two paths the block is analysed once, with
+//!   the first arriving path's borrow environment (mirrors the move-state
+//!   approximation above) — the second path's borrows are not re-checked there.
 //! * No interprocedural ownership (call effects on arguments beyond "moved").
 //! * `Drop`'s strategy field is ignored; we treat `Drop { place, .. }` as not
 //!   moving (it consumes a value already accounted for by ownership).
@@ -91,7 +96,7 @@ use rv_borrow::{affine_ok, FracPerm, Mult, Perm, UsageSemiring};
 use rv_core::{Symbols, Ty};
 use rv_logic::{Grades, ResourceAlgebra};
 use rv_ir::{
-    BlockId, BorrowKind, Function, Lowerable, LocalId, Operand, Place, Program, RValue, Stmt,
+    BlockId, BorrowKind, Function, Lowerable, LocalId, Operand, Place, Program, Proj, RValue, Stmt,
     Terminator,
 };
 
@@ -149,97 +154,101 @@ fn is_copy(ty: &Ty) -> bool {
 // Per-function analysis.
 // ===========================================================================
 
-/// Algebraic ownership state of one local on one CFG path.
+/// One active borrow: the reference local that holds it, the root it borrows,
+/// its kind, and the fractional permission it takes out of the root. A borrow
+/// stays active until its `reference` local is no longer live (NLL-style ends,
+/// computed from the liveness of `reference` — see [`Liveness`]).
 #[derive(Clone)]
-struct LocalState {
-    /// Consumption grade in the [`UsageSemiring`]: `Zero` = live and unconsumed,
-    /// `One` = moved out exactly once. The affine discipline (`grade ≤ One`)
-    /// is the move rule; a grade of `Many` is the use-after-move state.
-    usage: Mult,
-    /// The permission currently *lent out* to active borrows, as an element of
-    /// the [`FracPerm`] PCM. `Empty` = un-borrowed; `1` = a live `&mut`;
-    /// a fraction in `(0, 1)` = one or more live `&`. The owner may move or
-    /// reassign only while this is `Empty` (it holds the whole permission).
-    lent: Perm,
-    /// The fraction the *next* shared borrow will take: starts at ½ and halves
-    /// on every `&`, so shared borrows always compose validly (`Σ < 1`) among
-    /// themselves while any of them excludes the full permission.
-    next_share: Perm,
+struct ActiveBorrow {
+    reference: LocalId,
+    root: LocalId,
+    kind: BorrowKind,
+    perm: Perm,
 }
 
-impl Default for LocalState {
-    fn default() -> Self {
-        LocalState {
-            usage: UsageSemiring::zero(),
-            lent: FracPerm::unit(),
-            next_share: Perm::half_perm(),
-        }
-    }
-}
-
-/// Per-local ownership/borrow state threaded along a CFG path. Cloned at branch
-/// splits so each path reasons independently.
+/// Ownership/borrow state threaded along a CFG path. Cloned at branch splits so
+/// each path reasons independently.
+///
+/// Move state is per-local usage grades in the QTT [`UsageSemiring`]; borrow
+/// state is a list of [`ActiveBorrow`]s, each holding a fraction of its root's
+/// permission. "How much of `x` is lent" is recovered by *composing* the perms
+/// of every active borrow whose root is `x` in the [`FracPerm`] PCM — validity
+/// of that composition (`≤ 1`) is the borrow discipline.
 #[derive(Clone, Default)]
 struct Env {
-    locals: HashMap<LocalId, LocalState>,
+    /// Consumption grade per local: `Zero` = live/unconsumed, `One` = moved out,
+    /// `Many` = used-after-move. Absent = never touched (defaults to `Zero`).
+    usage: HashMap<LocalId, Mult>,
+    /// Every currently-live borrow. Pruned as reference locals go dead.
+    borrows: Vec<ActiveBorrow>,
 }
 
 impl Env {
-    fn state(&mut self, local: LocalId) -> &mut LocalState {
-        self.locals.entry(local).or_default()
-    }
-
-    /// Has `local` been moved out (grade ≥ `One`) on this path?
+    /// Has `local` been moved out (grade ≥ `One`)?
     fn is_moved(&self, local: LocalId) -> bool {
-        self.locals
+        self.usage
             .get(&local)
-            .is_some_and(|st| UsageSemiring::leq(&Mult::One, &st.usage))
+            .is_some_and(|g| UsageSemiring::leq(&Mult::One, g))
     }
 
-    /// Does `local` currently have any active borrow at all — i.e. is any part
-    /// of its permission lent out?
-    fn has_any_borrow(&self, local: LocalId) -> bool {
-        self.locals.get(&local).is_some_and(|st| st.lent.is_real())
+    /// The permission currently lent out of `root`: the [`FracPerm`] composition
+    /// of every active borrow rooted at `root`. `Empty` when nothing is lent.
+    fn lent(&self, root: LocalId) -> Perm {
+        self.borrows
+            .iter()
+            .filter(|b| b.root == root)
+            .fold(FracPerm::unit(), |acc, b| {
+                // Active borrows are always jointly valid (we only ever add a
+                // borrow that composed validly), so `compose` is `Some` here.
+                FracPerm::compose(&acc, &b.perm).unwrap_or(acc)
+            })
     }
 
-    /// Try to lend `required` out of `local`'s permission. Succeeds iff the
-    /// composition of the already-lent permission with `required` stays valid
-    /// (`≤ 1`) in the [`FracPerm`] algebra; on success the lent total is updated.
-    fn try_lend(&mut self, local: LocalId, required: &Perm) -> bool {
-        let st = self.state(local);
-        match FracPerm::compose(&st.lent, required) {
-            Some(sum) if FracPerm::valid(&sum) => {
-                st.lent = sum;
-                true
-            }
-            // Composition undefined (overflow) or over-owned (> 1): reject.
-            _ => false,
-        }
+    /// Does `root` currently have any active borrow — i.e. is any part of its
+    /// permission lent out?
+    fn has_any_borrow(&self, root: LocalId) -> bool {
+        self.lent(root).is_real()
+    }
+
+    /// How many active *shared* borrows are rooted at `root` (used to pick the
+    /// next halving fraction so shared borrows always co-compose to `< 1`).
+    fn shared_count(&self, root: LocalId) -> usize {
+        self.borrows
+            .iter()
+            .filter(|b| b.root == root && b.kind == BorrowKind::Shared)
+            .count()
+    }
+
+    /// Record a new active borrow.
+    fn add_borrow(&mut self, b: ActiveBorrow) {
+        self.borrows.push(b);
+    }
+
+    /// Drop any active borrow held by reference local `r` (it is being redefined
+    /// or has gone dead).
+    fn drop_borrows_of(&mut self, r: LocalId) {
+        self.borrows.retain(|b| b.reference != r);
+    }
+
+    /// Prune borrows whose reference local is not in `live` — this is the
+    /// NLL-style borrow *end*: a borrow lives exactly as long as the reference
+    /// that holds it. `keep_defined_here` protects a borrow just created at the
+    /// current statement whose reference is dead-on-arrival (so it is still
+    /// checked, then dropped on the next prune).
+    fn prune_dead(&mut self, live: &HashSet<LocalId>) {
+        self.borrows.retain(|b| live.contains(&b.reference));
     }
 
     /// Record a consuming use of `local`: bump its grade by `⊕ One`.
     fn consume(&mut self, local: LocalId) {
-        let st = self.state(local);
-        st.usage = UsageSemiring::add(&st.usage, &UsageSemiring::one());
-        debug_assert!(
-            !affine_ok(&st.usage) || st.usage == Mult::One,
-            "a single consume from Zero lands on One"
-        );
+        let g = self.usage.entry(local).or_insert_with(UsageSemiring::zero);
+        *g = UsageSemiring::add(g, &UsageSemiring::one());
+        debug_assert!(!affine_ok(g) || *g == Mult::One, "a single consume from Zero lands on One");
     }
 
     /// Reassignment: the local owns a fresh value, so its grade resets to `Zero`.
     fn revive(&mut self, local: LocalId) {
-        self.state(local).usage = UsageSemiring::zero();
-    }
-
-    /// End-of-block release: every lent permission returns to its owner (the
-    /// block-scoped borrow-lifetime heuristic). Usage grades persist — moves
-    /// outlive blocks.
-    fn release_borrows(&mut self) {
-        for st in self.locals.values_mut() {
-            st.lent = FracPerm::unit();
-            st.next_share = Perm::half_perm();
-        }
+        self.usage.insert(local, UsageSemiring::zero());
     }
 }
 
@@ -252,6 +261,203 @@ fn algebra_kind(kind: BorrowKind) -> rv_borrow::BorrowKind {
     }
 }
 
+// ===========================================================================
+// Liveness (backward dataflow) — drives NLL-style borrow ends.
+// ===========================================================================
+
+/// The successor blocks of a terminator (the CFG edges out of a block).
+fn successors(term: &Terminator<Lowerable>) -> Vec<BlockId> {
+    match term {
+        Terminator::Goto(b) => vec![*b],
+        Terminator::Branch { then_blk, else_blk, .. } => vec![*then_blk, *else_blk],
+        Terminator::Match { arms, otherwise, .. } => {
+            let mut s: Vec<BlockId> = arms.iter().map(|a| a.target).collect();
+            s.extend(otherwise.iter().copied());
+            s
+        }
+        Terminator::Drop { next, .. } => vec![*next],
+        Terminator::Return(_) | Terminator::Panic => vec![],
+    }
+}
+
+/// Add the locals *read* by a place: its root, plus any operands inside `Index`
+/// projections (`a[i]` reads `i`).
+fn place_uses(place: &Place, out: &mut Vec<LocalId>) {
+    out.push(place.local);
+    for p in &place.proj {
+        if let Proj::Index(op) = p {
+            operand_uses(op, out);
+        }
+    }
+}
+
+fn operand_uses(op: &Operand, out: &mut Vec<LocalId>) {
+    if let Operand::Copy(p) = op {
+        place_uses(p, out);
+    }
+}
+
+fn rvalue_uses(rv: &RValue, out: &mut Vec<LocalId>) {
+    match rv {
+        RValue::Use(a) | RValue::Un(_, a) | RValue::VecLen(a) => operand_uses(a, out),
+        RValue::Bin(_, a, b) | RValue::WrappingBin(_, a, b) | RValue::VecPush(a, b) => {
+            operand_uses(a, out);
+            operand_uses(b, out);
+        }
+        RValue::Call(_, args) | RValue::Closure(_, args) | RValue::Aggregate(_, args) => {
+            for a in args {
+                operand_uses(a, out);
+            }
+        }
+        RValue::CallClosure(callee, args) => {
+            operand_uses(callee, out);
+            for a in args {
+                operand_uses(a, out);
+            }
+        }
+        // Borrowing reads the borrowed root (and any index operands in its path).
+        RValue::Ref(_, place) => place_uses(place, out),
+    }
+}
+
+/// Locals read by a statement. A *projected* assign destination (`x.f = …`,
+/// `*p = …`) reads its path; a bare destination is a def, not a use.
+fn stmt_uses(s: &Stmt, out: &mut Vec<LocalId>) {
+    if let Stmt::Assign(dest, rv) = s {
+        rvalue_uses(rv, out);
+        if !dest.proj.is_empty() {
+            place_uses(dest, out);
+        }
+    }
+    // Ghost statements (Assert/Assume/Invariant) carry only Props — no value uses.
+}
+
+/// The local *defined* (overwritten) by a statement: a write to a bare local.
+fn stmt_def(s: &Stmt) -> Option<LocalId> {
+    match s {
+        Stmt::Assign(dest, _) if dest.proj.is_empty() => Some(dest.local),
+        _ => None,
+    }
+}
+
+/// Locals read by a terminator.
+fn term_uses(term: &Terminator<Lowerable>, out: &mut Vec<LocalId>) {
+    match term {
+        Terminator::Branch { cond, .. } => operand_uses(cond, out),
+        Terminator::Match { scrutinee, .. } => operand_uses(scrutinee, out),
+        Terminator::Return(op) => operand_uses(op, out),
+        Terminator::Drop { place, .. } => place_uses(place, out),
+        Terminator::Goto(_) | Terminator::Panic => {}
+    }
+}
+
+/// Per-function liveness of locals, from a standard backward fixpoint. Drives
+/// borrow lifetimes: a borrow ends when the reference local holding it dies.
+struct Liveness {
+    /// Locals live on entry to each block.
+    live_in: HashMap<BlockId, HashSet<LocalId>>,
+}
+
+impl Liveness {
+    fn compute(f: &Function<Lowerable>) -> Liveness {
+        // Per-block gen (upward-exposed uses) and kill (all defs).
+        let mut gen: HashMap<BlockId, HashSet<LocalId>> = HashMap::new();
+        let mut kill: HashMap<BlockId, HashSet<LocalId>> = HashMap::new();
+        for b in &f.blocks {
+            let (mut g, mut k, mut defined) = (HashSet::new(), HashSet::new(), HashSet::new());
+            for s in &b.stmts {
+                let mut uses = Vec::new();
+                stmt_uses(s, &mut uses);
+                for u in uses {
+                    if !defined.contains(&u) {
+                        g.insert(u);
+                    }
+                }
+                if let Some(d) = stmt_def(s) {
+                    k.insert(d);
+                    defined.insert(d);
+                }
+            }
+            let mut tuses = Vec::new();
+            term_uses(&b.term, &mut tuses);
+            for u in tuses {
+                if !defined.contains(&u) {
+                    g.insert(u);
+                }
+            }
+            gen.insert(b.id, g);
+            kill.insert(b.id, k);
+        }
+
+        let mut live_in: HashMap<BlockId, HashSet<LocalId>> =
+            f.blocks.iter().map(|b| (b.id, HashSet::new())).collect();
+
+        // Backward fixpoint: live_in[b] = gen[b] ∪ (live_out[b] − kill[b]).
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for b in &f.blocks {
+                let mut live_out = HashSet::new();
+                for s in successors(&b.term) {
+                    if let Some(li) = live_in.get(&s) {
+                        live_out.extend(li.iter().copied());
+                    }
+                }
+                let mut new_in = gen[&b.id].clone();
+                let k = &kill[&b.id];
+                new_in.extend(live_out.iter().filter(|l| !k.contains(l)).copied());
+                if &new_in != &live_in[&b.id] {
+                    live_in.insert(b.id, new_in);
+                    changed = true;
+                }
+            }
+        }
+        Liveness { live_in }
+    }
+
+    /// Locals live on exit from `block`: the union of successors' `live_in`.
+    fn live_out(&self, f: &Function<Lowerable>, block: &rv_ir::Block<Lowerable>) -> HashSet<LocalId> {
+        let _ = f;
+        let mut out = HashSet::new();
+        for s in successors(&block.term) {
+            if let Some(li) = self.live_in.get(&s) {
+                out.extend(li.iter().copied());
+            }
+        }
+        out
+    }
+}
+
+/// Statement-granular liveness within one block: `live_after[i]` is the set of
+/// locals live immediately *after* statement `i` executes (and `live_after[n]`
+/// is live before the terminator). Computed backward from `live_out`.
+fn live_after_each(
+    stmts: &[Stmt],
+    term: &Terminator<Lowerable>,
+    live_out: &HashSet<LocalId>,
+) -> Vec<HashSet<LocalId>> {
+    let n = stmts.len();
+    // live_before[i] for i in 0..=n; live_before[n] is before the terminator.
+    let mut live_before: Vec<HashSet<LocalId>> = vec![HashSet::new(); n + 1];
+    let mut at_term = live_out.clone();
+    let mut tuses = Vec::new();
+    term_uses(term, &mut tuses);
+    at_term.extend(tuses);
+    live_before[n] = at_term;
+    for i in (0..n).rev() {
+        let mut s = live_before[i + 1].clone();
+        if let Some(d) = stmt_def(&stmts[i]) {
+            s.remove(&d);
+        }
+        let mut uses = Vec::new();
+        stmt_uses(&stmts[i], &mut uses);
+        s.extend(uses);
+        live_before[i] = s;
+    }
+    // live_after[i] == live_before[i+1].
+    (1..=n).map(|i| live_before[i].clone()).collect()
+}
+
 struct FuncChecker<'a> {
     f: &'a Function<Lowerable>,
     fname: String,
@@ -259,11 +465,14 @@ struct FuncChecker<'a> {
     errors: Vec<BorrowError>,
     /// Blocks already visited on the *current* walk; terminates loops/back-edges.
     visited: HashSet<BlockId>,
+    /// Liveness of locals, precomputed; borrows end when their reference dies.
+    live: Liveness,
 }
 
 impl<'a> FuncChecker<'a> {
     fn new(f: &'a Function<Lowerable>, fname: String, syms: &'a Symbols) -> Self {
-        Self { f, fname, syms, errors: Vec::new(), visited: HashSet::new() }
+        let live = Liveness::compute(f);
+        Self { f, fname, syms, errors: Vec::new(), visited: HashSet::new(), live }
     }
 
     fn run(&mut self) {
@@ -315,13 +524,22 @@ impl<'a> FuncChecker<'a> {
         let stmts = block.stmts.clone();
         let term = clone_term(&block.term);
 
-        for stmt in &stmts {
+        // Liveness-driven borrow ends: a borrow lives exactly as long as the
+        // reference local that holds it. `live_out` is what survives to
+        // successors; `live_after[i]` is what is live just after statement `i`.
+        let live_out = self.live.live_out(self.f, block);
+        let live_after = live_after_each(&stmts, &term, &live_out);
+
+        for (i, stmt) in stmts.iter().enumerate() {
             self.check_stmt(stmt, &mut env);
+            // End any borrow whose reference local is no longer live (NLL end),
+            // including one just created here that is dead-on-arrival.
+            env.prune_dead(&live_after[i]);
         }
-        // Borrows are block-scoped: anything created in this block stays active
-        // through the terminator, then is dropped before we enter successors.
+        // Borrows still live at the terminator can conflict with its reads; then
+        // only those live *out* of the block carry into successors.
         self.check_terminator(&term, &mut env);
-        env.release_borrows();
+        env.prune_dead(&live_out);
 
         match &term {
             Terminator::Goto(b) => self.walk(*b, env),
@@ -408,7 +626,10 @@ impl<'a> FuncChecker<'a> {
                 }
             }
             RValue::Ref(kind, borrowed) => {
-                self.check_borrow(*kind, borrowed, env);
+                // The reference local (`dest`) holds the borrow; its liveness
+                // determines when the borrow ends. A projected ref destination
+                // is not a plain reference local, so fall back to the root.
+                self.check_borrow(*kind, borrowed, dest_local, env);
             }
         }
 
@@ -431,37 +652,50 @@ impl<'a> FuncChecker<'a> {
 
     // -- Borrows ------------------------------------------------------------
 
-    /// Check creating `RValue::Ref(kind, place)`: lend the permission the borrow
-    /// requires out of the root local. Exclusion is not a special-cased rule —
-    /// it is the validity predicate of the [`FracPerm`] PCM: the borrow is legal
-    /// iff `lent ⊕ required` stays `≤ 1`.
-    fn check_borrow(&mut self, kind: BorrowKind, place: &Place, env: &mut Env) {
-        let local = place.local;
+    /// Check creating `reference = Ref(kind, place)`: lend the permission the
+    /// borrow requires out of the borrowed root. Exclusion is not a special-cased
+    /// rule — it is the validity predicate of the [`FracPerm`] PCM: the borrow is
+    /// legal iff `lent(root) ⊕ required` stays `≤ 1`. On success the borrow is
+    /// recorded against `reference`, and ends when `reference` goes dead.
+    fn check_borrow(&mut self, kind: BorrowKind, place: &Place, reference: LocalId, env: &mut Env) {
+        let root = place.local;
+
+        // Reassigning the reference ends whatever it borrowed before.
+        env.drop_borrows_of(reference);
 
         // Reading through the place to create the reference is itself a (shared)
         // read of the root: borrowing a moved value is an error.
-        if self.is_move_local(local) && env.is_moved(local) {
-            let n = self.local_name(local);
+        if self.is_move_local(root) && env.is_moved(root) {
+            let n = self.local_name(root);
             self.emit(format!("use of moved value `{n}`"));
         }
 
         // What this borrow needs to hold while live. A `&mut` needs the full
-        // permission; a `&` takes the local's next halving fraction so shared
-        // borrows compose among themselves but exclude uniqueness.
+        // permission; a `&` takes a strictly-halving fraction — (½)^(k+1) for the
+        // k shared borrows already live — so shared borrows always co-compose to
+        // `< 1` yet still exclude the full permission a `&mut` needs.
         let required = match algebra_kind(kind) {
             k if k.is_unique() => k.required_perm(),
             _ => {
-                let st = env.state(local);
-                let take = st.next_share;
-                // Halve for the next shared borrow; on (absurd) overflow keep
-                // the current fraction — still sound, at worst over-excluding.
-                st.next_share = st.next_share.half().unwrap_or(take);
-                take
+                let mut frac = Perm::half_perm();
+                for _ in 0..env.shared_count(root) {
+                    // On (absurd) overflow keep the current fraction — still
+                    // sound, at worst over-excluding.
+                    frac = frac.half().unwrap_or(frac);
+                }
+                frac
             }
         };
 
-        if !env.try_lend(local, &required) {
-            let n = self.local_name(local);
+        // Validity of the composition is the whole discipline.
+        let lent = env.lent(root);
+        let ok = FracPerm::compose(&lent, &required)
+            .is_some_and(|sum| FracPerm::valid(&sum));
+
+        if ok {
+            env.add_borrow(ActiveBorrow { reference, root, kind, perm: required });
+        } else {
+            let n = self.local_name(root);
             match kind {
                 // `&mut` composed to > 1: some permission is already lent.
                 BorrowKind::Mut => self.emit(format!(
@@ -631,6 +865,12 @@ mod tests {
         Operand::Copy(Place::local(local))
     }
 
+    /// Read through a reference local (`*r`) — a *use* of `r` that keeps its
+    /// borrow live to this point (the NLL end is the reference's last use).
+    fn deref_use(r: LocalId) -> Operand {
+        Operand::Copy(Place { local: r, proj: vec![Proj::Deref] })
+    }
+
     // -- (a) clean program → no errors --------------------------------------
 
     #[test]
@@ -675,19 +915,46 @@ mod tests {
 
     #[test]
     fn double_mut_borrow() {
-        // fn f() { let a: Int; let r1 = &mut a; let r2 = &mut a; }  (one conflict)
+        // let r1 = &mut a; let r2 = &mut a; use r1  — r1 is live across r2's
+        // borrow (it is read afterward), so the two `&mut` genuinely overlap.
         let mut b = Build::new("f");
         let a = b.local("a", Ty::Int);
         let r1 = b.local("r1", Ty::Ref { mutable: true, inner: Box::new(Ty::Int) });
         let r2 = b.local("r2", Ty::Ref { mutable: true, inner: Box::new(Ty::Int) });
+        let t = b.local("t", Ty::Int);
         let stmts = vec![
             Stmt::Assign(Place::local(r1), RValue::Ref(BorrowKind::Mut, Place::local(a))),
             Stmt::Assign(Place::local(r2), RValue::Ref(BorrowKind::Mut, Place::local(a))),
+            // Keep r1 live past r2's creation → real conflict.
+            Stmt::Assign(Place::local(t), RValue::Use(deref_use(r1))),
         ];
         let (prog, syms) = b.finish(vec![], stmts, Terminator::Return(Operand::Const(Const::Unit)));
         let errs = check(&prog, &syms);
         assert_eq!(errs.len(), 1, "expected exactly one error, got {errs:?}");
         assert!(errs[0].message.contains("as mutable"), "{:?}", errs[0]);
+    }
+
+    // -- (c′) NLL: an unused first borrow ends immediately → no conflict -----
+
+    #[test]
+    fn double_mut_borrow_first_unused_is_ok() {
+        // let r1 = &mut a; let r2 = &mut a;  with r1 never used afterward. Under
+        // NLL r1's borrow has already ended, so this is *not* a conflict — the
+        // precision the block-scoped approximation lacked.
+        let mut b = Build::new("f");
+        let a = b.local("a", Ty::Int);
+        let r1 = b.local("r1", Ty::Ref { mutable: true, inner: Box::new(Ty::Int) });
+        let r2 = b.local("r2", Ty::Ref { mutable: true, inner: Box::new(Ty::Int) });
+        let t = b.local("t", Ty::Int);
+        let stmts = vec![
+            Stmt::Assign(Place::local(r1), RValue::Ref(BorrowKind::Mut, Place::local(a))),
+            Stmt::Assign(Place::local(r2), RValue::Ref(BorrowKind::Mut, Place::local(a))),
+            // Only r2 is used → r1 was already dead when r2 was created.
+            Stmt::Assign(Place::local(t), RValue::Use(deref_use(r2))),
+        ];
+        let (prog, syms) = b.finish(vec![], stmts, Terminator::Return(Operand::Const(Const::Unit)));
+        let errs = check(&prog, &syms);
+        assert!(errs.is_empty(), "unused first borrow should not conflict, got {errs:?}");
     }
 
     // -- (d) shared & + read → no error -------------------------------------
@@ -740,9 +1007,12 @@ mod tests {
         let a = b.local("a", Ty::Int);
         let r1 = b.local("r1", Ty::Ref { mutable: false, inner: Box::new(Ty::Int) });
         let r2 = b.local("r2", Ty::Ref { mutable: true, inner: Box::new(Ty::Int) });
+        let t = b.local("t", Ty::Int);
         let stmts = vec![
             Stmt::Assign(Place::local(r1), RValue::Ref(BorrowKind::Shared, Place::local(a))),
             Stmt::Assign(Place::local(r2), RValue::Ref(BorrowKind::Mut, Place::local(a))),
+            // r1 live across the &mut → conflict.
+            Stmt::Assign(Place::local(t), RValue::Use(deref_use(r1))),
         ];
         let (prog, syms) = b.finish(vec![], stmts, Terminator::Return(Operand::Const(Const::Unit)));
         let errs = check(&prog, &syms);
@@ -759,10 +1029,12 @@ mod tests {
         let a = b.local("a", Ty::Adt(s));
         let r = b.local("r", Ty::Ref { mutable: false, inner: Box::new(Ty::Adt(s)) });
         let bb = b.local("b", Ty::Adt(s));
+        let t = b.local("t", Ty::Adt(s));
         let stmts = vec![
             Stmt::Assign(Place::local(r), RValue::Ref(BorrowKind::Shared, Place::local(a))),
-            // b = a while a is borrowed -> error
+            // b = a while a is borrowed -> error (r is still live: used below)
             Stmt::Assign(Place::local(bb), RValue::Use(copy(a))),
+            Stmt::Assign(Place::local(t), RValue::Use(deref_use(r))),
         ];
         let (prog, syms) = b.finish(vec![], stmts, Terminator::Return(Operand::Const(Const::Unit)));
         let errs = check(&prog, &syms);
@@ -888,12 +1160,19 @@ mod tests {
         let mut b = Build::new("f");
         let a = b.local("a", Ty::Int);
         let mut stmts = Vec::new();
+        let mut shared = Vec::new();
         for i in 0..3 {
             let r = b.local(&format!("r{i}"), Ty::Ref { mutable: false, inner: Box::new(Ty::Int) });
+            shared.push(r);
             stmts.push(Stmt::Assign(Place::local(r), RValue::Ref(BorrowKind::Shared, Place::local(a))));
         }
         let m = b.local("m", Ty::Ref { mutable: true, inner: Box::new(Ty::Int) });
         stmts.push(Stmt::Assign(Place::local(m), RValue::Ref(BorrowKind::Mut, Place::local(a))));
+        // Keep every shared borrow live past the &mut so they genuinely overlap.
+        for (i, r) in shared.into_iter().enumerate() {
+            let t = b.local(&format!("t{i}"), Ty::Int);
+            stmts.push(Stmt::Assign(Place::local(t), RValue::Use(deref_use(r))));
+        }
         let (prog, syms) = b.finish(vec![], stmts, Terminator::Return(Operand::Const(Const::Unit)));
         let errs = check(&prog, &syms);
         assert_eq!(errs.len(), 1, "{errs:?}");
@@ -979,6 +1258,53 @@ mod tests {
         let errs = check(&prog, &bd.syms);
         assert_eq!(errs.len(), 1, "{errs:?}");
         assert!(errs[0].message.contains("use of moved value `a`"), "{:?}", errs[0]);
+    }
+
+    // -- NLL: a borrow live across a block boundary still conflicts ----------
+
+    #[test]
+    fn borrow_live_across_block_conflicts() {
+        // b0: r = &a; goto b1.  b1: m = &mut a; use r.  Because r is used in b1,
+        // its shared borrow is live *out* of b0 and into b1 — so the &mut in b1
+        // conflicts. The old block-scoped checker released r at b0's end and
+        // missed this; liveness carries it across the edge.
+        let mut b = Build::new("f");
+        let a = b.local("a", Ty::Int);
+        let r = b.local("r", Ty::Ref { mutable: false, inner: Box::new(Ty::Int) });
+        let m = b.local("m", Ty::Ref { mutable: true, inner: Box::new(Ty::Int) });
+        let t = b.local("t", Ty::Int);
+        let entry = BlockId(0);
+        let b1 = BlockId(1);
+        let blocks = vec![
+            Block {
+                id: entry,
+                stmts: vec![Stmt::Assign(Place::local(r), RValue::Ref(BorrowKind::Shared, Place::local(a)))],
+                term: Terminator::Goto(b1),
+            },
+            Block {
+                id: b1,
+                stmts: vec![
+                    Stmt::Assign(Place::local(m), RValue::Ref(BorrowKind::Mut, Place::local(a))),
+                    Stmt::Assign(Place::local(t), RValue::Use(deref_use(r))),
+                ],
+                term: Terminator::Return(Operand::Const(Const::Unit)),
+            },
+        ];
+        let func = Function {
+            name: b.name,
+            type_params: Vec::new(),
+            params: vec![],
+            ret: Ty::Unit,
+            pre: rv_core::Prop::True,
+            post: rv_core::Prop::True,
+            locals: b.locals,
+            blocks,
+            entry,
+        };
+        let prog = Program { types: Vec::new(), funcs: vec![func] };
+        let errs = check(&prog, &b.syms);
+        assert_eq!(errs.len(), 1, "cross-block borrow should conflict, got {errs:?}");
+        assert!(errs[0].message.contains("as mutable"), "{:?}", errs[0]);
     }
 
     // -- Extra: projected read of a moved value is caught -------------------
