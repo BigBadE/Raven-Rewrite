@@ -39,7 +39,7 @@ cargo test                                    # 344 tests across the workspace
 | `rv-codegen` | `IR<Lowerable>` → bytecode | — |
 | `rv-vm` | bytecode interpreter | — |
 | `rv-borrow` | ownership substrate: fractional-permission resource algebra + QTT grade semiring | — |
-| `rv-borrowck` | borrow/ownership checker: move tracking + borrow conflicts over the IR | — |
+| `rv-borrowck` | borrow/ownership checker over the IR — moves are affine usage grades, borrow conflicts are `FracPerm` composition validity (built on `rv-borrow`) | — |
 | `rv-db` | **salsa** incremental engine: source input + memoized, dependency-tracked pipeline queries | — |
 | `rv-kernel` | **dependent-type-theory kernel** + its Rust-like `.rv` surface (the verified-Raven proof path) | **trusted** |
 | `rv-driver` | pipeline orchestration: the executable `.rv` path via salsa, the verified `.rv` path via the kernel | — |

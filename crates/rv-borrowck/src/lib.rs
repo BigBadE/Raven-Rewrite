@@ -1,11 +1,25 @@
 //! # `rv-borrowck` — a first borrow / ownership checker over `IR<Lowerable>`
 //!
 //! This crate performs an *intraprocedural*, CFG-aware ownership and borrow
-//! analysis over each function's typed control-flow graph. It is the first
-//! borrow-checking wave to actually consume the IR (the algebra substrate lives
-//! in [`rv_borrow`]; this crate uses its *conceptual* `BorrowKind`/permission
-//! vocabulary but does the bookkeeping with plain flags, which is all the first
-//! version needs).
+//! analysis over each function's typed control-flow graph. The bookkeeping is
+//! done directly in the [`rv_borrow`] algebra — the same substrate the kernel's
+//! grade discipline is built on — so every judgement here is an instance of an
+//! algebraic law rather than an ad-hoc flag:
+//!
+//! * **Move tracking** is usage accounting in the QTT [`rv_borrow::UsageSemiring`].
+//!   Each non-`Copy` local carries a grade ([`rv_borrow::Mult`]): `Zero` while
+//!   live-and-unconsumed, bumped by `⊕ One` at every consuming use. The move
+//!   discipline is *affine* — `use of moved value` is exactly the failure of
+//!   [`rv_borrow::affine_ok`] on the local's grade.
+//! * **Borrow conflicts** are validity of composition in the fractional-permission
+//!   PCM ([`rv_borrow::FracPerm`]). Each local tracks the permission currently
+//!   *lent out* to active borrows. Creating a borrow composes the permission it
+//!   requires ([`rv_borrow::BorrowKind::required_perm`]) into the lent total; the
+//!   borrow is legal iff the composition stays valid (`≤ 1`). A `&mut` requires
+//!   the full permission, so it composes validly only into an un-lent local; a
+//!   `&` takes a strictly-halving fraction (½, ¼, …), so any number of shared
+//!   borrows stay `< 1` but exclude `&mut`. Moving or assigning requires that
+//!   nothing is lent (the owner must hold the whole permission).
 //!
 //! ## What it checks
 //!
@@ -73,7 +87,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use rv_borrow::{affine_ok, FracPerm, Mult, Perm, UsageSemiring};
 use rv_core::{Symbols, Ty};
+use rv_logic::{Grades, ResourceAlgebra};
 use rv_ir::{
     BlockId, BorrowKind, Function, Lowerable, LocalId, Operand, Place, Program, RValue, Stmt,
     Terminator,
@@ -133,34 +149,106 @@ fn is_copy(ty: &Ty) -> bool {
 // Per-function analysis.
 // ===========================================================================
 
+/// Algebraic ownership state of one local on one CFG path.
+#[derive(Clone)]
+struct LocalState {
+    /// Consumption grade in the [`UsageSemiring`]: `Zero` = live and unconsumed,
+    /// `One` = moved out exactly once. The affine discipline (`grade ≤ One`)
+    /// is the move rule; a grade of `Many` is the use-after-move state.
+    usage: Mult,
+    /// The permission currently *lent out* to active borrows, as an element of
+    /// the [`FracPerm`] PCM. `Empty` = un-borrowed; `1` = a live `&mut`;
+    /// a fraction in `(0, 1)` = one or more live `&`. The owner may move or
+    /// reassign only while this is `Empty` (it holds the whole permission).
+    lent: Perm,
+    /// The fraction the *next* shared borrow will take: starts at ½ and halves
+    /// on every `&`, so shared borrows always compose validly (`Σ < 1`) among
+    /// themselves while any of them excludes the full permission.
+    next_share: Perm,
+}
+
+impl Default for LocalState {
+    fn default() -> Self {
+        LocalState {
+            usage: UsageSemiring::zero(),
+            lent: FracPerm::unit(),
+            next_share: Perm::half_perm(),
+        }
+    }
+}
+
 /// Per-local ownership/borrow state threaded along a CFG path. Cloned at branch
 /// splits so each path reasons independently.
 #[derive(Clone, Default)]
 struct Env {
-    /// Locals that have been moved-out and not yet reassigned (on this path).
-    moved: HashSet<LocalId>,
-    /// Active borrows per local *within the current block*. Each entry records
-    /// the borrow kinds currently outstanding on that local. Cleared at the end
-    /// of every block (block-scoped lifetime heuristic — see module docs).
-    borrows: HashMap<LocalId, Vec<BorrowKind>>,
+    locals: HashMap<LocalId, LocalState>,
 }
 
 impl Env {
-    /// Does `local` currently have any active `&mut` borrow?
-    fn has_mut_borrow(&self, local: LocalId) -> bool {
-        self.borrows
+    fn state(&mut self, local: LocalId) -> &mut LocalState {
+        self.locals.entry(local).or_default()
+    }
+
+    /// Has `local` been moved out (grade ≥ `One`) on this path?
+    fn is_moved(&self, local: LocalId) -> bool {
+        self.locals
             .get(&local)
-            .is_some_and(|ks| ks.iter().any(|k| *k == BorrowKind::Mut))
+            .is_some_and(|st| UsageSemiring::leq(&Mult::One, &st.usage))
     }
 
-    /// Does `local` currently have any active borrow at all?
+    /// Does `local` currently have any active borrow at all — i.e. is any part
+    /// of its permission lent out?
     fn has_any_borrow(&self, local: LocalId) -> bool {
-        self.borrows.get(&local).is_some_and(|ks| !ks.is_empty())
+        self.locals.get(&local).is_some_and(|st| st.lent.is_real())
     }
 
-    /// Record a new active borrow on `local`.
-    fn add_borrow(&mut self, local: LocalId, kind: BorrowKind) {
-        self.borrows.entry(local).or_default().push(kind);
+    /// Try to lend `required` out of `local`'s permission. Succeeds iff the
+    /// composition of the already-lent permission with `required` stays valid
+    /// (`≤ 1`) in the [`FracPerm`] algebra; on success the lent total is updated.
+    fn try_lend(&mut self, local: LocalId, required: &Perm) -> bool {
+        let st = self.state(local);
+        match FracPerm::compose(&st.lent, required) {
+            Some(sum) if FracPerm::valid(&sum) => {
+                st.lent = sum;
+                true
+            }
+            // Composition undefined (overflow) or over-owned (> 1): reject.
+            _ => false,
+        }
+    }
+
+    /// Record a consuming use of `local`: bump its grade by `⊕ One`.
+    fn consume(&mut self, local: LocalId) {
+        let st = self.state(local);
+        st.usage = UsageSemiring::add(&st.usage, &UsageSemiring::one());
+        debug_assert!(
+            !affine_ok(&st.usage) || st.usage == Mult::One,
+            "a single consume from Zero lands on One"
+        );
+    }
+
+    /// Reassignment: the local owns a fresh value, so its grade resets to `Zero`.
+    fn revive(&mut self, local: LocalId) {
+        self.state(local).usage = UsageSemiring::zero();
+    }
+
+    /// End-of-block release: every lent permission returns to its owner (the
+    /// block-scoped borrow-lifetime heuristic). Usage grades persist — moves
+    /// outlive blocks.
+    fn release_borrows(&mut self) {
+        for st in self.locals.values_mut() {
+            st.lent = FracPerm::unit();
+            st.next_share = Perm::half_perm();
+        }
+    }
+}
+
+/// Map the IR's surface borrow kind onto the algebra's [`rv_borrow::BorrowKind`],
+/// which knows what permission each kind requires.
+fn algebra_kind(kind: BorrowKind) -> rv_borrow::BorrowKind {
+    match kind {
+        BorrowKind::Shared => rv_borrow::BorrowKind::Shared,
+        BorrowKind::Mut => rv_borrow::BorrowKind::Mut,
     }
 }
 
@@ -233,7 +321,7 @@ impl<'a> FuncChecker<'a> {
         // Borrows are block-scoped: anything created in this block stays active
         // through the terminator, then is dropped before we enter successors.
         self.check_terminator(&term, &mut env);
-        env.borrows.clear();
+        env.release_borrows();
 
         match &term {
             Terminator::Goto(b) => self.walk(*b, env),
@@ -331,8 +419,8 @@ impl<'a> FuncChecker<'a> {
                 let n = self.local_name(dest_local);
                 self.emit(format!("cannot assign `{n}` while borrowed"));
             }
-            // Reassignment revives a previously-moved local.
-            env.moved.remove(&dest_local);
+            // Reassignment revives a previously-moved local (grade back to Zero).
+            env.revive(dest_local);
         } else {
             // A projected write (e.g. `x.f = ...`, `*p = ...`) reads `x`/`p`'s
             // path; treat it as a use of the root for move purposes, but it does
@@ -343,40 +431,49 @@ impl<'a> FuncChecker<'a> {
 
     // -- Borrows ------------------------------------------------------------
 
-    /// Check creating `RValue::Ref(kind, place)`: enforce exclusion against any
-    /// borrows already active on the borrowed root local, then record it.
+    /// Check creating `RValue::Ref(kind, place)`: lend the permission the borrow
+    /// requires out of the root local. Exclusion is not a special-cased rule —
+    /// it is the validity predicate of the [`FracPerm`] PCM: the borrow is legal
+    /// iff `lent ⊕ required` stays `≤ 1`.
     fn check_borrow(&mut self, kind: BorrowKind, place: &Place, env: &mut Env) {
         let local = place.local;
 
         // Reading through the place to create the reference is itself a (shared)
         // read of the root: borrowing a moved value is an error.
-        if self.is_move_local(local) && env.moved.contains(&local) {
+        if self.is_move_local(local) && env.is_moved(local) {
             let n = self.local_name(local);
             self.emit(format!("use of moved value `{n}`"));
         }
 
-        match kind {
-            BorrowKind::Mut => {
-                // `&mut` needs unique access: it conflicts with ANY active borrow.
-                if env.has_any_borrow(local) {
-                    let n = self.local_name(local);
-                    self.emit(format!(
-                        "cannot borrow `{n}` as mutable: it is already borrowed"
-                    ));
-                }
+        // What this borrow needs to hold while live. A `&mut` needs the full
+        // permission; a `&` takes the local's next halving fraction so shared
+        // borrows compose among themselves but exclude uniqueness.
+        let required = match algebra_kind(kind) {
+            k if k.is_unique() => k.required_perm(),
+            _ => {
+                let st = env.state(local);
+                let take = st.next_share;
+                // Halve for the next shared borrow; on (absurd) overflow keep
+                // the current fraction — still sound, at worst over-excluding.
+                st.next_share = st.next_share.half().unwrap_or(take);
+                take
             }
-            BorrowKind::Shared => {
-                // `&` conflicts only with an active `&mut`.
-                if env.has_mut_borrow(local) {
-                    let n = self.local_name(local);
-                    self.emit(format!(
-                        "cannot borrow `{n}` as shared: it is already mutably borrowed"
-                    ));
-                }
+        };
+
+        if !env.try_lend(local, &required) {
+            let n = self.local_name(local);
+            match kind {
+                // `&mut` composed to > 1: some permission is already lent.
+                BorrowKind::Mut => self.emit(format!(
+                    "cannot borrow `{n}` as mutable: it is already borrowed"
+                )),
+                // A shared fraction only fails to compose against a full lent
+                // permission, i.e. a live `&mut` (shared fractions sum < 1).
+                BorrowKind::Shared => self.emit(format!(
+                    "cannot borrow `{n}` as shared: it is already mutably borrowed"
+                )),
             }
         }
-
-        env.add_borrow(local, kind);
     }
 
     // -- Operand consumption (move semantics) -------------------------------
@@ -397,19 +494,21 @@ impl<'a> FuncChecker<'a> {
         // type. Projected access (`x.f`, `*p`) reads through and does not move
         // the whole local in this first pass.
         if place.proj.is_empty() && self.is_move_local(local) {
-            // Moving a borrowed local is forbidden.
+            // Moving requires the whole permission: forbidden while any part of
+            // it is lent out to a borrow.
             if env.has_any_borrow(local) {
                 let n = self.local_name(local);
                 self.emit(format!("cannot move `{n}` while borrowed"));
             }
-            env.moved.insert(local);
+            env.consume(local);
         }
     }
 
     /// Register a *read* of `local` (any access of its value or a projection of
-    /// it). Reading a moved, non-Copy local is a use-after-move error.
+    /// it). Reading a non-Copy local whose grade is already ≥ `One` (consumed)
+    /// is a use-after-move error — the affine discipline.
     fn use_local_for_read(&mut self, local: LocalId, env: &Env) {
-        if self.is_move_local(local) && env.moved.contains(&local) {
+        if self.is_move_local(local) && env.is_moved(local) {
             let n = self.local_name(local);
             // Borrow `self` immutably above, then mutate via emit: collect first.
             let msg = format!("use of moved value `{n}`");
@@ -762,6 +861,124 @@ mod tests {
         let prog = Program { types: Vec::new(), funcs: vec![func] };
         let errs = check(&prog, &b.syms);
         assert!(errs.is_empty(), "{errs:?}");
+    }
+
+    // -- Algebra: many shared borrows compose (Σ halvings < 1) --------------
+
+    #[test]
+    fn many_shared_borrows_stay_valid() {
+        // Eight `&a` in one block: fractions ½ + ¼ + … always compose validly.
+        let mut b = Build::new("f");
+        let a = b.local("a", Ty::Int);
+        let mut stmts = Vec::new();
+        for i in 0..8 {
+            let r = b.local(&format!("r{i}"), Ty::Ref { mutable: false, inner: Box::new(Ty::Int) });
+            stmts.push(Stmt::Assign(Place::local(r), RValue::Ref(BorrowKind::Shared, Place::local(a))));
+        }
+        let (prog, syms) = b.finish(vec![], stmts, Terminator::Return(Operand::Const(Const::Unit)));
+        let errs = check(&prog, &syms);
+        assert!(errs.is_empty(), "shared borrows must compose, got {errs:?}");
+    }
+
+    // -- Algebra: any outstanding fraction excludes the full permission -----
+
+    #[test]
+    fn mut_after_many_shared_borrows_fails() {
+        // Several `&a` then one `&mut a`: lent < 1 but full no longer fits.
+        let mut b = Build::new("f");
+        let a = b.local("a", Ty::Int);
+        let mut stmts = Vec::new();
+        for i in 0..3 {
+            let r = b.local(&format!("r{i}"), Ty::Ref { mutable: false, inner: Box::new(Ty::Int) });
+            stmts.push(Stmt::Assign(Place::local(r), RValue::Ref(BorrowKind::Shared, Place::local(a))));
+        }
+        let m = b.local("m", Ty::Ref { mutable: true, inner: Box::new(Ty::Int) });
+        stmts.push(Stmt::Assign(Place::local(m), RValue::Ref(BorrowKind::Mut, Place::local(a))));
+        let (prog, syms) = b.finish(vec![], stmts, Terminator::Return(Operand::Const(Const::Unit)));
+        let errs = check(&prog, &syms);
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert!(errs[0].message.contains("as mutable"), "{:?}", errs[0]);
+    }
+
+    // -- Algebra: borrows release at block end (permission returns whole) ---
+
+    #[test]
+    fn borrow_released_at_block_end_allows_mut() {
+        // b0: r = &a; goto b1.  b1: m = &mut a.  The shared fraction is returned
+        // at the end of b0, so the full permission is available in b1.
+        let mut b = Build::new("f");
+        let a = b.local("a", Ty::Int);
+        let r = b.local("r", Ty::Ref { mutable: false, inner: Box::new(Ty::Int) });
+        let m = b.local("m", Ty::Ref { mutable: true, inner: Box::new(Ty::Int) });
+        let entry = BlockId(0);
+        let b1 = BlockId(1);
+        let blocks = vec![
+            Block {
+                id: entry,
+                stmts: vec![Stmt::Assign(Place::local(r), RValue::Ref(BorrowKind::Shared, Place::local(a)))],
+                term: Terminator::Goto(b1),
+            },
+            Block {
+                id: b1,
+                stmts: vec![Stmt::Assign(Place::local(m), RValue::Ref(BorrowKind::Mut, Place::local(a)))],
+                term: Terminator::Return(Operand::Const(Const::Unit)),
+            },
+        ];
+        let func = Function {
+            name: b.name,
+            type_params: Vec::new(),
+            params: vec![],
+            ret: Ty::Unit,
+            pre: rv_core::Prop::True,
+            post: rv_core::Prop::True,
+            locals: b.locals,
+            blocks,
+            entry,
+        };
+        let prog = Program { types: Vec::new(), funcs: vec![func] };
+        let errs = check(&prog, &b.syms);
+        assert!(errs.is_empty(), "{errs:?}");
+    }
+
+    // -- Algebra: moves persist across blocks while borrows do not ----------
+
+    #[test]
+    fn move_grade_persists_across_blocks() {
+        // b0: b = a (move); goto b1.  b1: c = a  → use of moved value.
+        let mut bd = Build::new("f");
+        let s = bd.syms.intern("S");
+        let a = bd.local("a", Ty::Adt(s));
+        let bb = bd.local("b", Ty::Adt(s));
+        let cc = bd.local("c", Ty::Adt(s));
+        let entry = BlockId(0);
+        let b1 = BlockId(1);
+        let blocks = vec![
+            Block {
+                id: entry,
+                stmts: vec![Stmt::Assign(Place::local(bb), RValue::Use(copy(a)))],
+                term: Terminator::Goto(b1),
+            },
+            Block {
+                id: b1,
+                stmts: vec![Stmt::Assign(Place::local(cc), RValue::Use(copy(a)))],
+                term: Terminator::Return(Operand::Const(Const::Unit)),
+            },
+        ];
+        let func = Function {
+            name: bd.name,
+            type_params: Vec::new(),
+            params: vec![],
+            ret: Ty::Unit,
+            pre: rv_core::Prop::True,
+            post: rv_core::Prop::True,
+            locals: bd.locals,
+            blocks,
+            entry,
+        };
+        let prog = Program { types: Vec::new(), funcs: vec![func] };
+        let errs = check(&prog, &bd.syms);
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert!(errs[0].message.contains("use of moved value `a`"), "{:?}", errs[0]);
     }
 
     // -- Extra: projected read of a moved value is caught -------------------
