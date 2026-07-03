@@ -63,7 +63,9 @@ cargo test                                    # 344 tests across the workspace
 `struct` · `enum` · `match` (exhaustiveness-checked) · field access (readable in specs:
 `requires p.v != 0`) · `requires` · `ensures` ·
 `assert` · `while … invariant …` (loop invariants proved by induction) · **`&`/`&mut`/`*`
-references** (borrow-checked: move tracking + conflict detection) · **generics** (`fn f<T>`,
+references** (borrow-checked: move tracking + conflict detection; a unique `&mut` licenses a
+*strong update* through `*r`, so specs can reason about the pointee — e.g. prove `result == 5`
+after `*r = 5`) · **generics** (`fn f<T>`,
 `struct S<T>`, `enum E<T>`; type-erased) · **traits / `impl` / methods** (`x.method()`,
 desugared to functions + resolved calls).
 

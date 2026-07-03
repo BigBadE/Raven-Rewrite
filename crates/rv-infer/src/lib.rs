@@ -610,6 +610,19 @@ struct State {
     /// Loop headers we are currently *inside* (header -> its invariants). A
     /// back-edge to one of these emits the "loop invariant preserved" obligation.
     loop_headers: HashMap<BlockId, Vec<Prop>>,
+    /// Points-to facts: a reference local `r` created by `r = &x` / `r = &mut x`
+    /// with a *bare local* pointee maps `r ↦ x`. This lets the verifier read and
+    /// (for `&mut`) strong-update the pointee's symbolic value through `*r`.
+    ///
+    /// SOUNDNESS rests on the borrow checker: a `&mut x` is *unique* while live
+    /// (no other live reference aliases `x`, and `x` cannot be reassigned while
+    /// borrowed), so a store `*r = e` is a strong update to `x` — exactly one
+    /// location changes. A program that violates the borrow discipline is never
+    /// reported verified (the driver conjoins `borrow_errors.is_empty()` with the
+    /// obligation results), so these facts are only *relied upon* when the
+    /// uniqueness that justifies them actually holds. This is the ownership →
+    /// dependency bridge: unique ownership licenses reasoning about pointee values.
+    points_to: HashMap<LocalId, LocalId>,
 }
 
 /// Carries everything a function's VC walk needs.
@@ -648,6 +661,7 @@ impl VcGen<'_> {
             path,
             visited: HashSet::new(),
             loop_headers: HashMap::new(),
+            points_to: HashMap::new(),
         };
         self.exec_block(self.f.entry, state);
     }
@@ -879,17 +893,36 @@ impl VcGen<'_> {
 
     /// The set of locals assigned (whole-local or via a projection) anywhere in the
     /// given blocks. Used to havoc the loop's mutated state.
+    ///
+    /// A store *through a reference* (`*r = e`) names `r` as its `place.local`, but
+    /// the location it actually mutates is `r`'s pointee. Since points-to is
+    /// path-sensitive and this scan is static, we cannot know which pointee, so we
+    /// over-approximate: if the body contains any deref-store, we also havoc every
+    /// local whose address is taken by a `&`/`&mut` in the body (any possible
+    /// pointee). This keeps the loop havoc sound in the presence of the strong
+    /// updates that [`exec_stmt`] performs through tracked references.
     fn assigned_locals(&self, blocks: &HashSet<BlockId>) -> HashSet<LocalId> {
         let mut out = HashSet::new();
+        let mut borrowed_pointees = HashSet::new();
+        let mut has_deref_store = false;
         for blk in &self.f.blocks {
             if !blocks.contains(&blk.id) {
                 continue;
             }
             for stmt in &blk.stmts {
-                if let Stmt::Assign(place, _) = stmt {
+                if let Stmt::Assign(place, rv) = stmt {
                     out.insert(place.local);
+                    if place.proj.iter().any(|p| matches!(p, Proj::Deref)) {
+                        has_deref_store = true;
+                    }
+                    if let RValue::Ref(_, pointee) = rv {
+                        borrowed_pointees.insert(pointee.local);
+                    }
                 }
             }
+        }
+        if has_deref_store {
+            out.extend(borrowed_pointees);
         }
         out
     }
@@ -912,19 +945,40 @@ impl VcGen<'_> {
                         state.path = range_assumption(std::mem::replace(&mut state.path, Prop::True), &value, w);
                     }
                     state.env.insert(place.local, value);
+                    // Track (or invalidate) a points-to fact for this local. `r = &x`
+                    // / `r = &mut x` with a bare pointee records `r ↦ x`; any other
+                    // rvalue overwrites `r`, so a prior points-to fact is dropped.
+                    match rv {
+                        RValue::Ref(_, pointee) if pointee.proj.is_empty() => {
+                            state.points_to.insert(place.local, pointee.local);
+                        }
+                        _ => {
+                            state.points_to.remove(&place.local);
+                        }
+                    }
+                } else if let ([Proj::Deref], Some(&pointee)) =
+                    (place.proj.as_slice(), state.points_to.get(&place.local))
+                {
+                    // STRONG UPDATE THROUGH A UNIQUE REFERENCE (`*r = e` where we
+                    // recorded `r ↦ x`). Because a live `&mut x` is unique (borrow
+                    // checker), this store changes exactly the pointee `x`: bind `x`
+                    // to the stored value, exactly as a direct `x = e` would. This is
+                    // what lets a spec observe mutation through a reference (e.g.
+                    // prove `x == 5` after `*r = 5`). Carry the `IntN` range fact too.
+                    if let Ty::IntN(w) = self.low.locals[pointee.0 as usize].ty {
+                        state.path = range_assumption(std::mem::replace(&mut state.path, Prop::True), &value, w);
+                    }
+                    state.env.insert(pointee, value);
                 } else if place.proj.iter().any(|p| matches!(p, Proj::Deref)) {
-                    // STORE THROUGH A REFERENCE (`*r = e`, possibly with further
-                    // projections). The write lands on the *pointee*, not on `r`
-                    // itself, so the symbolic value of `r` is unchanged. We track
-                    // nothing about pointees (every read through a `Deref` is already
-                    // a FRESH opaque var — see `term_of_operand`), so this store
-                    // changes nothing in our model and we deliberately do *nothing*.
+                    // STORE THROUGH AN UNTRACKED REFERENCE (`*r = e` where `r`'s
+                    // pointee is unknown — a ref parameter, a reborrow, or a store
+                    // with further projections like `(*r).f = e`). The write lands on
+                    // a pointee we model as opaque, so it changes nothing we know and
+                    // we do *nothing*.
                     //
-                    // SOUNDNESS: because we never assert any fact about a pointee, a
+                    // SOUNDNESS: we assert no fact about an untracked pointee, so a
                     // store through a possibly-aliasing reference cannot invalidate a
-                    // fact we are relying on — there is no such fact. Hence no HAVOC
-                    // of aliasing locals is needed; the conservative "pointees are
-                    // unknown" model is already sound. We still evaluated `value`
+                    // fact we rely on — there is none. We still evaluated `value`
                     // above, so an obligation inside the stored expression (e.g. a
                     // division) is still emitted.
                     let _ = value;
@@ -1110,6 +1164,20 @@ impl VcGen<'_> {
                 if let [Proj::Field(n)] = place.proj.as_slice() {
                     if let Some(base) = state.env.get(&place.local).cloned() {
                         return Term::field(base, *n);
+                    }
+                }
+                // A read `*r` through a tracked reference (`r ↦ x`) resolves to the
+                // pointee's current symbolic value — the same term a direct read of
+                // `x` produces, so a fact about `x` connects (by shared term) to a
+                // use of `*r`. Sound: while `r` is a live borrow of `x`, `x` is not
+                // independently mutated (borrow checker), so its value is stable.
+                if let [Proj::Deref] = place.proj.as_slice() {
+                    if let Some(&pointee) = state.points_to.get(&place.local) {
+                        return state
+                            .env
+                            .get(&pointee)
+                            .cloned()
+                            .unwrap_or_else(|| Term::Var(self.local_sym(&Place::local(pointee))));
                     }
                 }
                 Term::Var(self.fresh_var("$proj"))
@@ -1799,6 +1867,114 @@ mod tests {
                 o.origin
             );
         }
+    }
+
+    /// (d) STRONG UPDATE: after `r = &mut x; *r = 5`, the verifier knows `x == 5`.
+    /// The `assert x == 5` obligation resolves to the trivially-true `5 == 5`,
+    /// proving the store through the unique reference updated the pointee's value.
+    /// This is the ownership → dependency bridge in action.
+    #[test]
+    fn strong_update_through_mut_ref_updates_pointee() {
+        let mut syms = Symbols::new();
+        let f = syms.intern("f");
+        let x = syms.intern("x");
+        let r = syms.intern("r");
+        let l_x = LocalId(0);
+        let l_r = LocalId(1);
+        let deref = Place { local: l_r, proj: vec![Proj::Deref] };
+        let assert_x5 = Prop::Holds(Term::bin(BinOp::Eq, Term::Var(x), Term::Int(5)));
+        let prog = Program {
+            types: vec![],
+            funcs: vec![func(
+                f,
+                vec![],
+                vec![decl(Some(x)), decl(Some(r))],
+                Prop::True,
+                Prop::True,
+                vec![
+                    Stmt::Assign(Place::local(l_x), RValue::Use(Operand::Const(Const::Int(1)))),
+                    Stmt::Assign(Place::local(l_r), RValue::Ref(BorrowKind::Mut, Place::local(l_x))),
+                    Stmt::Assign(deref, RValue::Use(Operand::Const(Const::Int(5)))),
+                    Stmt::Assert(assert_x5),
+                ],
+                Terminator::Return(Operand::Const(Const::Unit)),
+            )],
+        };
+        let elab = elaborate(prog, &syms).expect("elaboration");
+        let a = elab.obligations.iter().find(|o| o.origin == "assert").expect("assert obligation");
+        // x was strong-updated to 5, so the goal is `5 == 5`.
+        assert_eq!(a.goal, Prop::Holds(Term::bin(BinOp::Eq, Term::Int(5), Term::Int(5))));
+    }
+
+    /// (e) SOUNDNESS GUARD: without the store, `x` keeps its value `1`, so the same
+    /// `assert x == 5` resolves to `1 == 5` — *not* trivially true. Confirms the
+    /// strong update reflects the actual stored value rather than always succeeding.
+    #[test]
+    fn no_store_leaves_pointee_value_unchanged() {
+        let mut syms = Symbols::new();
+        let f = syms.intern("f");
+        let x = syms.intern("x");
+        let r = syms.intern("r");
+        let l_x = LocalId(0);
+        let l_r = LocalId(1);
+        let assert_x5 = Prop::Holds(Term::bin(BinOp::Eq, Term::Var(x), Term::Int(5)));
+        let prog = Program {
+            types: vec![],
+            funcs: vec![func(
+                f,
+                vec![],
+                vec![decl(Some(x)), decl(Some(r))],
+                Prop::True,
+                Prop::True,
+                vec![
+                    Stmt::Assign(Place::local(l_x), RValue::Use(Operand::Const(Const::Int(1)))),
+                    Stmt::Assign(Place::local(l_r), RValue::Ref(BorrowKind::Mut, Place::local(l_x))),
+                    Stmt::Assert(assert_x5),
+                ],
+                Terminator::Return(Operand::Const(Const::Unit)),
+            )],
+        };
+        let elab = elaborate(prog, &syms).expect("elaboration");
+        let a = elab.obligations.iter().find(|o| o.origin == "assert").expect("assert obligation");
+        // No store: x is still 1, goal is the non-trivial `1 == 5`.
+        assert_eq!(a.goal, Prop::Holds(Term::bin(BinOp::Eq, Term::Int(1), Term::Int(5))));
+    }
+
+    /// (f) READ THROUGH A REFERENCE: `let n = 7; r = &n; v = *r` binds `v` to the
+    /// pointee's value, so `assert v == 7` resolves to `7 == 7`. A shared read now
+    /// connects to the borrowed value instead of being opaque.
+    #[test]
+    fn read_through_shared_ref_sees_pointee_value() {
+        let mut syms = Symbols::new();
+        let f = syms.intern("f");
+        let n = syms.intern("n");
+        let r = syms.intern("r");
+        let v = syms.intern("v");
+        let l_n = LocalId(0);
+        let l_r = LocalId(1);
+        let l_v = LocalId(2);
+        let deref = Place { local: l_r, proj: vec![Proj::Deref] };
+        let assert_v7 = Prop::Holds(Term::bin(BinOp::Eq, Term::Var(v), Term::Int(7)));
+        let prog = Program {
+            types: vec![],
+            funcs: vec![func(
+                f,
+                vec![],
+                vec![decl(Some(n)), decl(Some(r)), decl(Some(v))],
+                Prop::True,
+                Prop::True,
+                vec![
+                    Stmt::Assign(Place::local(l_n), RValue::Use(Operand::Const(Const::Int(7)))),
+                    Stmt::Assign(Place::local(l_r), RValue::Ref(BorrowKind::Shared, Place::local(l_n))),
+                    Stmt::Assign(Place::local(l_v), RValue::Use(Operand::Copy(deref))),
+                    Stmt::Assert(assert_v7),
+                ],
+                Terminator::Return(Operand::Const(Const::Unit)),
+            )],
+        };
+        let elab = elaborate(prog, &syms).expect("elaboration");
+        let a = elab.obligations.iter().find(|o| o.origin == "assert").expect("assert obligation");
+        assert_eq!(a.goal, Prop::Holds(Term::bin(BinOp::Eq, Term::Int(7), Term::Int(7))));
     }
 
     // -- generics tests ------------------------------------------------------
