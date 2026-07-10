@@ -221,6 +221,8 @@ dependent work, so we front it with Rust-like syntax and migrate the embedded pr
   closures (`|x| body` with capture, lambda-lifted) all run on the VM.
 - **Stage 5 — effect rows + handlers** on the CBPV layer. *(Kernel CBPV layer present; the
   executable `effect`/`uses`/`handle` surface + runtime handler dispatch are still to do.)*
+  This stage must carry effect rows in callable types and make handler coverage a type-checking
+  judgement; parsing syntax alone would create another unverified runtime side path.
 - **Stage 6 — unify the two backends under QTT** so a single `.rv` file mixes runtime code
   and erased proofs, split automatically by grade. *(The unified type system is demonstrated —
   the kernel both checks AND runs the modeled fragment, see `examples/proofs/unified.rv`.)*

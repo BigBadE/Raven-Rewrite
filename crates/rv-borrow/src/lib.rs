@@ -1,8 +1,8 @@
 //! # `rv-borrow` — the ownership / borrow *substrate*
 //!
 //! This crate is a **self-contained library** of ownership-theory building blocks.
-//! It is the substrate a future borrow-checking wave will sit on; it is *not yet*
-//! wired into the IR. It exports two families of structures, both phrased against
+//! It is the substrate used by `rv-borrowck` in the executable compiler pipeline.
+//! It exports two families of structures, both phrased against
 //! the traits in [`rv_logic`]:
 //!
 //! 1. **Resource algebras** — partial commutative monoids with a validity
@@ -478,7 +478,7 @@ pub fn linear_ok(g: &Mult) -> bool {
 // 5. (Optional) BorrowKind — Rust-style borrows mapped onto perms & grades.
 // ===========================================================================
 
-/// A Rust-style borrow/move classification, for use by a future borrow checker.
+/// A Rust-style borrow/move classification used by `rv-borrowck`.
 ///
 /// This ties the two substrates together at the *documentation* level: it says
 /// how each surface notion of borrowing projects onto a fractional permission

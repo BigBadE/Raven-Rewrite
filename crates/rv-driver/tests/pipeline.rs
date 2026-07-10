@@ -77,6 +77,17 @@ fn bool_body_under_int_return_is_rejected() {
     assert!(verify("fn p(x: i64) -> bool { return x > 0; }").is_ok());
 }
 
+/// Direct calls carry the callee's return type through executable elaboration;
+/// they are not an implicit `i64` conversion point.
+#[test]
+fn direct_call_return_type_is_checked() {
+    let src = r#"
+        fn flag() -> bool { return true; }
+        fn main() -> i64 { return flag(); }
+    "#;
+    assert!(verify(src).is_err(), "a bool-returning call cannot satisfy -> i64");
+}
+
 /// Soundness guard: a division with no precondition must NOT verify (x could be 0).
 #[test]
 fn unguarded_division_is_not_verified() {

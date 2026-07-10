@@ -32,7 +32,7 @@ changes.
 | `bool` | `enum Bool { false, true }` + `fn` ops | nothing (inductives) |
 | `Nat`, unbounded `Int` | `enum Nat`, `enum Int { Pos(Nat), NegSucc(Nat) }` + proved ring laws | nothing |
 | `iN`/`uN` machine words | a width-indexed model + reduction mod `2^N`; **overflow is a definition**, proved against the modular spec | nothing |
-| references / `&mut` | a heap model (finite map) + points-to propositions; the borrow discipline emits a checkable certificate (`rv-borrowck`, outside the trust base) | nothing |
+| references / `&mut` | a heap model (finite map) + points-to propositions; the executable pipeline checks borrow discipline through `FracPerm`/QTT grades (`rv-borrowck`, outside the trust base) | nothing |
 | algebraic effects | a free-monad / effect-signature encoding over inductive types; handlers are folds | nothing (the legacy in-kernel CBPV layer can become a library) |
 | **partiality / non-termination** | a *type*, not an effect-in-the-kernel: `Partial<A> ≈ (fuel: Nat) -> Option<A>` (or an encoded `Delay`). A diverging computation has type `Partial<A>`, **not** `A` | nothing — misuse (`Partial<Empty>` used as `Empty`) is a **plain type error the existing kernel catches** |
 
@@ -66,9 +66,10 @@ a standing requirement for ints/refs/effects/partiality.
   it has no `bool`/`i64`-style leniency (it rejects `Bool` where `Nat` is expected).
 - **The runtime language**: its convenience checker (`rv-infer`) is *not* the kernel and is
   *not* in the trust base. The end goal is to check the runtime fragment against the **models**
-  above, so the kernel — not `rv-infer` — is what types it. Until then, `rv-infer` must at
-  least enforce primitive types itself (its current `bool`/`i64` leniency is a bug to fix, not
-  a design choice).
+  above, so the kernel — not `rv-infer` — is what types it. `rv-infer` already rejects primitive
+  type mismatches and execution is gated on its complete verification result; remaining work is
+  to replace its trusted solver result with checkable evidence and elaborate runtime contracts
+  into the dependent model.
 - **Realization**: trusted, explicit, small (residue (a)).
 
 ## 5. Status
@@ -84,12 +85,15 @@ a standing requirement for ints/refs/effects/partiality.
   (`unified.rv`).
 - ✅ Generic `enum` parameters, proved-once generic stdlib, reflection — the proof surface.
 - ✅ Executable surface Stage 4: strings, floats, closures, `print` run on the VM.
+- ✅ Executable ownership: moves are affine QTT usage grades; borrow exclusion is `FracPerm`
+  validity; borrow lifetimes are liveness-driven; unique references support points-to strong
+  updates in executable specifications.
 - ✅ One parser: `rv-syntax` is the single lexer+parser for all `.rv` source. The proof path
   (`verify_rv`/`rvc`) translates its AST to kernel commands (`rv-driver/src/unify.rs`) instead
   of re-parsing; all 28 proof files + the prelude verify through it. A translation bug can only
   *reject* a proof (the kernel re-checks every term), never accept an unsound one.
-- ⏳ Frontier: executable algebraic effects (`effect`/`uses`/`handle` + a VM handler stack with
-  resumption).
+- ⏳ Frontiers: executable algebraic effects (`effect`/`uses`/`handle` + a VM handler stack with
+  resumption), explicit closure/call contracts, and replayable solver certificates.
 
 The discipline in one line: **grow the realization layer and the `.rv` libraries, never the
 kernel.**

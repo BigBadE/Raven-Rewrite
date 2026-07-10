@@ -85,9 +85,28 @@ pub fn elaborate(prog: Program<Parsed>, syms: &Symbols) -> Result<Elaborated, St
         prog.types.iter().map(|t| (t.name(), t.clone())).collect();
 
     // ---- Pass 1: infer per-function types, build the Lowerable program. ----
+    // Seed direct-call typing from surface return annotations. A function may call a
+    // later declaration, so this map must exist before any body is inferred.
+    let declared_returns: HashMap<Sym, Ty> = prog
+        .funcs
+        .iter()
+        .map(|f| (f.name, f.ret.clone().unwrap_or(Ty::Int)))
+        .collect();
+    let mut provisional: Vec<Function<Lowerable>> = Vec::with_capacity(prog.funcs.len());
+    for f in &prog.funcs {
+        provisional.push(infer_function(f, &type_table, &declared_returns)?);
+    }
+
+    // A small second pass replaces annotation fallbacks with the actual inferred
+    // return types. This covers unannotated/lifted functions without making the
+    // answer depend on declaration order.
+    let inferred_returns: HashMap<Sym, Ty> = provisional
+        .iter()
+        .map(|f| (f.name, f.ret.clone()))
+        .collect();
     let mut funcs_low: Vec<Function<Lowerable>> = Vec::with_capacity(prog.funcs.len());
     for f in &prog.funcs {
-        let inferred = infer_function(f, &type_table)?;
+        let inferred = infer_function(f, &type_table, &inferred_returns)?;
         sigs.insert(
             f.name,
             Signature {
@@ -144,6 +163,7 @@ fn param_syms<P: rv_ir::Phase>(f: &Function<P>) -> Vec<Sym> {
 fn infer_function(
     f: &Function<Parsed>,
     types: &HashMap<Sym, TypeDef>,
+    returns: &HashMap<Sym, Ty>,
 ) -> Result<Function<Lowerable>, String> {
     // Seed from any front-end *declared* types (e.g. a parameter's `: u8`), then
     // refine by the forward sweep over assignments. A declared type matters most
@@ -166,7 +186,7 @@ fn infer_function(
                 if !place.proj.is_empty() {
                     continue;
                 }
-                let ty = type_of_rvalue(rv, &tys, f, types)?;
+                let ty = type_of_rvalue(rv, &tys, f, types, returns)?;
                 set_ty(&mut tys, place.local, ty)?;
             }
         }
@@ -255,6 +275,7 @@ fn type_of_rvalue(
     tys: &[Option<Ty>],
     f: &Function<Parsed>,
     types: &HashMap<Sym, TypeDef>,
+    returns: &HashMap<Sym, Ty>,
 ) -> Result<Ty, String> {
     match rv {
         RValue::Use(op) => type_of_operand(op, tys, types),
@@ -307,13 +328,13 @@ fn type_of_rvalue(
                 }
             }
         }
-        // A call's value has the callee's return type. The slice's spec language has
-        // only `Int`/`Bool` returns and the kernel's `type_of` does not need the
-        // call result typed precisely for the obligations we emit, so we default to
-        // `Int` (the numeric default). Self-recursion falls through here too.
-        RValue::Call(_callee, _) => {
+        // A call has its callee's declared/inferred return type. The map is seeded
+        // from every declaration before body inference and then refreshed with
+        // actual inferred returns, so forward calls and lifted functions are not
+        // silently treated as `i64`.
+        RValue::Call(callee, _) => {
             let _ = f;
-            Ok(Ty::Int)
+            Ok(returns.get(callee).cloned().unwrap_or(Ty::Int))
         }
         // A closure value has a function type. We do not track the lambda's exact
         // signature here (it is opaque to the kernel anyway), so we give it a
