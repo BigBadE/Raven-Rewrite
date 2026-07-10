@@ -179,7 +179,7 @@ fn lower_method(
     if decl.has_self && types.struct_info(type_name).is_some() {
         var_struct.insert(syms.intern("self"), type_name);
     }
-    let (pre, post) = lower_clauses(
+    let (pre, mut post) = lower_clauses(
         &decl.requires,
         &decl.ensures,
         &decl.params,
@@ -187,6 +187,7 @@ fn lower_method(
         &var_struct,
         syms,
     )?;
+    post = apply_return_alias_refinement(post, decl.ret.as_ref(), types, &var_struct, syms)?;
     b.lower_block(&decl.body, syms)?;
     b.finish_with_default_return();
 
@@ -232,7 +233,8 @@ fn lower_callable(
     bind_params(&mut b, ast_params, &scope, types, &mut params);
 
     let var_struct = struct_typed_params(ast_params, &scope, types);
-    let (pre, post) = lower_clauses(requires, ensures, ast_params, types, &var_struct, syms)?;
+    let (pre, mut post) = lower_clauses(requires, ensures, ast_params, types, &var_struct, syms)?;
+    post = apply_return_alias_refinement(post, ret_ann, types, &var_struct, syms)?;
 
     // Lower the body into the CFG.
     b.lower_block(body, syms)?;
@@ -340,6 +342,33 @@ fn lower_clauses(
         post = post.and(spec::lower_prop(e, syms, &ctx)?);
     }
     Ok((pre, post))
+}
+
+/// A refinement alias in return position is postcondition sugar. Its predicate
+/// is written over `self` in the alias declaration and instantiated with the
+/// reserved `result` term here.
+fn apply_return_alias_refinement(
+    post: rv_core::Prop,
+    ret: Option<&AstTy>,
+    types: &Types,
+    var_struct: &HashMap<Sym, Sym>,
+    syms: &mut rv_core::Symbols,
+) -> Result<rv_core::Prop, String> {
+    let Some(AstTy::Adt(alias)) = ret else {
+        return Ok(post);
+    };
+    let Some(refinement) = types.alias_refinement(*alias) else {
+        return Ok(post);
+    };
+    let ctx = spec::SpecCtx { types, var_struct };
+    let prop = spec::lower_prop(refinement, syms, &ctx)?;
+    let self_sym = syms.intern("self");
+    let result_sym = syms.intern(rv_ir::RESULT_NAME);
+    Ok(post.and(rv_core::subst_prop(
+        &prop,
+        self_sym,
+        &rv_core::Term::Var(result_sym),
+    )))
 }
 
 /// Build the map from struct-typed parameter names to their struct type, used to

@@ -68,6 +68,29 @@ fn refinement_type_alias_is_a_real_contract() {
     assert!(report.obligations.iter().any(|o| o.origin.contains("precondition of recip")));
 }
 
+#[test]
+fn refinement_type_alias_is_a_return_contract() {
+    let src = r#"
+        type NonZero = i64 where self != 0;
+        fn one() -> NonZero { return 1; }
+        fn main() -> i64 { return 100 / one(); }
+    "#;
+    let report = run_pipeline(src, Some("main")).expect("front-end ok");
+    assert!(report.all_verified(), "{report:?}");
+    assert_eq!(report.run, Some(Ok(Value::Int(100))));
+    assert!(report.obligations.iter().any(|o| o.origin.contains("postcondition")));
+}
+
+#[test]
+fn false_refinement_return_is_not_verified() {
+    let src = r#"
+        type NonZero = i64 where self != 0;
+        fn wrong() -> NonZero { return 0; }
+    "#;
+    let report = verify(src).expect("front-end ok");
+    assert!(!report.all_verified(), "a false refined return must be rejected");
+}
+
 /// Stage 4 executable surface: float literals + f64 arithmetic run on the VM.
 #[test]
 fn float_arithmetic_runs() {
