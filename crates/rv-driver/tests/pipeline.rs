@@ -144,6 +144,24 @@ fn false_refinement_aggregate_field_is_not_verified() {
 }
 
 #[test]
+fn refinement_enum_payload_is_available_after_match() {
+    let src = r#"
+        type NonZero = i64 where self != 0;
+        enum MaybeDivisor { Some(NonZero), None, }
+        fn main() -> i64 {
+            let value = MaybeDivisor::Some(4);
+            match value {
+                MaybeDivisor::Some(divisor) => { return 100 / divisor; }
+                MaybeDivisor::None => { return 0; }
+            }
+        }
+    "#;
+    let report = run_pipeline(src, Some("main")).expect("front-end ok");
+    assert!(report.all_verified(), "{report:?}");
+    assert_eq!(report.run, Some(Ok(Value::Int(25))));
+}
+
+#[test]
 fn fixed_width_integers_prove_conversion_and_overflow_bounds() {
     let src = r#"
         fn inc(x: u8) -> u8

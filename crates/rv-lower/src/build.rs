@@ -315,6 +315,28 @@ impl<'a> FnBuilder<'a> {
         Ok(())
     }
 
+    /// Introduce the invariant carried by a value whose nominal type is a
+    /// refinement alias. Unlike initialization, this does not re-assert the
+    /// predicate: destructuring a refined aggregate exposes an already checked
+    /// field, and aggregate projections are opaque to the first-order solver.
+    fn assume_alias_local_refinement(
+        &mut self,
+        local: Sym,
+        alias: Sym,
+        syms: &mut Symbols,
+    ) -> Result<(), String> {
+        let Some(refinement) = self.types.alias_refinement(alias) else {
+            return Ok(());
+        };
+        let var_struct = self.var_struct_map();
+        let ctx = spec::SpecCtx { types: self.types, var_struct: &var_struct };
+        let prop = spec::lower_prop(refinement, syms, &ctx)?;
+        let self_sym = syms.intern("self");
+        let prop = rv_core::subst_prop(&prop, self_sym, &rv_core::Term::Var(local));
+        self.push_stmt(IrStmt::Assume(prop));
+        Ok(())
+    }
+
     /// Check a refinement alias on a value being embedded in an aggregate. The
     /// value is first materialized under a stable ghost-local name so the
     /// first-order verifier can refer to it even when the source expression was
@@ -704,6 +726,12 @@ impl<'a> FnBuilder<'a> {
                 RValue::Use(Operand::Copy(src)),
             ));
             self.bind(*name, dst);
+            // A payload declared with a refinement alias carries that contract
+            // into the successful match arm, just like an explicitly annotated
+            // local. The constructor established it; pattern matching exposes it.
+            if let Some(alias) = self.types.variant_field_alias(enum_name, variant, i) {
+                self.assume_alias_local_refinement(*name, alias, syms)?;
+            }
         }
         Ok(())
     }
