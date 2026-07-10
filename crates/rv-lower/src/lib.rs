@@ -757,6 +757,22 @@ struct Holder { o: Option<i64> }";
     }
 
     #[test]
+    fn refinement_alias_expands_in_aggregate_fields() {
+        use rv_ir::TypeDef;
+        let src = "type NonZero = i64 where self != 0; struct Score { value: NonZero }";
+        let (prog, mut syms) = lower_src(src);
+        let fields = prog
+            .types
+            .iter()
+            .find_map(|def| match def {
+                TypeDef::Struct { name, fields, .. } if *name == syms.intern("Score") => Some(fields),
+                _ => None,
+            })
+            .expect("Score definition");
+        assert_eq!(fields[0].ty, rv_core::Ty::Int);
+    }
+
+    #[test]
     fn desugars_inherent_method_call_to_mangled_call() {
         // (c) `impl Point { fn sum(self) -> i64 {..} }` + `p.sum()` desugars to a
         // Call of the mangled function `Point::sum` with the receiver as first arg.

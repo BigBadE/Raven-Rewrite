@@ -83,7 +83,7 @@ impl Types {
             if t.aliases.contains_key(&alias.name) {
                 return Err(format!("duplicate type alias `{}`", syms.resolve(alias.name)));
             }
-            let base = resolve_ty(&alias.base, &HashSet::new());
+            let base = t.resolve_ty(&alias.base, &HashSet::new());
             t.aliases.insert(alias.name, (base, alias.refinement.clone()));
         }
 
@@ -107,7 +107,7 @@ impl Types {
                     ));
                 }
                 fields.push(f.name);
-                field_defs.push(FieldDef { name: f.name, ty: resolve_ty(&f.ty, &scope) });
+                field_defs.push(FieldDef { name: f.name, ty: t.resolve_ty(&f.ty, &scope) });
             }
             t.structs.insert(s.name, StructInfo { fields, field_index });
             t.defs.push(TypeDef::Struct { name: s.name, type_params, fields: field_defs });
@@ -130,7 +130,7 @@ impl Types {
                         syms.resolve(e.name)
                     ));
                 }
-                let tys = v.fields.iter().map(|ty| resolve_ty(ty, &scope)).collect();
+                let tys = v.fields.iter().map(|ty| t.resolve_ty(ty, &scope)).collect();
                 variant_defs.push(VariantDef { name: v.name, fields: tys });
             }
             t.enums.insert(e.name, EnumInfo { variant_index });
