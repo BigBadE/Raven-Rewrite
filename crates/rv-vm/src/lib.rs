@@ -437,6 +437,7 @@ mod tests {
         // locals: 0 = result accumulator
         let func = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name,
             params: vec![],
             ret: rv_core::Ty::Int,
@@ -468,7 +469,7 @@ mod tests {
             entry: BlockId(0),
         };
 
-        let prog = Program { types: vec![], funcs: vec![func] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![func] };
         let bc = compile(&prog, &syms);
         let result = run(&bc, "main", &[]).unwrap();
         assert_eq!(result, Value::Int(6));
@@ -481,6 +482,7 @@ mod tests {
         let name = syms.intern("main");
         let func = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name,
             params: vec![],
             ret: rv_core::Ty::Int,
@@ -501,7 +503,7 @@ mod tests {
             }],
             entry: BlockId(0),
         };
-        let prog = Program { types: vec![], funcs: vec![func] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![func] };
         let bc = compile(&prog, &syms);
         assert_eq!(run(&bc, "main", &[]), Err("division by zero".to_string()));
     }
@@ -514,6 +516,7 @@ mod tests {
         // params: l0 = x. locals: l0 = x, l1 = cond, l2 = result
         let func = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name,
             params: vec![LocalId(0)],
             ret: rv_core::Ty::Int,
@@ -552,7 +555,7 @@ mod tests {
             ],
             entry: BlockId(0),
         };
-        let prog = Program { types: vec![], funcs: vec![func] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![func] };
         let bc = compile(&prog, &syms);
         assert_eq!(run(&bc, "abs", &[Value::Int(-7)]).unwrap(), Value::Int(7));
         assert_eq!(run(&bc, "abs", &[Value::Int(5)]).unwrap(), Value::Int(5));
@@ -568,6 +571,7 @@ mod tests {
         // add(a, b): l0=a, l1=b, l2=sum
         let add_fn = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name: add,
             params: vec![LocalId(0), LocalId(1)],
             ret: rv_core::Ty::Int,
@@ -588,6 +592,7 @@ mod tests {
         // main(): l0 = add(4, 5); return l0
         let main_fn = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name: main,
             params: vec![],
             ret: rv_core::Ty::Int,
@@ -608,7 +613,7 @@ mod tests {
             entry: BlockId(0),
         };
 
-        let prog = Program { types: vec![], funcs: vec![add_fn, main_fn] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![add_fn, main_fn] };
         let bc = compile(&prog, &syms);
         assert_eq!(run(&bc, "main", &[]).unwrap(), Value::Int(9));
     }
@@ -620,6 +625,7 @@ mod tests {
         let name = syms.intern("main");
         let func = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name,
             params: vec![],
             ret: rv_core::Ty::Bool,
@@ -651,7 +657,7 @@ mod tests {
             }],
             entry: BlockId(0),
         };
-        let prog = Program { types: vec![], funcs: vec![func] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![func] };
         let bc = compile(&prog, &syms);
         assert_eq!(run(&bc, "main", &[]).unwrap(), Value::Bool(true));
     }
@@ -667,6 +673,7 @@ mod tests {
         // locals: l0 = the Point value, l1 = the extracted field
         let func = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name: main,
             params: vec![],
             ret: rv_core::Ty::Int,
@@ -704,7 +711,7 @@ mod tests {
             entry: BlockId(0),
         };
 
-        let prog = Program { types: vec![], funcs: vec![func] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![func] };
         let bc = compile(&prog, &syms);
         assert_eq!(run(&bc, "main", &[]).unwrap(), Value::Int(3));
     }
@@ -722,6 +729,7 @@ mod tests {
         // locals: l0 = the Option value, l1 = the result.
         let func = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name: main,
             params: vec![],
             ret: rv_core::Ty::Int,
@@ -776,7 +784,7 @@ mod tests {
             entry: BlockId(0),
         };
 
-        let prog = Program { types: vec![], funcs: vec![func] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![func] };
         let bc = compile(&prog, &syms);
         assert_eq!(run(&bc, "main", &[]).unwrap(), Value::Int(7));
     }
@@ -796,6 +804,7 @@ mod tests {
         // locals: l0 = x, l1 = r (a reference to x)
         let func = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name: main,
             params: vec![],
             ret: rv_core::Ty::Int,
@@ -823,7 +832,7 @@ mod tests {
             }],
             entry: BlockId(0),
         };
-        let prog = Program { types: vec![], funcs: vec![func] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![func] };
         let bc = compile(&prog, &syms);
         assert_eq!(run(&bc, "main", &[]).unwrap(), Value::Int(5));
     }
@@ -837,6 +846,7 @@ mod tests {
         // locals: l0 = x, l1 = r, l2 = the dereffed value
         let func = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name: main,
             params: vec![],
             ret: rv_core::Ty::Int,
@@ -866,7 +876,7 @@ mod tests {
             }],
             entry: BlockId(0),
         };
-        let prog = Program { types: vec![], funcs: vec![func] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![func] };
         let bc = compile(&prog, &syms);
         assert_eq!(run(&bc, "main", &[]).unwrap(), Value::Int(7));
     }
@@ -881,6 +891,7 @@ mod tests {
         // locals: l0 = p (a Point), l1 = r, l2 = field
         let func = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name: main,
             params: vec![],
             ret: rv_core::Ty::Int,
@@ -923,7 +934,7 @@ mod tests {
             }],
             entry: BlockId(0),
         };
-        let prog = Program { types: vec![], funcs: vec![func] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![func] };
         let bc = compile(&prog, &syms);
         assert_eq!(run(&bc, "main", &[]).unwrap(), Value::Int(4));
     }
@@ -938,6 +949,7 @@ mod tests {
         // locals: l0 = p, l1 = r, l2 = field read-back
         let func = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name: main,
             params: vec![],
             ret: rv_core::Ty::Int,
@@ -989,7 +1001,7 @@ mod tests {
             }],
             entry: BlockId(0),
         };
-        let prog = Program { types: vec![], funcs: vec![func] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![func] };
         let bc = compile(&prog, &syms);
         assert_eq!(run(&bc, "main", &[]).unwrap(), Value::Int(9));
     }
@@ -1003,6 +1015,7 @@ mod tests {
         // r = &p.0  (a field sub-borrow) -> should trap
         let func = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name: main,
             params: vec![],
             ret: rv_core::Ty::Int,
@@ -1037,7 +1050,7 @@ mod tests {
             }],
             entry: BlockId(0),
         };
-        let prog = Program { types: vec![], funcs: vec![func] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![func] };
         let bc = compile(&prog, &syms);
         assert!(run(&bc, "main", &[]).is_err());
     }
@@ -1050,6 +1063,7 @@ mod tests {
         let name = syms.intern("main");
         let func = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name,
             params: vec![],
             ret: rv_core::Ty::Int,
@@ -1063,7 +1077,7 @@ mod tests {
             }],
             entry: BlockId(0),
         };
-        let prog = Program { types: vec![], funcs: vec![func] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![func] };
         let bc = compile(&prog, &syms);
         let err = run(&bc, "main", &[]).unwrap_err();
         assert!(err.contains("panic"), "expected a panic error, got {err:?}");
@@ -1079,6 +1093,7 @@ mod tests {
         // l0 = cond, l1 = result
         let func = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name,
             params: vec![],
             ret: rv_core::Ty::Int,
@@ -1117,7 +1132,7 @@ mod tests {
             ],
             entry: BlockId(0),
         };
-        let prog = Program { types: vec![], funcs: vec![func] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![func] };
         let bc = compile(&prog, &syms);
         assert_eq!(run(&bc, "main", &[]).unwrap(), Value::Int(42));
     }
@@ -1138,6 +1153,7 @@ mod tests {
         let func = Function::<Lowerable> {
             name: id,
             type_params: vec![t], // erased — present only to prove codegen ignores it
+            generic_bounds: vec![],
             params: vec![LocalId(0)],
             ret: rv_core::Ty::Int,
             pre: Prop::True,
@@ -1151,7 +1167,7 @@ mod tests {
             entry: BlockId(0),
         };
 
-        let prog = Program { types: vec![], funcs: vec![func] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![func] };
         let bc = compile(&prog, &syms);
         // The argument comes straight back out, regardless of the erased `T`.
         assert_eq!(run(&bc, "id", &[Value::Int(42)]).unwrap(), Value::Int(42));
@@ -1174,6 +1190,7 @@ mod tests {
         let sum_fn = Function::<Lowerable> {
             name: point_sum,
             type_params: vec![],
+            generic_bounds: vec![],
             params: vec![LocalId(0)],
             ret: rv_core::Ty::Int,
             pre: Prop::True,
@@ -1210,6 +1227,7 @@ mod tests {
         let main_fn = Function::<Lowerable> {
             name: main,
             type_params: vec![],
+            generic_bounds: vec![],
             params: vec![],
             ret: rv_core::Ty::Int,
             pre: Prop::True,
@@ -1253,7 +1271,7 @@ mod tests {
             ],
         }];
 
-        let prog = Program { types, funcs: vec![sum_fn, main_fn] };
+        let prog = Program { types, trait_impls: vec![], funcs: vec![sum_fn, main_fn] };
         let bc = compile(&prog, &syms);
         assert_eq!(run(&bc, "main", &[]).unwrap(), Value::Int(7));
     }
@@ -1270,6 +1288,7 @@ mod tests {
         let arr_ty = rv_core::Ty::Array(Box::new(rv_core::Ty::Int), 3);
         let func = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name: main,
             params: vec![],
             ret: rv_core::Ty::Int,
@@ -1316,7 +1335,7 @@ mod tests {
             entry: BlockId(0),
         };
 
-        let prog = Program { types: vec![], funcs: vec![func] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![func] };
         let bc = compile(&prog, &syms);
         assert_eq!(run(&bc, "main", &[]).unwrap(), Value::Int(99));
     }
@@ -1331,6 +1350,7 @@ mod tests {
         let tup_ty = rv_core::Ty::Tuple(vec![rv_core::Ty::Int, rv_core::Ty::Int]);
         let func = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name: main,
             params: vec![],
             ret: rv_core::Ty::Int,
@@ -1368,7 +1388,7 @@ mod tests {
             entry: BlockId(0),
         };
 
-        let prog = Program { types: vec![], funcs: vec![func] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![func] };
         let bc = compile(&prog, &syms);
         assert_eq!(run(&bc, "main", &[]).unwrap(), Value::Int(6));
     }
@@ -1385,6 +1405,7 @@ mod tests {
         // locals: l0 = the vec, l1 = len, l2 = read-back element.
         Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name,
             params: vec![],
             ret: rv_core::Ty::Int,
@@ -1453,13 +1474,13 @@ mod tests {
         let vec_sym = syms.intern("Vec");
 
         // len() == 2 (returns l1).
-        let prog = Program { types: vec![], funcs: vec![vec_main(main, vec_sym, Terminator::Return(copy(1)))] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![vec_main(main, vec_sym, Terminator::Return(copy(1)))] };
         let bc = compile(&prog, &syms);
         assert_eq!(run(&bc, "main", &[]).unwrap(), Value::Int(2));
 
         // After `v[0] = 99` (IndexSet), the final write to l2 is `l0[0]` == 99,
         // so returning l2 verifies both IndexSet and the IndexGet read-back.
-        let prog_99 = Program { types: vec![], funcs: vec![vec_main(main, vec_sym, Terminator::Return(copy(2)))] };
+        let prog_99 = Program { types: vec![], trait_impls: vec![], funcs: vec![vec_main(main, vec_sym, Terminator::Return(copy(2)))] };
         let bc_99 = compile(&prog_99, &syms);
         assert_eq!(run(&bc_99, "main", &[]).unwrap(), Value::Int(99));
     }
@@ -1474,6 +1495,7 @@ mod tests {
         let vec_ty = rv_core::Ty::Adt(syms.intern("Vec"));
         let func = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name: main,
             params: vec![],
             ret: rv_core::Ty::Int,
@@ -1511,7 +1533,7 @@ mod tests {
             }],
             entry: BlockId(0),
         };
-        let prog = Program { types: vec![], funcs: vec![func] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![func] };
         let bc = compile(&prog, &syms);
         assert_eq!(run(&bc, "main", &[]).unwrap(), Value::Int(20));
     }
@@ -1532,6 +1554,7 @@ mod tests {
         // add(captured, x): l0 = captured, l1 = x, l2 = captured + x.
         let add_fn = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name: add,
             params: vec![LocalId(0), LocalId(1)],
             ret: rv_core::Ty::Int,
@@ -1552,6 +1575,7 @@ mod tests {
         // main(): l0 = 10; l1 = closure(add capturing l0); l2 = l1(5); return l2.
         let main_fn = Function::<Lowerable> {
             type_params: vec![],
+            generic_bounds: vec![],
             name: main,
             params: vec![],
             ret: rv_core::Ty::Int,
@@ -1586,7 +1610,7 @@ mod tests {
             entry: BlockId(0),
         };
 
-        let prog = Program { types: vec![], funcs: vec![add_fn, main_fn] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![add_fn, main_fn] };
         let bc = compile(&prog, &syms);
         assert_eq!(run(&bc, "main", &[]).unwrap(), Value::Int(15));
     }

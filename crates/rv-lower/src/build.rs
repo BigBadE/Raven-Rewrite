@@ -892,6 +892,7 @@ impl<'a> FnBuilder<'a> {
         self.lifted.push(rv_ir::Function {
             name,
             type_params: Vec::new(),
+            generic_bounds: Vec::new(),
             params: fparams,
             ret: None,
             pre: rv_core::Prop::True,

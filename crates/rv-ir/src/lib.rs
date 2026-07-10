@@ -50,7 +50,18 @@ impl Phase for Lowerable {
 pub struct Program<P: Phase> {
     /// Struct/enum definitions. Phase-independent (declared types are always concrete).
     pub types: Vec<TypeDef>,
+    /// Implemented trait/type pairs known to this compilation unit. Kept at
+    /// module scope because a generic call must validate a type argument against
+    /// the implementation registry, independently of any method body.
+    pub trait_impls: Vec<TraitImpl>,
     pub funcs: Vec<Function<P>>,
+}
+
+/// Evidence that `type_name` implements `trait_name` in the current module.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TraitImpl {
+    pub trait_name: Sym,
+    pub type_name: Sym,
 }
 
 /// A user-defined algebraic data type.
@@ -108,6 +119,9 @@ pub struct Function<P: Phase> {
     pub name: Sym,
     /// Generic type parameters (`fn f<T, U>(..)`). Erased at runtime; opaque to checking.
     pub type_params: Vec<Sym>,
+    /// Bounds on each declared generic parameter. These are retained through
+    /// lowering so call-site elaboration can validate inferred substitutions.
+    pub generic_bounds: Vec<(Sym, Vec<Sym>)>,
     pub params: Vec<LocalId>,
     /// Return type. Grows `()` -> `Ty`.
     pub ret: P::Ty,

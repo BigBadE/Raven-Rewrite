@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use rv_core::Sym;
-use rv_ir::{Function, Parsed, Program};
+use rv_ir::{Function, Parsed, Program, TraitImpl};
 use rv_syntax::ast::{
     Block as AstBlock, Expr as AstExpr, GenericParam, Item, MethodDecl, Module, Param, TraitDecl,
     Ty as AstTy,
@@ -127,7 +127,13 @@ pub fn lower(
     for (type_name, m, mangled) in planned_methods {
         funcs.extend(lower_method(type_name, m, mangled, &types, syms)?);
     }
-    Ok(Program { types: types.defs, funcs })
+    let trait_impls = impl_decls
+        .iter()
+        .filter_map(|im| {
+            im.trait_name.map(|trait_name| TraitImpl { trait_name, type_name: im.type_name })
+        })
+        .collect();
+    Ok(Program { types: types.defs, trait_impls, funcs })
 }
 
 /// Validate the executable portion of a trait implementation before methods are
@@ -246,6 +252,11 @@ fn lower_method(
     let mut out = vec![Function {
         name: mangled,
         type_params,
+        generic_bounds: decl
+            .generics
+            .iter()
+            .map(|param| (param.name, param.bounds.clone()))
+            .collect(),
         params,
         // Declared return annotation (if any), for the body-vs-signature check in inference.
         ret: decl.ret.as_ref().map(|t| types.resolve_ty(t, &scope)),
@@ -297,6 +308,10 @@ fn lower_callable(
     let mut out = vec![Function {
         name,
         type_params,
+        generic_bounds: generics
+            .iter()
+            .map(|param| (param.name, param.bounds.clone()))
+            .collect(),
         params,
         // Record the *declared* return annotation (if any) so inference can check the
         // body against it — most importantly to reject a primitive mismatch like a

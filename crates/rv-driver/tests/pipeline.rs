@@ -259,6 +259,33 @@ fn unknown_trait_impl_is_rejected() {
     assert!(verify(src).is_err(), "an impl cannot target an undeclared trait");
 }
 
+#[test]
+fn generic_trait_bound_is_checked_at_call_site() {
+    let src = r#"
+        trait Summable { fn sum(self) -> i64; }
+        struct Point { value: i64, }
+        impl Summable for Point { fn sum(self) -> i64 { return self.value; } }
+        fn keep<T: Summable>(value: T) -> T { return value; }
+        fn main() -> Point { return keep(Point { value: 7 }); }
+    "#;
+    let report = run_pipeline(src, Some("main")).expect("front-end ok");
+    assert!(report.all_verified(), "{report:?}");
+    assert!(report.run.is_some(), "verified bounded generic call should execute");
+}
+
+#[test]
+fn missing_generic_trait_bound_is_rejected_at_call_site() {
+    let src = r#"
+        trait Summable { fn sum(self) -> i64; }
+        struct Point { value: i64, }
+        struct Other { value: i64, }
+        impl Summable for Point { fn sum(self) -> i64 { return self.value; } }
+        fn keep<T: Summable>(value: T) -> T { return value; }
+        fn main() -> Other { return keep(Other { value: 7 }); }
+    "#;
+    assert!(verify(src).is_err(), "a generic call must satisfy its declared trait bound");
+}
+
 /// Direct calls carry the callee's return type through executable elaboration;
 /// they are not an implicit `i64` conversion point.
 #[test]

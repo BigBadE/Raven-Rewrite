@@ -848,6 +848,7 @@ mod tests {
             let func = Function {
                 name: self.name,
                 type_params: Vec::new(),
+                generic_bounds: vec![],
                 params,
                 ret: Ty::Unit,
                 pre: rv_core::Prop::True,
@@ -856,7 +857,7 @@ mod tests {
                 blocks: vec![Block { id: entry, stmts, term }],
                 entry,
             };
-            let prog = Program { types: Vec::new(), funcs: vec![func] };
+            let prog = Program { types: Vec::new(), trait_impls: vec![], funcs: vec![func] };
             (prog, self.syms)
         }
     }
@@ -1082,6 +1083,7 @@ mod tests {
         let func = Function {
             name: b.name,
             type_params: Vec::new(),
+            generic_bounds: vec![],
             params: vec![],
             ret: Ty::Unit,
             pre: rv_core::Prop::True,
@@ -1090,7 +1092,7 @@ mod tests {
             blocks,
             entry,
         };
-        let prog = Program { types: Vec::new(), funcs: vec![func] };
+        let prog = Program { types: Vec::new(), trait_impls: vec![], funcs: vec![func] };
         let errs = check(&prog, &b.syms);
         assert!(errs.is_empty(), "expected no errors, got {errs:?}");
     }
@@ -1122,6 +1124,7 @@ mod tests {
         let func = Function {
             name: b.name,
             type_params: Vec::new(),
+            generic_bounds: vec![],
             params: vec![],
             ret: Ty::Unit,
             pre: rv_core::Prop::True,
@@ -1130,7 +1133,7 @@ mod tests {
             blocks,
             entry,
         };
-        let prog = Program { types: Vec::new(), funcs: vec![func] };
+        let prog = Program { types: Vec::new(), trait_impls: vec![], funcs: vec![func] };
         let errs = check(&prog, &b.syms);
         assert!(errs.is_empty(), "{errs:?}");
     }
@@ -1206,6 +1209,7 @@ mod tests {
         let func = Function {
             name: b.name,
             type_params: Vec::new(),
+            generic_bounds: vec![],
             params: vec![],
             ret: Ty::Unit,
             pre: rv_core::Prop::True,
@@ -1214,7 +1218,7 @@ mod tests {
             blocks,
             entry,
         };
-        let prog = Program { types: Vec::new(), funcs: vec![func] };
+        let prog = Program { types: Vec::new(), trait_impls: vec![], funcs: vec![func] };
         let errs = check(&prog, &b.syms);
         assert!(errs.is_empty(), "{errs:?}");
     }
@@ -1246,6 +1250,7 @@ mod tests {
         let func = Function {
             name: bd.name,
             type_params: Vec::new(),
+            generic_bounds: vec![],
             params: vec![],
             ret: Ty::Unit,
             pre: rv_core::Prop::True,
@@ -1254,7 +1259,7 @@ mod tests {
             blocks,
             entry,
         };
-        let prog = Program { types: Vec::new(), funcs: vec![func] };
+        let prog = Program { types: Vec::new(), trait_impls: vec![], funcs: vec![func] };
         let errs = check(&prog, &bd.syms);
         assert_eq!(errs.len(), 1, "{errs:?}");
         assert!(errs[0].message.contains("use of moved value `a`"), "{:?}", errs[0]);
@@ -1293,6 +1298,7 @@ mod tests {
         let func = Function {
             name: b.name,
             type_params: Vec::new(),
+            generic_bounds: vec![],
             params: vec![],
             ret: Ty::Unit,
             pre: rv_core::Prop::True,
@@ -1301,7 +1307,7 @@ mod tests {
             blocks,
             entry,
         };
-        let prog = Program { types: Vec::new(), funcs: vec![func] };
+        let prog = Program { types: Vec::new(), trait_impls: vec![], funcs: vec![func] };
         let errs = check(&prog, &b.syms);
         assert_eq!(errs.len(), 1, "cross-block borrow should conflict, got {errs:?}");
         assert!(errs[0].message.contains("as mutable"), "{:?}", errs[0]);

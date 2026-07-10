@@ -104,7 +104,7 @@ pub fn elaborate(prog: Program<Parsed>, syms: &Symbols) -> Result<Elaborated, St
         .iter()
         .map(|f| (f.name, f.ret.clone()))
         .collect();
-    let call_types = callable_types(&provisional);
+    let call_types = callable_types(&provisional, &prog.trait_impls);
     let mut funcs_low: Vec<Function<Lowerable>> = Vec::with_capacity(prog.funcs.len());
     for f in &prog.funcs {
         let inferred = infer_function(f, &type_table, &inferred_returns, Some(&call_types))?;
@@ -138,7 +138,10 @@ pub fn elaborate(prog: Program<Parsed>, syms: &Symbols) -> Result<Elaborated, St
 
     // Carry the (phase-independent) type definitions through to the Lowerable
     // program unchanged.
-    Ok(Elaborated { prog: Program { types: prog.types, funcs: funcs_low }, obligations })
+    Ok(Elaborated {
+        prog: Program { types: prog.types, trait_impls: prog.trait_impls, funcs: funcs_low },
+        obligations,
+    })
 }
 
 /// A callee's signature, used at call sites for modular verification.
@@ -155,9 +158,14 @@ struct Signature {
 struct CallableType {
     params: Vec<Ty>,
     ret: Ty,
+    generic_bounds: Vec<(Sym, Vec<Sym>)>,
+    trait_impls: Vec<rv_ir::TraitImpl>,
 }
 
-fn callable_types(funcs: &[Function<Lowerable>]) -> HashMap<Sym, CallableType> {
+fn callable_types(
+    funcs: &[Function<Lowerable>],
+    trait_impls: &[rv_ir::TraitImpl],
+) -> HashMap<Sym, CallableType> {
     funcs
         .iter()
         .map(|f| {
@@ -166,7 +174,15 @@ fn callable_types(funcs: &[Function<Lowerable>]) -> HashMap<Sym, CallableType> {
                 .iter()
                 .map(|id| f.locals[id.0 as usize].ty.clone())
                 .collect();
-            (f.name, CallableType { params, ret: f.ret.clone() })
+            (
+                f.name,
+                CallableType {
+                    params,
+                    ret: f.ret.clone(),
+                    generic_bounds: f.generic_bounds.clone(),
+                    trait_impls: trait_impls.to_vec(),
+                },
+            )
         })
         .collect()
 }
@@ -249,6 +265,7 @@ fn infer_function(
         // Generic type parameters are erased for checking but carried through the
         // phase change so downstream phases see the same signature.
         type_params: f.type_params.clone(),
+        generic_bounds: f.generic_bounds.clone(),
         params: f.params.clone(),
         ret,
         pre: f.pre.clone(),
@@ -372,7 +389,9 @@ fn type_of_rvalue(
                     let arg_ty = type_of_operand(arg, tys, types)?;
                     check(&arg_ty, param, &format!("argument {} of call", index + 1))?;
                 }
-                return Ok(sig.ret.clone());
+                let substitutions = infer_type_arguments(&sig.params, args, tys, types)?;
+                check_generic_bounds(sig, &substitutions)?;
+                return Ok(instantiate_ty(&sig.ret, &substitutions));
             }
             Ok(returns.get(callee).cloned().unwrap_or(Ty::Int))
         }
@@ -478,6 +497,89 @@ fn type_of_rvalue(
             })
         }
     }
+}
+
+/// Infer the concrete type argument for each generic parameter appearing in a
+/// direct call's formal parameter types. The executable surface currently
+/// erases type arguments syntactically, so this is the authoritative
+/// instantiation point.
+fn infer_type_arguments(
+    params: &[Ty],
+    args: &[Operand],
+    tys: &[Option<Ty>],
+    types: &HashMap<Sym, TypeDef>,
+) -> Result<HashMap<Sym, Ty>, String> {
+    let mut substitutions = HashMap::new();
+    for (param, arg) in params.iter().zip(args) {
+        let actual = type_of_operand(arg, tys, types)?;
+        collect_type_arguments(param, &actual, &mut substitutions)?;
+    }
+    Ok(substitutions)
+}
+
+fn collect_type_arguments(
+    formal: &Ty,
+    actual: &Ty,
+    substitutions: &mut HashMap<Sym, Ty>,
+) -> Result<(), String> {
+    match formal {
+        Ty::Param(name) => match substitutions.get(name) {
+            Some(previous) if previous != actual => Err(format!(
+                "type error: generic parameter {name:?} inferred as both {previous:?} and {actual:?}"
+            )),
+            _ => {
+                substitutions.insert(*name, actual.clone());
+                Ok(())
+            }
+        },
+        Ty::Ref { mutable, inner } => {
+            if let Ty::Ref { mutable: actual_mut, inner: actual_inner } = actual {
+                if mutable == actual_mut {
+                    collect_type_arguments(inner, actual_inner, substitutions)?;
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn instantiate_ty(ty: &Ty, substitutions: &HashMap<Sym, Ty>) -> Ty {
+    match ty {
+        Ty::Param(name) => substitutions.get(name).cloned().unwrap_or_else(|| ty.clone()),
+        Ty::Ref { mutable, inner } => Ty::Ref {
+            mutable: *mutable,
+            inner: Box::new(instantiate_ty(inner, substitutions)),
+        },
+        Ty::Tuple(items) => Ty::Tuple(items.iter().map(|item| instantiate_ty(item, substitutions)).collect()),
+        Ty::Array(item, len) => Ty::Array(Box::new(instantiate_ty(item, substitutions)), *len),
+        Ty::Vec(item) => Ty::Vec(Box::new(instantiate_ty(item, substitutions))),
+        Ty::Fn(params, ret) => Ty::Fn(
+            params.iter().map(|param| instantiate_ty(param, substitutions)).collect(),
+            Box::new(instantiate_ty(ret, substitutions)),
+        ),
+        _ => ty.clone(),
+    }
+}
+
+fn check_generic_bounds(sig: &CallableType, substitutions: &HashMap<Sym, Ty>) -> Result<(), String> {
+    for (param, bounds) in &sig.generic_bounds {
+        if bounds.is_empty() {
+            continue;
+        }
+        let actual = substitutions.get(param).ok_or_else(|| {
+            format!("cannot infer bounded generic parameter {param:?} at this call")
+        })?;
+        let Ty::Adt(type_name) = actual else {
+            return Err(format!("type {actual:?} cannot satisfy trait bounds for {param:?}"));
+        };
+        for trait_name in bounds {
+            if !sig.trait_impls.iter().any(|imp| imp.trait_name == *trait_name && imp.type_name == *type_name) {
+                return Err(format!("type {actual:?} does not implement required trait {trait_name:?}"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Check an aggregate constructor's arity and operand types against its declared
@@ -1488,6 +1590,7 @@ mod tests {
         Function {
             name,
             type_params: vec![],
+            generic_bounds: vec![],
             params,
             ret: None,
             pre,
@@ -1510,6 +1613,7 @@ mod tests {
         // local 0 = 1 + 2 (Int). One block: l0 = 1 + 2; return l0.
         let l0 = LocalId(0);
         let prog = Program {
+            trait_impls: vec![],
             types: vec![],
             funcs: vec![func(
                 f,
@@ -1541,6 +1645,7 @@ mod tests {
         let f = syms.intern("bad");
         let l0 = LocalId(0);
         let prog = Program {
+            trait_impls: vec![],
             types: vec![],
             funcs: vec![func(
                 f,
@@ -1569,6 +1674,7 @@ mod tests {
         let f = syms.intern("g");
         let l0 = LocalId(0);
         let prog = Program {
+            trait_impls: vec![],
             types: vec![],
             funcs: vec![func(
                 f,
@@ -1636,7 +1742,7 @@ mod tests {
             Terminator::Return(Operand::Copy(Place::local(l_t))),
         );
 
-        let prog = Program { types: vec![], funcs: vec![callee_fn, caller_fn] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![callee_fn, caller_fn] };
         let elab = elaborate(prog, &syms).expect("elaboration");
         let pre_ob = elab
             .obligations
@@ -1662,7 +1768,7 @@ mod tests {
         blocks: Vec<Block<Parsed>>,
     ) -> Function<Parsed> {
         let entry = blocks[0].id;
-        Function { name, type_params: vec![], params, ret: None, pre, post, locals, blocks, entry }
+        Function { name, type_params: vec![], generic_bounds: vec![], params, ret: None, pre, post, locals, blocks, entry }
     }
 
     /// A two-variant enum `E { A, B }` as a `TypeDef`.
@@ -1726,7 +1832,7 @@ mod tests {
             Prop::True,
             vec![b0, b1, b2],
         );
-        let prog = Program { types: vec![enum_td], funcs: vec![func] };
+        let prog = Program { types: vec![enum_td], trait_impls: vec![], funcs: vec![func] };
         let elab = elaborate(prog, &syms).expect("exhaustive match should elaborate");
         // The scrutinee local was typed as the ADT.
         assert_eq!(elab.prog.funcs[0].locals[0].ty, Ty::Adt(e));
@@ -1763,7 +1869,7 @@ mod tests {
 
         let func =
             func_blocks(f, vec![], vec![decl(None)], Prop::True, Prop::True, vec![b0, b1]);
-        let prog = Program { types: vec![enum_td], funcs: vec![func] };
+        let prog = Program { types: vec![enum_td], trait_impls: vec![], funcs: vec![func] };
         match elaborate(prog, &syms) {
             Err(e) => assert_eq!(e, "non-exhaustive match"),
             Ok(_) => panic!("non-exhaustive match should error"),
@@ -1841,7 +1947,7 @@ mod tests {
             Prop::True,
             vec![b0, b1, b2, b3],
         );
-        let prog = Program { types: vec![], funcs: vec![func] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![func] };
         let elab = elaborate(prog, &syms).expect("loop elaboration");
 
         let entry = elab.obligations.iter().any(|o| o.origin == "loop invariant on entry");
@@ -1864,6 +1970,7 @@ mod tests {
         let l_x = LocalId(0);
         let l_r = LocalId(1);
         let prog = Program {
+            trait_impls: vec![],
             types: vec![],
             funcs: vec![func(
                 f,
@@ -1907,6 +2014,7 @@ mod tests {
         let l_v = LocalId(2);
         let deref_place = Place { local: l_r, proj: vec![Proj::Deref] };
         let prog = Program {
+            trait_impls: vec![],
             types: vec![],
             funcs: vec![func(
                 f,
@@ -1949,6 +2057,7 @@ mod tests {
         let l_r = LocalId(1);
         let deref_place = Place { local: l_r, proj: vec![Proj::Deref] };
         let prog = Program {
+            trait_impls: vec![],
             types: vec![],
             funcs: vec![func(
                 f,
@@ -2010,6 +2119,7 @@ mod tests {
         let deref = Place { local: l_r, proj: vec![Proj::Deref] };
         let assert_x5 = Prop::Holds(Term::bin(BinOp::Eq, Term::Var(x), Term::Int(5)));
         let prog = Program {
+            trait_impls: vec![],
             types: vec![],
             funcs: vec![func(
                 f,
@@ -2045,6 +2155,7 @@ mod tests {
         let l_r = LocalId(1);
         let assert_x5 = Prop::Holds(Term::bin(BinOp::Eq, Term::Var(x), Term::Int(5)));
         let prog = Program {
+            trait_impls: vec![],
             types: vec![],
             funcs: vec![func(
                 f,
@@ -2082,6 +2193,7 @@ mod tests {
         let deref = Place { local: l_r, proj: vec![Proj::Deref] };
         let assert_v7 = Prop::Holds(Term::bin(BinOp::Eq, Term::Var(v), Term::Int(7)));
         let prog = Program {
+            trait_impls: vec![],
             types: vec![],
             funcs: vec![func(
                 f,
@@ -2128,7 +2240,7 @@ mod tests {
         );
         f.type_params = vec![t];
 
-        let prog = Program { types: vec![], funcs: vec![f] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![f] };
         let elab = elaborate(prog, &syms).expect("generic identity should elaborate");
         // The type parameter is carried through to the Lowerable program.
         assert_eq!(elab.prog.funcs[0].type_params, vec![t]);
@@ -2193,7 +2305,7 @@ mod tests {
             Prop::True,
             vec![blk],
         );
-        let prog = Program { types: vec![box_def], funcs: vec![func] };
+        let prog = Program { types: vec![box_def], trait_impls: vec![], funcs: vec![func] };
         let elab = elaborate(prog, &syms).expect("generic-field use should elaborate leniently");
         // The struct local is typed as its ADT (type arguments erased).
         assert_eq!(elab.prog.funcs[0].locals[0].ty, Ty::Adt(box_ty));
@@ -2258,7 +2370,7 @@ mod tests {
             Prop::True,
             vec![b0, b1, b2],
         );
-        let prog = Program { types: vec![opt_def], funcs: vec![func] };
+        let prog = Program { types: vec![opt_def], trait_impls: vec![], funcs: vec![func] };
         let elab = elaborate(prog, &syms).expect("generic enum match should elaborate");
         // The scrutinee local is typed as the (generic) ADT — type args erased.
         assert_eq!(elab.prog.funcs[0].locals[0].ty, Ty::Adt(opt));
@@ -2298,7 +2410,7 @@ mod tests {
             Prop::True,
             vec![nb0, nb1],
         );
-        let nprog = Program { types: vec![opt_def2], funcs: vec![nfunc] };
+        let nprog = Program { types: vec![opt_def2], trait_impls: vec![], funcs: vec![nfunc] };
         assert!(
             elaborate(nprog, &syms).is_err(),
             "a non-exhaustive generic match must still be rejected"
@@ -2356,7 +2468,7 @@ mod tests {
             post,
             vec![b0, b1, b2],
         );
-        let prog = Program { types: vec![], funcs: vec![func] };
+        let prog = Program { types: vec![], trait_impls: vec![], funcs: vec![func] };
         let elab = elaborate(prog, &syms).expect("panic-branch function should elaborate");
 
         // The Panic terminator is carried through to the Lowerable phase.
