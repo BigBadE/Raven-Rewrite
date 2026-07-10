@@ -17,7 +17,8 @@ use std::collections::HashSet;
 use rv_core::Sym;
 use rv_ir::{Function, Parsed, Program};
 use rv_syntax::ast::{
-    Block as AstBlock, Expr as AstExpr, GenericParam, Item, MethodDecl, Module, Param, Ty as AstTy,
+    Block as AstBlock, Expr as AstExpr, GenericParam, Item, MethodDecl, Module, Param, TraitDecl,
+    Ty as AstTy,
 };
 
 use build::FnBuilder;
@@ -62,6 +63,7 @@ pub fn lower(
     }
 
     let mut types = Types::build(&struct_decls, &enum_decls, &alias_decls, syms)?;
+    let trait_by_name: HashMap<Sym, &TraitDecl> = trait_decls.iter().map(|tr| (tr.name, *tr)).collect();
 
     // Traits produce no IR; record their method-name sets for optional validation.
     for tr in &trait_decls {
@@ -84,6 +86,10 @@ pub fn lower(
         }
         // For a trait impl, optionally check the declared methods are all present.
         if let Some(tr) = im.trait_name {
+            let trait_decl = trait_by_name.get(&tr).ok_or_else(|| {
+                format!("impl references unknown trait `{}`", syms.resolve(tr))
+            })?;
+            check_trait_impl_signatures(trait_decl, im, syms)?;
             types.check_trait_impl(tr, im.type_name, &provided, syms)?;
         }
     }
@@ -122,6 +128,49 @@ pub fn lower(
         funcs.extend(lower_method(type_name, m, mangled, &types, syms)?);
     }
     Ok(Program { types: types.defs, funcs })
+}
+
+/// Validate the executable portion of a trait implementation before methods are
+/// lowered and erased. Trait dispatch is still static/desugared, but accepting a
+/// same-named method with a different callable shape would make a bound lie.
+fn check_trait_impl_signatures(
+    trait_decl: &TraitDecl,
+    implementation: &rv_syntax::ast::ImplDecl,
+    syms: &rv_core::Symbols,
+) -> Result<(), String> {
+    for required in &trait_decl.methods {
+        let method = implementation
+            .methods
+            .iter()
+            .find(|method| method.name == required.name)
+            .ok_or_else(|| {
+                format!(
+                    "impl of trait `{}` for `{}` is missing method `{}`",
+                    syms.resolve(trait_decl.name),
+                    syms.resolve(implementation.type_name),
+                    syms.resolve(required.name)
+                )
+            })?;
+        if method.has_self != required.has_self
+            || method.params.len() != required.params.len()
+            || method.ret != required.ret
+            || !method.generics.is_empty()
+            || method
+                .params
+                .iter()
+                .zip(&required.params)
+                .all(|(actual, expected)| actual.ty == expected.ty)
+                == false
+        {
+            return Err(format!(
+                "method `{}` in impl of trait `{}` for `{}` does not match the trait signature",
+                syms.resolve(required.name),
+                syms.resolve(trait_decl.name),
+                syms.resolve(implementation.type_name)
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Lower a single function declaration into IR.

@@ -220,6 +220,27 @@ fn aggregate_constructor_fields_are_checked() {
     assert!(verify(src).is_err(), "struct field type mismatch must be rejected");
 }
 
+#[test]
+fn trait_impl_method_signature_is_checked() {
+    let src = r#"
+        trait Summable { fn sum(self, add: i64) -> i64; }
+        struct Point { value: i64, }
+        impl Summable for Point {
+            fn sum(self, add: bool) -> i64 { return self.value; }
+        }
+    "#;
+    assert!(verify(src).is_err(), "trait impl parameter types must match the declaration");
+}
+
+#[test]
+fn unknown_trait_impl_is_rejected() {
+    let src = r#"
+        struct Point { value: i64, }
+        impl Missing for Point { fn sum(self) -> i64 { return self.value; } }
+    "#;
+    assert!(verify(src).is_err(), "an impl cannot target an undeclared trait");
+}
+
 /// Direct calls carry the callee's return type through executable elaboration;
 /// they are not an implicit `i64` conversion point.
 #[test]
