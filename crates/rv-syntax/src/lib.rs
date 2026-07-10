@@ -57,6 +57,14 @@ mod tests {
     }
 
     #[test]
+    fn scalar_parameter_refinement_stays_executable() {
+        let mut syms = Symbols::new();
+        let module = parse("fn recip(x: i64 where x != 0) -> i64 { return 1 / x; }", &mut syms)
+            .unwrap();
+        assert_eq!(classify(&module), vec![Fragment::Exec]);
+    }
+
+    #[test]
     fn respects_precedence() {
         let mut syms = Symbols::new();
         let m = parse("fn f() -> i64 { return 1 + 2 * 3; }", &mut syms).unwrap();

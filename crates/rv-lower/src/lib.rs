@@ -177,7 +177,14 @@ fn lower_method(
     if decl.has_self && types.struct_info(type_name).is_some() {
         var_struct.insert(syms.intern("self"), type_name);
     }
-    let (pre, post) = lower_clauses(&decl.requires, &decl.ensures, types, &var_struct, syms)?;
+    let (pre, post) = lower_clauses(
+        &decl.requires,
+        &decl.ensures,
+        &decl.params,
+        types,
+        &var_struct,
+        syms,
+    )?;
     b.lower_block(&decl.body, syms)?;
     b.finish_with_default_return();
 
@@ -223,7 +230,7 @@ fn lower_callable(
     bind_params(&mut b, ast_params, &scope, &mut params);
 
     let var_struct = struct_typed_params(ast_params, &scope, types);
-    let (pre, post) = lower_clauses(requires, ensures, types, &var_struct, syms)?;
+    let (pre, post) = lower_clauses(requires, ensures, ast_params, types, &var_struct, syms)?;
 
     // Lower the body into the CFG.
     b.lower_block(body, syms)?;
@@ -289,6 +296,7 @@ fn bind_params(
 fn lower_clauses(
     requires: &[AstExpr],
     ensures: &[AstExpr],
+    params: &[Param],
     types: &Types,
     var_struct: &HashMap<Sym, Sym>,
     syms: &mut rv_core::Symbols,
@@ -298,6 +306,13 @@ fn lower_clauses(
     let mut pre = rv_core::Prop::True;
     for r in requires {
         pre = pre.and(spec::lower_prop(r, syms, &ctx)?);
+    }
+    // A refinement on a parameter is contract syntax, not local annotation
+    // metadata: callers must establish it and the function body may assume it.
+    for param in params {
+        if let Some(refinement) = &param.refinement {
+            pre = pre.and(spec::lower_prop(refinement, syms, &ctx)?);
+        }
     }
     // Postconditions: conjoin all `ensures` clauses (empty -> True). The `result`
     // identifier lowers to `Term::Var(intern("result"))` automatically because it

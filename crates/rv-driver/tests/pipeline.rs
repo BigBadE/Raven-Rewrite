@@ -39,6 +39,20 @@ fn refinement_precondition_discharges_div() {
     assert!(report.obligations.iter().any(|o| o.origin.contains("division")));
 }
 
+/// A parameter refinement is contract sugar: it is assumed inside the callee and
+/// checked at every call site, just like an explicit `requires` clause.
+#[test]
+fn parameter_refinement_is_a_real_contract() {
+    let src = r#"
+        fn recip(x: i64 where x != 0) -> i64 { return 100 / x; }
+        fn main() -> i64 { return recip(2); }
+    "#;
+    let report = run_pipeline(src, Some("main")).expect("front-end ok");
+    assert!(report.all_verified(), "{report:?}");
+    assert_eq!(report.run, Some(Ok(Value::Int(50))));
+    assert!(report.obligations.iter().any(|o| o.origin.contains("precondition of recip")));
+}
+
 /// Stage 4 executable surface: float literals + f64 arithmetic run on the VM.
 #[test]
 fn float_arithmetic_runs() {

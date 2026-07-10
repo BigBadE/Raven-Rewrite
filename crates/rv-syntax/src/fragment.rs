@@ -14,10 +14,10 @@
 //! * an `enum` is **proof** when it is an *indexed relation* (`-> Prop`/`-> Type`, or it
 //!   has indices); a plain data `enum` is **shared** — both backends may need it (a data
 //!   type used by runtime code *and* by proofs about it).
-//! * a `fn` is **proof** when it is logical: its return type is a proposition, a parameter
-//!   carries a refinement (`x: T where p`), its body uses a proof-only expression form
-//!   (`match`-as-expression, `fun`, `forall`, …), or — transitively — it calls a proof
-//!   `fn`. Otherwise it is **executable**.
+//! * a `fn` is **proof** when it is logical: its return type is a proposition, it takes a
+//!   logical parameter, its refinement/spec is dependent, its body uses a proof-only expression
+//!   form (`match`-as-expression, `fun`, `forall`, …), or — transitively — it calls a proof
+//!   `fn`. Scalar refinements stay executable and become solver obligations.
 
 use crate::ast::{Block, EnumDecl, Expr, Item, Module, Stmt, Ty};
 use rv_core::Sym;
@@ -84,12 +84,20 @@ pub fn classify(m: &Module) -> Vec<Fragment> {
     let mut proof_fns: HashSet<Sym> = HashSet::new();
     for it in &m.items {
         if let Item::Fn(f) = it {
-            // Proof on its own when it returns a proposition, takes a proof argument (a
-            // logical-typed or refined parameter), or uses a proof-only body form.
+            // Proof on its own when it returns a proposition, takes a logical
+            // argument, has a dependent refinement/spec, or uses a proof-only body
+            // form. A scalar parameter refinement (`x: i64 where x != 0`) is an
+            // executable contract, not a reason to route the function away from
+            // the VM.
             let takes_proof_arg = f
                 .params
                 .iter()
-                .any(|p| p.refinement.is_some() || ty_is_logical(Some(&p.ty), &proof_types));
+                .any(|p| ty_is_logical(Some(&p.ty), &proof_types));
+            let has_dependent_refinement = f
+                .params
+                .iter()
+                .filter_map(|p| p.refinement.as_ref())
+                .any(expr_is_dependent_spec);
             // A *dependent* spec — one mentioning an enum constructor or a proof form
             // (`result == Nat::Succ(x)`) — is a kernel obligation. A scalar spec
             // (`p.v != 0`, even over a struct field) stays on `rv-solve`'s executable path.
@@ -99,6 +107,7 @@ pub fn classify(m: &Module) -> Vec<Fragment> {
                 .chain(&f.ensures)
                 .any(expr_is_dependent_spec);
             if takes_proof_arg
+                || has_dependent_refinement
                 || has_dependent_spec
                 || ty_is_logical(f.ret.as_ref(), &proof_types)
                 || block_has_proof_form(&f.body)
