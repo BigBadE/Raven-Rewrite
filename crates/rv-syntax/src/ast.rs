@@ -63,7 +63,9 @@ pub struct DefDecl {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Ty {
     I64,
+    F64,
     Bool,
+    String,
     Unit,
     /// A user-defined struct or enum, referenced by its interned name. A bare
     /// `IDENT` whose name is one of the enclosing declaration's type parameters

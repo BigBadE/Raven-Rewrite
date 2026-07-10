@@ -538,9 +538,9 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
-    /// `type := "&" "mut"? type | "i64" | "bool" | "()" | IDENT generic? | type_expr`
+    /// `type := "&" "mut"? type | scalar | "()" | IDENT generic? | type_expr`
     ///
-    /// Executable types (`i64`, `bool`, `()`, `&mut T`, `Option<i64>`) parse exactly as
+    /// Executable types (`i64`, `f64`, `bool`, `String`, `()`, `&mut T`, `Option<i64>`) parse exactly as
     /// before. In the **proof fragment** a type position may instead hold a dependent
     /// type-expression — a proposition `a == b`, a function type `A -> B`, a universe
     /// `Type`/`Prop`, or a type-level application `Eval(env, e, v)` — which is captured as
@@ -609,14 +609,22 @@ impl<'a> Parser<'a> {
             };
         }
         let base = match self.peek().clone() {
-            // `i64` and `bool` arrive as identifiers from the lexer.
+            // Primitive types arrive as identifiers from the lexer.
             Tok::Ident(name) if name == "i64" => {
                 self.bump();
                 Ty::I64
             }
+            Tok::Ident(name) if name == "f64" => {
+                self.bump();
+                Ty::F64
+            }
             Tok::Ident(name) if name == "bool" => {
                 self.bump();
                 Ty::Bool
+            }
+            Tok::Ident(name) if name == "String" => {
+                self.bump();
+                Ty::String
             }
             // Any other identifier names a user-defined struct/enum, an optional
             // generic application (`Base<arg, ...>`), or — resolved at lowering —
@@ -657,7 +665,7 @@ impl<'a> Parser<'a> {
             }
             other => {
                 return Err(format!(
-                    "line {}: expected a type (`i64`, `bool`, `()`, or a type name), found {other:?}",
+                    "line {}: expected a type (`i64`, `f64`, `bool`, `String`, `()`, or a type name), found {other:?}",
                     self.line()
                 ))
             }

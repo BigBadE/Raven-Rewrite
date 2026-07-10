@@ -225,12 +225,12 @@ fn infer_function(
         }
     }
 
-    // Soundness: if the signature *declared* a return type, the body must agree with it.
-    // We enforce this conservatively — only between *primitive scalars* — so a `bool` body
-    // under an `-> i64` signature (and vice versa) is rejected, while ADT/ref/opaque returns
-    // (whose operand type may be defaulted) are left to the existing lenient inference.
+    // A declared return type is part of the function type, so the body must agree
+    // with it for every concrete type, not only scalars. Integer widths remain
+    // compatible with the unsuffixed integer default, and generic parameters stay
+    // abstract, matching ordinary operand checking.
     if let Some(declared) = &f.ret {
-        check_scalar_return(&ret, declared)?;
+        check_return(&ret, declared)?;
     }
 
     // Any local still unknown defaults to `Int` (the pragmatic default for the slice;
@@ -565,29 +565,20 @@ fn int_result_ty(a: &Ty, b: &Ty) -> Option<Ty> {
     }
 }
 
-/// Classify a type as a primitive scalar: `Some(true)` = boolean, `Some(false)` =
-/// integer-family (`Int`/`IntN`). Everything else (ADT, ref, unit, fn, param) is `None`.
-fn scalar_kind(t: &Ty) -> Option<bool> {
-    match t {
-        Ty::Bool => Some(true),
-        Ty::Int | Ty::IntN(_) => Some(false),
-        _ => None,
+fn check_return(actual: &Ty, declared: &Ty) -> Result<(), String> {
+    if matches!(actual, Ty::Param(_)) || matches!(declared, Ty::Param(_)) {
+        return Ok(());
     }
-}
-
-/// Reject a primitive-scalar return mismatch (the `bool` body / `-> i64` signature bug).
-/// Only fires when *both* the body's type and the declared type are primitive scalars and
-/// they disagree on the boolean/integer axis — `Int` vs `IntN` stays compatible, and any
-/// non-scalar (ADT/ref/opaque) is left to the lenient inference path.
-fn check_scalar_return(actual: &Ty, declared: &Ty) -> Result<(), String> {
-    if let (Some(a), Some(d)) = (scalar_kind(actual), scalar_kind(declared)) {
-        if a != d {
-            return Err(format!(
-                "type error in return type: signature declares {declared:?}, but the body returns {actual:?}"
-            ));
-        }
+    if int_like(actual) && int_like(declared) {
+        return Ok(());
     }
-    Ok(())
+    if actual == declared {
+        Ok(())
+    } else {
+        Err(format!(
+            "type error in return type: signature declares {declared:?}, but the body returns {actual:?}"
+        ))
+    }
 }
 
 fn check(got: &Ty, want: &Ty, ctx: &str) -> Result<(), String> {

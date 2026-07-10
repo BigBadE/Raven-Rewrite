@@ -47,6 +47,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_runtime_float_and_string_types() {
+        let mut syms = Symbols::new();
+        let module = parse("fn f(x: f64, s: String) -> f64 { return x; }", &mut syms).unwrap();
+        let Item::Fn(f) = &module.items[0] else { panic!("expected function") };
+        assert_eq!(f.params[0].ty, Ty::F64);
+        assert_eq!(f.params[1].ty, Ty::String);
+        assert_eq!(f.ret, Some(Ty::F64));
+    }
+
+    #[test]
     fn respects_precedence() {
         let mut syms = Symbols::new();
         let m = parse("fn f() -> i64 { return 1 + 2 * 3; }", &mut syms).unwrap();

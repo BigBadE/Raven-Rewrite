@@ -77,6 +77,15 @@ fn bool_body_under_int_return_is_rejected() {
     assert!(verify("fn p(x: i64) -> bool { return x > 0; }").is_ok());
 }
 
+#[test]
+fn concrete_adt_return_type_is_checked() {
+    let src = r#"
+        struct Boxed { value: i64 }
+        fn wrong() -> Boxed { return 1; }
+    "#;
+    assert!(verify(src).is_err(), "a declared ADT return cannot return an integer");
+}
+
 /// Direct calls carry the callee's return type through executable elaboration;
 /// they are not an implicit `i64` conversion point.
 #[test]
