@@ -22,12 +22,19 @@ pub struct StructInfo {
     pub fields: Vec<Sym>,
     /// name -> index, for resolving `s.f` and reordering struct-literal fields.
     pub field_index: HashMap<Sym, u32>,
+    /// Refinement alias, if any, written on each field declaration. The IR only
+    /// carries the alias's runtime base type, so this preserves the contract for
+    /// construction-site checking.
+    pub field_aliases: Vec<Option<Sym>>,
 }
 
 /// Resolved information about a single enum.
 pub struct EnumInfo {
     /// variant name -> (index, arity).
     pub variant_index: HashMap<Sym, (u32, u32)>,
+    /// Variant name -> aliases written on its payload fields, in declaration
+    /// order. See [`StructInfo::field_aliases`].
+    pub variant_field_aliases: HashMap<Sym, Vec<Option<Sym>>>,
 }
 
 /// The `Result`/`Option`-shaped variant pair the `?` operator propagates over:
@@ -98,6 +105,7 @@ impl Types {
             let mut fields = Vec::with_capacity(s.fields.len());
             let mut field_index = HashMap::new();
             let mut field_defs = Vec::with_capacity(s.fields.len());
+            let mut field_aliases = Vec::with_capacity(s.fields.len());
             for (i, f) in s.fields.iter().enumerate() {
                 if field_index.insert(f.name, i as u32).is_some() {
                     return Err(format!(
@@ -107,9 +115,10 @@ impl Types {
                     ));
                 }
                 fields.push(f.name);
+                field_aliases.push(t.alias_name(&f.ty));
                 field_defs.push(FieldDef { name: f.name, ty: t.resolve_ty(&f.ty, &scope) });
             }
-            t.structs.insert(s.name, StructInfo { fields, field_index });
+            t.structs.insert(s.name, StructInfo { fields, field_index, field_aliases });
             t.defs.push(TypeDef::Struct { name: s.name, type_params, fields: field_defs });
         }
 
@@ -121,6 +130,7 @@ impl Types {
             let type_params: Vec<Sym> = e.generics.iter().map(|g| g.name).collect();
             let scope: HashSet<Sym> = type_params.iter().copied().collect();
             let mut variant_index = HashMap::new();
+            let mut variant_field_aliases = HashMap::new();
             let mut variant_defs = Vec::with_capacity(e.variants.len());
             for (i, v) in e.variants.iter().enumerate() {
                 if variant_index.insert(v.name, (i as u32, v.fields.len() as u32)).is_some() {
@@ -130,10 +140,14 @@ impl Types {
                         syms.resolve(e.name)
                     ));
                 }
+                variant_field_aliases.insert(
+                    v.name,
+                    v.fields.iter().map(|ty| t.alias_name(ty)).collect(),
+                );
                 let tys = v.fields.iter().map(|ty| t.resolve_ty(ty, &scope)).collect();
                 variant_defs.push(VariantDef { name: v.name, fields: tys });
             }
-            t.enums.insert(e.name, EnumInfo { variant_index });
+            t.enums.insert(e.name, EnumInfo { variant_index, variant_field_aliases });
             t.defs.push(TypeDef::Enum { name: e.name, type_params, variants: variant_defs });
         }
 
@@ -167,8 +181,31 @@ impl Types {
         self.aliases.get(&name).map(|(_, refinement)| refinement)
     }
 
+    /// Return the alias named directly by a surface annotation, if it is a
+    /// known refinement alias. Generic aliases are deliberately unsupported.
+    fn alias_name(&self, ty: &AstTy) -> Option<Sym> {
+        match ty {
+            AstTy::Adt(name) if self.aliases.contains_key(name) => Some(*name),
+            _ => None,
+        }
+    }
+
     pub fn struct_info(&self, name: Sym) -> Option<&StructInfo> {
         self.structs.get(&name)
+    }
+
+    pub fn struct_field_alias(&self, name: Sym, index: usize) -> Option<Sym> {
+        self.structs.get(&name)?.field_aliases.get(index).copied().flatten()
+    }
+
+    pub fn variant_field_alias(&self, enum_name: Sym, variant: Sym, index: usize) -> Option<Sym> {
+        self.enums
+            .get(&enum_name)?
+            .variant_field_aliases
+            .get(&variant)?
+            .get(index)
+            .copied()
+            .flatten()
     }
 
     /// Identify the success/failure variant pair of a `Result`/`Option`-like enum

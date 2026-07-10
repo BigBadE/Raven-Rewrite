@@ -46,6 +46,9 @@ pub struct FnBuilder<'a> {
     lifted: Vec<rv_ir::Function<Parsed>>,
     /// Monotonic counter for fresh lifted-closure names within this body.
     closure_ctr: u32,
+    /// Monotonic counter for ghost locals that carry a value while its
+    /// refinement-alias contract is checked.
+    refinement_ctr: u32,
 }
 
 impl<'a> FnBuilder<'a> {
@@ -62,6 +65,7 @@ impl<'a> FnBuilder<'a> {
             local_adt: HashMap::new(),
             lifted: Vec::new(),
             closure_ctr: 0,
+            refinement_ctr: 0,
         }
     }
 
@@ -208,6 +212,9 @@ impl<'a> FnBuilder<'a> {
                 if let Some(AstTy::Adt(alias)) = ty {
                     self.lower_alias_local_refinement(*name, *alias, syms)?;
                 }
+                if let Some(adt) = self.adt_of_expr(init) {
+                    self.assume_struct_field_refinements(*name, adt, syms)?;
+                }
                 Ok(())
             }
             AstStmt::Assign { name, value } => {
@@ -305,6 +312,72 @@ impl<'a> FnBuilder<'a> {
         let prop = rv_core::subst_prop(&prop, self_sym, &rv_core::Term::Var(local));
         self.push_stmt(IrStmt::Assert(prop.clone()));
         self.push_stmt(IrStmt::Assume(prop));
+        Ok(())
+    }
+
+    /// Check a refinement alias on a value being embedded in an aggregate. The
+    /// value is first materialized under a stable ghost-local name so the
+    /// first-order verifier can refer to it even when the source expression was
+    /// a literal, call, or compound computation. The local and both statements
+    /// erase before code generation.
+    fn check_alias_operand(
+        &mut self,
+        operand: Operand,
+        alias: Option<Sym>,
+        syms: &mut Symbols,
+    ) -> Result<Operand, String> {
+        let Some(alias) = alias else {
+            return Ok(operand);
+        };
+        let Some(refinement) = self.types.alias_refinement(alias) else {
+            return Ok(operand);
+        };
+
+        let name = syms.intern(&format!("__refinement_value_{}", self.refinement_ctr));
+        self.refinement_ctr += 1;
+        let local = self.new_local(Some(name));
+        self.push_stmt(IrStmt::Assign(Place::local(local), RValue::Use(operand)));
+
+        let var_struct = self.var_struct_map();
+        let ctx = spec::SpecCtx { types: self.types, var_struct: &var_struct };
+        let prop = spec::lower_prop(refinement, syms, &ctx)?;
+        let self_sym = syms.intern("self");
+        let prop = rv_core::subst_prop(&prop, self_sym, &rv_core::Term::Var(name));
+        self.push_stmt(IrStmt::Assert(prop.clone()));
+        self.push_stmt(IrStmt::Assume(prop));
+        Ok(Operand::Copy(Place::local(local)))
+    }
+
+    /// A struct value built at this binding site has known field contents. Keep
+    /// each refined-field predicate as a path fact over the corresponding
+    /// uninterpreted field projection, so later reads (for example a divisor
+    /// field) can use the contract. Enum values need case-sensitive facts and
+    /// are handled when a variant is destructured rather than globally here.
+    fn assume_struct_field_refinements(
+        &mut self,
+        local: Sym,
+        adt: Sym,
+        syms: &mut Symbols,
+    ) -> Result<(), String> {
+        let Some(info) = self.types.struct_info(adt) else {
+            return Ok(());
+        };
+        let aliases = info.field_aliases.clone();
+        for (index, alias) in aliases.into_iter().enumerate() {
+            let Some(alias) = alias else {
+                continue;
+            };
+            let Some(refinement) = self.types.alias_refinement(alias) else {
+                continue;
+            };
+            let var_struct = self.var_struct_map();
+            let ctx = spec::SpecCtx { types: self.types, var_struct: &var_struct };
+            let prop = spec::lower_prop(refinement, syms, &ctx)?;
+            let self_sym = syms.intern("self");
+            let term = rv_core::Term::field(rv_core::Term::Var(local), index as u32);
+            let prop = rv_core::subst_prop(&prop, self_sym, &term);
+            self.push_stmt(IrStmt::Assume(prop));
+        }
         Ok(())
     }
 
@@ -843,7 +916,13 @@ impl<'a> FnBuilder<'a> {
                     syms.resolve(name)
                 ));
             }
-            slots[idx] = Some(self.lower_operand(fexpr, syms)?);
+            let operand = self.lower_operand(fexpr, syms)?;
+            let operand = self.check_alias_operand(
+                operand,
+                self.types.struct_field_alias(name, idx),
+                syms,
+            )?;
+            slots[idx] = Some(operand);
         }
         // Every field must be provided.
         let mut ops = Vec::with_capacity(n);
@@ -892,8 +971,13 @@ impl<'a> FnBuilder<'a> {
             ));
         }
         let mut ops = Vec::with_capacity(args.len());
-        for a in args {
-            ops.push(self.lower_operand(a, syms)?);
+        for (index, a) in args.iter().enumerate() {
+            let operand = self.lower_operand(a, syms)?;
+            ops.push(self.check_alias_operand(
+                operand,
+                self.types.variant_field_alias(enum_name, variant, index),
+                syms,
+            )?);
         }
         Ok(RValue::Aggregate(AggKind::Variant(enum_name, vidx), ops))
     }

@@ -116,6 +116,34 @@ fn false_refinement_local_initializer_is_not_verified() {
 }
 
 #[test]
+fn refinement_type_alias_is_checked_in_aggregate_fields() {
+    let src = r#"
+        type NonZero = i64 where self != 0;
+        struct Divisor { value: NonZero, }
+        enum MaybeDivisor { Some(NonZero), None, }
+        fn main() -> i64 {
+            let d = Divisor { value: 5 };
+            let m = MaybeDivisor::Some(4);
+            return 100 / d.value;
+        }
+    "#;
+    let report = run_pipeline(src, Some("main")).expect("front-end ok");
+    assert!(report.all_verified(), "{report:?}");
+    assert_eq!(report.run, Some(Ok(Value::Int(20))));
+}
+
+#[test]
+fn false_refinement_aggregate_field_is_not_verified() {
+    let src = r#"
+        type NonZero = i64 where self != 0;
+        struct Divisor { value: NonZero, }
+        fn main() -> Divisor { return Divisor { value: 0 }; }
+    "#;
+    let report = verify(src).expect("front-end ok");
+    assert!(!report.all_verified(), "a refined aggregate field must be rejected");
+}
+
+#[test]
 fn fixed_width_integers_prove_conversion_and_overflow_bounds() {
     let src = r#"
         fn inc(x: u8) -> u8
