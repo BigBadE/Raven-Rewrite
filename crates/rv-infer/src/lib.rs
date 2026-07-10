@@ -94,7 +94,7 @@ pub fn elaborate(prog: Program<Parsed>, syms: &Symbols) -> Result<Elaborated, St
         .collect();
     let mut provisional: Vec<Function<Lowerable>> = Vec::with_capacity(prog.funcs.len());
     for f in &prog.funcs {
-        provisional.push(infer_function(f, &type_table, &declared_returns)?);
+        provisional.push(infer_function(f, &type_table, &declared_returns, None)?);
     }
 
     // A small second pass replaces annotation fallbacks with the actual inferred
@@ -104,9 +104,10 @@ pub fn elaborate(prog: Program<Parsed>, syms: &Symbols) -> Result<Elaborated, St
         .iter()
         .map(|f| (f.name, f.ret.clone()))
         .collect();
+    let call_types = callable_types(&provisional);
     let mut funcs_low: Vec<Function<Lowerable>> = Vec::with_capacity(prog.funcs.len());
     for f in &prog.funcs {
-        let inferred = infer_function(f, &type_table, &inferred_returns)?;
+        let inferred = infer_function(f, &type_table, &inferred_returns, Some(&call_types))?;
         sigs.insert(
             f.name,
             Signature {
@@ -148,6 +149,28 @@ struct Signature {
     post: Prop,
 }
 
+/// The executable portion of a function type used while inferring call sites.
+/// Contracts remain in [`Signature`] for VC generation; this shape is deliberately
+/// structural so it can become one component of a unified callable type later.
+struct CallableType {
+    params: Vec<Ty>,
+    ret: Ty,
+}
+
+fn callable_types(funcs: &[Function<Lowerable>]) -> HashMap<Sym, CallableType> {
+    funcs
+        .iter()
+        .map(|f| {
+            let params = f
+                .params
+                .iter()
+                .map(|id| f.locals[id.0 as usize].ty.clone())
+                .collect();
+            (f.name, CallableType { params, ret: f.ret.clone() })
+        })
+        .collect()
+}
+
 /// The parameter symbols of a function, in parameter order. Missing names (anonymous
 /// params) are skipped — `pre`/`post` cannot refer to them anyway.
 fn param_syms<P: rv_ir::Phase>(f: &Function<P>) -> Vec<Sym> {
@@ -164,6 +187,7 @@ fn infer_function(
     f: &Function<Parsed>,
     types: &HashMap<Sym, TypeDef>,
     returns: &HashMap<Sym, Ty>,
+    calls: Option<&HashMap<Sym, CallableType>>,
 ) -> Result<Function<Lowerable>, String> {
     // Seed from any front-end *declared* types (e.g. a parameter's `: u8`), then
     // refine by the forward sweep over assignments. A declared type matters most
@@ -186,7 +210,7 @@ fn infer_function(
                 if !place.proj.is_empty() {
                     continue;
                 }
-                let ty = type_of_rvalue(rv, &tys, f, types, returns)?;
+                let ty = type_of_rvalue(rv, &tys, f, types, returns, calls)?;
                 set_ty(&mut tys, place.local, ty)?;
             }
         }
@@ -276,6 +300,7 @@ fn type_of_rvalue(
     f: &Function<Parsed>,
     types: &HashMap<Sym, TypeDef>,
     returns: &HashMap<Sym, Ty>,
+    calls: Option<&HashMap<Sym, CallableType>>,
 ) -> Result<Ty, String> {
     match rv {
         RValue::Use(op) => type_of_operand(op, tys, types),
@@ -332,8 +357,23 @@ fn type_of_rvalue(
         // from every declaration before body inference and then refreshed with
         // actual inferred returns, so forward calls and lifted functions are not
         // silently treated as `i64`.
-        RValue::Call(callee, _) => {
+        RValue::Call(callee, args) => {
             let _ = f;
+            let sig = calls.and_then(|calls| calls.get(callee));
+            if let Some(sig) = sig {
+                if args.len() != sig.params.len() {
+                    return Err(format!(
+                        "type error: call expects {} arguments, got {}",
+                        sig.params.len(),
+                        args.len()
+                    ));
+                }
+                for (index, (arg, param)) in args.iter().zip(&sig.params).enumerate() {
+                    let arg_ty = type_of_operand(arg, tys, types)?;
+                    check(&arg_ty, param, &format!("argument {} of call", index + 1))?;
+                }
+                return Ok(sig.ret.clone());
+            }
             Ok(returns.get(callee).cloned().unwrap_or(Ty::Int))
         }
         // A closure value has a function type. We do not track the lambda's exact

@@ -262,6 +262,10 @@ fn bind_params(
 ) {
     for p in ast_params {
         let id = b.new_local(Some(p.name));
+        // Parameters have no defining assignment in their own CFG, so retain the
+        // full declared type on the Parsed IR. This is also the source of truth
+        // for direct-call argument checking in elaboration.
+        b.set_local_ty(id, types::resolve_ty(&p.ty, scope));
         // Track an ADT parameter's type so field access / match / `?` / methods
         // resolve. A bare name that is actually a generic type parameter is NOT a
         // known ADT, so we skip it (its type erases to `Ty::Param`). A generic

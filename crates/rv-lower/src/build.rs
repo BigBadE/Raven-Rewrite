@@ -73,6 +73,13 @@ impl<'a> FnBuilder<'a> {
     /// Record that local `id` holds a value of ADT type `adt` (best-effort).
     pub fn set_local_adt(&mut self, id: LocalId, adt: Sym) {
         self.local_adt.insert(id, adt);
+        self.set_local_ty(id, rv_core::Ty::Adt(adt));
+    }
+
+    /// Preserve a source-level declaration on the Parsed IR local. Inference uses
+    /// these annotations for parameters, where no defining assignment exists.
+    pub fn set_local_ty(&mut self, id: LocalId, ty: rv_core::Ty) {
+        self.locals[id.0 as usize].ty = Some(ty);
     }
 
     /// Map currently-bound variable names to their struct type, for resolving

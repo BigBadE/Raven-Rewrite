@@ -88,6 +88,15 @@ fn direct_call_return_type_is_checked() {
     assert!(verify(src).is_err(), "a bool-returning call cannot satisfy -> i64");
 }
 
+#[test]
+fn direct_call_arguments_are_checked() {
+    let src = r#"
+        fn negate(x: bool) -> bool { return !x; }
+        fn main() -> bool { return negate(1); }
+    "#;
+    assert!(verify(src).is_err(), "a call argument must match the parameter type");
+}
+
 /// Soundness guard: a division with no precondition must NOT verify (x could be 0).
 #[test]
 fn unguarded_division_is_not_verified() {
