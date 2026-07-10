@@ -14,7 +14,7 @@ use std::collections::HashSet;
 
 use rv_core::{Sym, Symbols, Ty as CoreTy};
 use rv_ir::{FieldDef, TypeDef, VariantDef};
-use rv_syntax::ast::{EnumDecl, StructDecl, Ty as AstTy};
+use rv_syntax::ast::{EnumDecl, Expr, StructDecl, TypeAliasDecl, Ty as AstTy};
 
 /// Resolved information about a single struct.
 pub struct StructInfo {
@@ -61,6 +61,9 @@ pub struct Types {
     /// returns a struct/enum. Lets `adt_of_expr` resolve the ADT of a call result,
     /// so `match`/`?`/method-calls compose on call results.
     fn_ret_adt: HashMap<Sym, Sym>,
+    /// Refinement aliases lower to a runtime base type plus a predicate over
+    /// `self`. They are intentionally non-generic in this first surface slice.
+    aliases: HashMap<Sym, (CoreTy, Expr)>,
 }
 
 impl Types {
@@ -71,9 +74,18 @@ impl Types {
     pub fn build(
         structs: &[&StructDecl],
         enums: &[&EnumDecl],
+        aliases: &[&TypeAliasDecl],
         syms: &mut Symbols,
     ) -> Result<Self, String> {
         let mut t = Types::default();
+
+        for alias in aliases {
+            if t.aliases.contains_key(&alias.name) {
+                return Err(format!("duplicate type alias `{}`", syms.resolve(alias.name)));
+            }
+            let base = resolve_ty(&alias.base, &HashSet::new());
+            t.aliases.insert(alias.name, (base, alias.refinement.clone()));
+        }
 
         for s in structs {
             if t.structs.contains_key(&s.name) || t.enums.contains_key(&s.name) {
@@ -126,6 +138,33 @@ impl Types {
         }
 
         Ok(t)
+    }
+
+    /// Resolve a surface annotation with refinement aliases expanded to their
+    /// runtime representation.
+    pub fn resolve_ty(&self, ty: &AstTy, scope: &HashSet<Sym>) -> CoreTy {
+        match ty {
+            AstTy::Adt(name) if !scope.contains(name) => self
+                .aliases
+                .get(name)
+                .map(|(base, _)| base.clone())
+                .unwrap_or(CoreTy::Adt(*name)),
+            AstTy::Generic { base, .. } if !scope.contains(base) => self
+                .aliases
+                .get(base)
+                .map(|(ty, _)| ty.clone())
+                .unwrap_or(CoreTy::Adt(*base)),
+            AstTy::Ref { mutable, inner } => CoreTy::Ref {
+                mutable: *mutable,
+                inner: Box::new(self.resolve_ty(inner, scope)),
+            },
+            _ => resolve_ty(ty, scope),
+        }
+    }
+
+    /// The predicate of an alias, expressed over the reserved `self` variable.
+    pub fn alias_refinement(&self, name: Sym) -> Option<&Expr> {
+        self.aliases.get(&name).map(|(_, refinement)| refinement)
     }
 
     pub fn struct_info(&self, name: Sym) -> Option<&StructInfo> {

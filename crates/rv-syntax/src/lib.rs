@@ -65,6 +65,18 @@ mod tests {
     }
 
     #[test]
+    fn parses_refinement_type_alias() {
+        let mut syms = Symbols::new();
+        let module = parse("type NonZero = i64 where self != 0;", &mut syms).unwrap();
+        let Item::TypeAlias(alias) = &module.items[0] else {
+            panic!("expected type alias")
+        };
+        assert_eq!(syms.resolve(alias.name), "NonZero");
+        assert_eq!(alias.base, Ty::I64);
+        assert_eq!(classify(&module), vec![Fragment::Exec]);
+    }
+
+    #[test]
     fn respects_precedence() {
         let mut syms = Symbols::new();
         let m = parse("fn f() -> i64 { return 1 + 2 * 3; }", &mut syms).unwrap();

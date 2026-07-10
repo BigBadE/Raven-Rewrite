@@ -19,6 +19,8 @@ pub enum Item {
     Fn(FnDecl),
     Struct(StructDecl),
     Enum(EnumDecl),
+    /// `type Name = Base where predicate;` — a reusable executable refinement.
+    TypeAlias(TypeAliasDecl),
     /// A `trait Name { fn sig; ... }` declaration (surface-only sugar; produces no IR).
     Trait(TraitDecl),
     /// An `impl Type { methods }` or `impl Trait for Type { methods }` block.
@@ -36,6 +38,15 @@ pub enum Item {
     Instance(DefDecl),
     /// `mutual { enum … enum … }` — a block of mutually-referential inductives.
     Mutual(Vec<EnumDecl>),
+}
+
+/// A non-generic refinement alias. `self` in `refinement` denotes a value of
+/// `base`; lowering substitutes it with the parameter using the alias.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypeAliasDecl {
+    pub name: Sym,
+    pub base: Ty,
+    pub refinement: Expr,
 }
 
 /// An `axiom name(params) : ty` declaration (proof fragment).

@@ -157,7 +157,7 @@ impl<'a> Parser<'a> {
 
     // ---- grammar: program / items ------------------------------------------
 
-    /// `program := (fn_decl | struct_decl | enum_decl | trait_decl | impl_decl)*`
+    /// `program := (fn_decl | struct_decl | enum_decl | type_alias | trait_decl | impl_decl)*`
     pub fn parse_module(&mut self) -> Result<Module, String> {
         let mut items = Vec::new();
         while self.peek() != &Tok::Eof {
@@ -165,6 +165,7 @@ impl<'a> Parser<'a> {
                 Tok::Fn => items.push(Item::Fn(self.parse_fn()?)),
                 Tok::Struct => items.push(Item::Struct(self.parse_struct()?)),
                 Tok::Enum => items.push(Item::Enum(self.parse_enum()?)),
+                Tok::Ident(w) if w == "type" => items.push(Item::TypeAlias(self.parse_type_alias()?)),
                 Tok::Trait => items.push(Item::Trait(self.parse_trait()?)),
                 Tok::Impl => items.push(Item::Impl(self.parse_impl()?)),
                 // Proof-fragment items, matched by spelling (no reserved keyword token):
@@ -177,7 +178,7 @@ impl<'a> Parser<'a> {
                 Tok::Ident(w) if w == "mutual" => items.push(self.parse_mutual()?),
                 other => {
                     return Err(format!(
-                        "line {}: expected an item (`fn`, `struct`, `enum`, `trait`, `impl`, \
+                        "line {}: expected an item (`fn`, `struct`, `enum`, `type`, `trait`, `impl`, \
                          `axiom`, or `def`), found {other:?}",
                         self.line()
                     ))
@@ -185,6 +186,24 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(Module { items })
+    }
+
+    /// `type_alias := "type" IDENT "=" type "where" expr ";"?`
+    fn parse_type_alias(&mut self) -> Result<TypeAliasDecl, String> {
+        debug_assert!(self.peek_kw("type"));
+        self.bump();
+        let name = self.ident("after `type`")?;
+        self.expect(&Tok::Eq, "after a type alias name")?;
+        let base = self.parse_type()?;
+        if !self.eat_kw("where") {
+            return Err(format!(
+                "line {}: a type alias requires `where <refinement>`",
+                self.line()
+            ));
+        }
+        let refinement = self.with_no_struct_lit(|p| p.parse_expr())?;
+        self.eat(&Tok::Semi);
+        Ok(TypeAliasDecl { name, base, refinement })
     }
 
     /// `generics := ( "<" generic_param ("," generic_param)* ">" )?`

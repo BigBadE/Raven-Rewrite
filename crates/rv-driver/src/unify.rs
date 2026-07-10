@@ -90,7 +90,7 @@ impl Tr<'_> {
                 let members = enums.iter().map(|e| self.enum_decl(e)).collect::<Result<_, _>>()?;
                 Ok(Command::Mutual(members))
             }
-            Item::Struct(_) | Item::Trait(_) | Item::Impl(_) => Err(format!(
+            Item::Struct(_) | Item::TypeAlias(_) | Item::Trait(_) | Item::Impl(_) => Err(format!(
                 "this item form is not yet supported in the unified proof front-end: {item:?}"
             )),
         }

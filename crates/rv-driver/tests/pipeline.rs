@@ -53,6 +53,21 @@ fn parameter_refinement_is_a_real_contract() {
     assert!(report.obligations.iter().any(|o| o.origin.contains("precondition of recip")));
 }
 
+/// Reusable refinement aliases lower to their runtime representation and inject
+/// their `self` predicate into every parameter contract that uses the alias.
+#[test]
+fn refinement_type_alias_is_a_real_contract() {
+    let src = r#"
+        type NonZero = i64 where self != 0;
+        fn recip(x: NonZero) -> i64 { return 100 / x; }
+        fn main() -> i64 { return recip(4); }
+    "#;
+    let report = run_pipeline(src, Some("main")).expect("front-end ok");
+    assert!(report.all_verified(), "{report:?}");
+    assert_eq!(report.run, Some(Ok(Value::Int(25))));
+    assert!(report.obligations.iter().any(|o| o.origin.contains("precondition of recip")));
+}
+
 /// Stage 4 executable surface: float literals + f64 arithmetic run on the VM.
 #[test]
 fn float_arithmetic_runs() {

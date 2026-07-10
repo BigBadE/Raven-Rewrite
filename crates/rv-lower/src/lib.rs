@@ -37,6 +37,7 @@ pub fn lower(
     let mut struct_decls = Vec::new();
     let mut enum_decls = Vec::new();
     let mut fn_decls = Vec::new();
+    let mut alias_decls = Vec::new();
     let mut trait_decls = Vec::new();
     let mut impl_decls = Vec::new();
     // Classify items once: the proof fragment (relations, proof `fn`s, `def`/`axiom`/…)
@@ -50,6 +51,7 @@ pub fn lower(
         match item {
             Item::Struct(s) => struct_decls.push(s),
             Item::Enum(e) => enum_decls.push(e),
+            Item::TypeAlias(a) => alias_decls.push(a),
             Item::Fn(f) => fn_decls.push(f),
             Item::Trait(t) => trait_decls.push(t),
             Item::Impl(i) => impl_decls.push(i),
@@ -59,7 +61,7 @@ pub fn lower(
         }
     }
 
-    let mut types = Types::build(&struct_decls, &enum_decls, syms)?;
+    let mut types = Types::build(&struct_decls, &enum_decls, &alias_decls, syms)?;
 
     // Traits produce no IR; record their method-name sets for optional validation.
     for tr in &trait_decls {
@@ -170,7 +172,7 @@ fn lower_method(
         params.push(id);
     }
     // Remaining ordinary parameters.
-    bind_params(&mut b, &decl.params, &scope, &mut params);
+    bind_params(&mut b, &decl.params, &scope, types, &mut params);
 
     // `self` and any struct-typed parameter can be projected in a spec.
     let mut var_struct = struct_typed_params(&decl.params, &scope, types);
@@ -195,7 +197,7 @@ fn lower_method(
         type_params,
         params,
         // Declared return annotation (if any), for the body-vs-signature check in inference.
-        ret: decl.ret.as_ref().map(|t| types::resolve_ty(t, &scope)),
+        ret: decl.ret.as_ref().map(|t| types.resolve_ty(t, &scope)),
         pre,
         post,
         locals,
@@ -227,7 +229,7 @@ fn lower_callable(
 
     let mut b = FnBuilder::new(types);
     let mut params = Vec::with_capacity(ast_params.len());
-    bind_params(&mut b, ast_params, &scope, &mut params);
+    bind_params(&mut b, ast_params, &scope, types, &mut params);
 
     let var_struct = struct_typed_params(ast_params, &scope, types);
     let (pre, post) = lower_clauses(requires, ensures, ast_params, types, &var_struct, syms)?;
@@ -246,7 +248,7 @@ fn lower_callable(
         // Record the *declared* return annotation (if any) so inference can check the
         // body against it — most importantly to reject a primitive mismatch like a
         // `bool` body under an `-> i64` signature. `None` = unannotated (inferred).
-        ret: ret_ann.map(|t| types::resolve_ty(t, &scope)),
+        ret: ret_ann.map(|t| types.resolve_ty(t, &scope)),
         pre,
         post,
         locals,
@@ -265,6 +267,7 @@ fn bind_params(
     b: &mut FnBuilder,
     ast_params: &[Param],
     scope: &HashSet<Sym>,
+    types: &Types,
     out: &mut Vec<rv_ir::LocalId>,
 ) {
     for p in ast_params {
@@ -272,15 +275,19 @@ fn bind_params(
         // Parameters have no defining assignment in their own CFG, so retain the
         // full declared type on the Parsed IR. This is also the source of truth
         // for direct-call argument checking in elaboration.
-        b.set_local_ty(id, types::resolve_ty(&p.ty, scope));
+        b.set_local_ty(id, types.resolve_ty(&p.ty, scope));
         // Track an ADT parameter's type so field access / match / `?` / methods
         // resolve. A bare name that is actually a generic type parameter is NOT a
         // known ADT, so we skip it (its type erases to `Ty::Param`). A generic
         // application `Base<args..>` erases to its base ADT, which we also track
         // (so e.g. a `Result<i64, i64>` parameter is matchable / `?`-propagatable).
         match &p.ty {
-            AstTy::Adt(adt) if !scope.contains(adt) => b.set_local_adt(id, *adt),
-            AstTy::Generic { base, .. } if !scope.contains(base) => b.set_local_adt(id, *base),
+            AstTy::Adt(adt) if !scope.contains(adt) && types.is_adt(*adt) => {
+                b.set_local_adt(id, *adt)
+            }
+            AstTy::Generic { base, .. } if !scope.contains(base) && types.is_adt(*base) => {
+                b.set_local_adt(id, *base)
+            }
             _ => {}
         }
         b.bind(p.name, id);
@@ -312,6 +319,17 @@ fn lower_clauses(
     for param in params {
         if let Some(refinement) = &param.refinement {
             pre = pre.and(spec::lower_prop(refinement, syms, &ctx)?);
+        }
+        if let AstTy::Adt(alias) = param.ty {
+            if let Some(refinement) = types.alias_refinement(alias) {
+                let prop = spec::lower_prop(refinement, syms, &ctx)?;
+                let self_sym = syms.intern("self");
+                pre = pre.and(rv_core::subst_prop(
+                    &prop,
+                    self_sym,
+                    &rv_core::Term::Var(param.name),
+                ));
+            }
         }
     }
     // Postconditions: conjoin all `ensures` clauses (empty -> True). The `result`

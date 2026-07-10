@@ -167,7 +167,7 @@ pub fn classify(m: &Module) -> Vec<Fragment> {
     m.items
         .iter()
         .map(|it| match it {
-            Item::Struct(_) | Item::Trait(_) | Item::Impl(_) => Fragment::Exec,
+            Item::Struct(_) | Item::TypeAlias(_) | Item::Trait(_) | Item::Impl(_) => Fragment::Exec,
             Item::Axiom(_) | Item::Def(_) | Item::Instance(_) | Item::Mutual(_) => Fragment::Proof,
             Item::Enum(e) => {
                 if proof_types.contains(&e.name) {
