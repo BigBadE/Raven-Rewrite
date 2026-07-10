@@ -290,8 +290,9 @@ pub fn compile_source(text: &str) -> AnalysisResult {
     analyze(&db, src)
 }
 
-/// Like [`compile_source`], but if the program verifies clean (no borrow errors)
-/// and `entry` is `Some`, also compile to bytecode and run that entry point.
+/// Like [`compile_source`], but if the program verifies clean (all solver
+/// obligations discharged and no borrow errors) and `entry` is `Some`, also
+/// compile to bytecode and run that entry point.
 ///
 /// Codegen + execution intentionally live *outside* the memoized query graph: a
 /// VM `Value`/runtime error isn't salsa-friendly, and running is a side-effecting
@@ -303,7 +304,10 @@ pub fn compile_and_run(text: &str, entry: Option<&str>) -> (AnalysisResult, Opti
     let analysis = analyze(&db, src);
 
     let run = match (entry, &analysis) {
-        (Some(e), AnalysisResult::Analyzed(a)) if a.borrow_errors.is_empty() => {
+        // Execution is a continuation of successful checking, not a separate
+        // escape hatch.  In particular, an unresolved safety obligation must
+        // prevent bytecode from being emitted and run.
+        (Some(e), AnalysisResult::Analyzed(a)) if a.all_verified => {
             // Reuse the memoized elaboration (no re-parse/-lower/-elaborate).
             let elaborated = elaborate(&db, src).expect("analyze already proved front-end ok");
             let ElaboratedInner { elaborated, syms } = &*elaborated.0;

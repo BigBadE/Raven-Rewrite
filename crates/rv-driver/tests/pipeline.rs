@@ -58,8 +58,12 @@ fn string_literal_runs() {
 /// Stage 4: a closure capturing a local, lifted and called indirectly.
 #[test]
 fn closure_capture_runs() {
-    let src = "fn main() -> i64 { let k: i64 = 10; let f = |x: i64| x + k; return f(5); }";
+    // The lifted closure is a real function, so its arithmetic must meet the
+    // same overflow contract as every other function. `wrapping_add` states
+    // the intended modular arithmetic explicitly.
+    let src = "fn main() -> i64 { let k: i64 = 10; let f = |x: i64| wrapping_add(x, k); return f(5); }";
     let report = run_pipeline(src, Some("main")).expect("front-end ok");
+    assert!(report.all_verified(), "{report:?}");
     assert_eq!(report.run, Some(Ok(Value::Int(15))));
 }
 

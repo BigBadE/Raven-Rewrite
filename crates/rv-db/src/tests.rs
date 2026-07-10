@@ -65,3 +65,13 @@ fn compile_and_run_executes() {
     assert!(matches!(analysis, AnalysisResult::Analyzed(a) if a.all_verified));
     assert_eq!(run, Some(Ok(rv_vm::Value::Int(5))));
 }
+
+/// An executable entry is available only after the complete verification result
+/// succeeds.  Running a program with an unresolved safety obligation would make
+/// `rvc` two different languages: one for checking and one for execution.
+#[test]
+fn compile_and_run_refuses_unverified_program() {
+    let (analysis, run) = compile_and_run(RECIP_BAD, Some("main"));
+    assert!(matches!(analysis, AnalysisResult::Analyzed(a) if !a.all_verified));
+    assert_eq!(run, None);
+}
