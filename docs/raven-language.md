@@ -215,8 +215,11 @@ dependent work, so we front it with Rust-like syntax and migrate the embedded pr
 - **Stage 2 — migrate the proof corpus to `.rv`**: move the ~1,500 lines of embedded
   kernel-surface (stdlib, STLC, System F, CEK, the pipeline) into `.rv` files; the Rust
   crates load them from disk instead of string literals. *All Raven code lives in `.rv`.*
-- **Stage 3 — refinement types + auto-discharge**: `where` on types, flow-sensitive
-  refinement, `requires`/`ensures` as type-level refinements, routed to `rv-solve`.
+- **Stage 3 — refinement types + auto-discharge** *(current executable slice)*:
+  parameter `where` refinements and non-generic aliases such as
+  `type NonZero = i64 where self != 0` lower to caller-checked/callee-assumed
+  contracts; `requires`/`ensures` route to `rv-solve`. Flow-sensitive refinement
+  remains the next extension of this stage.
 - **Stage 4 — executable language fills the gaps** *(done)*: strings + `print`, floats, and
   closures (`|x| body` with capture, lambda-lifted) all run on the VM.
 - **Stage 5 — effect rows + handlers** on the CBPV layer. *(Kernel CBPV layer present; the
