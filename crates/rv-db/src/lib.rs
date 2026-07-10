@@ -267,9 +267,9 @@ pub fn analyze(db: &dyn salsa::Database, src: SourceProgram) -> AnalysisResult {
     let obligations: Vec<ObligationOutcome> = elaborated
         .obligations
         .iter()
-        .map(|ob| ObligationOutcome {
-            origin: ob.origin.clone(),
-            ok: registry.discharge(ob).is_discharged(),
+        .map(|ob| {
+            let outcome = registry.discharge(ob);
+            ObligationOutcome { origin: ob.origin.clone(), ok: outcome.checks(ob) }
         })
         .collect();
 

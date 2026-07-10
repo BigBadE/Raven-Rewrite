@@ -17,11 +17,65 @@ impl Obligation {
     }
 }
 
-/// Evidence that a goal holds. (Designed to later carry a kernel-checkable proof
-/// term; for now its presence means a trusted solver accepted the goal.)
+/// Evidence that a goal holds.
+///
+/// [`Certificate::Replay`] is checked directly against the original obligation;
+/// the producer of that certificate is therefore untrusted. `Trusted` remains a
+/// temporary escape hatch for decision procedures that have not yet learned to
+/// emit a replayable proof object.
 #[derive(Clone, Debug)]
-pub struct Certificate {
-    pub by: &'static str,
+pub enum Certificate {
+    Replay(ReplayCertificate),
+    Trusted { by: &'static str },
+}
+
+/// A tiny, independently replayable fragment of propositional evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplayCertificate {
+    GoalTrue,
+    ContextContainsFalse,
+    ContextContainsGoal,
+}
+
+impl Certificate {
+    pub fn trusted(by: &'static str) -> Self {
+        Certificate::Trusted { by }
+    }
+
+    /// Validate a replay certificate against its source obligation. Trusted
+    /// certificates deliberately return true until their solver has a proof
+    /// format; callers can inspect [`Self::is_replayable`] for trust reporting.
+    pub fn check(&self, ob: &Obligation) -> bool {
+        match self {
+            Certificate::Replay(ReplayCertificate::GoalTrue) => matches!(ob.goal, Prop::True),
+            Certificate::Replay(ReplayCertificate::ContextContainsFalse) => {
+                context_contains_false(&ob.ctx)
+            }
+            Certificate::Replay(ReplayCertificate::ContextContainsGoal) => {
+                conjuncts_contain(&ob.ctx, &ob.goal)
+            }
+            Certificate::Trusted { .. } => true,
+        }
+    }
+
+    pub fn is_replayable(&self) -> bool {
+        matches!(self, Certificate::Replay(_))
+    }
+}
+
+fn context_contains_false(p: &Prop) -> bool {
+    match p {
+        Prop::False => true,
+        Prop::And(a, b) => context_contains_false(a) || context_contains_false(b),
+        _ => false,
+    }
+}
+
+fn conjuncts_contain(ctx: &Prop, goal: &Prop) -> bool {
+    match ctx {
+        Prop::And(a, b) => conjuncts_contain(a, goal) || conjuncts_contain(b, goal),
+        other => other == goal,
+    }
 }
 
 /// Where a fact's truth comes from — proved vs trusted.
@@ -42,6 +96,12 @@ pub enum Outcome {
 impl Outcome {
     pub fn is_discharged(&self) -> bool {
         matches!(self, Outcome::Discharged(_))
+    }
+
+    /// A solver result is usable only when any attached replay certificate checks
+    /// against this exact obligation.
+    pub fn checks(&self, ob: &Obligation) -> bool {
+        matches!(self, Outcome::Discharged(cert) if cert.check(ob))
     }
 }
 
@@ -93,4 +153,19 @@ pub trait Grades {
     fn add(a: &Self::G, b: &Self::G) -> Self::G;
     fn mul(a: &Self::G, b: &Self::G) -> Self::G;
     fn leq(a: &Self::G, b: &Self::G) -> bool;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_certificates_are_bound_to_their_obligation() {
+        let true_goal = Obligation::new(Prop::False, Prop::True, "test");
+        let cert = Certificate::Replay(ReplayCertificate::GoalTrue);
+        assert!(cert.check(&true_goal));
+
+        let non_true_goal = Obligation::new(Prop::True, Prop::False, "test");
+        assert!(!cert.check(&non_true_goal));
+    }
 }

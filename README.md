@@ -35,7 +35,7 @@ cargo test                                    # 344 tests across the workspace
 | `rv-syntax` | lexer + parser → AST | — |
 | `rv-lower` | AST → `IR<Parsed>` | — |
 | `rv-infer` | typecheck + phase fill + VC generation | — |
-| `rv-solve` | linear-arithmetic + propositional decision procedure | **trusted** (until certificates) |
+| `rv-solve` | linear-arithmetic + propositional decision procedure | linear arithmetic **trusted**; structural discharges replayed |
 | `rv-codegen` | `IR<Lowerable>` → bytecode | — |
 | `rv-vm` | bytecode interpreter | — |
 | `rv-borrow` | ownership substrate: fractional-permission resource algebra + QTT grade semiring | — |
@@ -48,9 +48,10 @@ cargo test                                    # 344 tests across the workspace
 ## Design properties realized here
 
 - **Small trust base.** Only the kernels (`rv-core` for the executable path's first-order
-  `Prop`, `rv-kernel` for the dependent proof path) and, for now, the `rv-solve` decision
-  procedure can host a soundness bug. Every other crate can only reject a program or fail to
-  prove one — never falsely "verify".
+  `Prop`, `rv-kernel` for the dependent proof path) and the still-trusted linear-arithmetic
+  portion of `rv-solve` can host a soundness bug. Structural solver results are replayed from
+  their certificates against the original obligation. Every other crate can only reject a
+  program or fail to prove one — never falsely "verify".
 - **Phases make illegal states unrepresentable.** `IR<Parsed>` has no types; `IR<Lowerable>`
   has them and a memory strategy. Codegen accepts only `Lowerable` — enforced by the type
   system (`rv_ir::Phase`).
@@ -115,6 +116,7 @@ growth). The solver
 is a sound, deliberately-incomplete linear-integer-arithmetic + propositional prover (no
 external SMT, no AI proving). The backend is a bytecode interpreter. Open frontier: closures /
 higher-order combinators (`map`/`and_then`), wider integers (`u64`/`i128`) with sound bounds,
-and moving the `rv-solve` decision procedure out of the trust base via checkable certificates.
+and moving the remaining `rv-solve` linear-arithmetic decision procedure out of the trust base
+via checkable certificates (the structural fragment already replays certificates).
 See `ARCHITECTURE.md` for the trust boundary, and `docs/raven-language.md` for the unified
 design (one `.rv` surface, executable + verified, the Rust frontend now removed).

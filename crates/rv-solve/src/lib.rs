@@ -6,9 +6,10 @@
 //! assignment to its variables). Equivalently — and this is the form we actually
 //! decide — whether `ctx ∧ ¬goal` is **unsatisfiable**.
 //!
-//! This crate is *trust-base adjacent* (see `ARCHITECTURE.md`): until solvers emit
-//! kernel-checkable certificates, a `Discharged` result is **trusted**. Therefore
-//! the overriding invariant of everything here is:
+//! This crate is *trust-base adjacent* (see `ARCHITECTURE.md`). The structural
+//! fast-path emits replay certificates that `rv-logic` validates independently;
+//! the linear arithmetic engine remains **trusted** until it emits a checkable
+//! unsatisfiability certificate. Therefore the overriding invariant is:
 //!
 //! > **SOUNDNESS:** we return [`Outcome::Discharged`] only when the obligation is
 //! > genuinely valid. When we cannot *prove* validity we return
@@ -73,7 +74,7 @@
 //! string simply means none was found in the box — not that the obligation is valid.
 
 use rv_core::Prop;
-use rv_logic::{Certificate, Obligation, Outcome, Solver, SolverRegistry};
+use rv_logic::{Certificate, Obligation, Outcome, ReplayCertificate, Solver, SolverRegistry};
 
 mod equality;
 mod linear;
@@ -114,16 +115,20 @@ impl Solver for TrivialSolver {
     fn try_solve(&self, ob: &Obligation) -> Outcome {
         // goal == True  ⇒  valid.
         if matches!(ob.goal, Prop::True) {
-            return Outcome::Discharged(Certificate { by: "trivial" });
+            return Outcome::Discharged(Certificate::Replay(ReplayCertificate::GoalTrue));
         }
         // False is a top-level conjunct of ctx  ⇒  ctx is unsatisfiable, so
         // `ctx ⟹ anything` is valid.
         if context_contains_false(&ob.ctx) {
-            return Outcome::Discharged(Certificate { by: "trivial" });
+            return Outcome::Discharged(Certificate::Replay(
+                ReplayCertificate::ContextContainsFalse,
+            ));
         }
         // goal is one of the top-level conjuncts of ctx  ⇒  valid (`H ∧ … ⟹ H`).
         if conjuncts_contain(&ob.ctx, &ob.goal) {
-            return Outcome::Discharged(Certificate { by: "trivial" });
+            return Outcome::Discharged(Certificate::Replay(
+                ReplayCertificate::ContextContainsGoal,
+            ));
         }
         Outcome::Failed(None)
     }
@@ -195,7 +200,7 @@ impl Solver for LiaSolver {
                 }
             }
         }
-        Outcome::Discharged(Certificate { by: "lia" })
+        Outcome::Discharged(Certificate::trusted("lia"))
     }
 }
 
