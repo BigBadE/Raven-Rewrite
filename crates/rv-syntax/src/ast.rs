@@ -5,7 +5,7 @@
 //! `rv_core::Ty` is only introduced later (during inference), so we keep a syntax-
 //! local notion of type here.
 
-use rv_core::{BinOp, Sym, UnOp};
+use rv_core::{BinOp, IntTy, Sym, UnOp};
 
 /// A whole compilation unit: a sequence of top-level items.
 #[derive(Clone, Debug, PartialEq)]
@@ -74,6 +74,8 @@ pub struct DefDecl {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Ty {
     I64,
+    /// A fixed-width signed or unsigned integer (`i8`, `u32`, …).
+    IntN(IntTy),
     F64,
     Bool,
     String,

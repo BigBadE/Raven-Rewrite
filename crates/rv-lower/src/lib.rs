@@ -188,6 +188,7 @@ fn lower_method(
         syms,
     )?;
     post = apply_return_alias_refinement(post, decl.ret.as_ref(), types, &var_struct, syms)?;
+    post = apply_return_width_contract(post, decl.ret.as_ref(), syms);
     b.lower_block(&decl.body, syms)?;
     b.finish_with_default_return();
 
@@ -235,6 +236,7 @@ fn lower_callable(
     let var_struct = struct_typed_params(ast_params, &scope, types);
     let (pre, mut post) = lower_clauses(requires, ensures, ast_params, types, &var_struct, syms)?;
     post = apply_return_alias_refinement(post, ret_ann, types, &var_struct, syms)?;
+    post = apply_return_width_contract(post, ret_ann, syms);
 
     // Lower the body into the CFG.
     b.lower_block(body, syms)?;
@@ -369,6 +371,31 @@ fn apply_return_alias_refinement(
         self_sym,
         &rv_core::Term::Var(result_sym),
     )))
+}
+
+/// A fixed-width return type carries its representability range as an implicit
+/// postcondition. This both validates a return in the callee and lets callers
+/// safely use a `u8`/`i32` result as a value of that width.
+fn apply_return_width_contract(
+    post: rv_core::Prop,
+    ret: Option<&AstTy>,
+    syms: &mut rv_core::Symbols,
+) -> rv_core::Prop {
+    let Some(AstTy::IntN(w)) = ret else {
+        return post;
+    };
+    let result = rv_core::Term::Var(syms.intern(rv_ir::RESULT_NAME));
+    let lo = rv_core::Prop::Holds(rv_core::Term::bin(
+        rv_core::BinOp::Ge,
+        result.clone(),
+        rv_core::Term::Int(w.min() as i64),
+    ));
+    let hi = rv_core::Prop::Holds(rv_core::Term::bin(
+        rv_core::BinOp::Le,
+        result,
+        rv_core::Term::Int(w.max() as i64),
+    ));
+    post.and(lo).and(hi)
 }
 
 /// Build the map from struct-typed parameter names to their struct type, used to

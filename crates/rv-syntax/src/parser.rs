@@ -633,6 +633,10 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Ty::I64
             }
+            Tok::Ident(name) if fixed_int_ty(&name).is_some() => {
+                self.bump();
+                Ty::IntN(fixed_int_ty(&name).expect("guarded above"))
+            }
             Tok::Ident(name) if name == "f64" => {
                 self.bump();
                 Ty::F64
@@ -1508,6 +1512,23 @@ impl<'a> Parser<'a> {
         result?;
         Ok(args)
     }
+}
+
+/// Parse the executable fixed-width integer spellings. `isize`/`usize` are
+/// modeled as 64-bit values on Raven's current 64-bit VM target.
+fn fixed_int_ty(name: &str) -> Option<rv_core::IntTy> {
+    let (signed, bits) = match name {
+        "i8" => (true, 8),
+        "i16" => (true, 16),
+        "i32" => (true, 32),
+        "u8" => (false, 8),
+        "u16" => (false, 16),
+        "u32" => (false, 32),
+        "u64" | "usize" => (false, 64),
+        "isize" => (true, 64),
+        _ => return None,
+    };
+    Some(rv_core::IntTy { signed, bits })
 }
 
 /// Map a token to its binary operator and binding power (higher binds tighter).

@@ -1023,10 +1023,11 @@ impl VcGen<'_> {
                 self.emit_index_bounds(place, state);
                 if place.proj.is_empty() {
                     // Whole-local assignment: bind the local to the rvalue term.
-                    // A sized-integer local additionally carries its range fact —
-                    // its value is in range because every producer (param, checked
-                    // op, wrapping op, literal) guarantees it.
+                    // A sized-integer local carries its range fact only after the
+                    // assigned value has been proved representable at that width.
                     if let Ty::IntN(w) = self.low.locals[place.local.0 as usize].ty {
+                        let range = range_assumption(Prop::True, &value, w);
+                        self.emit(state.path.clone(), range, "integer range");
                         state.path = range_assumption(std::mem::replace(&mut state.path, Prop::True), &value, w);
                     }
                     state.env.insert(place.local, value);

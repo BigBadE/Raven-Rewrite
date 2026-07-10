@@ -115,6 +115,27 @@ fn false_refinement_local_initializer_is_not_verified() {
     assert!(!report.all_verified(), "a false refined local must be rejected");
 }
 
+#[test]
+fn fixed_width_integers_prove_conversion_and_overflow_bounds() {
+    let src = r#"
+        fn inc(x: u8) -> u8
+          requires x < 255;
+        { return x + 1; }
+        fn main() -> u8 { let x: u8 = 2; return inc(x); }
+    "#;
+    let report = run_pipeline(src, Some("main")).expect("front-end ok");
+    assert!(report.all_verified(), "{report:?}");
+    assert_eq!(report.run, Some(Ok(Value::Int(3))));
+}
+
+#[test]
+fn out_of_range_fixed_width_initializer_is_not_verified() {
+    let src = "fn main() -> u8 { let x: u8 = 300; return x; }";
+    let report = verify(src).expect("front-end ok");
+    assert!(!report.all_verified(), "out-of-range u8 initialization must not verify");
+    assert!(report.obligations.iter().any(|o| o.origin.contains("integer range")));
+}
+
 /// Stage 4 executable surface: float literals + f64 arithmetic run on the VM.
 #[test]
 fn float_arithmetic_runs() {

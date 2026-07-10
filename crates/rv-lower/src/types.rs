@@ -324,6 +324,7 @@ pub(crate) fn mangle_method(type_name: Sym, method: Sym, syms: &mut Symbols) -> 
 pub(crate) fn resolve_ty(ty: &AstTy, scope: &HashSet<Sym>) -> CoreTy {
     match ty {
         AstTy::I64 => CoreTy::Int,
+        AstTy::IntN(w) => CoreTy::IntN(*w),
         AstTy::F64 => CoreTy::Float,
         AstTy::Bool => CoreTy::Bool,
         AstTy::String => CoreTy::Str,

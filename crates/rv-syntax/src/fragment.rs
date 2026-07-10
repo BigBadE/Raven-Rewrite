@@ -246,7 +246,7 @@ fn ty_names_proof_type(ty: &Ty, proof_types: &HashSet<Sym>) -> bool {
         }
         Ty::Ref { inner, .. } => ty_names_proof_type(inner, proof_types),
         Ty::Term(_) => true,
-        Ty::I64 | Ty::F64 | Ty::Bool | Ty::String | Ty::Unit => false,
+        Ty::I64 | Ty::IntN(_) | Ty::F64 | Ty::Bool | Ty::String | Ty::Unit => false,
     }
 }
 

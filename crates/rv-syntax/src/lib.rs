@@ -57,6 +57,15 @@ mod tests {
     }
 
     #[test]
+    fn parses_fixed_width_integer_types() {
+        let mut syms = Symbols::new();
+        let module = parse("fn f(x: u8) -> i32 { return 0; }", &mut syms).unwrap();
+        let Item::Fn(f) = &module.items[0] else { panic!("expected function") };
+        assert_eq!(f.params[0].ty, Ty::IntN(rv_core::IntTy { signed: false, bits: 8 }));
+        assert_eq!(f.ret, Some(Ty::IntN(rv_core::IntTy { signed: true, bits: 32 })));
+    }
+
+    #[test]
     fn scalar_parameter_refinement_stays_executable() {
         let mut syms = Symbols::new();
         let module = parse("fn recip(x: i64 where x != 0) -> i64 { return 1 / x; }", &mut syms)

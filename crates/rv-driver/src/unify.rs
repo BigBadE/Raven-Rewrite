@@ -256,7 +256,7 @@ impl Tr<'_> {
                 e
             }
             Ty::Term(e) => self.expr(e)?,
-            Ty::I64 | Ty::F64 | Ty::Bool | Ty::String | Ty::Unit | Ty::Ref { .. } => {
+            Ty::I64 | Ty::IntN(_) | Ty::F64 | Ty::Bool | Ty::String | Ty::Unit | Ty::Ref { .. } => {
                 return Err(format!("this type is not part of the proof fragment: {t:?}"))
             }
         })
