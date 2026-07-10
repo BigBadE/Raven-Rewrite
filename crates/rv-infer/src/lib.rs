@@ -417,10 +417,26 @@ fn type_of_rvalue(
             }
             Ok(*ret)
         }
-        // Aggregates name their ADT directly: a struct `s` has type `Adt(s)`, an
-        // enum variant of `e` has type `Adt(e)`. The local *is* the ADT value.
-        RValue::Aggregate(AggKind::Struct(s), _) => Ok(Ty::Adt(*s)),
-        RValue::Aggregate(AggKind::Variant(e, _), _) => Ok(Ty::Adt(*e)),
+        // Aggregates name their ADT directly, but each constructor operand must
+        // first satisfy its declared field type. Without this check a literal
+        // like `Point { x: true }` could acquire type `Point` unchecked.
+        RValue::Aggregate(AggKind::Struct(s), ops) => {
+            let Some(TypeDef::Struct { fields, .. }) = types.get(s) else {
+                return Err(format!("unknown struct constructor {s:?}"));
+            };
+            check_aggregate_fields(ops, fields.iter().map(|field| &field.ty), tys, types, "struct")?;
+            Ok(Ty::Adt(*s))
+        }
+        RValue::Aggregate(AggKind::Variant(e, variant), ops) => {
+            let Some(TypeDef::Enum { variants, .. }) = types.get(e) else {
+                return Err(format!("unknown enum constructor {e:?}"));
+            };
+            let fields = variants
+                .get(*variant as usize)
+                .ok_or_else(|| format!("unknown enum variant {variant} for {e:?}"))?;
+            check_aggregate_fields(ops, fields.fields.iter(), tys, types, "enum variant")?;
+            Ok(Ty::Adt(*e))
+        }
         // A tuple's type is the tuple of its operands' types.
         RValue::Aggregate(AggKind::Tuple, ops) => {
             let elems = ops
@@ -462,6 +478,30 @@ fn type_of_rvalue(
             })
         }
     }
+}
+
+/// Check an aggregate constructor's arity and operand types against its declared
+/// fields. Generic parameters remain abstract through [`check`], as elsewhere.
+fn check_aggregate_fields<'a>(
+    ops: &[Operand],
+    expected: impl IntoIterator<Item = &'a Ty>,
+    tys: &[Option<Ty>],
+    types: &HashMap<Sym, TypeDef>,
+    kind: &str,
+) -> Result<(), String> {
+    let expected: Vec<&Ty> = expected.into_iter().collect();
+    if ops.len() != expected.len() {
+        return Err(format!(
+            "type error: {kind} constructor expects {} fields, got {}",
+            expected.len(),
+            ops.len()
+        ));
+    }
+    for (index, (op, field_ty)) in ops.iter().zip(expected).enumerate() {
+        let got = type_of_operand(op, tys, types)?;
+        check(&got, field_ty, &format!("field {} of {kind} constructor", index + 1))?;
+    }
+    Ok(())
 }
 
 /// The type of an operand: a constant's own type, or a local's so-far-inferred type.

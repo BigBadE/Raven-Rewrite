@@ -183,6 +183,15 @@ fn concrete_adt_return_type_is_checked() {
     assert!(verify(src).is_err(), "a declared ADT return cannot return an integer");
 }
 
+#[test]
+fn aggregate_constructor_fields_are_checked() {
+    let src = r#"
+        struct Point { x: i64, }
+        fn main() -> Point { return Point { x: true }; }
+    "#;
+    assert!(verify(src).is_err(), "struct field type mismatch must be rejected");
+}
+
 /// Direct calls carry the callee's return type through executable elaboration;
 /// they are not an implicit `i64` conversion point.
 #[test]
