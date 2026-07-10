@@ -713,6 +713,27 @@ impl B { fn m(self) -> i64 { return self.v; } }";
     }
 
     #[test]
+    fn lambda_lift_keeps_capture_and_explicit_parameter() {
+        use rv_ir::{RValue, Stmt};
+        let (prog, mut syms) = lower_src(
+            "fn main() -> i64 { let k: i64 = 10; let f = |x: i64| wrapping_add(x, k); return f(5); }",
+        );
+        let main = prog.funcs.iter().find(|f| f.name == syms.intern("main")).unwrap();
+        let (lifted, captures) = main
+            .blocks
+            .iter()
+            .flat_map(|b| &b.stmts)
+            .find_map(|stmt| match stmt {
+                Stmt::Assign(_, RValue::Closure(name, captures)) => Some((*name, captures)),
+                _ => None,
+            })
+            .expect("expected closure construction");
+        let lifted = prog.funcs.iter().find(|f| f.name == lifted).unwrap();
+        assert_eq!(captures.len(), 1, "only k is captured");
+        assert_eq!(lifted.params.len(), 2, "capture k plus explicit parameter x");
+    }
+
+    #[test]
     fn method_call_on_unknown_receiver_type_errors() {
         // A method call whose receiver type can't be resolved is a clear error.
         let mut syms = rv_core::Symbols::new();

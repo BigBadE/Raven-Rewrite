@@ -97,6 +97,28 @@ fn direct_call_arguments_are_checked() {
     assert!(verify(src).is_err(), "a call argument must match the parameter type");
 }
 
+#[test]
+fn closure_call_return_type_is_checked() {
+    let src = r#"
+        fn main() -> bool {
+            let f = |x: i64| x;
+            return f(1);
+        }
+    "#;
+    assert!(verify(src).is_err(), "a closure call carries its actual return type");
+}
+
+#[test]
+fn closure_call_arguments_are_checked() {
+    let src = r#"
+        fn main() -> i64 {
+            let f = |x: i64| x;
+            return f(true);
+        }
+    "#;
+    assert!(verify(src).is_err(), "a closure argument must match its parameter type");
+}
+
 /// Soundness guard: a division with no precondition must NOT verify (x could be 0).
 #[test]
 fn unguarded_division_is_not_verified() {

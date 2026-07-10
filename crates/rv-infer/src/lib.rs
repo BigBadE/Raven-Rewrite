@@ -376,14 +376,47 @@ fn type_of_rvalue(
             }
             Ok(returns.get(callee).cloned().unwrap_or(Ty::Int))
         }
-        // A closure value has a function type. We do not track the lambda's exact
-        // signature here (it is opaque to the kernel anyway), so we give it a
-        // best-effort `Fn` type; closure locals are never indexed/len'd, so the
-        // imprecise arg/ret types are inconsequential.
-        RValue::Closure(_func, _captures) => Ok(Ty::Fn(vec![], Box::new(Ty::Int))),
-        // An indirect call's result type is unknown; default to the numeric `Int`,
-        // exactly as a direct `Call` does.
-        RValue::CallClosure(_callee, _) => Ok(Ty::Int),
+        // Lambda lowering creates a top-level function whose leading parameters are
+        // the captured environment. Its callable value exposes only the remaining
+        // parameters to the caller. This recovers the closure's real function type
+        // without a special closure-only type system.
+        RValue::Closure(func, captures) => {
+            if let Some(sig) = calls.and_then(|calls| calls.get(func)) {
+                let exposed = sig.params.get(captures.len()..).ok_or_else(|| {
+                    "internal error: closure captures exceed lifted function parameters".to_string()
+                })?;
+                Ok(Ty::Fn(exposed.to_vec(), Box::new(sig.ret.clone())))
+            } else {
+                // The provisional pass has not inferred lifted signatures yet.
+                Ok(Ty::Fn(vec![], Box::new(Ty::Int)))
+            }
+        }
+        // Indirect calls are type-checked from the closure value's recovered
+        // `Fn(args, ret)` type. A non-function callee is a regular type error.
+        RValue::CallClosure(callee, args) => {
+            // During the provisional pass lifted closure signatures have not been
+            // recovered yet. Keep the historical conservative fallback until the
+            // second pass has the complete callable map.
+            if calls.is_none() {
+                return Ok(Ty::Int);
+            }
+            let callee_ty = type_of_operand(callee, tys, types)?;
+            let Ty::Fn(params, ret) = callee_ty else {
+                return Err(format!("type error: attempted to call non-function {callee_ty:?}"));
+            };
+                if args.len() != params.len() {
+                    return Err(format!(
+                        "type error: closure call expects {} arguments, got {}",
+                    params.len(),
+                    args.len()
+                ));
+            }
+            for (index, (arg, param)) in args.iter().zip(&params).enumerate() {
+                let arg_ty = type_of_operand(arg, tys, types)?;
+                check(&arg_ty, param, &format!("argument {} of closure call", index + 1))?;
+            }
+            Ok(*ret)
+        }
         // Aggregates name their ADT directly: a struct `s` has type `Adt(s)`, an
         // enum variant of `e` has type `Adt(e)`. The local *is* the ADT value.
         RValue::Aggregate(AggKind::Struct(s), _) => Ok(Ty::Adt(*s)),
