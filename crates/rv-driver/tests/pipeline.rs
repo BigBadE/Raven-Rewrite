@@ -91,6 +91,30 @@ fn false_refinement_return_is_not_verified() {
     assert!(!report.all_verified(), "a false refined return must be rejected");
 }
 
+#[test]
+fn refinement_type_alias_is_checked_and_assumed_for_locals() {
+    let src = r#"
+        type NonZero = i64 where self != 0;
+        fn main() -> i64 {
+            let x: NonZero = 5;
+            return 100 / x;
+        }
+    "#;
+    let report = run_pipeline(src, Some("main")).expect("front-end ok");
+    assert!(report.all_verified(), "{report:?}");
+    assert_eq!(report.run, Some(Ok(Value::Int(20))));
+}
+
+#[test]
+fn false_refinement_local_initializer_is_not_verified() {
+    let src = r#"
+        type NonZero = i64 where self != 0;
+        fn main() -> i64 { let x: NonZero = 0; return x; }
+    "#;
+    let report = verify(src).expect("front-end ok");
+    assert!(!report.all_verified(), "a false refined local must be rejected");
+}
+
 /// Stage 4 executable surface: float literals + f64 arithmetic run on the VM.
 #[test]
 fn float_arithmetic_runs() {

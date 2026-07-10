@@ -13,7 +13,7 @@ use rv_ir::{
     Parsed, Place, Proj, RValue, Stmt as IrStmt, Terminator,
 };
 use rv_syntax::ast::{
-    Block as AstBlock, Expr, MatchArm as AstMatchArm, PatBind, Pattern, Stmt as AstStmt,
+    Block as AstBlock, Expr, MatchArm as AstMatchArm, PatBind, Pattern, Stmt as AstStmt, Ty as AstTy,
 };
 
 use crate::spec;
@@ -193,8 +193,11 @@ impl<'a> FnBuilder<'a> {
 
     fn lower_stmt(&mut self, stmt: &AstStmt, syms: &mut Symbols) -> Result<(), String> {
         match stmt {
-            AstStmt::Let { name, init, .. } => {
+            AstStmt::Let { name, ty, init } => {
                 let dst = self.new_local(Some(*name));
+                if let Some(ty) = ty {
+                    self.set_local_ty(dst, self.types.resolve_ty(ty, &std::collections::HashSet::new()));
+                }
                 self.lower_into_local(dst, init, syms)?;
                 // Best-effort: propagate a known ADT type from the initializer so
                 // later field access / match on this local can resolve.
@@ -202,6 +205,9 @@ impl<'a> FnBuilder<'a> {
                     self.set_local_adt(dst, adt);
                 }
                 self.bind(*name, dst);
+                if let Some(AstTy::Adt(alias)) = ty {
+                    self.lower_alias_local_refinement(*name, *alias, syms)?;
+                }
                 Ok(())
             }
             AstStmt::Assign { name, value } => {
@@ -277,6 +283,29 @@ impl<'a> FnBuilder<'a> {
             }
             AstStmt::Match { scrut, arms } => self.lower_match(scrut, arms, syms),
         }
+    }
+
+    /// Refined aliases on locals are checked at initialization and then become a
+    /// path fact for the rest of the block. `Assert` keeps the obligation visible;
+    /// the following ghost `Assume` is justified because execution is gated on all
+    /// verification obligations discharging.
+    fn lower_alias_local_refinement(
+        &mut self,
+        local: Sym,
+        alias: Sym,
+        syms: &mut Symbols,
+    ) -> Result<(), String> {
+        let Some(refinement) = self.types.alias_refinement(alias) else {
+            return Ok(());
+        };
+        let var_struct = self.var_struct_map();
+        let ctx = spec::SpecCtx { types: self.types, var_struct: &var_struct };
+        let prop = spec::lower_prop(refinement, syms, &ctx)?;
+        let self_sym = syms.intern("self");
+        let prop = rv_core::subst_prop(&prop, self_sym, &rv_core::Term::Var(local));
+        self.push_stmt(IrStmt::Assert(prop.clone()));
+        self.push_stmt(IrStmt::Assume(prop));
+        Ok(())
     }
 
     /// Lower `if cond { then } else { els }` into branch/join blocks.
