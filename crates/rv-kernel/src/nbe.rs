@@ -276,11 +276,13 @@ impl<'a> Nbe<'a> {
     /// leave it stuck. The exact dual of [`try_iota`]/[`try_nu`] for the fixed
     /// `Quot.lift` constant: `f` is at spine index 3, the scrutinee `q` at index 5, and
     /// the representative `a` is the last argument of the `Quot.mk` spine `[A, R, a]`.
+    /// Also drives the **dependent** recursor `Quot.rec` (same spine positions as
+    /// `Quot.lift` — see `crate::reduce::Reducer::try_quot_lift`'s doc comment).
     fn try_quot_lift(&self, h: Head, spine: Vec<Rc<Value>>) -> Rc<Value> {
         const F_POS: usize = 3;
         const SCRUT_POS: usize = 5;
         if let Head::Const(lname, _) = &h {
-            if matches!(self.env.get(lname), Some(Decl::Quot(q)) if q.role == QuotRole::Lift)
+            if matches!(self.env.get(lname), Some(Decl::Quot(q)) if q.role == QuotRole::Lift || q.role == QuotRole::Rec)
                 && spine.len() > SCRUT_POS
             {
                 if let Value::Stuck(Head::Const(mkn, _), margs) = &*spine[SCRUT_POS] {
