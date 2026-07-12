@@ -14,7 +14,7 @@
 //! be adopted as the performance path with confidence, while the proven reducer
 //! remains the reference.
 
-use crate::env::{CircleRole, Decl, Env, HitRole, I2Role, QuotRole, TruncRole};
+use crate::env::{CircleRole, Decl, Env, HitRole, I2Role, QuotRole, S1cRole, TruncRole};
 use crate::face::{Atom, Cof};
 use crate::level::{self, Level};
 use crate::term::{Grade, Name, Term};
@@ -455,7 +455,12 @@ impl<'a> Nbe<'a> {
                                     if let Value::Stuck(h7, spine7) = &*stuck {
                                         let stuck = self.try_i2_rec(h7.clone(), spine7.clone());
                                         if let Value::Stuck(h8, spine8) = &*stuck {
-                                            self.try_hit_rec(h8.clone(), spine8.clone())
+                                            let stuck = self.try_s1c_rec(h8.clone(), spine8.clone());
+                                            if let Value::Stuck(h9, spine9) = &*stuck {
+                                                self.try_hit_rec(h9.clone(), spine9.clone())
+                                            } else {
+                                                stuck
+                                            }
                                         } else {
                                             stuck
                                         }
@@ -781,6 +786,58 @@ impl<'a> Nbe<'a> {
                             {
                                 let s = spine[S_POS].clone();
                                 let mut v = self.vpapp(s, r.clone());
+                                for extra in &spine[SCRUT_POS + 1..] {
+                                    v = self.vapp(v, extra.clone());
+                                }
+                                return v;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Rc::new(Value::Stuck(h, spine))
+    }
+
+    /// The cubical-circle (`S1c`) computation rules, NbE counterpart of
+    /// [`crate::reduce::Reducer::try_s1c_rec`] (see [`crate::circle_cubical`]). Two
+    /// ι-rules for the fixed, **computing** `S1c.rec.{v} C b l x` (spine: `C`@0,
+    /// `b`@1, `l`@2, scrutinee `x`@3):
+    ///
+    /// ```text
+    ///   S1c.rec C b l S1c.base        ↦  b
+    ///   S1c.rec C b l (S1c.loop @ r)  ↦  l @ r
+    /// ```
+    ///
+    /// Structurally identical to [`Self::try_i2_rec`] (one point constructor, one
+    /// path constructor whose `PApp` head must be the literal, nullary `S1c.loop`).
+    fn try_s1c_rec(&self, h: Head, spine: Vec<Rc<Value>>) -> Rc<Value> {
+        const B_POS: usize = 1;
+        const L_POS: usize = 2;
+        const SCRUT_POS: usize = 3;
+        if let Head::Const(rname, _) = &h {
+            if matches!(self.env.get(rname), Some(Decl::S1c(c)) if c.role == S1cRole::Rec)
+                && spine.len() > SCRUT_POS
+            {
+                match &*spine[SCRUT_POS] {
+                    Value::Stuck(Head::Const(ptn, _), pargs) if pargs.is_empty() => {
+                        if matches!(self.env.get(ptn), Some(Decl::S1c(c)) if c.role == S1cRole::Base)
+                        {
+                            let mut v = spine[B_POS].clone();
+                            for extra in &spine[SCRUT_POS + 1..] {
+                                v = self.vapp(v, extra.clone());
+                            }
+                            return v;
+                        }
+                    }
+                    Value::Stuck(Head::PathApp(p, r), pargs) if pargs.is_empty() => {
+                        if let Value::Stuck(Head::Const(loopn, _), loopargs) = &**p {
+                            if matches!(self.env.get(loopn), Some(Decl::S1c(c)) if c.role == S1cRole::Loop)
+                                && loopargs.is_empty()
+                            {
+                                let l = spine[L_POS].clone();
+                                let mut v = self.vpapp(l, r.clone());
                                 for extra in &spine[SCRUT_POS + 1..] {
                                     v = self.vapp(v, extra.clone());
                                 }
