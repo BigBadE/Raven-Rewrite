@@ -14,7 +14,7 @@
 //! `is_def_eq` equated distinct types, ill-typed programs would slip through. The
 //! rules are the standard ones; we keep them total and structural.
 
-use crate::env::{Decl, Env, Recursor};
+use crate::env::{Decl, Destructor, Env, Recursor};
 use crate::level;
 use crate::term::Term;
 
@@ -46,6 +46,15 @@ impl<'e> Reducer<'e> {
                     }
                     // ι: a recursor meeting its constructor.
                     Some(Decl::Recursor(rec)) => match self.try_iota(rec, ls, &args) {
+                        Some(reduced) => {
+                            let (h, a) = reduced.unfold_apps();
+                            head = h;
+                            args = a;
+                        }
+                        None => break,
+                    },
+                    // ν: a destructor observing a corecursor application.
+                    Some(Decl::Destructor(dtor)) => match self.try_nu(n, dtor, ls, &args) {
                         Some(reduced) => {
                             let (h, a) = reduced.unfold_apps();
                             head = h;
@@ -116,6 +125,77 @@ impl<'e> Reducer<'e> {
         // Any arguments beyond the major premise + indices were over-application;
         // re-attach them.
         for extra in &args[major_pos + 1..] {
+            applied = Term::app(applied, extra.clone());
+        }
+        Some(applied)
+    }
+
+    /// Try one ν-reduction: destructor `dtor` (carrying universe args `ls`) applied to
+    /// `args`, whose scrutinee (the argument right after the parameters) whnf's to a
+    /// **corecursor** application. Observation forces exactly one layer:
+    ///
+    /// * a **plain** destructor `d` reduces `d params (S.corec params X steps seed)` to
+    ///   `step_d seed`;
+    /// * a **corecursive** destructor `d` (result is the coinductive again) reduces it to
+    ///   `S.corec params X steps (step_d seed)` — one layer peeled and the corecursor
+    ///   re-wrapped around the *new* seed. Because the recursive occurrence is placed back
+    ///   *under* the corecursor (i.e. under a fresh observation), corecursion is guarded
+    ///   by construction: no unfolding happens until the next observation demands it.
+    ///
+    /// Returns `None` if the destructor is not yet saturated to its scrutinee or the
+    /// scrutinee is not a corecursor application (a stuck/neutral observation).
+    fn try_nu(
+        &self,
+        dtor_name: &crate::term::Name,
+        dtor: &Destructor,
+        _ls: &[level::Level],
+        args: &[Term],
+    ) -> Option<Term> {
+        // Destructor spine: [params…, scrutinee, extra…]. The scrutinee sits right after
+        // the coinductive's parameters, whose count we read off the corecursor once we
+        // know which coinductive this is.
+        let coind = match self.env.get(&dtor.coind) {
+            Some(Decl::Coinductive(c)) => c.clone(),
+            _ => return None,
+        };
+        let scrut_pos = coind.num_params;
+        if args.len() <= scrut_pos {
+            return None; // not saturated to the scrutinee
+        }
+        let scrut = self.whnf(&args[scrut_pos]);
+        let (corec_head, corec_args) = scrut.unfold_apps();
+        let Term::Const(corec_name, _corec_ls) = &corec_head else {
+            return None;
+        };
+        let corec = match self.env.get(corec_name) {
+            Some(Decl::Corecursor(c)) if c.coind == dtor.coind => c.clone(),
+            _ => return None,
+        };
+        let _ = dtor.index;
+        let rule = corec.rules.get(dtor_name)?;
+        if corec_args.len() < corec.arity() {
+            return None; // corecursor itself not fully applied
+        }
+        // `S.corec params X steps seed` — pull out the pieces.
+        let step = &corec_args[rule.step_index];
+        let seed = &corec_args[corec.seed_pos()];
+        // The observed field is `step seed`.
+        let observed = Term::app(step.clone(), seed.clone());
+        let result = if rule.corecursive {
+            // Re-wrap: `S.corec params X steps (step seed)` — the next state under a
+            // fresh corecursor. Reuse the original corecursor spine, swapping the seed.
+            let mut rebuilt = corec_head.clone();
+            for (i, a) in corec_args.iter().enumerate().take(corec.arity()) {
+                let a = if i == corec.seed_pos() { &observed } else { a };
+                rebuilt = Term::app(rebuilt, a.clone());
+            }
+            rebuilt
+        } else {
+            observed
+        };
+        // Re-attach any over-application beyond the scrutinee.
+        let mut applied = result;
+        for extra in &args[scrut_pos + 1..] {
             applied = Term::app(applied, extra.clone());
         }
         Some(applied)
