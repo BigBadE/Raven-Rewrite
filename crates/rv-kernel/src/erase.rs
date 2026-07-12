@@ -120,7 +120,7 @@ impl<'a> Eraser<'a> {
         }
         match t {
             // ζ: erase through a `let` by substitution.
-            Term::Let(_, v, b) => self.erase(&b.instantiate(v), expected),
+            Term::Let(_, _, v, b) => self.erase(&b.instantiate(v), expected),
 
             // A λ: the binder's grade comes from the expected Π type.
             Term::Lam(dom, body) => {

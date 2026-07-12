@@ -123,7 +123,7 @@ impl<'a> Nbe<'a> {
                 self.eval(venv, d),
                 Closure { env: venv.clone(), body: b.clone() },
             )),
-            Term::Let(_, v, b) => {
+            Term::Let(_, _, v, b) => {
                 let vv = self.eval(venv, v);
                 self.eval(&venv.cons(vv), b)
             }

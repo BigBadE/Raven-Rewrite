@@ -65,21 +65,22 @@
 //! threading a per-field grade *annotation* through `declare_inductive`'s `IndSpec` is
 //! future work, tracked as a restriction rather than attempted here.
 //!
-//! ## Restriction: `let` remains ungraded (`ω`) in this pass
+//! ## `let` is graded
 //!
-//! `Term::Let(ty, value, body)` carries no grade slot in the core representation (unlike
-//! `Term::Pi`), so there is nothing for this pass to check the let-binder's usage
-//! *against* — it is treated as unrestricted, exactly as before. Adding a grade to
-//! `Let` is a core-representation change that ripples through every module matching
-//! on `Term::Let` (`term.rs`, `check.rs`, `reduce.rs`, `nbe.rs`, `unify.rs`,
-//! `erase.rs`, `coinductive.rs`, `generate.rs`) **and** the surface-syntax elaborator
-//! (`elab2.rs`, owned by a concurrent agent in this workspace) which constructs and
-//! destructures `Term::Let` in over a dozen places. Making that change here risks
-//! destabilizing concurrent work on `elab2.rs` for a representation change that
-//! deserves its own careful pass (in particular: deciding how a *desugared* surface
-//! `let` — used for intermediate elaboration bookkeeping, not just user-written lets —
-//! should default). Left as an explicit, documented restriction rather than attempted
-//! partially.
+//! `Term::Let(grade, ty, value, body)` carries a [`Grade`] on the bound variable,
+//! exactly like `Term::Pi`'s binder. [`Term::let_`] (the constructor every existing
+//! call site — hand-built terms, `elab.rs`, `elab2.rs`, `unify.rs`'s zonker, …— already
+//! used) defaults it to `Grade::Many` (unrestricted), so **every pre-existing `let` is
+//! unaffected**: this pass's `Let` rule imposes no discipline unless a `let` was built
+//! with the new [`Term::let_graded`] and a non-`ω` grade. The rule follows the standard
+//! QTT let-elimination:
+//! ```text
+//! usage(let x :ᵖ ty := value in body) = usage(body ∖ x) + p · usage(value)
+//! ```
+//! i.e. `x`'s usage inside `body` must fit `p` (exactly once for `p = 1`), and the
+//! *definiens* `value`'s own free-variable usages are scaled by `p` before being added
+//! to the total — the same scaling the `App` rule applies to an argument passed at
+//! grade `p`. `ty` remains in the erased fragment, as for every other binder's type.
 //!
 //! The analysis is deliberately a **usage skeleton**, independent of full type
 //! inference: it walks the term's structure and consults declared `Π` grades (on
@@ -296,14 +297,20 @@ impl<'e> Graded<'e> {
                 Ok(ud.add(&urest))
             }
 
-            // `let (_ : ty) := value in body`. `let` carries no grade, so the bound
-            // binder is treated as unrestricted (grade `ω`) — imposing no discipline,
-            // which keeps it backward-compatible. The value's usages add into the total.
-            Term::Let(ty, value, body) => {
+            // `let (_ :ᵖ ty) := value in body`. Standard QTT let-rule:
+            //   usage(let x :ᵖ ty := value in body) = usage(body minus x) + p · usage(value)
+            // i.e. the bound variable's usage inside `body` must fit grade `p` (exactly
+            // `1` for a linear `p`), and the *definiens*' own usages are scaled by `p`
+            // before being added in — mirroring the `App`/`Π` rule where an argument
+            // passed at grade `p` costs `p · usage(argument)`. The type is erased, as
+            // for every other binder. Default `p = Grade::Many` (via `Term::let_`)
+            // reproduces the old unrestricted, unchecked behaviour exactly.
+            Term::Let(p, ty, value, body) => {
                 let ut = self.infer(ty)?.scale(Grade::Zero);
-                let uv = self.infer(value)?;
+                let uv = self.infer(value)?.scale(*p);
                 let ub = self.under(ty, |s| s.infer(body))?;
-                let (_u0, urest) = ub.pop_binder();
+                let (u0, urest) = ub.pop_binder();
+                self.check_binder(*p, u0, "let")?;
                 Ok(ut.add(&uv).add(&urest))
             }
 
@@ -702,5 +709,198 @@ mod tests {
         let ty = Term::arrow(cn("A"), cn("A"));
         assert!(check_usage_against(k.env(), &term, &ty).is_ok());
         assert!(check_usage(k.env(), &term).is_ok());
+    }
+
+    // --- `let`-binder grades. ---------------------------------------------------------
+    //
+    // `Term::let_graded(p, ty, value, body)` grades the let-bound variable exactly like
+    // a `Π`: `usage(let x :ᵖ ty := value in body) = usage(body ∖ x) + p · usage(value)`.
+    // `Term::let_` (the default constructor every pre-existing call site uses) grades
+    // `ω`, so these tests exercise only the *new*, opt-in `let_graded` path.
+
+    /// A linear `let` whose body consumes the bound variable exactly once: accepted.
+    #[test]
+    fn linear_let_used_once_accepted() {
+        let env = Env::new();
+        // let y :¹ Type0 := Type0 in y   (using Sort as a stand-in inhabitant so this
+        // needs no axioms; only the usage skeleton is under test, not typing).
+        let t = Term::let_graded(Grade::One, Term::typ(0), Term::typ(0), Term::Var(0));
+        assert!(check_usage(&env, &t).is_ok());
+    }
+
+    /// A linear `let` whose body drops the bound variable: rejected (`LinearUnused`).
+    #[test]
+    fn linear_let_dropped_rejected() {
+        let env = Env::new();
+        let t = Term::let_graded(Grade::One, Term::typ(0), Term::typ(0), Term::typ(0));
+        assert!(matches!(check_usage(&env, &t), Err(GradeError::LinearUnused { .. })));
+    }
+
+    /// A linear `let` whose body consumes the bound variable **twice**: rejected. This
+    /// is "a linear resource consumed twice across a `let`" — the duplication happens
+    /// entirely inside the let-body, so the let's own binder-discipline check (not the
+    /// outer one) must catch it.
+    #[test]
+    fn linear_let_duplicated_in_body_rejected() {
+        let mut k = Kernel::new();
+        k.add_axiom("Res", 0, Term::typ(0)).unwrap();
+        k.add_axiom("dup", 0, Term::arrow(cn("Res"), Term::arrow(cn("Res"), cn("Res")))).unwrap();
+        // let y :¹ Res := <axiom witness> in dup y y
+        k.add_axiom("r", 0, cn("Res")).unwrap();
+        let t = Term::let_graded(
+            Grade::One,
+            cn("Res"),
+            cn("r"),
+            Term::apps(cn("dup"), [Term::Var(0), Term::Var(0)]),
+        );
+        let err = check_usage(k.env(), &t).unwrap_err();
+        assert!(matches!(err, GradeError::UsageMismatch { .. }), "got {err}");
+    }
+
+    /// A linear **outer** resource consumed twice *across* two separate `let`s (not by
+    /// repeating the variable within a single let-body): `λ (x :¹ Res). combine (let
+    /// y1 := x in y1) (let y2 := x in y2)`. Each individual `let` only uses `x` once in
+    /// its own definiens, but `x` is fed into two lets, so its total outer usage is `2`
+    /// (saturating to `ω`), which does not fit the outer binder's linear grade — must be
+    /// rejected even though no single `let`-body duplicates anything.
+    #[test]
+    fn linear_resource_consumed_twice_across_separate_lets_rejected() {
+        let mut k = Kernel::new();
+        k.add_axiom("Res", 0, Term::typ(0)).unwrap();
+        k.add_axiom(
+            "combine",
+            0,
+            Term::arrow(cn("Res"), Term::arrow(cn("Res"), cn("Res"))),
+        )
+        .unwrap();
+        let ty = Term::pi_graded(Grade::One, cn("Res"), cn("Res"));
+        let one_let = |v: Term| Term::let_graded(Grade::One, cn("Res"), v, Term::Var(0));
+        let body = Term::apps(
+            cn("combine"),
+            [one_let(Term::Var(0)), one_let(Term::Var(0))],
+        );
+        let term = Term::lam(cn("Res"), body);
+        k.add_definition("bad_double_let", 0, ty.clone(), term.clone()).unwrap();
+        let err = check_usage_against(k.env(), &term, &ty).unwrap_err();
+        assert!(matches!(err, GradeError::UsageMismatch { .. }), "got {err}");
+    }
+
+    /// The accepted counterpart: the same outer linear resource routed through a
+    /// **single** `let`, used exactly once downstream — accepted.
+    #[test]
+    fn linear_resource_through_single_let_used_once_accepted() {
+        let mut k = Kernel::new();
+        k.add_axiom("Res", 0, Term::typ(0)).unwrap();
+        let ty = Term::pi_graded(Grade::One, cn("Res"), cn("Res"));
+        // λ (x :¹ Res). let y :¹ Res := x in y
+        let term = Term::lam(
+            cn("Res"),
+            Term::let_graded(Grade::One, cn("Res"), Term::Var(0), Term::Var(0)),
+        );
+        k.add_definition("good_single_let", 0, ty.clone(), term.clone()).unwrap();
+        assert!(check_usage_against(k.env(), &term, &ty).is_ok());
+    }
+
+    /// An **erased** (`0`) `let` binding used at a relevant (computational) position in
+    /// its body is rejected; used only in erased/type position is fine.
+    #[test]
+    fn erased_let_used_relevantly_rejected() {
+        let env = Env::new();
+        let bad = Term::let_graded(Grade::Zero, Term::typ(0), Term::typ(0), Term::Var(0));
+        assert!(matches!(
+            check_usage(&env, &bad),
+            Err(GradeError::UsageMismatch { .. })
+        ));
+        // Not used at all: fine (erased bindings may be dropped).
+        let ok = Term::let_graded(Grade::Zero, Term::typ(0), Term::typ(0), Term::typ(0));
+        assert!(check_usage(&env, &ok).is_ok());
+    }
+
+    /// A linear resource duplicated **across a recursor/match branch chain**: the
+    /// dropping case of [`linear_recursor_branch_consumes_field_once`] shows a branch
+    /// that leaks its field; this is the dual — a branch that consumes its bound field
+    /// **twice**.
+    #[test]
+    fn linear_recursor_branch_duplicates_field_rejected() {
+        let mut k = Kernel::new();
+        k.add_axiom("Res", 0, Term::typ(0)).unwrap();
+        k.add_axiom("Box", 0, Term::typ(0)).unwrap();
+        k.add_axiom("mk", 0, Term::pi_graded(Grade::One, cn("Res"), cn("Box"))).unwrap();
+        k.add_axiom("dup", 0, Term::arrow(cn("Res"), Term::arrow(cn("Res"), cn("Res")))).unwrap();
+        let case_ty = Term::pi_graded(Grade::One, cn("Res"), cn("Res"));
+        let rec_ty = Term::pi_graded(
+            Grade::One,
+            case_ty,
+            Term::pi_graded(Grade::One, cn("Box"), cn("Res")),
+        );
+        k.add_axiom("rec", 0, rec_ty).unwrap();
+
+        // λ (b :¹ Box). rec (λ x. dup x x) b — the branch consumes its field twice.
+        let dup_branch =
+            Term::lam(cn("Res"), Term::apps(cn("dup"), [Term::Var(0), Term::Var(0)]));
+        let caller_ty = Term::pi_graded(Grade::One, cn("Box"), cn("Res"));
+        let caller = Term::lam(cn("Box"), Term::apps(cn("rec"), [dup_branch, Term::Var(0)]));
+        k.add_definition("caller_dup", 0, caller_ty.clone(), caller.clone()).unwrap();
+        let err = check_usage_against(k.env(), &caller, &caller_ty).unwrap_err();
+        assert!(matches!(err, GradeError::UsageMismatch { .. }), "got {err}");
+    }
+
+    /// Worked ownership-flavored example: a linear `Handle` threaded through a `let`
+    /// *and* a recursor ("match") — accepted when consumed exactly once along the path,
+    /// rejected if the branch duplicates it. Models `let h2 = h in match () { () => close
+    /// h2 }` versus a branch that calls `close` twice.
+    #[test]
+    fn linear_handle_through_let_and_match_discipline() {
+        let mut k = Kernel::new();
+        k.add_axiom("Handle", 0, Term::typ(0)).unwrap();
+        k.add_axiom("Unit", 0, Term::typ(0)).unwrap();
+        k.add_axiom("close", 0, Term::pi_graded(Grade::One, cn("Handle"), cn("Unit")))
+            .unwrap();
+        // A trivial unary "match": rec : Π (case :¹ Π (h :¹ Handle). Unit) (b :¹ Handle). Unit
+        let case_ty = Term::pi_graded(Grade::One, cn("Handle"), cn("Unit"));
+        let rec_ty = Term::pi_graded(
+            Grade::One,
+            case_ty,
+            Term::pi_graded(Grade::One, cn("Handle"), cn("Unit")),
+        );
+        k.add_axiom("rec", 0, rec_ty).unwrap();
+        let ty = Term::pi_graded(Grade::One, cn("Handle"), cn("Unit"));
+
+        // OK: let h2 :¹ Handle := h in rec (λ h3. close h3) h2 — a single consuming path.
+        let good_branch = Term::lam(cn("Handle"), Term::app(cn("close"), Term::Var(0)));
+        let good = Term::lam(
+            cn("Handle"),
+            Term::let_graded(
+                Grade::One,
+                cn("Handle"),
+                Term::Var(0),
+                Term::apps(cn("rec"), [good_branch, Term::Var(0)]),
+            ),
+        );
+        k.add_definition("handle_ok", 0, ty.clone(), good.clone()).unwrap();
+        assert!(check_usage_against(k.env(), &good, &ty).is_ok());
+
+        // Rejected: the branch closes the handle twice.
+        k.add_axiom(
+            "close2",
+            0,
+            Term::arrow(cn("Handle"), Term::arrow(cn("Handle"), cn("Unit"))),
+        )
+        .unwrap();
+        let dup_branch = Term::lam(
+            cn("Handle"),
+            Term::apps(cn("close2"), [Term::Var(0), Term::Var(0)]),
+        );
+        let bad = Term::lam(
+            cn("Handle"),
+            Term::let_graded(
+                Grade::One,
+                cn("Handle"),
+                Term::Var(0),
+                Term::apps(cn("rec"), [dup_branch, Term::Var(0)]),
+            ),
+        );
+        let err = check_usage_against(k.env(), &bad, &ty).unwrap_err();
+        assert!(matches!(err, GradeError::UsageMismatch { .. }), "got {err}");
     }
 }

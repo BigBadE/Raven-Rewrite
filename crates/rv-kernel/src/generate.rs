@@ -89,7 +89,7 @@ pub(crate) fn occurs(n: &str, t: &Term) -> bool {
         Term::Const(m, _) => &**m == n,
         Term::App(f, a) => occurs(n, f) || occurs(n, a),
         Term::Lam(d, b) | Term::Pi(_, d, b) => occurs(n, d) || occurs(n, b),
-        Term::Let(x, y, z) => occurs(n, x) || occurs(n, y) || occurs(n, z),
+        Term::Let(_, x, y, z) => occurs(n, x) || occurs(n, y) || occurs(n, z),
         Term::Sort(_) | Term::Var(_) | Term::Meta(_) => false,
     }
 }

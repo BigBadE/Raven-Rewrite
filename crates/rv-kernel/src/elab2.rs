@@ -2104,7 +2104,8 @@ fn abstract_occurrences(e: &Term, target: &Term, k: usize) -> Term {
             abstract_occurrences(d, target, k),
             abstract_occurrences(b, target, k + 1),
         ),
-        Term::Let(t, v, b) => Term::let_(
+        Term::Let(g, t, v, b) => Term::let_graded(
+            *g,
             abstract_occurrences(t, target, k),
             abstract_occurrences(v, target, k),
             abstract_occurrences(b, target, k + 1),
@@ -2216,7 +2217,8 @@ pub(crate) fn replace_with_var(t: &Term, target: &Term, k: usize) -> Term {
             Term::Pi(g, d, b) => {
                 Term::pi_graded(*g, go(d, target, k, depth), go(b, target, k, depth + 1))
             }
-            Term::Let(ty, v, b) => Term::let_(
+            Term::Let(g, ty, v, b) => Term::let_graded(
+                *g,
                 go(ty, target, k, depth),
                 go(v, target, k, depth),
                 go(b, target, k, depth + 1),
@@ -2240,7 +2242,8 @@ fn subst_db_var(t: &Term, d: usize, u: &Term) -> Term {
             Term::Pi(gr, g, b) => {
                 Term::pi_graded(*gr, go(g, d, u, depth), go(b, d, u, depth + 1))
             }
-            Term::Let(ty, v, b) => Term::let_(
+            Term::Let(gr, ty, v, b) => Term::let_graded(
+                *gr,
                 go(ty, d, u, depth),
                 go(v, d, u, depth),
                 go(b, d, u, depth + 1),
@@ -2263,7 +2266,7 @@ fn occurs_term(t: &Term, target: &Term) -> bool {
             Term::Lam(d, b) | Term::Pi(_, d, b) => {
                 go(d, target, depth) || go(b, target, depth + 1)
             }
-            Term::Let(x, y, z) => {
+            Term::Let(_, x, y, z) => {
                 go(x, target, depth) || go(y, target, depth) || go(z, target, depth + 1)
             }
         }
@@ -2279,7 +2282,7 @@ fn occurs_var(t: &Term, d: usize) -> bool {
             Term::Sort(_) | Term::Const(..) | Term::Meta(_) => false,
             Term::App(f, a) => go(f, d, depth) || go(a, d, depth),
             Term::Lam(g, b) | Term::Pi(_, g, b) => go(g, d, depth) || go(b, d, depth + 1),
-            Term::Let(x, y, z) => {
+            Term::Let(_, x, y, z) => {
                 go(x, d, depth) || go(y, d, depth) || go(z, d, depth + 1)
             }
         }
@@ -2293,7 +2296,7 @@ fn occurs_const(n: &str, t: &Term) -> bool {
         Term::Const(m, _) => &**m == n,
         Term::App(f, a) => occurs_const(n, f) || occurs_const(n, a),
         Term::Lam(d, b) | Term::Pi(_, d, b) => occurs_const(n, d) || occurs_const(n, b),
-        Term::Let(x, y, z) => occurs_const(n, x) || occurs_const(n, y) || occurs_const(n, z),
+        Term::Let(_, x, y, z) => occurs_const(n, x) || occurs_const(n, y) || occurs_const(n, z),
         Term::Sort(_) | Term::Var(_) | Term::Meta(_) => false,
     }
 }
@@ -2334,7 +2337,7 @@ fn is_closed_at(t: &Term, depth: usize) -> bool {
         Term::Sort(_) | Term::Const(..) | Term::Meta(_) => true,
         Term::App(f, a) => is_closed_at(f, depth) && is_closed_at(a, depth),
         Term::Lam(d, b) | Term::Pi(_, d, b) => is_closed_at(d, depth) && is_closed_at(b, depth + 1),
-        Term::Let(x, y, z) => {
+        Term::Let(_, x, y, z) => {
             is_closed_at(x, depth) && is_closed_at(y, depth) && is_closed_at(z, depth + 1)
         }
     }
