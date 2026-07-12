@@ -493,6 +493,116 @@ impl Term {
         }
     }
 
+    /// Parallel substitution of the innermost `images.len()` binders, **without**
+    /// shrinking the surrounding frame — a variant of [`Term::subst_ctx`] for
+    /// **reparametrization** rather than *elimination* of binders. `subst_ctx`
+    /// removes the substituted slots (so any *un*-replaced free variable above the
+    /// block shifts *down* by `images.len()`, because that many binders have gone
+    /// away). This function instead **replaces the meaning of exactly those slots**
+    /// (e.g. swapping an interval binder `i` for a differently-named/derived one
+    /// `k`, or swapping a `Π`'s bound `x`/its own interval binder `i` for two fresh
+    /// ones in a reparametrized family) while leaving every other free variable's
+    /// de Bruijn index **untouched** — the frame stays exactly as large as it was,
+    /// with the same variables sitting at the same indices above the substituted
+    /// block; only `images.len()` slots' *content* changes.
+    ///
+    /// Used exclusively by the `Π`-case `transp` Kan rule (see `crate::kan`'s module
+    /// doc and [`reduce::Reducer::whnf`]/[`nbe::Nbe::eval`]'s `Term::Transp` arms) to
+    /// build the CCHM generalized-`coe` reparametrized family
+    /// `dom[i := (r∧~k)∨(r'∧k)]` (one slot swapped for a fresh De Morgan connection
+    /// over a new interval binder `k`) and the `B i (x̄ i)` family (two slots — the
+    /// `Π`'s bound `x` and its own interval binder `i` — swapped for the outer
+    /// `transp`'s fresh binder and the backward-transported argument line). See the
+    /// call sites for the exact index bookkeeping; this is deliberately the same
+    /// recursive shape as `subst_ctx_go`; it differs in exactly one line (the `Var`,
+    /// "above the block" arm).
+    pub(crate) fn subst_ctx_keep_frame(&self, images: &[Term]) -> Term {
+        self.subst_ctx_keep_frame_go(images, 0)
+    }
+    pub(crate) fn subst_ctx_keep_frame_go(&self, images: &[Term], depth: usize) -> Term {
+        match self {
+            Term::Sort(_) | Term::Const(..) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => {
+                self.clone()
+            }
+            Term::Var(i) => {
+                if *i < depth {
+                    Term::Var(*i) // bound by one of self's own binders
+                } else if *i - depth < images.len() {
+                    images[*i - depth].lift(depth as isize, 0)
+                } else {
+                    // The one difference from `subst_ctx_go`: no shrink — this free
+                    // variable refers to the *same* outer slot it always did, since
+                    // the surrounding frame's size is unchanged by this operation.
+                    Term::Var(*i)
+                }
+            }
+            Term::App(f, a) => Term::app(
+                f.subst_ctx_keep_frame_go(images, depth),
+                a.subst_ctx_keep_frame_go(images, depth),
+            ),
+            Term::Lam(d, b) => Term::lam(
+                d.subst_ctx_keep_frame_go(images, depth),
+                b.subst_ctx_keep_frame_go(images, depth + 1),
+            ),
+            Term::Pi(g, d, b) => Term::pi_graded(
+                *g,
+                d.subst_ctx_keep_frame_go(images, depth),
+                b.subst_ctx_keep_frame_go(images, depth + 1),
+            ),
+            Term::Let(g, t, v, b) => Term::let_graded(
+                *g,
+                t.subst_ctx_keep_frame_go(images, depth),
+                v.subst_ctx_keep_frame_go(images, depth),
+                b.subst_ctx_keep_frame_go(images, depth + 1),
+            ),
+            Term::INeg(r) => Term::ineg(r.subst_ctx_keep_frame_go(images, depth)),
+            Term::IMeet(r, s) => Term::imeet(
+                r.subst_ctx_keep_frame_go(images, depth),
+                s.subst_ctx_keep_frame_go(images, depth),
+            ),
+            Term::IJoin(r, s) => Term::ijoin(
+                r.subst_ctx_keep_frame_go(images, depth),
+                s.subst_ctx_keep_frame_go(images, depth),
+            ),
+            Term::PLam(b) => Term::plam(b.subst_ctx_keep_frame_go(images, depth + 1)),
+            Term::PApp(p, r) => Term::papp(
+                p.subst_ctx_keep_frame_go(images, depth),
+                r.subst_ctx_keep_frame_go(images, depth),
+            ),
+            Term::PathP(fam, a0, a1) => Term::pathp(
+                fam.subst_ctx_keep_frame_go(images, depth + 1),
+                a0.subst_ctx_keep_frame_go(images, depth),
+                a1.subst_ctx_keep_frame_go(images, depth),
+            ),
+            Term::Sys(branches) => Term::Sys(
+                branches
+                    .iter()
+                    .map(|(p, t)| {
+                        (
+                            Rc::new(p.subst_ctx_keep_frame_go(images, depth)),
+                            Rc::new(t.subst_ctx_keep_frame_go(images, depth)),
+                        )
+                    })
+                    .collect(),
+            ),
+            Term::Partial(p, a) => Term::Partial(
+                Rc::new(p.subst_ctx_keep_frame_go(images, depth)),
+                Rc::new(a.subst_ctx_keep_frame_go(images, depth)),
+            ),
+            Term::Transp(fam, phi, a) => Term::transp(
+                fam.subst_ctx_keep_frame_go(images, depth + 1),
+                phi.subst_ctx_keep_frame_go(images, depth),
+                a.subst_ctx_keep_frame_go(images, depth),
+            ),
+            Term::HComp(ty, phi, u, u0) => Term::hcomp(
+                ty.subst_ctx_keep_frame_go(images, depth),
+                phi.subst_ctx_keep_frame_go(images, depth),
+                u.subst_ctx_keep_frame_go(images, depth + 1),
+                u0.subst_ctx_keep_frame_go(images, depth),
+            ),
+        }
+    }
+
     /// Substitute the declaration's universe parameters with `args` everywhere a
     /// `Sort`/`Const` mentions them. Used when a polymorphic `Const` is unfolded or
     /// type-checked at specific levels.
