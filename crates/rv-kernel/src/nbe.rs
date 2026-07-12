@@ -14,7 +14,7 @@
 //! be adopted as the performance path with confidence, while the proven reducer
 //! remains the reference.
 
-use crate::env::{Decl, Env, QuotRole};
+use crate::env::{Decl, Env, QuotRole, TruncRole};
 use crate::level::{self, Level};
 use crate::term::{Grade, Name, Term};
 use std::rc::Rc;
@@ -160,7 +160,12 @@ impl<'a> Nbe<'a> {
                 if let Value::Stuck(h2, spine2) = &*stuck {
                     let stuck = self.try_nu(h2.clone(), spine2.clone());
                     if let Value::Stuck(h3, spine3) = &*stuck {
-                        self.try_quot_lift(h3.clone(), spine3.clone())
+                        let stuck = self.try_quot_lift(h3.clone(), spine3.clone());
+                        if let Value::Stuck(h4, spine4) = &*stuck {
+                            self.try_trunc_lift(h4.clone(), spine4.clone())
+                        } else {
+                            stuck
+                        }
                     } else {
                         stuck
                     }
@@ -283,6 +288,37 @@ impl<'a> Nbe<'a> {
                         && margs.len() == 3
                     {
                         let a = margs[2].clone();
+                        let f = spine[F_POS].clone();
+                        let mut v = self.vapp(f, a);
+                        for extra in &spine[SCRUT_POS + 1..] {
+                            v = self.vapp(v, extra.clone());
+                        }
+                        return v;
+                    }
+                }
+            }
+        }
+        Rc::new(Value::Stuck(h, spine))
+    }
+
+    /// If `h spine` is `Trunc.lift` saturated on a `Trunc.tr` scrutinee, fire the single
+    /// truncation computation rule `Trunc.lift … f resp (Trunc.tr … a) ↦ f a`; otherwise
+    /// leave it stuck. Mirrors [`try_quot_lift`] for the fixed `Trunc.lift` constant: `f`
+    /// is at spine index 2, the scrutinee `t` at index 4, and the representative `a` is
+    /// the last argument of the `Trunc.tr` spine `[A, a]`. It never fires on the path
+    /// constructor `Trunc.eq`.
+    fn try_trunc_lift(&self, h: Head, spine: Vec<Rc<Value>>) -> Rc<Value> {
+        const F_POS: usize = 2;
+        const SCRUT_POS: usize = 4;
+        if let Head::Const(lname, _) = &h {
+            if matches!(self.env.get(lname), Some(Decl::Trunc(t)) if t.role == TruncRole::Lift)
+                && spine.len() > SCRUT_POS
+            {
+                if let Value::Stuck(Head::Const(trn, _), targs) = &*spine[SCRUT_POS] {
+                    if matches!(self.env.get(trn), Some(Decl::Trunc(t)) if t.role == TruncRole::Tr)
+                        && targs.len() == 2
+                    {
+                        let a = targs[1].clone();
                         let f = spine[F_POS].clone();
                         let mut v = self.vapp(f, a);
                         for extra in &spine[SCRUT_POS + 1..] {

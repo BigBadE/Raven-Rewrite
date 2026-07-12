@@ -229,6 +229,44 @@ pub enum QuotRole {
     Ind,
 }
 
+/// Which of the five fixed **propositional-truncation** constants a [`Trunc`]
+/// declaration is.
+///
+/// Propositional truncation `∥A∥` (`Trunc A : Prop`) is the canonical *higher inductive
+/// type* (see [`crate::trunc`]): a point constructor `tr : A → ∥A∥` together with a
+/// **path/equality constructor** collapsing `∥A∥` to a mere proposition
+/// (`eq : Π (x y : ∥A∥), x = y`). Like the quotient schema it is a fixed set of constants
+/// installed once, not a per-instance datatype. The reducer needs to recognise only
+/// `Lift` (its computation rule fires on a `Tr` scrutinee); the others are ordinary typed
+/// constants with no reduction of their own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TruncRole {
+    /// The type former `Trunc A : Prop`.
+    Type,
+    /// The point constructor `Trunc.tr A a : Trunc A`.
+    Tr,
+    /// The path constructor `Trunc.eq A x y : x = y` (all elements equal — the
+    /// *truncation* that makes `Trunc A` a mere proposition). Identifies propositionally
+    /// (through `Eq`), never definitionally.
+    Eq,
+    /// The recursor `Trunc.lift A P f resp : Trunc A → P` (drives the ι-rule
+    /// `Trunc.lift … f resp (Trunc.tr … a) ↦ f a`).
+    Lift,
+    /// The `Prop`-eliminator `Trunc.ind` (no computation rule; sound by proof
+    /// irrelevance — see [`crate::trunc`]).
+    Ind,
+}
+
+/// A member of the fixed **propositional-truncation** schema — one of the five `Trunc*`
+/// constants. Structurally identical to [`Quotient`]; kept as a distinct decl so the
+/// reducer can special-case `Trunc.lift` independently of `Quot.lift`.
+#[derive(Clone, Debug)]
+pub struct Trunc {
+    pub role: TruncRole,
+    pub num_levels: u32,
+    pub ty: Term,
+}
+
 /// A member of the fixed **quotient** schema — one of the five `Quot*` constants.
 ///
 /// Unlike inductives/coinductives there is no per-quotient elaboration: `install_quot`
@@ -254,6 +292,7 @@ pub enum Decl {
     Destructor(Rc<Destructor>),
     Corecursor(Rc<Corecursor>),
     Quot(Rc<Quotient>),
+    Trunc(Rc<Trunc>),
 }
 
 impl Decl {
@@ -268,6 +307,7 @@ impl Decl {
             Decl::Destructor(d) => &d.ty,
             Decl::Corecursor(c) => &c.ty,
             Decl::Quot(q) => &q.ty,
+            Decl::Trunc(t) => &t.ty,
         }
     }
     /// How many universe parameters this entry abstracts over.
@@ -281,6 +321,7 @@ impl Decl {
             Decl::Destructor(d) => d.num_levels,
             Decl::Corecursor(c) => c.num_levels,
             Decl::Quot(q) => q.num_levels,
+            Decl::Trunc(t) => t.num_levels,
         }
     }
 }
