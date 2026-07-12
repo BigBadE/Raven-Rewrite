@@ -154,7 +154,13 @@ impl<'a> Nbe<'a> {
             Value::Stuck(h, spine) => {
                 let mut spine = spine.clone();
                 spine.push(a);
-                self.try_iota(h.clone(), spine)
+                // A recursor may fire (ι); otherwise a destructor may fire (ν).
+                let stuck = self.try_iota(h.clone(), spine);
+                if let Value::Stuck(h2, spine2) = &*stuck {
+                    self.try_nu(h2.clone(), spine2.clone())
+                } else {
+                    stuck
+                }
             }
             // Applying a Sort/Pi is ill-typed; only reachable on ill-typed input.
             _ => f,
@@ -200,6 +206,51 @@ impl<'a> Nbe<'a> {
                                     v = self.vapp(v, arg.clone());
                                 }
                                 return v;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Rc::new(Value::Stuck(h, spine))
+    }
+
+    /// If `h spine` is a **destructor** observing a saturated **corecursor** application,
+    /// fire its ν-rule (one observation forces one layer); otherwise leave it stuck. This
+    /// is the exact dual of [`try_iota`]: the scrutinee is at position `num_params` of the
+    /// destructor spine, and must be a stuck corecursor of the matching coinductive.
+    fn try_nu(&self, h: Head, spine: Vec<Rc<Value>>) -> Rc<Value> {
+        if let Head::Const(dname, _) = &h {
+            if let Some(Decl::Destructor(dtor)) = self.env.get(dname) {
+                if let Some(Decl::Coinductive(coind)) = self.env.get(&dtor.coind) {
+                    let scrut_pos = coind.num_params;
+                    if spine.len() > scrut_pos {
+                        if let Value::Stuck(Head::Const(cname, cls), cargs) = &*spine[scrut_pos] {
+                            if let Some(Decl::Corecursor(corec)) = self.env.get(cname) {
+                                if corec.coind == dtor.coind && cargs.len() >= corec.arity() {
+                                    if let Some(rule) = corec.rules.get(dname) {
+                                        let step = cargs[rule.step_index].clone();
+                                        let seed = cargs[corec.seed_pos()].clone();
+                                        // observed field = step seed
+                                        let observed = self.vapp(step, seed);
+                                        let mut v = if rule.corecursive {
+                                            // Re-wrap the corecursor around the new seed.
+                                            let mut new_args = cargs[..corec.arity()].to_vec();
+                                            new_args[corec.seed_pos()] = observed;
+                                            Rc::new(Value::Stuck(
+                                                Head::Const(cname.clone(), cls.clone()),
+                                                new_args,
+                                            ))
+                                        } else {
+                                            observed
+                                        };
+                                        // re-attach over-application beyond the scrutinee
+                                        for extra in &spine[scrut_pos + 1..] {
+                                            v = self.vapp(v, extra.clone());
+                                        }
+                                        return v;
+                                    }
+                                }
                             }
                         }
                     }

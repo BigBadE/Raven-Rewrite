@@ -94,6 +94,15 @@ impl Kernel {
         crate::mutual::declare_mutual(&mut self.env, specs)
     }
 
+    /// Declare a **coinductive** ("codata") family: a greatest fixpoint given by its
+    /// destructors, with a generated corecursor (see [`crate::coinductive`]).
+    pub fn declare_coinductive(
+        &mut self,
+        spec: crate::coinductive::CoindSpec,
+    ) -> Result<(), String> {
+        crate::coinductive::declare_coinductive(&mut self.env, spec)
+    }
+
     /// Infer the type of a closed term against the current environment.
     pub fn infer(&self, t: &Term) -> Result<Term, String> {
         reject_meta(t)?;

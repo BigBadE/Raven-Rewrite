@@ -105,6 +105,107 @@ pub struct Constructor {
     pub num_fields: usize,
 }
 
+/// A **coinductive** ("codata") type former — a *greatest* fixpoint.
+///
+/// Where an [`Inductive`] is presented by its **constructors** (introduction rules)
+/// and eliminated by a **recursor**, a coinductive is presented by its
+/// **destructors** ([`Destructor`], observation/projection rules) and *introduced*
+/// by a **corecursor** ([`Corecursor`], the `unfold`/coiteration primitive). The two
+/// are exact categorical duals: an inductive is the initial algebra of its
+/// constructor-signature functor, a coinductive is the *final coalgebra* of its
+/// destructor-signature functor.
+///
+/// The kernel supports the **non-indexed** coinductive case with **uniform
+/// parameters** (e.g. `Stream A`, `Colist A`). Each destructor observes one field of
+/// the unfolded state; a destructor whose result type is the coinductive itself
+/// (e.g. `Stream.tail : Stream A → Stream A`) is a *corecursive* observation.
+#[derive(Clone, Debug)]
+pub struct Coinductive {
+    pub num_levels: u32,
+    /// The type former's type: `Π params. Sort _` (no indices in the supported form).
+    pub ty: Term,
+    /// Number of uniform parameters.
+    pub num_params: usize,
+    /// Names of the destructors, in declaration order.
+    pub dtors: Vec<Name>,
+    /// Name of the corecursor generated for this coinductive.
+    pub corecursor: Name,
+}
+
+/// A **destructor** (observation) of a coinductive: `d : Π params. S params → R`.
+///
+/// `R` (the *result* type, under the params and the scrutinee binder) is either an
+/// ordinary type (a plain observation, like `Stream.head : Stream A → A`) or the
+/// coinductive itself applied to the parameters (a *corecursive* observation, like
+/// `Stream.tail : Stream A → Stream A`). Applying a destructor to a corecursor
+/// application is the ν-redex that drives coinductive computation.
+#[derive(Clone, Debug)]
+pub struct Destructor {
+    pub num_levels: u32,
+    /// The destructor's type: `Π params. S params → R`.
+    pub ty: Term,
+    /// The coinductive it observes.
+    pub coind: Name,
+    /// This destructor's position among its coinductive's destructors (its tag).
+    pub index: usize,
+    /// Whether this observation returns the coinductive itself (a corecursive step).
+    pub corecursive: bool,
+}
+
+/// The **corecursor** (`S.corec`/`unfold`) of a coinductive — its sole introduction
+/// rule and the dual of a [`Recursor`].
+///
+/// Its type is
+///
+/// ```text
+///   S.corec.{levels v} : Π params.
+///       Π (X : Sort v).                                  -- the coalgebra carrier / state
+///       Π (step_d : Π (x:X). R_d[X for S]) …             -- one step per destructor d
+///       Π (seed : X). S params
+/// ```
+///
+/// where for a plain destructor `R_d` is its result type and for a corecursive
+/// destructor `R_d` is `X` (the *next* state). A single ν-rule per destructor drives
+/// reduction: observing the seed unfolds exactly one layer (see [`crate::reduce`]).
+#[derive(Clone, Debug)]
+pub struct Corecursor {
+    pub num_levels: u32,
+    pub ty: Term,
+    /// The coinductive it introduces.
+    pub coind: Name,
+    pub num_params: usize,
+    /// Number of destructors (= number of `step` arguments).
+    pub num_dtors: usize,
+    /// Per-destructor ν-reduction data, keyed by destructor name.
+    pub rules: HashMap<Name, CorecRule>,
+}
+
+impl Corecursor {
+    /// Position of the carrier `X` argument in `S.corec`'s spine (right after params).
+    pub fn carrier_pos(&self) -> usize {
+        self.num_params
+    }
+    /// Position of the `seed` argument: `params + carrier + steps`.
+    pub fn seed_pos(&self) -> usize {
+        self.num_params + 1 + self.num_dtors
+    }
+    /// Total number of arguments `S.corec` takes.
+    pub fn arity(&self) -> usize {
+        self.seed_pos() + 1
+    }
+}
+
+/// One ν-reduction rule: how observing destructor `dtor` of a corecursor application
+/// computes.
+#[derive(Clone, Debug)]
+pub struct CorecRule {
+    pub dtor: Name,
+    /// The step argument's position among `S.corec`'s arguments.
+    pub step_index: usize,
+    /// Whether this destructor is corecursive (its result is the coinductive again).
+    pub corecursive: bool,
+}
+
 /// A single environment entry.
 #[derive(Clone, Debug)]
 pub enum Decl {
@@ -113,6 +214,9 @@ pub enum Decl {
     Inductive(Rc<Inductive>),
     Constructor(Rc<Constructor>),
     Recursor(Rc<Recursor>),
+    Coinductive(Rc<Coinductive>),
+    Destructor(Rc<Destructor>),
+    Corecursor(Rc<Corecursor>),
 }
 
 impl Decl {
@@ -123,6 +227,9 @@ impl Decl {
             Decl::Inductive(i) => &i.ty,
             Decl::Constructor(c) => &c.ty,
             Decl::Recursor(r) => &r.ty,
+            Decl::Coinductive(c) => &c.ty,
+            Decl::Destructor(d) => &d.ty,
+            Decl::Corecursor(c) => &c.ty,
         }
     }
     /// How many universe parameters this entry abstracts over.
@@ -132,6 +239,9 @@ impl Decl {
             Decl::Inductive(i) => i.num_levels,
             Decl::Constructor(c) => c.num_levels,
             Decl::Recursor(r) => r.num_levels,
+            Decl::Coinductive(c) => c.num_levels,
+            Decl::Destructor(d) => d.num_levels,
+            Decl::Corecursor(c) => c.num_levels,
         }
     }
 }
