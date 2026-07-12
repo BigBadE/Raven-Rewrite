@@ -298,6 +298,44 @@ pub struct Trunc {
     pub ty: Term,
 }
 
+/// Which of the five fixed **circle** constants a [`Circle`] declaration is.
+///
+/// The circle `S¹` (see [`crate::circle`]) is a **non-truncated** 1-HIT: a point
+/// constructor `base : S¹` together with a genuine self-loop **path** constructor
+/// `loop : Eq S¹ base base`. Unlike [`Trunc`] (whose `eq` identifies *every* pair of
+/// points, collapsing the type to a mere proposition and living in `Prop`), `S¹` lives in
+/// `Type` and only ONE specific path is postulated — the defining example of a
+/// non-truncated HIT. The reducer needs to recognise only `Rec` (its computation rule
+/// fires on a `Base` scrutinee); the others are ordinary typed constants with no
+/// reduction of their own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CircleRole {
+    /// The type former `S¹ : Type 0`.
+    Type,
+    /// The point constructor `S¹.base : S¹`.
+    Base,
+    /// The path constructor `S¹.loop : Eq S¹ S¹.base S¹.base` (a self-loop). Holds only
+    /// propositionally (through `Eq`), never definitionally.
+    Loop,
+    /// The non-dependent recursor `S¹.rec P pt lp : S¹ → P` (drives the ι-rule
+    /// `S¹.rec P pt lp S¹.base ↦ pt`; `lp : Eq P pt pt` is the respectfulness premise for
+    /// the `loop` path constructor, discarded at reduction time).
+    Rec,
+    /// The `Prop`-eliminator `S¹.ind` (no computation rule; sound by proof irrelevance —
+    /// see [`crate::circle`]).
+    Ind,
+}
+
+/// A member of the fixed **circle** schema — one of the five `S¹.*` constants.
+/// Structurally identical to [`Trunc`]; kept as a distinct decl so the reducer can
+/// special-case `S¹.rec` independently of `Trunc.lift`/`Quot.lift`.
+#[derive(Clone, Debug)]
+pub struct Circle {
+    pub role: CircleRole,
+    pub num_levels: u32,
+    pub ty: Term,
+}
+
 /// A member of the fixed **quotient** schema — one of the five `Quot*` constants.
 ///
 /// Unlike inductives/coinductives there is no per-quotient elaboration: `install_quot`
@@ -324,6 +362,7 @@ pub enum Decl {
     Corecursor(Rc<Corecursor>),
     Quot(Rc<Quotient>),
     Trunc(Rc<Trunc>),
+    Circle(Rc<Circle>),
 }
 
 impl Decl {
@@ -339,6 +378,7 @@ impl Decl {
             Decl::Corecursor(c) => &c.ty,
             Decl::Quot(q) => &q.ty,
             Decl::Trunc(t) => &t.ty,
+            Decl::Circle(c) => &c.ty,
         }
     }
     /// How many universe parameters this entry abstracts over.
@@ -353,6 +393,7 @@ impl Decl {
             Decl::Corecursor(c) => c.num_levels,
             Decl::Quot(q) => q.num_levels,
             Decl::Trunc(t) => t.num_levels,
+            Decl::Circle(c) => c.num_levels,
         }
     }
 }

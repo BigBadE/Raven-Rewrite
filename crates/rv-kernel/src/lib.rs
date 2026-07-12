@@ -29,6 +29,7 @@
 //! large-elimination restriction on `Prop`-valued inductives.
 
 pub mod check;
+pub mod circle;
 pub mod coinductive;
 pub mod effect;
 pub mod elab;

@@ -14,7 +14,7 @@
 //! be adopted as the performance path with confidence, while the proven reducer
 //! remains the reference.
 
-use crate::env::{Decl, Env, QuotRole, TruncRole};
+use crate::env::{CircleRole, Decl, Env, QuotRole, TruncRole};
 use crate::level::{self, Level};
 use crate::term::{Grade, Name, Term};
 use std::rc::Rc;
@@ -162,7 +162,12 @@ impl<'a> Nbe<'a> {
                     if let Value::Stuck(h3, spine3) = &*stuck {
                         let stuck = self.try_quot_lift(h3.clone(), spine3.clone());
                         if let Value::Stuck(h4, spine4) = &*stuck {
-                            self.try_trunc_lift(h4.clone(), spine4.clone())
+                            let stuck = self.try_trunc_lift(h4.clone(), spine4.clone());
+                            if let Value::Stuck(h5, spine5) = &*stuck {
+                                self.try_circle_rec(h5.clone(), spine5.clone())
+                            } else {
+                                stuck
+                            }
                         } else {
                             stuck
                         }
@@ -352,6 +357,35 @@ impl<'a> Nbe<'a> {
                         let a = targs[1].clone();
                         let f = spine[F_POS].clone();
                         let mut v = self.vapp(f, a);
+                        for extra in &spine[SCRUT_POS + 1..] {
+                            v = self.vapp(v, extra.clone());
+                        }
+                        return v;
+                    }
+                }
+            }
+        }
+        Rc::new(Value::Stuck(h, spine))
+    }
+
+    /// If `h spine` is `S¹.rec` saturated on an `S¹.base` scrutinee, fire the single
+    /// circle computation rule `S¹.rec P pt lp S¹.base ↦ pt`; otherwise leave it stuck.
+    /// Mirrors [`Self::try_trunc_lift`] for the fixed `S¹.rec` constant: `pt` is at spine
+    /// index 1, the scrutinee `t` at index 3, and `S¹.base` is nullary (empty spine). It
+    /// never fires on the path constructor `S¹.loop`.
+    fn try_circle_rec(&self, h: Head, spine: Vec<Rc<Value>>) -> Rc<Value> {
+        const PT_POS: usize = 1;
+        const SCRUT_POS: usize = 3;
+        if let Head::Const(rname, _) = &h {
+            if matches!(self.env.get(rname), Some(Decl::Circle(c)) if c.role == CircleRole::Rec)
+                && spine.len() > SCRUT_POS
+            {
+                if let Value::Stuck(Head::Const(basen, _), bargs) = &*spine[SCRUT_POS] {
+                    if matches!(self.env.get(basen), Some(Decl::Circle(c)) if c.role == CircleRole::Base)
+                        && bargs.is_empty()
+                    {
+                        let pt = spine[PT_POS].clone();
+                        let mut v = pt;
                         for extra in &spine[SCRUT_POS + 1..] {
                             v = self.vapp(v, extra.clone());
                         }
