@@ -615,11 +615,15 @@ pub fn eq_to_path(level: Level, a_ty: &Term, a: &Term, b: &Term, h: &Term) -> Te
 //   expressions — see [`interval_eq`]) rather than needing a fresh eta rule. See
 //   `j_typechecks_on_refl`/`j_typechecks_on_a_composite_path` below, which exercise
 //   this on concrete, non-axiomatized paths and confirm the full stated type
-//   checks. (A fully *opaque*/axiomatized `p` would additionally need a genuine,
-//   unconditional Path-η law, which Phase 1 does not add — consistent with this
-//   module's running "derived term, no new rule" discipline; see
-//   `j_on_an_opaque_path_needs_eta_and_is_documented_as_such` below for the
-//   honestly-reported boundary of what typechecks today.)
+//   checks. A fully *opaque*/axiomatized `p` additionally needs a genuine,
+//   unconditional Path-η law — `check::Checker::compare`/`nbe::alpha_eta_eq` now
+//   carry exactly that (the interval-binder analogue of the pre-existing `Lam`-η
+//   rule: `q ≡ ⟨j⟩ q @ j` for *any* `q : PathP`, literal `PLam` or neutral), so
+//   `⟨j⟩ p @ (i1 ∧ j)` is recognized as equal to `p` itself even when `p` is
+//   opaque. See `j_typechecks_on_an_opaque_axiomatized_path`/
+//   `trans_typechecks_on_opaque_axiomatized_paths` below, which exercise this on
+//   genuinely axiomatized (non-`PLam`) paths and confirm the full stated type
+//   checks even without any concrete path structure to reduce against.
 //
 // This needs **no new checking or reduction rule**: `J` is nothing but
 // [`Term::transp`] (already proven sound in `crate::kan`) applied to a family built
@@ -1669,6 +1673,56 @@ mod j_tests {
         let ty = k.infer(&term).unwrap();
         let expected = Term::path(cn("A"), a, c);
         assert!(k.def_eq(&ty, &expected));
+    }
+
+    // ---- (3.5) Payoff of path-η (`check.rs`/`nbe.rs`): `J` now type-checks on an
+    // ---- **opaque** (axiomatized, non-`PLam`) path, not just literal `PLam`-built
+    // ---- ones like `refl`/`ap` above. ----
+
+    /// `J` on a genuinely opaque path `q : Path A a b` (an *axiom*, not built from
+    /// `refl`/`ap`/any `Term::plam`). Before path-η this was exactly the
+    /// documented gap in the module doc above ("A fully *opaque*/axiomatized `p`
+    /// would additionally need a genuine, unconditional Path-η law, which Phase 1
+    /// does not add"): the family's `i1` boundary `⟨j⟩ q @ (i1 ∧ j)` reduces (via
+    /// `i1 ∧ j ⇝ j`, De Morgan) to `⟨j⟩ q @ j`, which needs to be recognized as
+    /// equal to the neutral `q` itself — impossible by pure structural comparison
+    /// when `q` has no `PLam` shape to reduce against. `check::Checker::compare`'s
+    /// new `(Term::PLam(_), _)`/`(_, Term::PLam(_))` arms are exactly the missing
+    /// piece: `⟨j⟩ q @ j` is a literal `PLam`, so it now compares against the
+    /// neutral `q` via path-η, unconditionally. This confirms the payoff: `J`
+    /// type-checks at its fully general stated type `C b q` for an opaque `q`.
+    #[test]
+    fn j_typechecks_on_an_opaque_axiomatized_path() {
+        let mut k = base_env();
+        k.add_axiom("q", 0, Term::path(cn("A"), cn("a"), cn("b"))).unwrap();
+        let a = cn("a");
+        let q = cn("q"); // opaque: an axiom, not a literal PLam-built path
+        let c = identity_motive(&a);
+        let d = refl(&a); // : C a (refl a)
+        let term = j(&c, &d, &q);
+        let ty = k.infer(&term).unwrap();
+        let b = cn("b");
+        let expected = Term::apps(c.clone(), [b, q.clone()]);
+        assert!(k.def_eq(&ty, &expected), "J on an opaque path must now check at C b q");
+        k.check(&term, &expected).unwrap();
+    }
+
+    /// Same payoff, exercised through the `trans` demo: `trans` now type-checks
+    /// on two fully opaque axiomatized paths (previously only literal/`PLam`-built
+    /// ones like `j_typechecks_on_a_composite_path` were guaranteed to work at the
+    /// general signature without path-η).
+    #[test]
+    fn trans_typechecks_on_opaque_axiomatized_paths() {
+        let mut k = base_env();
+        k.add_axiom("q1", 0, Term::path(cn("A"), cn("a"), cn("b"))).unwrap();
+        k.add_axiom("q2", 0, Term::path(cn("A"), cn("b"), cn("c"))).unwrap();
+        let a = cn("a");
+        let c = cn("c");
+        let term = trans(&a, &c, &cn("q1"), &cn("q2"));
+        let ty = k.infer(&term).unwrap();
+        let expected = Term::path(cn("A"), a, c);
+        assert!(k.def_eq(&ty, &expected));
+        k.check(&term, &expected).unwrap();
     }
 
     // ---- (4) Adversarial: `J` cannot manufacture `C x p` (or `False`) from nothing ----

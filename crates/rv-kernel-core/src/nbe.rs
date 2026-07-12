@@ -903,6 +903,13 @@ fn alpha_eta_eq(a: &Term, b: &Term) -> bool {
         (_, Term::Lam(_, body)) => alpha_eta_eq(&Term::app(a.lift(1, 0), Term::Var(0)), body),
         (Term::I, Term::I) | (Term::IZero, Term::IZero) | (Term::IOne, Term::IOne) => true,
         (Term::PLam(b1), Term::PLam(b2)) => alpha_eta_eq(b1, b2),
+        // Path-η: `⟨i⟩ p @ i ≡ p`, the interval-binder analogue of the `Lam`-η
+        // arms directly above — see `check::Checker::compare`'s matching arm for
+        // the full soundness/termination argument (kept in lockstep here, as this
+        // function's other cubical arms already are per the comment atop this
+        // function). Purely syntactic and unconditional, exactly like `Lam`-η.
+        (Term::PLam(body), _) => alpha_eta_eq(body, &Term::papp(b.lift(1, 0), Term::Var(0))),
+        (_, Term::PLam(body)) => alpha_eta_eq(&Term::papp(a.lift(1, 0), Term::Var(0)), body),
         (Term::PApp(p1, r1), Term::PApp(p2, r2)) => alpha_eta_eq(p1, p2) && alpha_eta_eq(r1, r2),
         (Term::PathP(f1, a01, a11), Term::PathP(f2, a02, a12)) => {
             alpha_eta_eq(f1, f2) && alpha_eta_eq(a01, a02) && alpha_eta_eq(a11, a12)
@@ -1037,5 +1044,76 @@ mod tests {
         let f = Term::app(Term::cnst(name("add"), vec![]), lit(1));
         let eta = Term::lam(Term::cnst(name("Nat"), vec![]), Term::app(f.lift(1, 0), Term::Var(0)));
         assert!(nbe.conv(&eta, &f));
+    }
+
+    /// `A : Type 0`, `a b c : A`, `p : Path A a b`, `q : Path A b c` — a minimal
+    /// environment with an **opaque** (axiomatized, non-`PLam`) path `p`, used to
+    /// exercise path-η on a neutral path.
+    fn path_kernel() -> crate::kernel::Kernel {
+        let mut k = crate::kernel::Kernel::new();
+        let cn = |s: &str| Term::cnst(name(s), vec![]);
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("a", 0, cn("A")).unwrap();
+        k.add_axiom("b", 0, cn("A")).unwrap();
+        k.add_axiom("c", 0, cn("A")).unwrap();
+        k.add_axiom("p", 0, Term::path(cn("A"), cn("a"), cn("b"))).unwrap();
+        k.add_axiom("q", 0, Term::path(cn("A"), cn("b"), cn("c"))).unwrap();
+        k
+    }
+
+    /// Path-η: `p ≡ ⟨i⟩ p @ i` for an opaque (axiomatized, non-`PLam`) path `p`.
+    /// This is the direct payoff test for `alpha_eta_eq`'s new `PLam` arms —
+    /// before this change, a neutral `p` had no `PLam` shape to reduce against, so
+    /// only literal `PLam`-built paths were ever recognized as equal to their own
+    /// η-expansion.
+    #[test]
+    fn path_eta_equality_on_an_opaque_path() {
+        let k = path_kernel();
+        let nbe = Nbe::new(k.env());
+        let p = Term::cnst(name("p"), vec![]);
+        let eta = Term::plam(Term::papp(p.lift(1, 0), Term::Var(0)));
+        assert!(nbe.conv(&eta, &p), "opaque path must be conv-equal to its own η-expansion");
+        // And the authoritative checker's `is_def_eq` agrees (differential check,
+        // same discipline as `conv_agrees_with_kernel` above).
+        let chk = Checker::new(k.env());
+        assert!(chk.def_eq(&eta, &p));
+    }
+
+    /// Adversarial: path-η must NOT equate two genuinely distinct opaque paths
+    /// with *different* endpoints (`p : Path A a b` vs `q : Path A b c`, so even
+    /// their types differ) — path-η only ever equates a path with its own
+    /// η-expansion, never two unrelated paths. If this were broken, path-η would
+    /// be too strong (equating things that aren't propositionally equal, let
+    /// alone definitionally) rather than just the standard η law.
+    #[test]
+    fn path_eta_does_not_equate_unrelated_opaque_paths() {
+        let k = path_kernel();
+        let nbe = Nbe::new(k.env());
+        let chk = Checker::new(k.env());
+        let p = Term::cnst(name("p"), vec![]);
+        let q = Term::cnst(name("q"), vec![]);
+        assert!(!nbe.conv(&p, &q), "distinct opaque paths with different endpoints must stay unequal");
+        assert!(!chk.def_eq(&p, &q));
+        // Nor does it collapse the *endpoints* of distinct paths — `a` and `c` are
+        // unrelated closed axioms (no path between them was ever assumed) and must
+        // stay distinct even after adding path-η.
+        assert!(!chk.def_eq(&Term::cnst(name("a"), vec![]), &Term::cnst(name("c"), vec![])));
+    }
+
+    /// Termination: path-η is a single, bounded η-expansion step exactly like
+    /// `Lam`-η (see `check::Checker::compare`'s doc comment on its matching arm
+    /// for the full argument) — it does not loop even when compared against a
+    /// deliberately deep chain of `PApp`/`PLam` wrappers around an opaque path.
+    /// This just needs to terminate (and agree) rather than diverge or stack
+    /// overflow.
+    #[test]
+    fn path_eta_terminates_on_nested_wrappers() {
+        let k = path_kernel();
+        let nbe = Nbe::new(k.env());
+        let p = Term::cnst(name("p"), vec![]);
+        // ⟨i⟩ (⟨j⟩ p @ j) @ i  — a doubly η-expanded wrapper around the opaque `p`.
+        let once = Term::plam(Term::papp(p.lift(1, 0), Term::Var(0)));
+        let twice = Term::plam(Term::papp(once.lift(1, 0), Term::Var(0)));
+        assert!(nbe.conv(&twice, &p), "doubly-wrapped opaque path must still converge to conv-equal");
     }
 }
