@@ -47,6 +47,7 @@ pub mod quotient;
 pub mod reduce;
 pub mod surface;
 pub mod term;
+pub mod trunc;
 pub mod unify;
 pub mod verify;
 

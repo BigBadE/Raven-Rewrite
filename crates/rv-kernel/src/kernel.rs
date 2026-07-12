@@ -110,6 +110,13 @@ impl Kernel {
         crate::quotient::install_quot(&mut self.env)
     }
 
+    /// Install the fixed **propositional-truncation** higher-inductive schema (`Trunc`,
+    /// `Trunc.tr`, `Trunc.eq`, `Trunc.lift`, `Trunc.ind`). Requires the `Eq` inductive to
+    /// already be present. See [`crate::trunc`] for the types and the soundness argument.
+    pub fn install_trunc(&mut self) -> Result<(), String> {
+        crate::trunc::install_trunc(&mut self.env)
+    }
+
     /// Infer the type of a closed term against the current environment.
     pub fn infer(&self, t: &Term) -> Result<Term, String> {
         reject_meta(t)?;

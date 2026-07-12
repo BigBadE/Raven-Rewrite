@@ -14,7 +14,7 @@
 //! `is_def_eq` equated distinct types, ill-typed programs would slip through. The
 //! rules are the standard ones; we keep them total and structural.
 
-use crate::env::{Decl, Destructor, Env, QuotRole, Recursor};
+use crate::env::{Decl, Destructor, Env, QuotRole, Recursor, TruncRole};
 use crate::level;
 use crate::term::Term;
 
@@ -65,6 +65,17 @@ impl<'e> Reducer<'e> {
                     // Quotient computation: `Quot.lift … f resp (Quot.mk … a) ↦ f a`.
                     Some(Decl::Quot(q)) if q.role == QuotRole::Lift => {
                         match self.try_quot_lift(&args) {
+                            Some(reduced) => {
+                                let (h, a) = reduced.unfold_apps();
+                                head = h;
+                                args = a;
+                            }
+                            None => break,
+                        }
+                    }
+                    // Truncation computation: `Trunc.lift … f resp (Trunc.tr … a) ↦ f a`.
+                    Some(Decl::Trunc(t)) if t.role == TruncRole::Lift => {
+                        match self.try_trunc_lift(&args) {
                             Some(reduced) => {
                                 let (h, a) = reduced.unfold_apps();
                                 head = h;
@@ -245,6 +256,49 @@ impl<'e> Reducer<'e> {
             return None;
         }
         let a = &mk_args[2];
+        let f = &args[F_POS];
+        let mut applied = Term::app(f.clone(), a.clone());
+        // Re-attach any over-application beyond the scrutinee.
+        for extra in &args[SCRUT_POS + 1..] {
+            applied = Term::app(applied, extra.clone());
+        }
+        Some(applied)
+    }
+
+    /// Try the single **propositional-truncation** computation rule (the point-constructor
+    /// ι-rule for the fixed `Trunc.lift` constant):
+    ///
+    /// ```text
+    ///   Trunc.lift.{u v} A P f resp (Trunc.tr.{u} A a)  ↦  f a
+    /// ```
+    ///
+    /// `Trunc.lift`'s spine is `[A, P, f, resp, t, extra…]`; the scrutinee `t` is at index
+    /// 4 and `f` at index 2. We fire only when `t` weak-head-reduces to a literal
+    /// `Trunc.tr` application (spine `[A, a]`, so `a` is its last argument), discarding
+    /// `resp` — its only role is to have been *type-checked to exist*, guaranteeing `f`
+    /// respects the truncation. It NEVER fires on the path constructor `Trunc.eq` (that is
+    /// not a `Trunc.tr` head). Returns `None` (stuck/neutral) when not saturated to the
+    /// scrutinee or the scrutinee is not a `Trunc.tr`.
+    fn try_trunc_lift(&self, args: &[Term]) -> Option<Term> {
+        const F_POS: usize = 2;
+        const SCRUT_POS: usize = 4;
+        if args.len() <= SCRUT_POS {
+            return None; // not yet applied to the truncation value
+        }
+        let scrut = self.whnf(&args[SCRUT_POS]);
+        let (tr_head, tr_args) = scrut.unfold_apps();
+        let Term::Const(tr_name, _) = &tr_head else {
+            return None;
+        };
+        match self.env.get(tr_name) {
+            Some(Decl::Trunc(t)) if t.role == TruncRole::Tr => {}
+            _ => return None,
+        }
+        // `Trunc.tr A a` — the representative `a` is the last (2nd) argument.
+        if tr_args.len() != 2 {
+            return None;
+        }
+        let a = &tr_args[1];
         let f = &args[F_POS];
         let mut applied = Term::app(f.clone(), a.clone());
         // Re-attach any over-application beyond the scrutinee.
