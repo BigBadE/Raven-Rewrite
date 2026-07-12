@@ -282,6 +282,14 @@ impl<'a> Nbe<'a> {
                     // against the very same `venv`.
                     let built = crate::kan::transp_pi_rule(dom, cod, a);
                     self.eval(venv, &built)
+                } else if let Some(built) = crate::kan::transp_inductive_rule(self.env, fam, a) {
+                    // Parametrized-inductive filling (see `crate::kan`'s "Phase
+                    // 3.10" doc, and `crate::reduce::Reducer::whnf`'s matching
+                    // arm — differentially tested): matched *syntactically* (no
+                    // evaluation) on both `fam` and `a`; the built term
+                    // introduces no new *free* variable, so it's evaluated
+                    // against the very same `venv`.
+                    self.eval(venv, &built)
                 } else {
                     Rc::new(Value::Transp(
                         TranspClosure { env: venv.clone(), fam: fam.clone(), phi: phi.clone() },

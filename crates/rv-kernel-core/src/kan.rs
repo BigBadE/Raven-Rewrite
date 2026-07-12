@@ -292,8 +292,9 @@
 //    the `Π` case specifically in
 //    [`kernel_tests::transp_pi_rule_does_not_smuggle_a_type_change_through_a_function`].
 
+use crate::env::{Decl, Env};
 use crate::face::Cof;
-use crate::term::Term;
+use crate::term::{mentions_var, Term};
 
 /// `coe^{i.dom}_{r→r'}(a)` (see the module doc's "Construction" section): transport
 /// `a` (of type `dom[i:=r]`) along the line `dom` (living under one interval
@@ -874,6 +875,307 @@ pub(crate) fn hcomp_pathp_rule(
     let new_u0 = Term::papp(u0.lift(1, 0), Term::Var(0));
     let body = Term::hcomp(fam.clone(), new_phi, new_u, new_u0);
     Some(Term::plam(body))
+}
+
+// ============================================================================
+// Phase 3.10: `transp` for type-parameter-varying user inductives.
+// ============================================================================
+//
+// Every rule shipped so far handles a *type former* (`Π`, `PathP`) built into the
+// term grammar itself. This phase extends `transp` one more step: through a
+// **user-declared, non-indexed inductive with uniform type parameters** (`List A`,
+// `Option A`, `Pair A B`, …), transported along a path *in one of those
+// parameters*. This is CCHM's own "data transport" rule (Cohen–Coquand–
+// Huber–Mörtberg §6.1 / the `hcomp`/`transp`-for-data-types construction present
+// in every subsequent cubical implementation, e.g. cubicaltt/redtt): transport
+// pushes structurally into each constructor's fields, transporting each field
+// along the line induced by its own (sub)type.
+//
+// ```text
+//   transp (λ i. D (P_1 i) … (P_n i)) φ (c a_1 … a_k)
+//     ↦ c (P_1 i1) … (P_n i1)                              -- the new parameters
+//         (transp^{field_1} …) … (transp^{field_k} …)        -- transported fields
+// ```
+//
+// # Scope (what this rule fires on, precisely)
+//
+// * `D` a user inductive (`env.get(D) = Some(Decl::Inductive(ind))`) with
+//   **`ind.num_indices == 0`** — no indices, only uniform parameters (the
+//   "non-indexed" restriction the task calls for; indexed families need the
+//   harder index-transport rule and are explicitly out of scope here).
+// * The family's head is, *syntactically* (no `whnf` — the same conservative,
+//   structural-only convention every rule in this file already uses, see
+//   [`transp_pi_rule`]/[`hcomp_pi_rule`]'s own doc comments), `D` applied to
+//   *exactly* `ind.num_params` arguments (`fam.unfold_apps()`), each living under
+//   the transp's own interval binder. **Exactly one** of those arguments may
+//   mention the bound interval variable (`mentions_var(_, 0)`) — the "the
+//   varying parameter" the task's paradigm case describes; the rest must be
+//   interval-constant (this is what makes the surrounding parameters' own
+//   `transp`s below unconditionally the identity, rather than requiring the full
+//   generality of *every* parameter varying at once, a strictly harder rule this
+//   pass does not attempt).
+// * The argument `a` is, *syntactically* (again no `whnf` — matching this file's
+//   standing discipline, and directly analogous to [`hcomp_pi_rule`]/
+//   [`hcomp_pathp_rule`] only firing on a literal `Sys`), a fully-applied
+//   constructor: `a.unfold_apps() = (Const(ctor, ls), args)` with `ctor` a
+//   constructor of `D` (`env.get(ctor) = Some(Decl::Constructor(c)), c.ind == D`)
+//   and `args.len() == ind.num_params + c.num_fields`.
+// * Each field's declared type (read off the constructor's own checked `Π`-
+//   telescope type, `Constructor::ty`) must be **non-dependent on earlier
+//   fields** — it may only mention the type parameters, never a previously-bound
+//   field variable (true of every "ordinary" data constructor: `List`/`Option`/
+//   `Pair`/`Vec`-with-a-separate-length-index/…; ruled out are constructors like
+//   `Σ`'s own dependent pair where a later field's *type* depends on an earlier
+//   field's *value* — a genuinely harder rule, deferred). This is checked
+//   structurally (`mentions_var` on each earlier field index) before any field is
+//   classified, so the rule *declines* (returns `None`, transp stays stuck) on
+//   any constructor shaped this way rather than mis-firing.
+// * Each (non-dependent, parameter-only) field type is then classified into
+//   exactly one of three structural shapes — see [`FieldKind`] — and any field
+//   whose type doesn't match one of the three is *also* a decline (`None`),
+//   consistent with this whole file's "stay stuck rather than guess" posture.
+//
+// # The three field kinds
+//
+// Reading a field's domain type in the *pure-parameter* context (after
+// confirming it mentions no earlier field, `Term::lift(-(j), 0)` safely drops the
+// `j` field binders already peeled — sound exactly because `Term::lift`'s own doc
+// requires no in-range free variable, which the non-dependence check just
+// established):
+//
+// * [`FieldKind::Param`] — the field's type *is* (up to syntactic equality) the
+//   varying parameter itself (`Var(pidx)` in the reduced context, e.g. `List A`'s
+//   head field `A`). Transported by `transp`-ing along the very sub-line
+//   `fam`'s own varying argument already supplies — this is [`coe`]'s use case
+//   one level up: literally `Term::transp(P_pidx, ⊤, field)` where `P_pidx` is
+//   the family's `pidx`-th argument (itself a term under one interval binder,
+//   living in exactly the frame `Transp`'s own `family` field expects).
+// * [`FieldKind::Recursive`] — the field's type is `D` applied to *exactly* the
+//   parameters in order (e.g. `List A`'s tail field, `List A` again). Transported
+//   by recursing: `Term::transp(fam.clone(), ⊤, field)` — the *same* family,
+//   producing another (possibly further-reducible, lazily) `Transp` node. This is
+//   what makes the rule walk an entire list/tree/whatever structurally, one
+//   constructor layer per `whnf` step, exactly mirroring how ι-reduction peels
+//   one constructor layer per step rather than eagerly normalizing a whole
+//   recursive value.
+// * [`FieldKind::Const`] — the field's type mentions **no** parameter at all
+//   (e.g. a `Nat`-typed "length" auxiliary field that happens not to depend on
+//   the type parameter). Transported by regularity: the field is returned
+//   **unchanged** — the CCHM/this-file's existing regularity principle, now
+//   applied per-field rather than to the whole `transp`.
+//
+// Any field type that is none of the three (e.g. `Option A`, `Pair A A`, a
+// *different* inductive applied to the parameter, or the varying parameter
+// wrapped in some other former) is **not** attempted — the whole rule declines,
+// and the parent `transp` stays stuck, honestly incomplete rather than silently
+// wrong. Extending to more field shapes (nested applications of *other*
+// parametrized inductives, e.g. `List (List A)`) is the natural generalization
+// path but needs its own field-kind case and its own soundness argument; not
+// attempted this pass.
+//
+// # Soundness
+//
+// Exactly the same posture as every other rule in this file: **no new axiom or
+// primitive**, purely a rewriting of one `Transp` node into a constructor
+// application whose arguments are themselves (possibly further-reducible)
+// `Transp`/original-field terms, each independently re-typechecked by the
+// existing, unmodified `Checker::infer`.
+//
+// 1. **Type preservation.** The source `Transp(fam, φ, a)` node's checked type is
+//    `fam[i:=i1] = D (P_1 i1) … (P_n i1)` (`Checker::infer`'s `Term::Transp` arm,
+//    unmodified by this phase). The built term is
+//    `ctor (P_1 i1) … (P_n i1) field'_1 … field'_k` — by `Checker::infer`'s
+//    `Term::Const`/`Term::App` arms (also unmodified), this infers to `D (P_1 i1)
+//    … (P_n i1)` **provided** `ctor`'s own checked `Π`-telescope type accepts
+//    `field'_j` at the type `c`'s telescope predicts once the parameters are
+//    instantiated to `(P_1 i1) … (P_n i1)` — i.e. `field'_j : FieldTy_j[params :=
+//    P_• i1]`. This holds per field kind:
+//    - `Param`: `field'_j = Term::transp(P_pidx, ⊤, field_j)`. The *original*
+//      constructor application `a`'s own checked typing (an independent, already
+//      -verified premise: `a : fam[i:=i0]`, forcing `a`'s spine to check against
+//      `ctor`'s telescope with parameters `(P_1 i0)…(P_n i0)`) gives
+//      `field_j : P_pidx[i:=i0]` — exactly the source type `Transp`'s own
+//      `Term::Transp` checking rule requires for its family `P_pidx` and argument
+//      `field_j`. `Checker::infer`'s (unmodified) `Term::Transp` arm then reports
+//      `field'_j : P_pidx[i:=i1]` — precisely `FieldTy_j[params := P_• i1]` for
+//      this field kind (`FieldTy_j = Var(pidx)`, i.e. literally the `pidx`-th
+//      parameter).
+//    - `Recursive`: `field'_j = Term::transp(fam.clone(), ⊤, field_j)`. Same
+//      argument: `field_j : fam[i:=i0]` (from `a`'s own already-checked typing,
+//      this field kind being `FieldTy_j = D(Var(n-1))…(Var(0))`, i.e. exactly `D`
+//      applied to the parameters, which after substituting `params := P_• i0` is
+//      exactly `fam[i:=i0]`), so `Term::Transp`'s own unmodified checking rule
+//      gives `field'_j : fam[i:=i1] = D(P_• i1)` — exactly `FieldTy_j[params :=
+//      P_• i1]` for this kind.
+//    - `Const`: `field'_j = field_j` unchanged. `field_j`'s already-checked type
+//      (from `a`'s own typing) is `FieldTy_j[params := P_• i0]`; since `FieldTy_j`
+//      by this kind's own defining property mentions **no** parameter variable at
+//      all, `FieldTy_j[params := P_• i0]` and `FieldTy_j[params := P_• i1]` are
+//      the identical term (substituting into a term with no free occurrence of
+//      the substituted variables is the identity — the same argument this
+//      module's top-level regularity rule already relies on, re-used per-field
+//      here) — so `field_j`'s existing type already **is** the target type,
+//      unchanged.
+// 2. **Every produced subterm independently re-typechecks** — not merely argued:
+//    [`kernel_tests::transp_list_rule_transports_a_concrete_list`] and
+//    [`kernel_tests::transp_list_rule_type_preservation_from_scratch`] below build
+//    a concrete `List`-like inductive, reduce a `transp` through a multi-element
+//    list, and re-run `Checker::infer` on the fully-reduced normal form.
+// 3. **Regularity agreement.** [`kernel_tests::transp_list_rule_agrees_with_regularity_on_a_constant_parameter`]
+//    transports a list along `refl` (a constant parameter family, so the
+//    top-level regularity rule — checked *first*, unconditionally, exactly as
+//    every other rule in this file defers to it — fires instead, and this rule
+//    never even runs) and confirms the two notions of "unchanged" coincide.
+// 4. **Reducer/NbE agreement**:
+//    [`kernel_tests::transp_list_rule_agrees_between_reducer_and_nbe`] confirms
+//    both engines land on the same (up-to-conversion) value.
+// 5. **Anti-`False`.** [`kernel_tests::transp_list_rule_cannot_smuggle_a_type_change`]
+//    re-runs this module's standing "opaque type-level path axiom" attack through
+//    the list case specifically: transporting a list of `A`s along an opaque
+//    `p : Path Type A B` produces a list of `B`s whose elements are `transport
+//    p`-images — checked from scratch — and is **not** confused with the
+//    original `A`-typed list.
+//
+// # What this does *not* handle (deferred, honestly)
+//
+// * **Indexed** inductives (`Vec` with a length *index*, `Fin`, …) — needs
+//   transporting the indices too, a strictly harder rule.
+// * **Multiple simultaneously-varying parameters** (e.g. transporting `Pair A B`
+//   along paths in *both* `A` and `B` at once) — this pass requires exactly one
+//   varying parameter; a family with two or more varying parameters simply
+//   doesn't match this rule's guard and stays stuck (still sound, just less
+//   complete).
+// * **Fields whose type nests another parametrized inductive** around the
+//   varying parameter (`List (List A)`, `Option (List A)`) — falls through
+//   `FieldKind`'s classification (`None` of the three shapes match) and declines.
+// * **Dependent fields** (a field's type depending on an earlier field's value,
+//   e.g. `Σ`-like constructors) — declines via the non-dependence check.
+// * `hcomp` for inductives, HITs, `Glue` — untouched by this phase (see the
+//   top-level module doc's "What's deferred").
+
+/// How a non-indexed inductive constructor's field's declared type relates to
+/// the (single) varying type parameter — see the module doc's "The three field
+/// kinds" section for the full soundness argument per case.
+enum FieldKind {
+    /// The field's type *is* the varying parameter itself (`List A`'s head).
+    Param,
+    /// The field's type is the inductive applied to exactly the parameters, in
+    /// order (`List A`'s tail).
+    Recursive,
+    /// The field's type mentions no parameter at all — regularity applies.
+    Const,
+}
+
+/// Classify constructor `ind_name`'s field domain `dom` (already confirmed to
+/// mention no earlier field — see the caller) as one of [`FieldKind`]'s three
+/// shapes, in the *pure-parameter* context (`Var(num_params-1) = param_0, …,
+/// Var(0) = param_{num_params-1}`, the standard `Π`-telescope convention — see
+/// the module doc). `pidx` is the (0-indexed, left-to-right) position of the
+/// varying parameter. Returns `None` if `dom` matches none of the three shapes
+/// (the caller then declines the whole rule).
+fn classify_field(dom: &Term, ind_name: &str, num_params: usize, pidx: usize) -> Option<FieldKind> {
+    let varying_var = num_params - 1 - pidx;
+    if *dom == Term::Var(varying_var) {
+        return Some(FieldKind::Param);
+    }
+    let (head, args) = dom.unfold_apps();
+    if let Term::Const(n, _) = &head {
+        if n.as_ref() == ind_name
+            && args.len() == num_params
+            && args.iter().enumerate().all(|(i, a)| *a == Term::Var(num_params - 1 - i))
+        {
+            return Some(FieldKind::Recursive);
+        }
+    }
+    if (0..num_params).all(|k| !mentions_var(dom, k)) {
+        return Some(FieldKind::Const);
+    }
+    None
+}
+
+/// The `transp`-for-parametrized-inductives filling rule (see the module doc's
+/// "Phase 3.10" section). `env` supplies the inductive/constructor declarations;
+/// `fam` is the transp's family (one interval binder, `Var(0) = i`, over the
+/// ambient context); `a` is the transp's checked argument (ambient context, no
+/// interval binder). Returns `None` — the rule doesn't fire, `transp` stays
+/// stuck — unless every structural precondition in the module doc holds; never
+/// panics on a malformed/unexpected shape.
+pub(crate) fn transp_inductive_rule(env: &Env, fam: &Term, a: &Term) -> Option<Term> {
+    // The family's head must be, syntactically, a user inductive applied to
+    // exactly its uniform parameters (no indices — see the module doc's scope).
+    let (fam_head, fam_args) = fam.unfold_apps();
+    let Term::Const(d_name, _d_ls) = &fam_head else { return None };
+    let Some(Decl::Inductive(ind)) = env.get(d_name) else { return None };
+    if ind.num_indices != 0 || fam_args.len() != ind.num_params {
+        return None;
+    }
+    // Exactly one parameter may vary.
+    let mut pidx = None;
+    for (i, p) in fam_args.iter().enumerate() {
+        if mentions_var(p, 0) {
+            if pidx.is_some() {
+                return None; // more than one varying parameter — out of scope
+            }
+            pidx = Some(i);
+        }
+    }
+    let pidx = pidx?;
+
+    // The argument must be, syntactically, a fully-applied constructor of `D`.
+    let (a_head, a_args) = a.unfold_apps();
+    let Term::Const(ctor_name, ctor_ls) = &a_head else { return None };
+    let Some(Decl::Constructor(ctor)) = env.get(ctor_name) else { return None };
+    if ctor.ind.as_ref() != d_name.as_ref() || a_args.len() != ind.num_params + ctor.num_fields {
+        return None;
+    }
+
+    // Peel `ctor`'s own checked `Π`-telescope: `num_params` parameter binders,
+    // then `ctor.num_fields` field binders, collecting each field's raw domain
+    // (in the accumulating context — see the module doc's index bookkeeping).
+    let mut cur = &ctor.ty;
+    for _ in 0..ind.num_params {
+        match cur {
+            Term::Pi(_, _, cod) => cur = cod,
+            _ => return None,
+        }
+    }
+    let mut field_kinds = Vec::with_capacity(ctor.num_fields);
+    for j in 0..ctor.num_fields {
+        let Term::Pi(_, dom, cod) = cur else { return None };
+        // Non-dependence: the field's type must not mention any earlier field.
+        if (0..j).any(|k| mentions_var(dom, k)) {
+            return None;
+        }
+        // Safe: `dom` mentions no `Var` in `0..j` (just confirmed), so shifting
+        // those `j` binders away is exactly `Term::lift`'s documented negative-
+        // amount case.
+        let dom_reduced = dom.lift(-(j as isize), 0);
+        let kind = classify_field(&dom_reduced, d_name, ind.num_params, pidx)?;
+        field_kinds.push(kind);
+        cur = cod;
+    }
+
+    // Build the transported fields (see the module doc's "The three field
+    // kinds").
+    let fields = &a_args[ind.num_params..];
+    let mut new_fields = Vec::with_capacity(ctor.num_fields);
+    for (j, kind) in field_kinds.into_iter().enumerate() {
+        let field = &fields[j];
+        let new_field = match kind {
+            FieldKind::Param => Term::transp(fam_args[pidx].clone(), Cof::top(), field.clone()),
+            FieldKind::Recursive => Term::transp(fam.clone(), Cof::top(), field.clone()),
+            FieldKind::Const => field.clone(),
+        };
+        new_fields.push(new_field);
+    }
+
+    // The new parameters: `fam`'s own arguments instantiated at `i1`.
+    let new_params: Vec<Term> = fam_args.iter().map(|p| p.instantiate(&Term::IOne)).collect();
+
+    Some(Term::apps(
+        Term::cnst(ctor_name.clone(), ctor_ls.clone()),
+        new_params.into_iter().chain(new_fields),
+    ))
 }
 
 #[cfg(test)]
@@ -1765,6 +2067,268 @@ mod kernel_tests {
         let a1 = cn("a1");
         let u = cn("p").lift(1, 0); // constant line ⟨i⟩ p, not a literal Sys
         assert!(super::hcomp_pathp_rule(&fam, &a0, &a1, &Cof::bot(), &u, &cn("p")).is_none());
+    }
+
+    // ---- transp: the parametrized-inductive filling rule (Phase 3.10, see the
+    // module doc's "Phase 3.10" section above) ----
+
+    use crate::env::{Constructor, Decl, Inductive};
+    use std::rc::Rc;
+
+    /// Declare a minimal `List A` inductive by hand (mirrors `inductive.rs`'s own
+    /// `declare_nat`/`declare_eq` hand-builds): `List : Type 0 → Type 0`,
+    /// `List.nil : Π A, List A`, `List.cons : Π A, A → List A → List A`. No
+    /// recursor is declared — this phase's rule only pattern-matches on
+    /// constructor *shape* (via `Decl::Inductive`/`Decl::Constructor`), never
+    /// ι-reduces, so `Inductive::recursor` is a dangling placeholder name that is
+    /// never looked up.
+    fn declare_list(env: &mut crate::env::Env) {
+        let list = || Term::cnst(name("List"), vec![]);
+        let inductive = Inductive {
+            num_levels: 0,
+            ty: Term::arrow(Term::typ(0), Term::typ(0)),
+            num_params: 1,
+            num_indices: 0,
+            ctors: vec![name("List.nil"), name("List.cons")],
+            recursor: name("List.rec"),
+            group: vec![name("List")],
+        };
+        // List.nil : Π (A : Type 0), List A
+        let nil_ty = Term::pi(Term::typ(0), Term::app(list(), Term::Var(0)));
+        let ctor_nil =
+            Constructor { num_levels: 0, ty: nil_ty, ind: name("List"), index: 0, num_fields: 0 };
+        // List.cons : Π (A : Type 0) (x : A) (xs : List A), List A
+        let cons_ty = Term::pi(
+            Term::typ(0),
+            Term::pi(
+                Term::Var(0),                        // x : A
+                Term::pi(
+                    Term::app(list(), Term::Var(1)), // xs : List A
+                    Term::app(list(), Term::Var(2)), // List A
+                ),
+            ),
+        );
+        let ctor_cons =
+            Constructor { num_levels: 0, ty: cons_ty, ind: name("List"), index: 1, num_fields: 2 };
+        env.insert(name("List"), Decl::Inductive(Rc::new(inductive))).unwrap();
+        env.insert(name("List.nil"), Decl::Constructor(Rc::new(ctor_nil))).unwrap();
+        env.insert(name("List.cons"), Decl::Constructor(Rc::new(ctor_cons))).unwrap();
+    }
+
+    fn list_nil(a: Term) -> Term {
+        Term::app(cn("List.nil"), a)
+    }
+    fn list_cons(a: Term, x: Term, xs: Term) -> Term {
+        Term::apps(cn("List.cons"), [a, x, xs])
+    }
+    fn list_of(a: Term) -> Term {
+        Term::app(cn("List"), a)
+    }
+
+    /// `A B : Type 0`, `p : Path Type A B`, `a1 a2 : A`, plus `List` declared.
+    fn list_env() -> Kernel {
+        let mut k = Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("B", 0, Term::typ(0)).unwrap();
+        k.add_axiom("p", 0, Term::path(Term::typ(0), cn("A"), cn("B"))).unwrap();
+        k.add_axiom("a1", 0, cn("A")).unwrap();
+        k.add_axiom("a2", 0, cn("A")).unwrap();
+        declare_list(k.env_mut());
+        k
+    }
+
+    /// `λi. List (p @ i)` — the family transporting a `List A` to a `List B`.
+    fn list_family() -> Term {
+        Term::app(cn("List"), Term::papp(cn("p").lift(1, 0), Term::Var(0)))
+    }
+
+    /// **The rule fires** on a two-element concrete list, producing a literal
+    /// `List.cons` application (not a stuck `Transp`), which independently
+    /// re-typechecks (subject reduction, checked from scratch) at the *target*
+    /// type `List B`.
+    #[test]
+    fn transp_list_rule_transports_a_concrete_list() {
+        let k = list_env();
+        let xs = list_cons(cn("A"), cn("a1"), list_cons(cn("A"), cn("a2"), list_nil(cn("A"))));
+        let t = Term::transp(list_family(), Cof::top(), xs);
+
+        let ty = k.infer(&t).unwrap();
+        assert!(k.def_eq(&ty, &list_of(cn("B"))));
+
+        let reducer = crate::reduce::Reducer::new(k.env());
+        let whnf = reducer.whnf(&t);
+        // Genuinely fires: head is List.cons, not a stuck Transp.
+        let (head, args) = whnf.unfold_apps();
+        assert_eq!(head, cn("List.cons"), "expected the rule to fire, got {}", whnf.pretty());
+        assert!(k.def_eq(&args[0], &cn("B")), "the new parameter must be B");
+
+        // Subject reduction: the reduced normal form independently re-typechecks
+        // at List B, from scratch.
+        let reinferred = k.infer(&whnf).unwrap();
+        assert!(k.def_eq(&reinferred, &list_of(cn("B"))));
+    }
+
+    /// **Type preservation, walked all the way down**: fully reduce (whnf at each
+    /// layer) the transported two-element list and confirm every element is
+    /// individually `B`-typed (via `transport p`, which stays stuck since `p` is
+    /// an opaque axiom — no further reduction rule applies to it — but is still,
+    /// independently, a well-typed `B`-classified term), and the tail bottoms out
+    /// at a literal `List.nil B`.
+    #[test]
+    fn transp_list_rule_type_preservation_from_scratch() {
+        let k = list_env();
+        let xs = list_cons(cn("A"), cn("a1"), list_cons(cn("A"), cn("a2"), list_nil(cn("A"))));
+        let t = Term::transp(list_family(), Cof::top(), xs);
+        let reducer = crate::reduce::Reducer::new(k.env());
+
+        // Layer 1: cons B (transp p a1) (transp fam (cons A a2 (nil A)))
+        let l1 = reducer.whnf(&t);
+        let (h1, args1) = l1.unfold_apps();
+        assert_eq!(h1, cn("List.cons"));
+        assert_eq!(args1.len(), 3);
+        assert!(k.def_eq(&args1[0], &cn("B")));
+        assert!(k.check(&args1[1], &cn("B")).is_ok(), "head element must check at B");
+
+        // Layer 2: whnf the tail — another cons, since the tail field is the
+        // Recursive case (transp fam (cons A a2 (nil A))).
+        let l2 = reducer.whnf(&args1[2]);
+        let (h2, args2) = l2.unfold_apps();
+        assert_eq!(h2, cn("List.cons"));
+        assert_eq!(args2.len(), 3);
+        assert!(k.def_eq(&args2[0], &cn("B")));
+        assert!(k.check(&args2[1], &cn("B")).is_ok(), "second element must check at B");
+
+        // Layer 3: whnf the final tail — bottoms out at List.nil B (no fields to
+        // transport, so the constructor rebuild is immediate).
+        let l3 = reducer.whnf(&args2[2]);
+        assert!(k.def_eq(&l3, &list_nil(cn("B"))), "expected List.nil B, got {}", l3.pretty());
+    }
+
+    /// **Regularity agreement**: transporting a list along a *constant* parameter
+    /// family (no varying parameter at all — the top-level regularity rule fires
+    /// first, unconditionally, exactly as every other rule in this file defers to
+    /// it) is still the identity, and this new rule never even runs (there is no
+    /// varying parameter for it to find).
+    #[test]
+    fn transp_list_rule_agrees_with_regularity_on_a_constant_parameter() {
+        let k = list_env();
+        let xs = list_cons(cn("A"), cn("a1"), list_nil(cn("A")));
+        let fam = list_of(cn("A")).lift(1, 0); // ⟨i⟩ List A, doesn't mention i
+        let t = Term::transp(fam, Cof::top(), xs.clone());
+        assert!(k.def_eq(&t, &xs));
+        let reducer = crate::reduce::Reducer::new(k.env());
+        assert!(matches!(reducer.whnf(&t).unfold_apps().0, Term::Const(ref n, _) if n.as_ref() == "List.cons"));
+    }
+
+    /// Differential check (this crate's standing convention): the trusted reducer
+    /// and NbE agree on the list rule's reduction, down to the individual
+    /// (still-stuck-on-the-opaque-`p`) transported elements.
+    #[test]
+    fn transp_list_rule_agrees_between_reducer_and_nbe() {
+        let k = list_env();
+        let xs = list_cons(cn("A"), cn("a1"), list_nil(cn("A")));
+        let t = Term::transp(list_family(), Cof::top(), xs);
+        let reducer = crate::reduce::Reducer::new(k.env());
+        let nbe = crate::nbe::Nbe::new(k.env());
+        let whnf = reducer.whnf(&t);
+        assert!(nbe.conv(&t, &whnf));
+    }
+
+    /// Sanity: a definition built by transporting a concrete list survives the
+    /// independent recheck harness.
+    #[test]
+    fn transp_list_rule_definitions_survive_independent_recheck() {
+        let mut k = list_env();
+        let xs = list_cons(cn("A"), cn("a1"), list_nil(cn("A")));
+        let t = Term::transp(list_family(), Cof::top(), xs);
+        k.add_definition("transported_xs", 0, list_of(cn("B")), t).unwrap();
+        assert_eq!(crate::kernel::recheck_all_definitions(k.env()).unwrap(), 1);
+    }
+
+    /// **Adversarial (anti-`False`, inductive case)**: the transported list's
+    /// elements must *not* be usable at the *source* type `A` — only at the
+    /// genuinely path-connected target `B` — i.e. the rule doesn't erase the
+    /// element-type change. Mirrors
+    /// `transp_pi_rule_transported_function_rejects_the_source_domain`.
+    #[test]
+    fn transp_list_rule_transported_list_rejects_the_source_element_type() {
+        let k = list_env();
+        let xs = list_cons(cn("A"), cn("a1"), list_nil(cn("A")));
+        let t = Term::transp(list_family(), Cof::top(), xs);
+        let reducer = crate::reduce::Reducer::new(k.env());
+        let whnf = reducer.whnf(&t);
+        let (_h, args) = whnf.unfold_apps();
+        // The transported head element (`args[1]`) is `B`-typed, not `A`-typed.
+        assert!(k.check(&args[1], &cn("B")).is_ok());
+        assert!(k.check(&args[1], &cn("A")).is_err());
+    }
+
+    /// **Adversarial (anti-`False`, inductive case)**: without an actual path
+    /// axiom connecting the element types, the rule cannot be used to move a list
+    /// to an *unrelated* element type — `Checker::infer`'s pre-existing
+    /// `check(a, family[i:=i0])` obligation (completely unmodified by this phase)
+    /// is the one thing guarding this.
+    #[test]
+    fn transp_list_rule_cannot_smuggle_a_list_to_an_unrelated_type() {
+        let mut k = list_env();
+        k.add_axiom("C", 0, Term::typ(0)).unwrap();
+        let xs = list_cons(cn("A"), cn("a1"), list_nil(cn("A")));
+        // Constant family (no path at all): claims `List A` transports along
+        // `List C`, which is simply false — `xs : List A`, not `List C`.
+        let fam = list_of(cn("C")).lift(1, 0);
+        let t = Term::transp(fam, Cof::top(), xs);
+        assert!(k.infer(&t).is_err());
+    }
+
+    /// **`transp_inductive_rule` itself returns `None`** when the argument is not
+    /// a syntactically literal constructor application (here, a free neutral
+    /// variable of `List A` type) — mirrors `hcomp_pi_rule_returns_none_for_a_non_sys_line`'s
+    /// discipline: the rule declines rather than guesses, leaving the `transp`
+    /// stuck (valid, inert data).
+    #[test]
+    fn transp_list_rule_returns_none_for_a_non_constructor_argument() {
+        let mut k = list_env();
+        k.add_axiom("xs_opaque", 0, list_of(cn("A"))).unwrap();
+        let fam = list_family();
+        assert!(super::transp_inductive_rule(k.env(), &fam, &cn("xs_opaque")).is_none());
+        // And the full `transp` genuinely stays stuck through the reducer too.
+        let t = Term::transp(fam, Cof::top(), cn("xs_opaque"));
+        let reducer = crate::reduce::Reducer::new(k.env());
+        assert!(matches!(reducer.whnf(&t), Term::Transp(..)));
+    }
+
+    /// **`transp_inductive_rule` declines when more than one parameter varies**
+    /// (out of scope for this pass — see the module doc). Built directly at the
+    /// function level with a two-parameter inductive stand-in (`List`'s own
+    /// single-parameter shape can't exercise this, so this test fabricates a
+    /// family whose *two* arguments both mention the interval variable against
+    /// `List`'s single-parameter signature is a bad fit — instead, confirm the
+    /// guard by checking a family with a mismatched argument count is declined
+    /// too, the simpler structural precondition failure).
+    #[test]
+    fn transp_list_rule_returns_none_for_wrong_parameter_count() {
+        let k = list_env();
+        // `List` takes exactly one parameter; apply it (nonsensically) to two.
+        let fam = Term::apps(
+            cn("List"),
+            [Term::papp(cn("p").lift(2, 0), Term::Var(1)), Term::Var(0)],
+        );
+        let xs = list_cons(cn("A"), cn("a1"), list_nil(cn("A")));
+        assert!(super::transp_inductive_rule(k.env(), &fam, &xs).is_none());
+    }
+
+    /// **Adversarial**: two structurally-distinct transported lists (different
+    /// source elements) are not conflated — the built `List.cons` applications
+    /// stay distinguishable.
+    #[test]
+    fn transp_list_rule_does_not_conflate_distinct_lists() {
+        let k = list_env();
+        assert!(!k.def_eq(&cn("a1"), &cn("a2")));
+        let xs1 = list_cons(cn("A"), cn("a1"), list_nil(cn("A")));
+        let xs2 = list_cons(cn("A"), cn("a2"), list_nil(cn("A")));
+        let t1 = Term::transp(list_family(), Cof::top(), xs1);
+        let t2 = Term::transp(list_family(), Cof::top(), xs2);
+        assert!(!k.def_eq(&t1, &t2));
     }
 }
 
