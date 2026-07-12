@@ -207,6 +207,16 @@ impl<'e> Reducer<'e> {
                             Some(built) => head = built,
                             None => break,
                         }
+                    } else if let Term::PathP(fam, a0, a1) = ty.as_ref() {
+                        // `PathP`-case filling (see `crate::kan`'s "Phase 3.9" doc):
+                        // matched *syntactically* on the raw type (no `whnf`),
+                        // mirroring the `Π` case's own structural-only convention;
+                        // only fires when `u` is itself a literal `Sys` (see
+                        // `crate::kan::hcomp_pathp_rule`'s doc for why).
+                        match crate::kan::hcomp_pathp_rule(fam, a0, a1, phi, u, u0) {
+                            Some(built) => head = built,
+                            None => break,
+                        }
                     } else {
                         break;
                     }

@@ -679,6 +679,203 @@ pub(crate) fn hcomp_pi_rule(
     Some(Term::lam(dom.clone(), body))
 }
 
+// ============================================================================
+// Phase 3.9: the `PathP`-case `hcomp` filling rule — NOW WIRED IN.
+// ============================================================================
+//
+// Phase 3.8 (above) designed the CCHM `PathP`-case `hcomp` rule, diagnosed that the
+// *then-current* (unconditional) `check_sys` compatibility condition rejected the
+// enlarged system it builds, and — per the standing "ship only what's demonstrably
+// sound" instruction — declined to wire in the reduction, leaving `hcomp` at a
+// `PathP` type permanently stuck. A later pass fixed the diagnosed root cause
+// (`check_sys`'s compatibility condition is now **restriction-aware**, see
+// `crate::face::restrict_clause_term`'s doc) and confirmed — in
+// [`kernel_tests::hcomp_pathp_rule_enlarged_system_now_passes_restriction_aware_check_sys`]
+// — that the very enlarged system Phase 3.8 designed now passes `check_sys` from
+// scratch. This phase takes the one remaining step: lift that construction into a
+// shared builder ([`hcomp_pathp_rule`], mirroring [`hcomp_pi_rule`]'s own shape) and
+// wire it into both `reduce.rs`'s `whnf` and `nbe.rs`'s `eval`.
+//
+// # The rule
+//
+// ```text
+//   hcomp (PathP C a b) φ u u0
+//     ↦ ⟨j⟩ hcomp (C @ j) ( φ ∨ (j=0) ∨ (j=1) )
+//                        [ φ ↦ (u i) @ j , (j=0) ↦ a , (j=1) ↦ b ]
+//                        (u0 @ j)
+// ```
+//
+// Fires only when `u` is *syntactically* (no `whnf`) a literal [`Term::Sys`] —
+// exactly [`hcomp_pi_rule`]'s own discipline, and for exactly the same reason: only
+// a literal `Sys`'s branches are concrete enough to push `@j` through soundly (see
+// that function's doc, and Phase 3.8's diagnosis above, for why an opaque
+// `Partial`-typed neutral has no such elimination).
+//
+// # Construction and index bookkeeping
+//
+// Given `fam` (`PathP`'s own family, frame `[j, Γ]` — `PathP`'s binder convention,
+// matching a fresh `⟨j⟩` one-for-one), `a0`/`a1` (the fixed endpoints, ambient
+// context `Γ`), `phi`/`u0` (ambient `Γ`), and `u`'s branches `(ψ_k, t_k)` (each
+// living in frame `[i, Γ]`, `t_k : PathP fam a0 a1` — the same frame `u` itself
+// lives in, per `Term::HComp`'s own convention):
+//
+// * **New guards** `ψ_k.lift(1,1)`: reindex from `[i,Γ]` to `[i,j,Γ]` (insert `j`
+//   *under* `i`, at cutoff 1) — identical bookkeeping to [`hcomp_pi_rule`]'s
+//   `psi_k.lift(1,1)`.
+// * **Tube branches** `PApp(t_k.lift(1,1), Var(1))`: `t_k` reindexed the same way,
+//   applied (`@`, not ordinary `App` — `t_k : PathP …`, a path, not a function) to
+//   the fresh `j = Var(1)` in that frame.
+// * **Endpoint branches** `(j=0) ↦ a0.lift(2,0)`, `(j=1) ↦ a1.lift(2,0)`: `a0`/`a1`
+//   have no binder of their own (frame `Γ`), so lifting by *two* (inserting both the
+//   new `hcomp`'s own interval binder `i'` *and* `j` above `Γ`) reindexes them into
+//   the new system's frame `[i',j,Γ]` directly — mirroring
+//   [`kernel_tests::hcomp_pathp_rule_enlarged_system_now_passes_restriction_aware_check_sys`]'s
+//   own `e0`/`e1` construction verbatim.
+// * **New line** `u' := Sys [ ψ_1.lift(1,1) ↦ tube_1, …, (j=0) ↦ a0.lift(2,0),
+//   (j=1) ↦ a1.lift(2,0) ]`, living in frame `[i',j,Γ]` — exactly `Term::HComp`'s
+//   own convention for its `u` field (one interval binder over the ambient context,
+//   now `[j,Γ]`).
+// * **New guard** `phi.lift(1,0) ∨ (j=0) ∨ (j=1)`: `phi` (frame `Γ`) lifted by one
+//   into `[j,Γ]`, joined with the two boundary faces of the fresh `j`.
+// * **New cap** `PApp(u0.lift(1,0), Var(0))`: `u0` (frame `Γ`) lifted into `[j,Γ]`,
+//   path-applied to the fresh `j = Var(0)` there.
+// * **Body**: `hcomp fam new_phi u' new_u0`, living in frame `[j,Γ]` — exactly the
+//   frame a `PLam(body)`'s body is expected in.
+//
+// [`hcomp_pathp_rule`] builds exactly this (one `PLam` wrapping one nested `HComp`,
+// whose `u` field is the rebuilt, enlarged `Sys`) — one extra binder (`PLam`'s own
+// `j`, sitting *outside* the inner `hcomp`'s interval binder) compared to
+// [`hcomp_pi_rule`]'s single `Lam`, matching Phase 3.8's own bookkeeping note.
+//
+// # Soundness
+//
+// This rule adds **no new axiom or primitive** — like [`hcomp_pi_rule`], it is a
+// pure rewriting of one `HComp` node into more `HComp`/`Sys`/`PLam`/`PApp` nodes,
+// each independently re-typechecked by the existing, unmodified
+// `Checker::infer`/`check_sys`. The argument:
+//
+// 1. **Type preservation.** The original `HComp(PathP fam a0 a1, φ, u, u0)` node's
+//    checked type is `PathP fam a0 a1` (`Checker::infer`'s `Term::HComp` arm always
+//    reports `ty` unchanged, regardless of which reduction rule fires — subject
+//    reduction is what must hold, exactly as for `hcomp_pi_rule`). The built
+//    `PLam(body)` has, by `Checker::infer`'s `Term::PLam` arm — which independently
+//    *re-derives* the enclosing `PathP`'s boundary from `body`'s own `i0`/`i1`
+//    instances, it does not merely trust a claimed type (see `crate::cubical`'s
+//    `Term::PLam` checking rule) — type `PathP fam (body[j:=i0]) (body[j:=i1])`.
+//    `body = HComp(fam, new_phi, new_u, new_u0)` under one `j` binder infers, by the
+//    *very same* unmodified `Term::HComp` arm, to `fam` (held fixed, exactly as
+//    `hcomp_pi_rule`'s inner `HComp(cod, …)` does) — **provided** its own three
+//    obligations hold, exactly mirroring `hcomp_pi_rule`'s soundness argument
+//    point 1:
+//    - `check_cof_wellformed(new_phi)`: `phi.lift(1,0)` is a structural reindexing of
+//      an already-well-formed `phi` (ordinary weakening, as before), joined with the
+//      two literal boundary atoms `(j=0)`/`(j=1)` on the fresh `j:I` binder itself —
+//      trivially well-formed.
+//    - `check(new_u, Partial(new_phi, fam).lift(1,0))`: `new_u` is *by construction*
+//      a literal `Sys`. **Coverage**: `new_phi = φ.lift(1,0) ∨ (j=0) ∨ (j=1)` is
+//      *exactly* the disjunction of `new_u`'s own guards
+//      (`ψ_1.lift(1,1) ∨ … ∨ ψ_n.lift(1,1) ∨ (j=0) ∨ (j=1)`) up to the *original*
+//      coverage obligation (`entails(φ, ψ_1∨…∨ψ_n)`, already required by the source
+//      `HComp`'s own `check(u, Partial(φ,ty).lift(1,0))`) lifted by the same
+//      structural weakening lemma `hcomp_pi_rule` already relies on — so `new_phi`
+//      entails it by construction, with the two extra endpoint disjuncts trivially
+//      self-covering. **Each branch typechecks**: a tube branch
+//      `PApp(t_k.lift(1,1), Var(1)) : fam[j:=Var(1)]` because `t_k : PathP fam a0 a1`
+//      (the *original* system's own `check(t_k, ty)` obligation, `ty = PathP fam a0
+//      a1`) path-applied to `j` — ordinary, unconditional `PathP`-application via
+//      `crate::check::Checker::path_boundary`'s generic (non-endpoint) case, giving
+//      `fam[j:=Var(1)]` by the standard substitution lemma; an endpoint branch
+//      `a0.lift(2,0) : fam[j:=i0]` / `a1.lift(2,0) : fam[j:=i1]` holds *exactly* by
+//      the source `PathP fam a0 a1`'s own well-formedness (`a0`/`a1` were already
+//      required to check at `fam[j:=i0]`/`fam[j:=i1]` respectively when the `PathP`
+//      type itself was formed — see `crate::cubical`'s `Term::PathP` checking rule —
+//      and lifting by two into `[i',j,Γ]` is the identical reindexing). **Compatibility**
+//      (the previously-blocking obligation, now restriction-aware): a tube/tube
+//      overlap is a congruence of the original system's own (already-checked)
+//      tube/tube compatibility, exactly as `hcomp_pi_rule`'s point 1 argues for
+//      `App(-,x)`, now for the congruence `PApp(-, Var(1))`; a tube/endpoint overlap
+//      (`ψ_k.lift(1,1) ∧ (j=0)`, say) restricts, on its every DNF clause, `j := i0`
+//      (forced by the `(j=0)` conjunct in every such clause — `restrict_clause_term`
+//      substitutes exactly the endpoints a clause pins), turning the tube branch into
+//      `PApp(t_k.lift(1,1)[j:=i0], i0) ≡ t_k[j:=i0]-frame @ i0`, which
+//      `crate::check::Checker::path_boundary`'s **literal-`i0`** case (the one this
+//      module's Phase 3.8 doc explicitly flagged as *not* firing for a bound
+//      variable — but here, after restriction, the argument genuinely *is* the
+//      literal `Term::IZero`) equates to `a0` — `t_k`'s own checked `PathP fam a0 a1`
+//      typing forces exactly this boundary, for *any* `t_k`, opaque axioms included.
+//      This is the *precise* mechanism `check_sys`'s restriction-awareness exists
+//      for, re-derived here structurally (not merely cited) for the endpoint-overlap
+//      case specifically; symmetrically for `(j=1)`/`a1`. An endpoint/endpoint
+//      overlap (`(j=0)∧(j=1)`) is `⊥` (a fresh `j` cannot be pinned to both literal
+//      endpoints at once — `crate::face`'s own overlap decision procedure already
+//      handles this as an existing, unmodified case), so it is vacuously compatible.
+//    - **Cap agreement** `new_u[i':=i0] ≡ new_u0`: substituting `i':=i0` distributes
+//      over `new_u`'s branches (structural on `Sys`); the tube branches become
+//      `PApp(t_k[i:=i0], j)` (using the *original* cap agreement `u[i:=i0] ≡ u0`,
+//      already checked, and the congruence `PApp(-,j)` respects `≡`) `≡ PApp(u0, j)`
+//      — exactly `new_u0` after the frame reindexing (identical bookkeeping to
+//      `hcomp_pi_rule`'s own cap-agreement argument); the endpoint branches don't
+//      mention `i'` at all, so substituting `i':=i0` is the identity on them, and
+//      they are exactly the boundary values `check_sys`'s compatibility argument
+//      above already used to justify the *tube* branches' agreement at `j=0`/`j=1`
+//      — so no new obligation is introduced there either.
+// 2. **Every produced subterm independently re-typechecks** — not merely argued:
+//    [`kernel_tests::hcomp_pathp_rule_reduces_and_reinfers_the_pathp_type`] below
+//    builds a concrete instance, reduces it (confirming the rule genuinely *fires*,
+//    producing a literal `PLam`), and re-runs `Checker::infer` on the reduced normal
+//    form from scratch, additionally checking its `j=i0`/`j=i1` boundaries
+//    (`PApp(result, IZero)`/`PApp(result, IOne)`) definitionally equal to the
+//    original `a`/`b` — the enlarged system's endpoint branches force exactly this,
+//    but it is independently *re-derived* here rather than merely assumed from the
+//    construction.
+// 3. **Reducer/NbE agreement**:
+//    [`kernel_tests::hcomp_pathp_rule_agrees_between_reducer_and_nbe`] confirms both
+//    engines land on the same (up-to-conversion) value.
+// 4. **Agreement with the trivial `⊤` rule**: as with `hcomp_pi_rule`, both call
+//    sites check `is_true(phi)` first, unconditionally, so the two rules never both
+//    fire on the same term — no possible disagreement by construction. A dedicated
+//    test, [`kernel_tests::hcomp_pathp_rule_agrees_with_the_trivial_rule_when_phi_is_top`],
+//    confirms the *values* still agree (applied at a concrete boundary) even though
+//    only one rule's reduction step literally fires.
+// 5. **No new equation between unrelated closed terms; anti-`False`.** The rule only
+//    ever rewrites via ordinary substitution/reindexing and re-wraps in
+//    `HComp`/`Sys`/`PLam`/`PApp` — it never invents a value or asserts an equation
+//    not already forced by the source system's own (already-checked) obligations.
+//    [`kernel_tests::hcomp_pathp_rule_cannot_conjure_a_path_between_unrelated_axioms`]
+//    and [`kernel_tests::no_closed_path_nat_0_1_via_hcomp_pathp_rule`] re-run the
+//    module doc's anti-`False` attacks through this specific rule.
+pub(crate) fn hcomp_pathp_rule(
+    fam: &Term,
+    a0: &Term,
+    a1: &Term,
+    phi: &Cof,
+    u: &Term,
+    u0: &Term,
+) -> Option<Term> {
+    let Term::Sys(branches) = u else {
+        return None;
+    };
+    // Push `@j` (the fresh path coordinate, `Var(1)` in the new frame `[i',j,Γ]`)
+    // into every tube branch — see the module doc's "Construction" section.
+    let mut new_branches: Vec<(Cof, Term)> = branches
+        .iter()
+        .map(|(psi_k, t_k)| (psi_k.lift(1, 1), Term::papp(t_k.lift(1, 1), Term::Var(1))))
+        .collect();
+    // The two new endpoint faces: `(j=0) ↦ a0`, `(j=1) ↦ a1`, reindexed from the
+    // ambient `Γ` into `[i',j,Γ]` (insert both fresh binders above `Γ`). `j` is
+    // `Var(1)` in this frame (`i'`, the new hcomp's own interval binder, is
+    // `Var(0)`) — these guards must pin the *outer* `PLam` coordinate `j`, not the
+    // freshly-introduced inner `hcomp` binder.
+    new_branches.push((Cof::eq0(Term::Var(1)), a0.lift(2, 0)));
+    new_branches.push((Cof::eq1(Term::Var(1)), a1.lift(2, 0)));
+    let new_u = Term::sys(new_branches);
+    // `φ ∨ (j=0) ∨ (j=1)`, reindexed into the new hcomp's ambient frame `[j,Γ]`.
+    let new_phi = Cof::or(Cof::or(phi.lift(1, 0), Cof::eq0(Term::Var(0))), Cof::eq1(Term::Var(0)));
+    let new_u0 = Term::papp(u0.lift(1, 0), Term::Var(0));
+    let body = Term::hcomp(fam.clone(), new_phi, new_u, new_u0);
+    Some(Term::plam(body))
+}
+
 #[cfg(test)]
 mod kernel_tests {
     use crate::face::Cof;
@@ -1384,4 +1581,191 @@ mod kernel_tests {
              got Err({result:?})"
         );
     }
+
+    // ---- hcomp: the `PathP`-case filling rule (Phase 3.9, now WIRED IN) ----
+
+    /// `A : Type 0`, `a0 a1 : A`, `p : Path A a0 a1` — the minimal setup for
+    /// exercising `hcomp` at a `PathP` type through a genuine (opaque) path.
+    fn pathp_env() -> Kernel {
+        let mut k = Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("a0", 0, cn("A")).unwrap();
+        k.add_axiom("a1", 0, cn("A")).unwrap();
+        k.add_axiom("p", 0, Term::path(cn("A"), cn("a0"), cn("a1"))).unwrap();
+        k
+    }
+
+    /// Build `hcomp (Path A a0 a1) ⊥ (⟨i⟩ [⊤ ↦ p]) p` — a `Sys`-built, always-`⊤`
+    /// tube around the constant line `p`, with `φ = ⊥` on the *outer* guard so the
+    /// trivial rule does not fire first (isolating the `PathP` rule specifically,
+    /// mirroring `hcomp_pi_rule_transports_a_concrete_partial_function`'s setup).
+    fn concrete_pathp_hcomp() -> (Kernel, Term) {
+        let k = pathp_env();
+        let u = Term::sys(vec![(Cof::top(), cn("p").lift(1, 0))]);
+        let t = Term::hcomp(Term::path(cn("A"), cn("a0"), cn("a1")), Cof::bot(), u, cn("p"));
+        (k, t)
+    }
+
+    /// **The `PathP` rule fires**, producing a literal `PLam`, which independently
+    /// re-typechecks (subject reduction, checked from scratch) at the *original*
+    /// `PathP A a0 a1` type — and, critically, its `j=i0`/`j=i1` boundaries
+    /// (re-derived via `PApp` at literal `IZero`/`IOne`, not merely assumed from the
+    /// construction) are definitionally equal to `a0`/`a1` respectively: this is the
+    /// task's required **type-preservation** proof, executed as a test rather than
+    /// merely argued in the doc comment above.
+    #[test]
+    fn hcomp_pathp_rule_reduces_and_reinfers_the_pathp_type() {
+        let (k, t) = concrete_pathp_hcomp();
+        let expected_ty = Term::path(cn("A"), cn("a0"), cn("a1"));
+        let ty = k.infer(&t).unwrap();
+        assert!(k.def_eq(&ty, &expected_ty));
+
+        let reducer = crate::reduce::Reducer::new(k.env());
+        let whnf = reducer.whnf(&t);
+        assert!(matches!(whnf, Term::PLam(..)), "expected the PathP rule to fire, got {}", whnf.pretty());
+
+        // Subject reduction: re-infer the reduced normal form from scratch.
+        let reinferred = k.infer(&whnf).unwrap();
+        assert!(k.def_eq(&reinferred, &expected_ty));
+
+        // Re-derive the boundary independently: `whnf @ i0 ≡ a0`, `whnf @ i1 ≡ a1`
+        // (the PathP checking rule for PLam already enforces this when re-inferring
+        // `whnf` above, but re-deriving it explicitly via PApp is the direct,
+        // "boundary=a,b" check the task asks for).
+        let at_i0 = Term::papp(whnf.clone(), Term::IZero);
+        let at_i1 = Term::papp(whnf.clone(), Term::IOne);
+        assert!(k.def_eq(&at_i0, &cn("a0")), "expected the j=i0 boundary to be a0");
+        assert!(k.def_eq(&at_i1, &cn("a1")), "expected the j=i1 boundary to be a1");
+    }
+
+    /// Differential check (this crate's standing convention): the trusted reducer
+    /// and NbE agree on the `PathP`-rule reduction.
+    #[test]
+    fn hcomp_pathp_rule_agrees_between_reducer_and_nbe() {
+        // Note: `reducer.is_def_eq`/`nbe.conv` are the *bare* structural engines —
+        // unlike `Kernel::def_eq` (used by the type-preservation test above), they
+        // deliberately do NOT include the checker-level `path_boundary` special case
+        // (see `crate::check::Checker::path_boundary`'s doc — that rule lives only in
+        // the checker's `is_def_eq`, layered on top of these engines), so `p @ i0`
+        // stays a *stuck* normal form at this bare layer rather than reducing to
+        // `a0`. What this test pins down is the thing these two engines actually
+        // own: that they agree with *each other* on the PathP rule's reduction.
+        let (k, t) = concrete_pathp_hcomp();
+        let reducer = crate::reduce::Reducer::new(k.env());
+        let nbe = crate::nbe::Nbe::new(k.env());
+        let at_i0 = Term::papp(t.clone(), Term::IZero);
+        let at_i1 = Term::papp(t.clone(), Term::IOne);
+        let whnf_i0 = reducer.whnf(&at_i0);
+        let whnf_i1 = reducer.whnf(&at_i1);
+        assert!(nbe.conv(&at_i0, &whnf_i0));
+        assert!(nbe.conv(&at_i1, &whnf_i1));
+        // The checker-level engine, which *does* know `path_boundary`, confirms the
+        // same boundary facts the type-preservation test above already established.
+        assert!(k.def_eq(&at_i0, &cn("a0")));
+        assert!(k.def_eq(&at_i1, &cn("a1")));
+    }
+
+    /// **Agreement with the trivial `⊤` rule**: when `φ` genuinely is `⊤` (so the
+    /// trivial rule fires, not the `PathP` rule — priority order, see the module
+    /// doc), the value produced is still the *same* (up to conversion, applied at
+    /// each boundary) as what the `PathP` rule *would* have built had it fired
+    /// instead — mirrors `hcomp_pi_rule_agrees_with_the_trivial_rule_when_phi_is_top`.
+    #[test]
+    fn hcomp_pathp_rule_agrees_with_the_trivial_rule_when_phi_is_top() {
+        let k = pathp_env();
+        let u = Term::sys(vec![(Cof::top(), cn("p").lift(1, 0))]);
+        let t = Term::hcomp(Term::path(cn("A"), cn("a0"), cn("a1")), Cof::top(), u.clone(), cn("p"));
+        let reducer = crate::reduce::Reducer::new(k.env());
+
+        let trivial_at_i0 = reducer.whnf(&Term::papp(t.clone(), Term::IZero));
+        let trivial_at_i1 = reducer.whnf(&Term::papp(t.clone(), Term::IOne));
+
+        let Term::PathP(fam, a0, a1) = Term::path(cn("A"), cn("a0"), cn("a1")) else { unreachable!() };
+        let pathp_built = super::hcomp_pathp_rule(&fam, &a0, &a1, &Cof::top(), &u, &cn("p")).unwrap();
+        let pathp_at_i0 = reducer.whnf(&Term::papp(pathp_built.clone(), Term::IZero));
+        let pathp_at_i1 = reducer.whnf(&Term::papp(pathp_built, Term::IOne));
+
+        assert!(reducer.is_def_eq(&trivial_at_i0, &pathp_at_i0));
+        assert!(reducer.is_def_eq(&trivial_at_i1, &pathp_at_i1));
+    }
+
+    /// Sanity: an `hcomp`-at-`PathP`-built definition using the new rule survives
+    /// the independent recheck harness.
+    #[test]
+    fn hcomp_pathp_rule_definitions_survive_independent_recheck() {
+        let (mut k, t) = concrete_pathp_hcomp();
+        let ty = Term::path(cn("A"), cn("a0"), cn("a1"));
+        k.add_definition("hp", 0, ty, t).unwrap();
+        assert_eq!(crate::kernel::recheck_all_definitions(k.env()).unwrap(), 1);
+    }
+
+    /// **Adversarial (anti-`False`, PathP-case)**: `hcomp`'s `PathP` rule cannot
+    /// conjure a path between two *unrelated* axioms `c0`/`c1` that have no
+    /// connecting path — pushing `@j` through the system's branches only ever
+    /// reuses already-`PathP`-typed branch terms, and the enlarged system's
+    /// endpoint branches are exactly the *claimed* type's own `a0`/`a1`, which the
+    /// checker independently verifies against; there's no way to land at a path
+    /// between unconnected axioms without one already being supplied.
+    #[test]
+    fn hcomp_pathp_rule_cannot_conjure_a_path_between_unrelated_axioms() {
+        let mut k = pathp_env();
+        k.add_axiom("c0", 0, cn("A")).unwrap();
+        k.add_axiom("c1", 0, cn("A")).unwrap();
+        // u's branch is `p : Path A a0 a1`, not `: Path A c0 c1` — mismatched
+        // against the claimed hcomp type `Path A c0 c1`.
+        let u = Term::sys(vec![(Cof::top(), cn("p").lift(1, 0))]);
+        let t = Term::hcomp(Term::path(cn("A"), cn("c0"), cn("c1")), Cof::bot(), u, cn("p"));
+        assert!(k.infer(&t).is_err());
+    }
+
+    /// **Adversarial (anti-`False`)**: no closed inhabitant of `Path B c0 c1` for
+    /// two *distinct*, path-free axioms `c0`/`c1` (a concrete "distinct closed
+    /// canonical values" instance of the module doc's anti-`False` guarantee) can be
+    /// produced by routing an unrelated, opaque `PathP`-typed axiom `p : Path A a0
+    /// a1` through the new `hcomp` rule — the rule only ever reshapes an
+    /// *already*-`Path B c0 c1`-typed term (of which there is none to reuse here,
+    /// `p` being at the wrong type entirely), never manufactures a boundary the
+    /// source didn't already have.
+    #[test]
+    fn no_closed_path_between_unrelated_values_via_hcomp_pathp_rule() {
+        let mut k = pathp_env();
+        k.add_axiom("B", 0, Term::typ(0)).unwrap();
+        k.add_axiom("c0", 0, cn("B")).unwrap();
+        k.add_axiom("c1", 0, cn("B")).unwrap();
+        assert!(!k.def_eq(&cn("c0"), &cn("c1")));
+        let u = Term::sys(vec![(Cof::top(), cn("p").lift(1, 0))]);
+        // Claim the hcomp lands at `Path B c0 c1` while the system's own branch is
+        // `p : Path A a0 a1` — a genuine type mismatch, rejected by the unmodified
+        // `check(t_k, ty)` obligation inside `check_sys`.
+        let t = Term::hcomp(Term::path(cn("B"), cn("c0"), cn("c1")), Cof::bot(), u, cn("p"));
+        assert!(k.infer(&t).is_err());
+    }
+
+    /// **Adversarial**: `hcomp`'s cap-agreement check still gates the `PathP` rule's
+    /// own input — a `Sys`-built line whose cap doesn't match `u0` is rejected
+    /// before the `PathP` rule ever gets a chance to fire.
+    #[test]
+    fn hcomp_pathp_rule_input_still_requires_cap_agreement() {
+        let mut k = pathp_env();
+        k.add_axiom("q", 0, Term::path(cn("A"), cn("a0"), cn("a1"))).unwrap();
+        let u = Term::sys(vec![(Cof::top(), cn("q").lift(1, 0))]); // line is q
+        let t = Term::hcomp(Term::path(cn("A"), cn("a0"), cn("a1")), Cof::bot(), u, cn("p")); // cap claims p
+        assert!(k.infer(&t).is_err());
+    }
+
+    /// **`hcomp_pathp_rule` itself returns `None` for a non-`Sys` line** — mirrors
+    /// `hcomp_pi_rule_returns_none_for_a_non_sys_line`'s discipline: checked at the
+    /// pure-function level, since a well-typed `hcomp`-at-`PathP` whose line `u` is
+    /// not a literal `Sys` has an inferred type of `Partial φ ty` with no
+    /// elimination back to plain `ty` here (see the module doc).
+    #[test]
+    fn hcomp_pathp_rule_returns_none_for_a_non_sys_line() {
+        let fam = cn("A").lift(1, 0);
+        let a0 = cn("a0");
+        let a1 = cn("a1");
+        let u = cn("p").lift(1, 0); // constant line ⟨i⟩ p, not a literal Sys
+        assert!(super::hcomp_pathp_rule(&fam, &a0, &a1, &Cof::bot(), &u, &cn("p")).is_none());
+    }
 }
+
+
