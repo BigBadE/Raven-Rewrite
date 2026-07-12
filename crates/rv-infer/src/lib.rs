@@ -734,19 +734,34 @@ fn resolve_proj_ty(base: &Ty, proj: &[Proj], types: &HashMap<Sym, TypeDef>) -> T
 /// onto a path. Used to record that an `IntN` parameter / result is in range.
 fn range_assumption(path: Prop, term: &Term, w: rv_core::IntTy) -> Prop {
     // An assumption must be *weaker-or-equal* to the truth: only conjoin a bound
-    // when the width's true bound is exactly representable as an `i64` (the kernel
-    // `Term::Int` carrier). A bound outside the `i64` range — `u64::MAX`, and all
-    // of `i128`/`u128` — is DROPPED rather than truncated. Truncating (the previous
-    // `w.max() as i64`) turned `u64::MAX` into `-1`, so a `u64` parameter would
-    // have carried the *false* assumption `param <= -1`, poisoning the path (from
-    // which anything is provable). Dropping the unrepresentable side keeps the
-    // assumption sound (merely weaker).
+    // when the width's true bound is exactly representable as an `i128` (the
+    // kernel `Term::Int` carrier). The only bound outside that range is `u128`'s
+    // true maximum (`u128::MAX == 2^128 - 1`), which is DROPPED rather than
+    // truncated. Truncating would assert a *false* bound, poisoning the path
+    // (from which anything is provable). Dropping the unrepresentable side keeps
+    // the assumption sound (merely weaker).
+    //
+    // A bound that equals `i128::MIN`/`i128::MAX` exactly (only reachable for a
+    // 128-bit width) is also omitted — not because it is false, but because it is
+    // a *tautology*: `term` is itself a Rust `i128`, so `term >= i128::MIN` /
+    // `term <= i128::MAX` hold unconditionally for every representable value,
+    // whether `term` is a literal or a variable. Omitting it is sound (assuming
+    // or proving `True` needs no solver work) and avoids feeding the trusted LIA
+    // solver a comparison against `i128::MIN`/`MAX` whose normalization
+    // (`term - i128::MIN`, or negating `i128::MIN`) would itself overflow `i128`
+    // — which the checked solver arithmetic correctly refuses (`None`), but that
+    // just means an avoidably-*incomplete* `Failed` instead of this a-priori-true
+    // fact.
     let mut out = path;
     if let Some(lo) = w.assume_lo_i64() {
-        out = out.and(Prop::Holds(Term::bin(BinOp::Ge, term.clone(), Term::Int(lo))));
+        if lo != i128::MIN {
+            out = out.and(Prop::Holds(Term::bin(BinOp::Ge, term.clone(), Term::Int(lo))));
+        }
     }
     if let Some(hi) = w.assume_hi_i64() {
-        out = out.and(Prop::Holds(Term::bin(BinOp::Le, term.clone(), Term::Int(hi))));
+        if hi != i128::MAX {
+            out = out.and(Prop::Holds(Term::bin(BinOp::Le, term.clone(), Term::Int(hi))));
+        }
     }
     out
 }
@@ -1582,7 +1597,7 @@ impl VcGen<'_> {
             // The upper bound depends on whether the indexed value is a static
             // array (constant length) or a growable vector (symbolic length).
             let upper = match resolve_proj_ty(&base, &place.proj[..i], self.types) {
-                Ty::Array(_, len) => Term::Int(len as i64),
+                Ty::Array(_, len) => Term::Int(len as i128),
                 Ty::Vec(_) => {
                     let bt = self.place_prefix_term(place, i, state);
                     self.vec_len_term(&bt)
@@ -1616,7 +1631,7 @@ impl VcGen<'_> {
     /// linear-arithmetic solver discharges this whenever the operands are bounded
     /// enough (a `requires`, an `IntN` width, a guard); an unbounded `x + y`
     /// correctly fails to prove.
-    fn emit_overflow(&mut self, result: &Term, lo: i64, hi: i64, state: &State) {
+    fn emit_overflow(&mut self, result: &Term, lo: i128, hi: i128, state: &State) {
         let lo_p = Prop::Holds(Term::bin(BinOp::Ge, result.clone(), Term::Int(lo)));
         let hi_p = Prop::Holds(Term::bin(BinOp::Le, result.clone(), Term::Int(hi)));
         self.emit(state.path.clone(), lo_p, "arithmetic overflow (underflow)");
@@ -1641,7 +1656,7 @@ impl VcGen<'_> {
     /// The `[lo, hi]` overflow range for an arithmetic result on `a`/`b`: the
     /// sized-integer width's range when either operand is `IntN`, else the
     /// default machine `i64` range.
-    fn overflow_range(&self, a: &Operand, b: &Operand) -> (i64, i64) {
+    fn overflow_range(&self, a: &Operand, b: &Operand) -> (i128, i128) {
         match int_result_ty(&self.operand_ty(a), &self.operand_ty(b)) {
             // Clamp the width's true range *inward* to the `i64`-representable
             // window (see `IntTy::overflow_lo_i64`/`overflow_hi_i64`). The clamped
@@ -1650,7 +1665,7 @@ impl VcGen<'_> {
             // exact bounds cannot be embedded in a `Term::Int`. The previous
             // `w.max() as i64` truncated instead (e.g. `u64::MAX -> -1`).
             Some(Ty::IntN(w)) => (w.overflow_lo_i64(), w.overflow_hi_i64()),
-            _ => (i64::MIN, i64::MAX),
+            _ => (i64::MIN as i128, i64::MAX as i128),
         }
     }
 }
@@ -2647,11 +2662,12 @@ mod tests {
         assert!(err.contains("i64"), "message should name the primitive: {err}");
     }
 
-    /// Range *assumptions* for a width whose bounds fit `i64` carry both sides
-    /// exactly; a width whose bound overflows `i64` DROPS that side rather than
-    /// wrapping it. This is the soundness fix for `u64`: `u64::MAX as i64 == -1`
-    /// must never become the assumption `x <= -1` (which, for an unsigned value, is
-    /// false and would let the path prove anything).
+    /// Range *assumptions* for a width whose bounds fit `i128` (the `Term::Int`
+    /// carrier) carry both sides exactly; only `u128`'s true maximum
+    /// (`u128::MAX == 2^128 - 1`, which overflows `i128`) is DROPPED rather than
+    /// wrapped. This is the soundness property that used to require dropping
+    /// `u64` too under the old `i64` carrier (`u64::MAX as i64 == -1`, which must
+    /// never become the assumption `x <= -1`); now `u64` fits exactly.
     #[test]
     fn range_assumption_drops_unrepresentable_bounds() {
         let mut syms = Symbols::new();
@@ -2661,21 +2677,33 @@ mod tests {
         // i32: both bounds representable, both conjoined.
         let i32w = rv_core::IntTy { signed: true, bits: 32 };
         let p = range_assumption(Prop::True, &term, i32w);
-        let lo = Prop::Holds(Term::bin(BinOp::Ge, term.clone(), Term::Int(i32::MIN as i64)));
-        let hi = Prop::Holds(Term::bin(BinOp::Le, term.clone(), Term::Int(i32::MAX as i64)));
+        let lo = Prop::Holds(Term::bin(BinOp::Ge, term.clone(), Term::Int(i32::MIN as i128)));
+        let hi = Prop::Holds(Term::bin(BinOp::Le, term.clone(), Term::Int(i32::MAX as i128)));
         assert_eq!(p, Prop::True.and(lo).and(hi));
 
-        // u64: upper bound (`u64::MAX`) does not fit i64 → dropped. Only `x >= 0`.
+        // u64: both bounds now fit `i128` exactly, so both are conjoined.
         let u64w = rv_core::IntTy { signed: false, bits: 64 };
         let p = range_assumption(Prop::True, &term, u64w);
-        assert_eq!(p, Prop::Holds(Term::bin(BinOp::Ge, term.clone(), Term::Int(0))));
-        // The dangerous `x <= -1` assumption must be absent.
+        let lo = Prop::Holds(Term::bin(BinOp::Ge, term.clone(), Term::Int(0)));
+        let hi = Prop::Holds(Term::bin(BinOp::Le, term.clone(), Term::Int(u64::MAX as i128)));
+        assert_eq!(p, Prop::True.and(lo).and(hi));
+        // The dangerous `x <= -1` assumption (the old `i64`-wraparound bug) must
+        // never appear.
         let bogus = Prop::Holds(Term::bin(BinOp::Le, term.clone(), Term::Int(-1)));
         assert_ne!(p, Prop::True.and(bogus));
 
-        // i128: neither bound fits i64 → both dropped, the path is unchanged.
+        // i128: both bounds fit `i128` exactly, but both equal exactly
+        // `i128::MIN`/`i128::MAX` — a tautology for any `i128`-carried `Term`
+        // (see `range_assumption`'s doc comment) — so both are omitted rather
+        // than asserted, and the path is unchanged.
         let i128w = rv_core::IntTy { signed: true, bits: 128 };
         assert_eq!(range_assumption(Prop::True, &term, i128w), Prop::True);
+
+        // u128: only the true maximum (`u128::MAX`) overflows `i128` → dropped.
+        let u128w = rv_core::IntTy { signed: false, bits: 128 };
+        let p = range_assumption(Prop::True, &term, u128w);
+        let lo = Prop::Holds(Term::bin(BinOp::Ge, term.clone(), Term::Int(0)));
+        assert_eq!(p, Prop::True.and(lo));
     }
 
     /// A malformed CFG — a terminator naming a block id that does not exist — is

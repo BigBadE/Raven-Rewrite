@@ -449,17 +449,31 @@ fn apply_return_width_contract(
         return post;
     };
     let result = rv_core::Term::Var(syms.intern(rv_ir::RESULT_NAME));
-    let lo = rv_core::Prop::Holds(rv_core::Term::bin(
-        rv_core::BinOp::Ge,
-        result.clone(),
-        rv_core::Term::Int(w.min() as i64),
-    ));
-    let hi = rv_core::Prop::Holds(rv_core::Term::bin(
-        rv_core::BinOp::Le,
-        result,
-        rv_core::Term::Int(w.max() as i64),
-    ));
-    post.and(lo).and(hi)
+    // A bound of exactly `i128::MIN`/`i128::MAX` (only reachable for a 128-bit
+    // width) is a tautology — `result` is itself a Rust `i128`, so it holds
+    // unconditionally — and is omitted. This mirrors `rv_infer::range_assumption`
+    // (see its doc comment): besides being redundant, feeding the trusted LIA
+    // solver a comparison against `i128::MIN`/`MAX` would overflow its own exact
+    // `i128` normalization arithmetic (e.g. negating `i128::MIN`), turning a
+    // trivial truth into an avoidably-incomplete `Failed`.
+    let mut post = post;
+    if w.min() != i128::MIN {
+        let lo = rv_core::Prop::Holds(rv_core::Term::bin(
+            rv_core::BinOp::Ge,
+            result.clone(),
+            rv_core::Term::Int(w.min()),
+        ));
+        post = post.and(lo);
+    }
+    if w.max() != i128::MAX {
+        let hi = rv_core::Prop::Holds(rv_core::Term::bin(
+            rv_core::BinOp::Le,
+            result,
+            rv_core::Term::Int(w.max()),
+        ));
+        post = post.and(hi);
+    }
+    post
 }
 
 /// Build the map from struct-typed parameter names to their struct type, used to

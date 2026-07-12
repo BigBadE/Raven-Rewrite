@@ -187,7 +187,9 @@ pub enum Operand {
 
 #[derive(Clone, Debug)]
 pub enum Const {
-    Int(i64),
+    /// Full 128-bit magnitude; see `rv_syntax::Tok::Int`'s doc comment for the
+    /// bit-pattern convention used for unsigned literals above `i128::MAX`.
+    Int(i128),
     Float(f64),
     Str(String),
     Bool(bool),

@@ -307,7 +307,9 @@ pub enum PatBind {
 /// An expression.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
-    Int(i64),
+    /// Full 128-bit magnitude; see `Tok::Int`'s doc comment for the bit-pattern
+    /// convention used for unsigned literals above `i128::MAX`.
+    Int(i128),
     Float(f64),
     Str(String),
     Bool(bool),
