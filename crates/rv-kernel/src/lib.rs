@@ -123,6 +123,7 @@ pub mod erase;
 pub mod funext;
 pub mod generate;
 pub mod graded;
+pub mod hit;
 pub mod inductive;
 pub mod infer;
 pub mod kernel;

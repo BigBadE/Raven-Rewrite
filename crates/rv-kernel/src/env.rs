@@ -342,6 +342,50 @@ pub struct Circle {
     pub ty: Term,
 }
 
+/// Which role a member of a **user-declared 1-HIT** (see [`crate::hit`]) plays. Unlike
+/// [`CircleRole`]/[`TruncRole`] (each a fixed, hand-coded five-constant instance),
+/// [`crate::hit::declare_hit`] installs a *family* of these per user declaration, so
+/// every [`Hit`] additionally carries an `id` (the type former's name) identifying
+/// *which* declared HIT it belongs to — the reducer/NbE must only ever match a `Rec`
+/// scrutinee against a `Point` of the *same* `id`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum HitRole {
+    /// The type former `H : Type 0`.
+    Type,
+    /// A (nullary) point constructor, tagged with its `0`-based index among the
+    /// declared point constructors — this is what the `Rec`/`Ind` ι-rules match on and
+    /// what a path constructor's `lhs`/`rhs` refer to.
+    Point { index: u32 },
+    /// A path constructor `H.<name> : Eq H point[lhs] point[rhs]`, holding only
+    /// propositionally (through `Eq`) — never definitionally, and with no reduction
+    /// rule of its own. `lhs`/`rhs` are point-constructor indices.
+    Path { lhs: u32, rhs: u32 },
+    /// The non-dependent recursor `H.rec.{v} : Π P case_0 .. case_{n-1} resp_0 ..
+    /// resp_{m-1}, H → P`, gated by one respectfulness premise `resp_j : Eq P
+    /// case_{lhs_j} case_{rhs_j}` per declared path constructor. Its single ι-rule
+    /// fires only when the scrutinee weak-head-reduces to a `Point { index: i }` of the
+    /// *same* `id`, reducing to `case_i` (discarding all `resp_j`).
+    Rec { num_points: u32, num_paths: u32 },
+    /// The `Prop`-only dependent eliminator `H.ind : Π (β : H → Prop) (h_0 : β
+    /// point_0) .. (h_{n-1} : β point_{n-1}), Π t, β t`. No computation rule of its
+    /// own; sound by proof irrelevance in `Prop` exactly as `S¹.ind`/`Trunc.ind`.
+    Ind { num_points: u32 },
+}
+
+/// A member of a **user-declared 1-HIT** family, installed by
+/// [`crate::hit::declare_hit`]. See [`HitRole`] for the per-constant breakdown and
+/// [`crate::hit`] for the schema's soundness argument and the supported class of HITs.
+#[derive(Clone, Debug)]
+pub struct Hit {
+    /// The name of this HIT's type former — shared by every constant belonging to the
+    /// same declaration, so the reducer/NbE never cross-match constants from two
+    /// different user-declared HITs.
+    pub id: Name,
+    pub role: HitRole,
+    pub num_levels: u32,
+    pub ty: Term,
+}
+
 /// A member of the fixed **quotient** schema — one of the five `Quot*` constants.
 ///
 /// Unlike inductives/coinductives there is no per-quotient elaboration: `install_quot`
@@ -369,6 +413,7 @@ pub enum Decl {
     Quot(Rc<Quotient>),
     Trunc(Rc<Trunc>),
     Circle(Rc<Circle>),
+    Hit(Rc<Hit>),
 }
 
 impl Decl {
@@ -385,6 +430,7 @@ impl Decl {
             Decl::Quot(q) => &q.ty,
             Decl::Trunc(t) => &t.ty,
             Decl::Circle(c) => &c.ty,
+            Decl::Hit(h) => &h.ty,
         }
     }
     /// How many universe parameters this entry abstracts over.
@@ -400,6 +446,7 @@ impl Decl {
             Decl::Quot(q) => q.num_levels,
             Decl::Trunc(t) => t.num_levels,
             Decl::Circle(c) => c.num_levels,
+            Decl::Hit(h) => h.num_levels,
         }
     }
 }

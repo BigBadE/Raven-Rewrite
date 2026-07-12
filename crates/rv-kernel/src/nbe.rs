@@ -14,7 +14,7 @@
 //! be adopted as the performance path with confidence, while the proven reducer
 //! remains the reference.
 
-use crate::env::{CircleRole, Decl, Env, QuotRole, TruncRole};
+use crate::env::{CircleRole, Decl, Env, HitRole, QuotRole, TruncRole};
 use crate::level::{self, Level};
 use crate::term::{Grade, Name, Term};
 use std::rc::Rc;
@@ -166,7 +166,12 @@ impl<'a> Nbe<'a> {
                             if let Value::Stuck(h5, spine5) = &*stuck {
                                 let stuck = self.try_trunc_rec(h5.clone(), spine5.clone());
                                 if let Value::Stuck(h6, spine6) = &*stuck {
-                                    self.try_circle_rec(h6.clone(), spine6.clone())
+                                    let stuck = self.try_circle_rec(h6.clone(), spine6.clone());
+                                    if let Value::Stuck(h7, spine7) = &*stuck {
+                                        self.try_hit_rec(h7.clone(), spine7.clone())
+                                    } else {
+                                        stuck
+                                    }
                                 } else {
                                     stuck
                                 }
@@ -427,6 +432,41 @@ impl<'a> Nbe<'a> {
                             v = self.vapp(v, extra.clone());
                         }
                         return v;
+                    }
+                }
+            }
+        }
+        Rc::new(Value::Stuck(h, spine))
+    }
+
+    /// User-declared 1-HIT computation rule (see [`crate::hit`]), NbE counterpart of
+    /// [`crate::reduce::Reducer::try_hit_rec`]: for `H.rec.{v} P case_0 .. resp_.. t`,
+    /// fires `case_i` when `t` is stuck on the `i`-th (nullary) point constructor of
+    /// the *same* HIT `id` as the `H.rec` head; otherwise stays stuck. Never fires
+    /// across two different declared HITs (guarded by comparing `id`s) or on a path
+    /// constructor.
+    fn try_hit_rec(&self, h: Head, spine: Vec<Rc<Value>>) -> Rc<Value> {
+        if let Head::Const(rname, _) = &h {
+            if let Some(Decl::Hit(hh)) = self.env.get(rname) {
+                if let HitRole::Rec { num_points, num_paths } = hh.role {
+                    let scrut_pos = 1 + num_points as usize + num_paths as usize;
+                    if spine.len() > scrut_pos {
+                        if let Value::Stuck(Head::Const(pname, _), pargs) = &*spine[scrut_pos] {
+                            if pargs.is_empty() {
+                                if let Some(Decl::Hit(p)) = self.env.get(pname) {
+                                    if p.id == hh.id {
+                                        if let HitRole::Point { index } = p.role {
+                                            let case_pos = 1 + index as usize;
+                                            let mut v = spine[case_pos].clone();
+                                            for extra in &spine[scrut_pos + 1..] {
+                                                v = self.vapp(v, extra.clone());
+                                            }
+                                            return v;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

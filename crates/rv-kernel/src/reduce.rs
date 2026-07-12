@@ -14,7 +14,7 @@
 //! `is_def_eq` equated distinct types, ill-typed programs would slip through. The
 //! rules are the standard ones; we keep them total and structural.
 
-use crate::env::{CircleRole, Decl, Destructor, Env, QuotRole, Recursor, TruncRole};
+use crate::env::{CircleRole, Decl, Destructor, Env, HitRole, QuotRole, Recursor, TruncRole};
 use crate::level;
 use crate::term::Term;
 
@@ -101,6 +101,18 @@ impl<'e> Reducer<'e> {
                     // Circle computation: `S¹.rec P pt lp S¹.base ↦ pt`.
                     Some(Decl::Circle(c)) if c.role == CircleRole::Rec => {
                         match self.try_circle_rec(&args) {
+                            Some(reduced) => {
+                                let (h, a) = reduced.unfold_apps();
+                                head = h;
+                                args = a;
+                            }
+                            None => break,
+                        }
+                    }
+                    // User-declared 1-HIT computation (see `crate::hit`):
+                    // `H.rec.{v} P case_0 .. resp_0 .. (H.p_i) ↦ case_i`.
+                    Some(Decl::Hit(hh)) if matches!(hh.role, HitRole::Rec { .. }) => {
+                        match self.try_hit_rec(hh, &args) {
                             Some(reduced) => {
                                 let (h, a) = reduced.unfold_apps();
                                 head = h;
@@ -448,6 +460,42 @@ impl<'e> Reducer<'e> {
         let mut applied = pt.clone();
         // Re-attach any over-application beyond the scrutinee.
         for extra in &args[SCRUT_POS + 1..] {
+            applied = Term::app(applied, extra.clone());
+        }
+        Some(applied)
+    }
+
+    /// Try a **user-declared 1-HIT** computation rule (see [`crate::hit`]): for
+    /// `H.rec.{v} P case_0 .. case_{n-1} resp_0 .. resp_{m-1} t`, fires `case_i` when
+    /// `t` weak-head-reduces to the `i`-th (nullary) point constructor *of the same
+    /// HIT `id`* as `hh`. Never fires on a path constructor (its type is `Eq H _ _`,
+    /// not `H` — ill-typed as a scrutinee) or on a point constructor belonging to a
+    /// *different* declared HIT (guarded by comparing `id`s), and stays stuck on a
+    /// neutral scrutinee.
+    fn try_hit_rec(&self, hh: &crate::env::Hit, args: &[Term]) -> Option<Term> {
+        let HitRole::Rec { num_points, num_paths } = hh.role else { return None };
+        let scrut_pos = 1 + num_points as usize + num_paths as usize;
+        if args.len() <= scrut_pos {
+            return None; // not yet applied to the scrutinee
+        }
+        let scrut = self.whnf(&args[scrut_pos]);
+        let (pt_head, pt_args) = scrut.unfold_apps();
+        let Term::Const(pt_name, _) = &pt_head else {
+            return None;
+        };
+        let index = match self.env.get(pt_name) {
+            Some(Decl::Hit(p)) if p.id == hh.id => match p.role {
+                HitRole::Point { index } => index,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        if !pt_args.is_empty() {
+            return None; // point constructors are nullary
+        }
+        let case_pos = 1 + index as usize;
+        let mut applied = args[case_pos].clone();
+        for extra in &args[scrut_pos + 1..] {
             applied = Term::app(applied, extra.clone());
         }
         Some(applied)
