@@ -1,0 +1,422 @@
+// SEPARATION LOGIC WITH FRACTIONAL PERMISSIONS, modeled in Raven and PROVED by the kernel.
+//
+// This is the PROOF-SIDE statement of the property the executable borrow checker enforces:
+// ownership (a fractional permission) licenses dependent reasoning about mutable state. A FULL
+// permission (`&mut`, exclusive) grants a *strong update*; a fractional permission (`&`, shared)
+// is duplicable to many readers. Here that discipline lives INSIDE the logic, as kernel-checked
+// dependent propositions — a fractional-permission points-to model, proved sound by the kernel
+// itself (`rvc --verify`). Nothing below extends the trusted checker.
+//
+// Design of `Perm`: permissions are counted in HALF-UNITS as a `Nat` — `half = 1`, `full = 2`,
+// composition `padd` is `plus`, validity is `sum <= full` (`Le`). This is the honest fully-proved
+// fragment of the FracPerm rationals of `crates/rv-borrow`: it captures split (`half + half =
+// full`), join, commutativity/associativity, and the over-one invalidity that makes a full
+// permission exclusive — everything the ownership x dependency bridge needs. (Surface note:
+// `half`/`full` are `def` constants rather than nullary `fn`s because two adjacent nullary calls
+// in a return-type position, `f() g()`, are not accepted by the current surface elaborator.)
+
+enum Nat { Zero, Succ(Nat) }
+enum Bool { false, true }
+enum Option<A: Type> { None, Some(A) }
+enum Pair<A: Type, B: Type> { mk(A, B) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+
+// The `<=` relation on Nat as an indexed inductive `Prop` (as in le.rv).
+enum Le(n: Nat, m: Nat) -> Prop {
+    LeZero(x: Nat)
+        where n == Nat::Zero, m == x;
+    LeSucc(a: Nat, b: Nat, h: Le(a, b))
+        where n == Nat::Succ(a), m == Nat::Succ(b);
+}
+
+// ===========================================================================================
+// 1. FRACTIONAL PERMISSIONS
+// ===========================================================================================
+
+def half : Nat := Nat::Succ(Nat::Zero)                 // half  = one half-unit
+def full : Nat := Nat::Succ(Nat::Succ(Nat::Zero))      // full  = two half-units
+
+// Composition of permissions is addition of half-units.
+fn padd(p: Nat, q: Nat) -> Nat { plus(p, q) }
+
+// A permission is VALID when it does not exceed a full unit.
+fn valid(p: Nat) -> Prop { Le(p, full) }
+
+// ----- half + half = full ------------------------------------------------------------------
+// Definitional: plus(1,1) reduces to 2 = full.
+fn half_add_half() -> padd(half, half) == full {
+    Eq::refl(Nat, full)
+}
+
+// ----- composition is commutative ----------------------------------------------------------
+fn plus_zero(n: Nat) -> plus(n, Nat::Zero) == n {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(k) => congr_arg(Nat, Nat, Nat::Succ, plus(k, Nat::Zero), k, plus_zero(k))
+    }
+}
+fn plus_succ(n: Nat, m: Nat) -> plus(n, Nat::Succ(m)) == Nat::Succ(plus(n, m)) {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Succ(m))
+      | Nat::Succ(k) =>
+          congr_arg(Nat, Nat, Nat::Succ, plus(k, Nat::Succ(m)), Nat::Succ(plus(k, m)),
+                    plus_succ(k, m))
+    }
+}
+fn padd_comm(p: Nat, q: Nat) -> padd(p, q) == padd(q, p) {
+    match p {
+      | Nat::Zero    => symm(Nat, plus(q, Nat::Zero), q, plus_zero(q))
+      | Nat::Succ(k) =>
+          trans(Nat,
+                Nat::Succ(plus(k, q)), Nat::Succ(plus(q, k)), plus(q, Nat::Succ(k)),
+                congr_arg(Nat, Nat, Nat::Succ, plus(k, q), plus(q, k), padd_comm(k, q)),
+                symm(Nat, plus(q, Nat::Succ(k)), Nat::Succ(plus(q, k)), plus_succ(q, k)))
+    }
+}
+
+// ----- composition is associative ----------------------------------------------------------
+fn padd_assoc(p: Nat, q: Nat, r: Nat) -> padd(padd(p, q), r) == padd(p, padd(q, r)) {
+    match p {
+      | Nat::Zero    => Eq::refl(Nat, plus(q, r))
+      | Nat::Succ(k) =>
+          congr_arg(Nat, Nat, Nat::Succ, plus(plus(k, q), r), plus(k, plus(q, r)),
+                    padd_assoc(k, q, r))
+    }
+}
+
+// ----- over-one is INVALID: full + half exceeds a unit -------------------------------------
+fn le_pred(a: Nat, b: Nat, h: Le(Nat::Succ(a), Nat::Succ(b))) -> Le(a, b) {
+    match h {
+      | Le::LeZero(x)          => match h { }
+      | Le::LeSucc(a0, b0, hp) => hp
+    }
+}
+fn le_one_zero_absurd(h: Le(Nat::Succ(Nat::Zero), Nat::Zero)) -> False {
+    match h { }
+}
+fn over_one_invalid(h: valid(padd(full, half))) -> False {
+    le_one_zero_absurd(
+      le_pred(Nat::Succ(Nat::Zero), Nat::Zero,
+        le_pred(Nat::Succ(Nat::Succ(Nat::Zero)), Nat::Succ(Nat::Zero), h)))
+}
+
+// full itself is valid (sanity: exclusive ownership is a legal permission).
+fn full_valid() -> valid(full) {
+    Le::LeSucc(Nat::Succ(Nat::Zero), Nat::Succ(Nat::Zero),
+      Le::LeSucc(Nat::Zero, Nat::Zero, Le::LeZero(Nat::Zero)))
+}
+
+// ===========================================================================================
+// 2. HEAP + POINTS-TO
+// ===========================================================================================
+//
+// A heap is a finite partial map from a location (`Nat`) to a permission-annotated value
+// `Pair<Perm, Val>`, modeled — as in heap.rv — as a total function `Nat -> Option<...>`. Values
+// are taken to be `Nat` (as in heap.rv's concrete demos); this monomorphization is what lets
+// disjointness be an *indexed inductive* `Prop` below (Raven's indexed enums do not accept a
+// `Type` parameter in their indices). `emp` is the empty heap; `sing l pi v` = `l |->[pi] v`.
+
+// Throughout: a heap is `Nat -> Option<Pair<Nat, Nat>>` (location -> (perm, value)), a cell is
+// `Pair<Nat, Nat>` (perm, value). These are written inline (a `def` for a function *type* is not
+// accepted by the surface parser).
+
+// Decidable location equality and its reflexivity (curried, as in heap.rv).
+fn beq(a: Nat) -> (Nat -> Bool) {
+    match a {
+      | Nat::Zero    => fun (b: Nat) => match b { | Nat::Zero => Bool::true  | Nat::Succ(k) => Bool::false }
+      | Nat::Succ(j) => fun (b: Nat) => match b { | Nat::Zero => Bool::false | Nat::Succ(k) => beq(j)(k) }
+    }
+}
+fn beq_refl(a: Nat) -> beq(a)(a) == Bool::true {
+    match a {
+      | Nat::Zero    => Eq::refl(Bool, Bool::true)
+      | Nat::Succ(j) => beq_refl(j)
+    }
+}
+
+// The empty heap: undefined everywhere.
+fn emp() -> (Nat -> Option<Pair<Nat, Nat>>) {
+    fun (q: Nat) => Option::None(Pair<Nat, Nat>)
+}
+
+// The singleton heap `l |->[pi] v`: owns exactly location `l` at permission `pi`, value `v`.
+fn sing(l: Nat, pi: Nat, v: Nat) -> (Nat -> Option<Pair<Nat, Nat>>) {
+    fun (q: Nat) => match beq(q)(l) {
+      | Bool::true  => Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, pi, v))
+      | Bool::false => Option::None(Pair<Nat, Nat>)
+    }
+}
+
+// Reading the singleton at its own location yields the annotated cell (the points-to fact).
+fn sing_here(l: Nat, pi: Nat, v: Nat)
+    -> sing(l, pi, v)(l) == Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, pi, v))
+{
+    subst(Bool,
+          fun (x: Bool) => (match x
+            { | Bool::true  => Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, pi, v))
+              | Bool::false => Option::None(Pair<Nat, Nat>) })
+            == Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, pi, v)),
+          Bool::true, beq(l)(l),
+          symm(Bool, beq(l)(l), Bool::true, beq_refl(l)),
+          Eq::refl(Option<Pair<Nat, Nat>>, Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, pi, v))))
+}
+
+// ===========================================================================================
+// 3. HEAP COMPOSITION, DISJOINTNESS, SEPARATING CONJUNCTION
+// ===========================================================================================
+//
+// Two heaps compose location-wise (`hunion`): where only one owns a location the cell survives;
+// where BOTH own it, their permissions ADD (`padd`) — the partial-commutative-monoid join of a
+// separation algebra. Raven lacks function extensionality, so heap agreement is stated POINTWISE
+// as `(q: Nat) -> h1(q) == h2(q)`, and every separation law is proved at that level.
+
+fn ccombine(x: Option<Pair<Nat, Nat>>, y: Option<Pair<Nat, Nat>>) -> Option<Pair<Nat, Nat>> {
+    match x {
+      | Option::None    => y
+      | Option::Some(cx) =>
+          match y {
+            | Option::None    => Option::Some(Pair<Nat, Nat>, cx)
+            | Option::Some(cy) =>
+                match cx { | Pair::mk(px, vx) => match cy { | Pair::mk(py, vy) =>
+                    Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, padd(px, py), vx)) } }
+          }
+    }
+}
+
+fn hunion(h1: Nat -> Option<Pair<Nat, Nat>>, h2: Nat -> Option<Pair<Nat, Nat>>)
+    -> (Nat -> Option<Pair<Nat, Nat>>) {
+    fun (q: Nat) => ccombine(h1(q), h2(q))
+}
+
+// emp is a UNIT of union, pointwise (monoid identity).
+fn hunion_emp_left(h: Nat -> Option<Pair<Nat, Nat>>)
+    -> (q: Nat) -> hunion(emp(), h)(q) == h(q) {
+    fun (q: Nat) => Eq::refl(Option<Pair<Nat, Nat>>, h(q))
+}
+fn hunion_emp_right(h: Nat -> Option<Pair<Nat, Nat>>)
+    -> (q: Nat) -> hunion(h, emp())(q) == h(q) {
+    fun (q: Nat) => match h(q) {
+      | Option::None    => Eq::refl(Option<Pair<Nat, Nat>>, Option::None(Pair<Nat, Nat>))
+      | Option::Some(c) => Eq::refl(Option<Pair<Nat, Nat>>, Option::Some(Pair<Nat, Nat>, c))
+    }
+}
+
+// DISJOINTNESS at one location, as an indexed inductive: constructors ONLY for the "at most one
+// owner" cases, so the both-owned case is uninhabited (an empty match refutes it).
+enum CDisj(x: Option<Pair<Nat, Nat>>, y: Option<Pair<Nat, Nat>>) -> Prop {
+    DLeftNone(c: Option<Pair<Nat, Nat>>)
+        where x == Option::None(Pair<Nat, Nat>), y == c;
+    DRightNone(c: Pair<Nat, Nat>)
+        where x == Option::Some(Pair<Nat, Nat>, c), y == Option::None(Pair<Nat, Nat>);
+}
+
+// On disjoint cells, combination is COMMUTATIVE.
+fn ccombine_comm(x: Option<Pair<Nat, Nat>>, y: Option<Pair<Nat, Nat>>, d: CDisj(x, y))
+    -> ccombine(x, y) == ccombine(y, x) {
+    match d {
+      | CDisj::DLeftNone(c)  => match c {
+          | Option::None    => Eq::refl(Option<Pair<Nat, Nat>>, Option::None(Pair<Nat, Nat>))
+          | Option::Some(cy) => Eq::refl(Option<Pair<Nat, Nat>>, Option::Some(Pair<Nat, Nat>, cy))
+        }
+      | CDisj::DRightNone(c) => Eq::refl(Option<Pair<Nat, Nat>>, Option::Some(Pair<Nat, Nat>, c))
+    }
+}
+
+// Disjointness is SYMMETRIC (needed for `P * Q |- Q * P`).
+fn cdisj_symm(x: Option<Pair<Nat, Nat>>, y: Option<Pair<Nat, Nat>>, d: CDisj(x, y)) -> CDisj(y, x) {
+    match d {
+      | CDisj::DLeftNone(c)  => match c {
+          | Option::None    => CDisj::DLeftNone(Option::None(Pair<Nat, Nat>))
+          | Option::Some(cy) => CDisj::DRightNone(cy)
+        }
+      | CDisj::DRightNone(c) => CDisj::DLeftNone(Option::Some(Pair<Nat, Nat>, c))
+    }
+}
+
+// UNION COMMUTATIVITY (pointwise), given pointwise disjointness — `P * Q` and `Q * P` describe
+// the same heap. This plus `cdisj_symm` is separation-conjunction commutativity at the model
+// level (`P * Q |- Q * P`).
+fn hunion_comm(h1: Nat -> Option<Pair<Nat, Nat>>, h2: Nat -> Option<Pair<Nat, Nat>>,
+    d: (q: Nat) -> CDisj(h1(q), h2(q)))
+    -> (q: Nat) -> hunion(h1, h2)(q) == hunion(h2, h1)(q) {
+    fun (q: Nat) => ccombine_comm(h1(q), h2(q), d(q))
+}
+
+// CELL-COMBINE ASSOCIATIVITY — the heart of separating-conjunction associativity. Permissions
+// add associatively (`padd_assoc`); the value tie-break (keep leftmost) is associative too, so
+// full associativity holds for ALL cells (no disjointness needed for this pointwise equation).
+fn ccombine_assoc(x: Option<Pair<Nat, Nat>>, y: Option<Pair<Nat, Nat>>, z: Option<Pair<Nat, Nat>>)
+    -> ccombine(ccombine(x, y), z) == ccombine(x, ccombine(y, z)) {
+    match x {
+      | Option::None    => Eq::refl(Option<Pair<Nat, Nat>>, ccombine(y, z))
+      | Option::Some(cx) => match y {
+          | Option::None    => Eq::refl(Option<Pair<Nat, Nat>>, ccombine(Option::Some(Pair<Nat, Nat>, cx), z))
+          | Option::Some(cy) => match z {
+              | Option::None    =>
+                  match cx { | Pair::mk(px, vx) => match cy { | Pair::mk(py, vy) =>
+                      Eq::refl(Option<Pair<Nat, Nat>>,
+                        Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, padd(px, py), vx))) } }
+              | Option::Some(cz) =>
+                  match cx { | Pair::mk(px, vx) => match cy { | Pair::mk(py, vy) => match cz { | Pair::mk(pz, vz) =>
+                      congr_arg(Nat, Option<Pair<Nat, Nat>>,
+                        fun (s: Nat) => Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, s, vx)),
+                        padd(padd(px, py), pz), padd(px, padd(py, pz)),
+                        padd_assoc(px, py, pz)) } } }
+            }
+        }
+    }
+}
+
+// UNION ASSOCIATIVITY (pointwise) — separating-conjunction associativity at the model level.
+fn hunion_assoc(h1: Nat -> Option<Pair<Nat, Nat>>, h2: Nat -> Option<Pair<Nat, Nat>>,
+    h3: Nat -> Option<Pair<Nat, Nat>>)
+    -> (q: Nat) -> hunion(hunion(h1, h2), h3)(q) == hunion(h1, hunion(h2, h3))(q) {
+    fun (q: Nat) => ccombine_assoc(h1(q), h2(q), h3(q))
+}
+
+// ===========================================================================================
+// 4. THE OWNERSHIP x DEPENDENCY BRIDGE  (the theorems this whole file exists for)
+// ===========================================================================================
+//
+// These are the proof-side statements of exactly what the EXECUTABLE borrow checker enforces:
+//   * a FULL-permission points-to is EXCLUSIVE — no other assertion about the location can
+//     co-exist with it under `*`. This is why `&mut x` (full) licenses a strong update: nothing
+//     else can be observing or aliasing the pointee.
+//   * a shared points-to is SPLITTABLE/DUPLICABLE into two readers, each holding a fraction.
+//     This is why `&x` (fractional) may be freely shared among many simultaneous readers.
+
+// ----- 4a. FULL PERMISSION IS EXCLUSIVE -----------------------------------------------------
+// The bridge as PERMISSION-VALIDITY: if a location is owned at `full` and ALSO at any real
+// (>= half) permission, their composite permission is INVALID (exceeds one unit). This is the
+// separation-algebra reason `&mut` (full) is exclusive: no companion owner can be admitted
+// without over-provisioning the location past a whole unit.
+//
+// `perm_of` (below) reads the permission out of a cell. `ccombine` (section 3) makes the two
+// owners' permissions ADD at a co-owned location. The theorem: full + (>= half) is invalid.
+
+// A location owned at `full` in h1 and at `>= half` in h2 has an invalid combined permission.
+// We take the companion permission to be exactly `half` (the smallest real share); larger shares
+// only make it more invalid. This is `l |->[1] v  *  l |->[½] w  |-  False`.
+fn full_excludes_half(v: Nat, w: Nat,
+    // the caller exhibits validity of the combined permission at the shared cell...
+    hv: valid(padd(full, half))) -> False {
+    over_one_invalid(hv)          // ...which is impossible: full + half exceeds one unit.
+}
+
+// Made concrete on cells: combining a FULL cell and a HALF cell at the same location produces a
+// cell whose permission is `full + half`, and asserting THAT permission valid is absurd. The
+// combined cell's permission is exposed by `perm_of`.
+fn perm_of(c: Pair<Nat, Nat>) -> Nat { match c { | Pair::mk(p, x) => p } }
+
+fn full_half_combine_perm(v: Nat, w: Nat)
+    -> perm_of(Pair::mk(Nat, Nat,
+         padd(full, half),
+         v)) == padd(full, half) {
+    Eq::refl(Nat, padd(full, half))
+}
+
+// So: any proof that the co-owned (full + half) cell carries a VALID permission is refuted —
+// the exclusivity of `&mut` at the level of the fractional-permission algebra.
+fn coowned_full_invalid(v: Nat, w: Nat,
+    hv: valid(perm_of(Pair::mk(Nat, Nat, padd(full, half), v)))) -> False {
+    over_one_invalid(
+      subst(Nat, valid,
+            perm_of(Pair::mk(Nat, Nat, padd(full, half), v)), padd(full, half),
+            full_half_combine_perm(v, w), hv))
+}
+
+// Tying it to `ccombine`: co-owning `l` at `full` and at `half` really does compose to a cell
+// carrying the `full + half` permission — so `coowned_full_invalid` applies to the ACTUAL joined
+// cell. This closes the loop from separation-conjunction composition to the invalidity refutation.
+fn ccombine_full_half_perm(v: Nat, w: Nat)
+    -> ccombine(Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, full, v)),
+                Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, half, w)))
+       == Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, padd(full, half), v)) {
+    Eq::refl(Option<Pair<Nat, Nat>>,
+      Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, padd(full, half), v)))
+}
+
+// ----- 4b. SHARED POINTS-TO IS SPLITTABLE / DUPLICABLE --------------------------------------
+// Combining two HALF-permission cells for the same value yields the FULL cell: the cell-level
+// content of `l |->[1] v  ==  l |->[½] v * l |->[½] v`. Definitional via `half + half = full`.
+fn half_split_cell(v: Nat)
+    -> ccombine(Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, half, v)),
+                Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, half, v)))
+       == Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, full, v)) {
+    Eq::refl(Option<Pair<Nat, Nat>>, Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, full, v)))
+}
+
+// Boolean case-analysis with an explicit motive (built on `Bool::rec`), so the scrutinee is
+// abstracted uniformly across ALL its occurrences in a goal — the tool needed to reason under
+// the shared `beq(q)(l)` in the singleton reads below.
+fn bool_case(M: Bool -> Prop, ht: M(Bool::true), hf: M(Bool::false), b: Bool) -> M(b) {
+    match b { | Bool::true => ht | Bool::false => hf }
+}
+
+// Stated on heaps, POINTWISE: the union of two half-singletons at `l` equals the full singleton
+// at `l` at every location. At the location whose `beq(q)(l)` is `true` both sides give
+// `Some(full, v)` (by the cell lemma); where it is `false` both give `None`. Abstracting
+// `beq(q)(l)` with `bool_case` refines all three singleton reads at once. This is the cell-level
+// content of  `l |->[½] v  *  l |->[½] v  ==  l |->[1] v`.
+fn half_split_heap(l: Nat, v: Nat)
+    -> (q: Nat) -> hunion(sing(l, half, v), sing(l, half, v))(q) == sing(l, full, v)(q) {
+    fun (q: Nat) =>
+      bool_case(
+        fun (b: Bool) =>
+          ccombine(
+            match b { | Bool::true => Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, half, v)) | Bool::false => Option::None(Pair<Nat, Nat>) },
+            match b { | Bool::true => Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, half, v)) | Bool::false => Option::None(Pair<Nat, Nat>) })
+          == (match b { | Bool::true => Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, full, v)) | Bool::false => Option::None(Pair<Nat, Nat>) }),
+        half_split_cell(v),
+        Eq::refl(Option<Pair<Nat, Nat>>, Option::None(Pair<Nat, Nat>)),
+        beq(q)(l))
+}
+
+// ----- 4c. THE FRAME PROPERTY ---------------------------------------------------------------
+// The frame rule's semantic core: a heap `h` extends to `h * f` for any disjoint frame `f`, and
+// what `h` already owns is UNDISTURBED by the frame. Pointwise: wherever `h` owns a location
+// (`h(q) == Some c`) that is disjoint from the frame (`f(q) == None`), the composed heap reads
+// back exactly `h`'s cell. This is why a proof about `h` survives adjoining unrelated state `f` —
+// the essence of local reasoning / the frame rule.
+fn frame_preserves(h: Nat -> Option<Pair<Nat, Nat>>, f: Nat -> Option<Pair<Nat, Nat>>, q: Nat,
+    c: Pair<Nat, Nat>, hq: h(q) == Option::Some(Pair<Nat, Nat>, c), fq: f(q) == Option::None(Pair<Nat, Nat>))
+    -> hunion(h, f)(q) == h(q) {
+    // hunion(h,f)(q) = ccombine(h(q), f(q)); rewrite f(q):=None then h(q):=Some c, both give Some c.
+    trans(Option<Pair<Nat, Nat>>,
+      ccombine(h(q), f(q)), ccombine(h(q), Option::None(Pair<Nat, Nat>)), h(q),
+      congr_arg(Option<Pair<Nat, Nat>>, Option<Pair<Nat, Nat>>,
+        fun (o: Option<Pair<Nat, Nat>>) => ccombine(h(q), o), f(q), Option::None(Pair<Nat, Nat>), fq),
+      // ccombine(h(q), None) == h(q): by cases on h(q), and here h(q) == Some c.
+      subst(Option<Pair<Nat, Nat>>,
+        fun (o: Option<Pair<Nat, Nat>>) => ccombine(o, Option::None(Pair<Nat, Nat>)) == o,
+        Option::Some(Pair<Nat, Nat>, c), h(q), symm(Option<Pair<Nat, Nat>>, h(q), Option::Some(Pair<Nat, Nat>, c), hq),
+        Eq::refl(Option<Pair<Nat, Nat>>, Option::Some(Pair<Nat, Nat>, c))))
+}
+
+// ===========================================================================================
+// 5. WORKED EXAMPLE — a shared read through a half-permission points-to
+// ===========================================================================================
+//
+// Ownership x dependency in action. We hold `l |->[½] v` (a shared, read-only borrow). Reading
+// `l` returns exactly `v` — a DEPENDENT fact about the pointee, licensed by the (fractional)
+// permission we own. Simultaneously the share is DUPLICABLE (`half_split_heap` above): the same
+// `l |->[1] v` splits into two `l |->[½] v` readers. Together: many readers, each certain of the
+// value — precisely the guarantee `&x` gives, now a theorem.
+
+// The value read out of a cell, and the "dereference" that projects the value from a heap read.
+fn val_of(c: Pair<Nat, Nat>) -> Nat { match c { | Pair::mk(p, x) => x } }
+fn deref(o: Option<Pair<Nat, Nat>>) -> Option<Nat> {
+    match o { | Option::None => Option::None(Nat) | Option::Some(c) => Option::Some(Nat, val_of(c)) }
+}
+
+// Reading location `l` through the shared points-to `l |->[½] v` yields exactly `v` — a dependent
+// fact about the pointee, licensed by the (fractional) permission owned. This IS what `&x` buys.
+fn shared_read(l: Nat, v: Nat)
+    -> deref(sing(l, half, v)(l)) == Option::Some(Nat, v) {
+    congr_arg(Option<Pair<Nat, Nat>>, Option<Nat>, deref,
+      sing(l, half, v)(l), Option::Some(Pair<Nat, Nat>, Pair::mk(Nat, Nat, half, v)),
+      sing_here(l, half, v))
+}
