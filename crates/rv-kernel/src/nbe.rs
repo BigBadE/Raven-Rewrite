@@ -228,26 +228,55 @@ impl<'a> Nbe<'a> {
 
     /// If `h spine` is a **destructor** observing a saturated **corecursor** application,
     /// fire its ν-rule (one observation forces one layer); otherwise leave it stuck. This
-    /// is the exact dual of [`try_iota`]: the scrutinee is at position `num_params` of the
-    /// destructor spine, and must be a stuck corecursor of the matching coinductive.
+    /// is the exact dual of [`try_iota`]: the scrutinee is at position `num_params +
+    /// num_indices` of the destructor spine, and must be a stuck corecursor of the
+    /// matching coinductive. For a corecursive destructor, the new indices are computed
+    /// by evaluating the destructor's declared index-transform (a [`Term`], stored at
+    /// declaration time) under a value environment built from the corecursor's current
+    /// `[params, indices]` arguments — mirroring [`crate::reduce::Reducer::try_nu`]
+    /// exactly (differentially cross-checked by the coinductive module's tests).
     fn try_nu(&self, h: Head, spine: Vec<Rc<Value>>) -> Rc<Value> {
         if let Head::Const(dname, _) = &h {
             if let Some(Decl::Destructor(dtor)) = self.env.get(dname) {
                 if let Some(Decl::Coinductive(coind)) = self.env.get(&dtor.coind) {
-                    let scrut_pos = coind.num_params;
+                    let scrut_pos = coind.num_params + coind.num_indices;
                     if spine.len() > scrut_pos {
                         if let Value::Stuck(Head::Const(cname, cls), cargs) = &*spine[scrut_pos] {
                             if let Some(Decl::Corecursor(corec)) = self.env.get(cname) {
                                 if corec.coind == dtor.coind && cargs.len() >= corec.arity() {
                                     if let Some(rule) = corec.rules.get(dname) {
                                         let step = cargs[rule.step_index].clone();
+                                        let cur_indices =
+                                            &cargs[corec.index_pos()..corec.index_pos() + corec.num_indices];
                                         let seed = cargs[corec.seed_pos()].clone();
-                                        // observed field = step seed
-                                        let observed = self.vapp(step, seed);
+                                        // observed field = step cur_indices… seed
+                                        let mut observed = step;
+                                        for idx in cur_indices {
+                                            observed = self.vapp(observed, idx.clone());
+                                        }
+                                        observed = self.vapp(observed, seed);
                                         let mut v = if rule.corecursive {
-                                            // Re-wrap the corecursor around the new seed.
+                                            // Evaluate the index-transform terms under a
+                                            // venv built from the current params ++
+                                            // indices (in that order — matches the
+                                            // transform's own `[params, indices]`
+                                            // context, innermost/last index at Var(0)).
+                                            let mut venv = Rc::new(VEnv::Nil);
+                                            for a in cargs[..corec.num_params].iter().chain(cur_indices) {
+                                                venv = venv.cons(a.clone());
+                                            }
+                                            let new_indices: Vec<Rc<Value>> = rule
+                                                .index_transform
+                                                .iter()
+                                                .map(|t| self.eval(&venv, t))
+                                                .collect();
+                                            // Re-wrap the corecursor around the new
+                                            // indices and the new seed.
                                             let mut new_args = cargs[..corec.arity()].to_vec();
                                             new_args[corec.seed_pos()] = observed;
+                                            for (i, ni) in new_indices.into_iter().enumerate() {
+                                                new_args[corec.index_pos() + i] = ni;
+                                            }
                                             Rc::new(Value::Stuck(
                                                 Head::Const(cname.clone(), cls.clone()),
                                                 new_args,

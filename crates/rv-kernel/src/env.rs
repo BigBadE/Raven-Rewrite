@@ -115,17 +115,23 @@ pub struct Constructor {
 /// constructor-signature functor, a coinductive is the *final coalgebra* of its
 /// destructor-signature functor.
 ///
-/// The kernel supports the **non-indexed** coinductive case with **uniform
-/// parameters** (e.g. `Stream A`, `Colist A`). Each destructor observes one field of
-/// the unfolded state; a destructor whose result type is the coinductive itself
-/// (e.g. `Stream.tail : Stream A → Stream A`) is a *corecursive* observation.
+/// The kernel supports coinductives with **uniform parameters** plus an optional
+/// **index telescope** (e.g. `Stream A`, `Colist A`, or the indexed `Bisim A (s t :
+/// Stream A) : Prop`). Each destructor observes one field of the unfolded state; a
+/// destructor whose result type is the coinductive itself (e.g. `Stream.tail : Stream
+/// A → Stream A`, or `Bisim.tail_bisim : Bisim A s t → Bisim A (tail s) (tail t)`) is a
+/// *corecursive* observation — see [`crate::coinductive`] for the exact supported form
+/// and restriction (a single non-indexed carrier `X`, indices transformed by a fixed
+/// per-destructor term over `[params, indices]`).
 #[derive(Clone, Debug)]
 pub struct Coinductive {
     pub num_levels: u32,
-    /// The type former's type: `Π params. Sort _` (no indices in the supported form).
+    /// The type former's type: `Π params. Π indices. Sort _`.
     pub ty: Term,
     /// Number of uniform parameters.
     pub num_params: usize,
+    /// Number of indices (0 for the original non-indexed form).
+    pub num_indices: usize,
     /// Names of the destructors, in declaration order.
     pub dtors: Vec<Name>,
     /// Name of the corecursor generated for this coinductive.
@@ -159,14 +165,19 @@ pub struct Destructor {
 ///
 /// ```text
 ///   S.corec.{levels v} : Π params.
-///       Π (X : Sort v).                                  -- the coalgebra carrier / state
-///       Π (step_d : Π (x:X). R_d[X for S]) …             -- one step per destructor d
-///       Π (seed : X). S params
+///       Π (X : Sort v).                                     -- the coalgebra carrier / state
+///       Π (step_d : Π indices. X → R_d[X for S]) …          -- one (index-polymorphic) step per destructor d
+///       Π indices (seed : X). S params indices
 /// ```
 ///
-/// where for a plain destructor `R_d` is its result type and for a corecursive
-/// destructor `R_d` is `X` (the *next* state). A single ν-rule per destructor drives
-/// reduction: observing the seed unfolds exactly one layer (see [`crate::reduce`]).
+/// where for a plain destructor `R_d` is its result type (which may mention the
+/// *step's own* `indices` binders) and for a corecursive destructor `R_d` is `X` (the
+/// *next* state — the carrier itself is **not** indexed; see [`crate::coinductive`]).
+/// The trailing `indices` (right before `seed`) are the *current* indices, threaded
+/// through the ν-rule and updated at each corecursive observation by substituting the
+/// destructor's declared index-transform (see [`CorecRule::index_transform`]). A
+/// single ν-rule per destructor drives reduction: observing the seed unfolds exactly
+/// one layer (see [`crate::reduce`]).
 #[derive(Clone, Debug)]
 pub struct Corecursor {
     pub num_levels: u32,
@@ -176,6 +187,8 @@ pub struct Corecursor {
     pub num_params: usize,
     /// Number of destructors (= number of `step` arguments).
     pub num_dtors: usize,
+    /// Number of indices (0 for the original non-indexed form).
+    pub num_indices: usize,
     /// Per-destructor ν-reduction data, keyed by destructor name.
     pub rules: HashMap<Name, CorecRule>,
 }
@@ -185,9 +198,13 @@ impl Corecursor {
     pub fn carrier_pos(&self) -> usize {
         self.num_params
     }
-    /// Position of the `seed` argument: `params + carrier + steps`.
-    pub fn seed_pos(&self) -> usize {
+    /// Position of the first "current indices" argument: `params + carrier + steps`.
+    pub fn index_pos(&self) -> usize {
         self.num_params + 1 + self.num_dtors
+    }
+    /// Position of the `seed` argument: `params + carrier + steps + indices`.
+    pub fn seed_pos(&self) -> usize {
+        self.index_pos() + self.num_indices
     }
     /// Total number of arguments `S.corec` takes.
     pub fn arity(&self) -> usize {
@@ -204,6 +221,13 @@ pub struct CorecRule {
     pub step_index: usize,
     /// Whether this destructor is corecursive (its result is the coinductive again).
     pub corecursive: bool,
+    /// For a **corecursive** destructor: the new index arguments, one term per index,
+    /// each living in the context `[params, indices]` (params outermost, `Var(0)` the
+    /// innermost/last index — see [`crate::coinductive`]). Instantiating these with the
+    /// corecursor's *current* `[params, indices]` arguments computes the *next*
+    /// indices at ν-reduction time. Empty when `num_indices == 0` or the destructor is
+    /// plain.
+    pub index_transform: Vec<Term>,
 }
 
 /// Which of the five fixed **quotient** constants a [`Quotient`] declaration is.

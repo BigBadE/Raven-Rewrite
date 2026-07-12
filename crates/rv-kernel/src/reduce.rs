@@ -155,16 +155,19 @@ impl<'e> Reducer<'e> {
     }
 
     /// Try one ν-reduction: destructor `dtor` (carrying universe args `ls`) applied to
-    /// `args`, whose scrutinee (the argument right after the parameters) whnf's to a
-    /// **corecursor** application. Observation forces exactly one layer:
+    /// `args`, whose scrutinee (the argument right after the parameters and indices)
+    /// whnf's to a **corecursor** application. Observation forces exactly one layer:
     ///
-    /// * a **plain** destructor `d` reduces `d params (S.corec params X steps seed)` to
-    ///   `step_d seed`;
+    /// * a **plain** destructor `d` reduces `d params indices (S.corec params X steps
+    ///   cur_indices seed)` to `step_d cur_indices seed`;
     /// * a **corecursive** destructor `d` (result is the coinductive again) reduces it to
-    ///   `S.corec params X steps (step_d seed)` — one layer peeled and the corecursor
-    ///   re-wrapped around the *new* seed. Because the recursive occurrence is placed back
-    ///   *under* the corecursor (i.e. under a fresh observation), corecursion is guarded
-    ///   by construction: no unfolding happens until the next observation demands it.
+    ///   `S.corec params X steps new_indices (step_d cur_indices seed)` — one layer
+    ///   peeled and the corecursor re-wrapped around the *new* seed **and** the *new*
+    ///   indices (computed by instantiating the destructor's declared index-transform
+    ///   with the current `[params, cur_indices]`). Because the recursive occurrence is
+    ///   placed back *under* the corecursor (i.e. under a fresh observation),
+    ///   corecursion is guarded by construction: no unfolding happens until the next
+    ///   observation demands it.
     ///
     /// Returns `None` if the destructor is not yet saturated to its scrutinee or the
     /// scrutinee is not a corecursor application (a stuck/neutral observation).
@@ -175,14 +178,14 @@ impl<'e> Reducer<'e> {
         _ls: &[level::Level],
         args: &[Term],
     ) -> Option<Term> {
-        // Destructor spine: [params…, scrutinee, extra…]. The scrutinee sits right after
-        // the coinductive's parameters, whose count we read off the corecursor once we
-        // know which coinductive this is.
+        // Destructor spine: [params…, indices…, scrutinee, extra…]. The scrutinee sits
+        // right after the coinductive's parameters and indices, whose counts we read
+        // off the coinductive once we know which one this is.
         let coind = match self.env.get(&dtor.coind) {
             Some(Decl::Coinductive(c)) => c.clone(),
             _ => return None,
         };
-        let scrut_pos = coind.num_params;
+        let scrut_pos = coind.num_params + coind.num_indices;
         if args.len() <= scrut_pos {
             return None; // not saturated to the scrutinee
         }
@@ -200,18 +203,40 @@ impl<'e> Reducer<'e> {
         if corec_args.len() < corec.arity() {
             return None; // corecursor itself not fully applied
         }
-        // `S.corec params X steps seed` — pull out the pieces.
+        // `S.corec params X steps cur_indices seed` — pull out the pieces.
         let step = &corec_args[rule.step_index];
+        let cur_indices = &corec_args[corec.index_pos()..corec.index_pos() + corec.num_indices];
         let seed = &corec_args[corec.seed_pos()];
-        // The observed field is `step seed`.
-        let observed = Term::app(step.clone(), seed.clone());
+        // The observed field is `step cur_indices… seed` (a step is index-polymorphic:
+        // `Π indices. X → R`).
+        let mut observed = step.clone();
+        for idx in cur_indices {
+            observed = Term::app(observed, idx.clone());
+        }
+        observed = Term::app(observed, seed.clone());
         let result = if rule.corecursive {
-            // Re-wrap: `S.corec params X steps (step seed)` — the next state under a
-            // fresh corecursor. Reuse the original corecursor spine, swapping the seed.
+            // Compute the *new* indices by instantiating the destructor's declared
+            // index-transform (in context `[params, indices]`) with the corecursor's
+            // *current* params+indices arguments. `subst_ctx` expects `images[i]` to
+            // replace `Var(i)`; the transform's `Var(0)` is the innermost/last index,
+            // so the substitution images are `[params ++ cur_indices]` reversed.
+            let actual: Vec<Term> =
+                corec_args[..corec.num_params].iter().chain(cur_indices).cloned().collect();
+            let images: Vec<Term> = actual.into_iter().rev().collect();
+            let new_indices: Vec<Term> =
+                rule.index_transform.iter().map(|t| t.subst_ctx(&images)).collect();
+            // Re-wrap: `S.corec params X steps new_indices (step cur_indices seed)` —
+            // the next state under a fresh corecursor. Reuse the original corecursor
+            // spine, swapping the indices and the seed.
             let mut rebuilt = corec_head.clone();
             for (i, a) in corec_args.iter().enumerate().take(corec.arity()) {
-                let a = if i == corec.seed_pos() { &observed } else { a };
-                rebuilt = Term::app(rebuilt, a.clone());
+                if i == corec.seed_pos() {
+                    rebuilt = Term::app(rebuilt, observed.clone());
+                } else if i >= corec.index_pos() && i < corec.index_pos() + corec.num_indices {
+                    rebuilt = Term::app(rebuilt, new_indices[i - corec.index_pos()].clone());
+                } else {
+                    rebuilt = Term::app(rebuilt, a.clone());
+                }
             }
             rebuilt
         } else {
