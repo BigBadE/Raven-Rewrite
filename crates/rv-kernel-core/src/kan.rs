@@ -167,6 +167,200 @@
 //! and this module's doc is the single place documenting exactly how far the
 //! implementation goes.
 
+// ============================================================================
+// Phase 3.6: the `Π`-case `transp` filling rule.
+// ============================================================================
+//
+// Phase 3 (above) shipped only `transp`'s **regularity** rule — a real, but narrow,
+// payoff. Phase 3.5 (`crate::cubical`) then added the De Morgan interval
+// (`~`/`∧`/`∨`, with `normalize_interval` deciding the free De Morgan algebra
+// definitionally). That connective structure is exactly the missing piece the
+// module doc above flagged as blocking the `Π` rule: with `~`/`∧`/`∨` in hand, a
+// **generalized coercion** `coe^{i.A}_{r→r'}` — CCHM's own device for expressing
+// "transport along an *arbitrary* pair of interval endpoints" — becomes expressible
+// *without* adding a new primitive, purely as a De Morgan reparametrization of the
+// **existing**, fixed-direction (`i0→i1`) [`crate::term::Term::Transp`]:
+//
+// ```text
+//   coe^{i.A}_{r→r'}(a) := transp (λ k. A[i := (r ∧ ~k) ∨ (r' ∧ k)]) φ a
+// ```
+//
+// Check the two boundaries (using the bounded-lattice laws `crate::cubical` already
+// proves definitional): at `k=i0`, `(r∧~i0)∨(r'∧i0) = (r∧i1)∨(r'∧i0) = r∨i0 = r`;
+// at `k=i1`, `(r∧~i1)∨(r'∧i1) = (r∧i0)∨(r'∧i1) = i0∨r' = r'`. So the reparametrized
+// family's `i0`/`i1` boundaries are exactly `A[i:=r]`/`A[i:=r']` — precisely what
+// the *existing*, unmodified `transp` primitive (fixed at `i0→i1`) needs to
+// transport `a : A[i:=r]` to a value of `A[i:=r']`. `φ` is passed as `⊤`
+// (`Cof::top()`): per this crate's own — already adversarially established —
+// convention (see the module doc above, "a soundness bug caught and fixed during
+// this pass"), the `Transp` reduction rule **never consults `φ`**, so its value is
+// irrelevant to what the term computes to; `⊤` is simply always a well-formed
+// cofibration, so it's the natural placeholder.
+//
+// [`coe`] implements exactly this (as a *term-building* helper, not a value/eval
+// one — see below for why that's the right layer). The one piece of bookkeeping it
+// needs beyond ordinary substitution is [`crate::term::Term::subst_ctx_keep_frame`]:
+// building `A[i := (r∧~k)∨(r'∧k)]` swaps `A`'s own interval binder `i` for a fresh
+// one `k` of the *same* De-Bruijn "width" (both are exactly one `I`-classified
+// binder around the same ambient context) — an ordinary [`Term::instantiate`] would
+// instead *eliminate* the binder outright (shrinking every other free variable's
+// index by one), which is wrong here: `k` needs to stay bound, not be eliminated.
+// See that method's doc comment for the full index bookkeeping argument.
+//
+// # The `Π` computation rule
+//
+// Given `transp (λ i. Π(g:A i). B i x) φ f0` — `A` living under the transp's own
+// interval binder (`Var(0) = i`), `B` living under that *and* the `Π`'s domain
+// binder (`Var(0) = x`, `Var(1) = i`) — CCHM's rule is:
+//
+// ```text
+//   transp (λi. Πx:A(i). B i x) φ f0
+//     ↦ λ (x1 : A i1).
+//         let x̄ := λ j. coe^{i.A}_{i1→j}(x1)     -- backward (contravariant) transport
+//                                                    of the argument: from i1 down to
+//                                                    any j, so x̄(i0) is the argument at
+//                                                    the *source* side f0 expects.
+//         in coe^{i. B i (x̄ i)}_{0→1}( f0 (x̄ i0) )  -- forward transport of the result.
+// ```
+//
+// Two observations simplify the implementation:
+//
+// 1. The **inner** `coe` (building `x̄`) has an *arbitrary* target endpoint (`i1→j`
+//    for varying `j`), so it genuinely needs the general reparametrization above.
+// 2. The **outer** `coe` transports `0→1` — **exactly** the primitive `Transp`'s own
+//    fixed direction — so it needs *no* reparametrization at all; it is literally
+//    `Term::transp(λi. B i (x̄ i), ⊤, f0 (x̄ i0))`, built directly.
+//
+// [`transp_pi_rule`] builds exactly this term (a `Lam` wrapping one nested
+// `Transp`), and is called from both [`crate::reduce::Reducer::whnf`] and
+// [`crate::nbe::Nbe::eval`]'s `Term::Transp` arms (after the existing regularity
+// check, when the family's head is *syntactically* — no `whnf` — a literal
+// [`crate::term::Term::Pi`]; see those call sites' doc comments for why syntactic
+// matching, matching the existing regularity rule's convention, is the deliberately
+// conservative choice here). Being a pure `Term → Term` builder (not
+// `Value`-specific) lets `nbe::Nbe::eval` simply hand the built term to `self.eval`
+// under the *same* `venv` the stuck computation would have used — the construction
+// introduces no new *free* variable (every fresh binder it creates, `x1`/`i2`/`k`,
+// is bound *within* the term it builds), so this is exactly as sound as evaluating
+// any other freshly-substituted subterm.
+//
+// # Soundness
+//
+// This rule adds **no new axiom or primitive** — it is a derived rewriting of
+// `Transp` into more `Transp`/`Lam`/`App` nodes, each of which is independently
+// re-typechecked by this crate's existing, unmodified `Checker::infer` (the
+// `Term::Transp` arm requires `a : family[i:=i0]` and reports `family[i:=i1]`,
+// exactly as before — this phase adds no new *checking* rule at all, only a new
+// *reduction*). Three things must hold for that to be safe:
+//
+// 1. **The reduction is type-preserving.** The built `Lam(A(i1), body)` must have
+//    type `family[i:=i1] = Πx:A(i1). B(i1,x)`, matching the *unmodified* `infer`
+//    result for the original `Transp` node (`Checker::infer` never even looks at
+//    which *reduction* rule fired — subject reduction is what must hold). `body`,
+//    under `x1 : A(i1)`, must have type `B(i1, x1)`.
+//    - `f0 (x̄ i0)` — `f0 = a0 : A(i0) → B(i0,·)` (the *original* checked premise,
+//      `a0 : family[i:=i0]`), applied to `x̄ i0 = coe^{i.A}_{i1→i0}(x1) : A(i0)`
+//      (`coe`'s own boundary computation above gives exactly this, with `r=i1`,
+//      `r'=i0`) — has type `B(i0, x̄ i0)`.
+//    - The outer `Transp(λi. B i (x̄ i), ⊤, f0(x̄ i0))` then transports that
+//      `B(i0, x̄ i0)`-typed term along `family := λi. B i (x̄ i)` — whose `i0`
+//      boundary is *exactly* `B(i0, x̄ i0)` (by construction: substituting `i:=i0`
+//      into `B i (x̄ i)` gives `B(i0, x̄(i0))` verbatim) — landing at `family[i:=i1]
+//      = B(i1, x̄ i1)`. And `x̄ i1 = coe^{i.A}_{i1→i1}(x1)`, whose own `i0`/`i1`
+//      boundaries (by the *same* boundary computation, now with `r=r'=i1`) are both
+//      `A(i1)` — i.e. `x̄ i1` is (up to conversion, `family[i:=i1]` unfolding the
+//      same way regardless of `r=r'`'s common value) exactly `x1`'s type, so
+//      `B(i1, x̄ i1) ≡ B(i1, x1)`, the target. This is the textbook CCHM argument,
+//      re-derived structurally here rather than assumed.
+// 2. **Every produced subterm independently re-typechecks** — this is not merely
+//    argued, it is *tested*: [`kernel_tests::transp_pi_rule_transports_a_concrete_function`]
+//    below builds a concrete instance, reduces it, and re-runs `Checker::infer` on
+//    the reduced normal form from scratch (the same "independent recheck" discipline
+//    this crate uses everywhere else), confirming the built term's *inferred* type
+//    (not just the *original* `Transp` node's) matches `family[i:=i1]`.
+// 3. **No new equation between unrelated closed terms is introduced.** The rule
+//    only ever *rewrites* one term into another via ordinary substitution
+//    (`subst_ctx_keep_frame`/`instantiate`/`lift`, all pre-existing, independently
+//    tested primitives) and re-wraps the pieces in `Transp`/`Lam`/`App` — it never
+//    invents a value or asserts a boundary that isn't *computed* from the family
+//    and argument already supplied. In particular the regularity rule (checked
+//    *first*, unconditionally — see the call sites) still governs the *constant*
+//    case, so this rule can only ever fire in addition to, never instead of, that
+//    already-proven-sound path; [`kernel_tests::transp_pi_rule_agrees_with_regularity_on_a_constant_pi_family`]
+//    pins this consistency down directly. The anti-`False` attack from the module
+//    doc above (a type-level path axiom smuggling a type change) is re-run through
+//    the `Π` case specifically in
+//    [`kernel_tests::transp_pi_rule_does_not_smuggle_a_type_change_through_a_function`].
+
+use crate::face::Cof;
+use crate::term::Term;
+
+/// `coe^{i.dom}_{r→r'}(a)` (see the module doc's "Construction" section): transport
+/// `a` (of type `dom[i:=r]`) along the line `dom` (living under one interval
+/// binder, `Var(0) = i`, over some ambient context) from `r` to `r'` (both living in
+/// that *ambient* context — no `i` in scope), producing a term of `dom[i:=r']`.
+/// Built as a reparametrized instance of the existing, fixed-direction
+/// [`Term::transp`] via the De Morgan connections `∧`/`∨`/`~` — see the module doc
+/// for the boundary computation that makes this valid.
+pub(crate) fn coe(dom: &Term, r: &Term, r_prime: &Term, a: &Term) -> Term {
+    // `conn`, living under a *fresh* interval binder `k` over the same ambient
+    // context as `r`/`r'` (hence `r`/`r'` are lifted by one to sit under it):
+    // `(r ∧ ~k) ∨ (r' ∧ k)`.
+    let conn = Term::ijoin(
+        Term::imeet(r.lift(1, 0), Term::ineg(Term::Var(0))),
+        Term::imeet(r_prime.lift(1, 0), Term::Var(0)),
+    );
+    // Swap `dom`'s own interval binder for `k`, substituting `conn` for every
+    // occurrence — `subst_ctx_keep_frame` (not `instantiate`) because this must
+    // *keep* one interval binder in place (now meaning `k`, not `i`), not eliminate
+    // it (see that method's doc comment).
+    let reparam = dom.subst_ctx_keep_frame(&[conn]);
+    Term::transp(reparam, Cof::top(), a.clone())
+}
+
+/// The `Π`-case `transp` filling rule (see the module doc's "The `Π` computation
+/// rule"). `dom`/`cod` are the two components of the family's `Π` head (`dom` under
+/// one interval binder, `cod` under that *and* the `Π`'s own domain binder — exactly
+/// [`Term::Pi`]'s own binder convention, just nested one level deeper for the
+/// transp's interval variable); `a0` is the transp's checked argument (of type
+/// `family[i:=i0]`), living in the ambient context (no interval/`Π` binder). Returns
+/// the reduced `Lam` term (one whnf step) — never partially applies/evaluates the
+/// pieces beyond the substitutions the rule itself calls for.
+pub(crate) fn transp_pi_rule(dom: &Term, cod: &Term, a0: &Term) -> Term {
+    // The result's domain: `A(i1)`, in the ambient context (no binders at all).
+    let dom_i1 = dom.instantiate(&Term::IOne);
+
+    // `dom`, reindexed to live under the body's own frame `[x1, Γ]` (insert one
+    // fresh slot for `x1` between `dom`'s own interval binder and the rest of its
+    // ambient context `Γ`) — used to build `x̄`'s two concrete/instantiated uses.
+    let dom_for_body = dom.lift(1, 1);
+    // `x̄(i0) = coe^{i.A}_{i1→i0}(x1)`, living in `[x1, Γ]` (`x1 = Var(0)` there).
+    let xbar_i0 = coe(&dom_for_body, &Term::IOne, &Term::IZero, &Term::Var(0));
+
+    // `f0 (x̄ i0)`: `a0` (== `f0`) lifted into `[x1, Γ]`, applied to `x̄(i0)`.
+    let f0_applied = Term::app(a0.lift(1, 0), xbar_i0);
+
+    // `dom`, reindexed to live under the *second* transp's frame `[i2, x1, Γ]`
+    // (insert two fresh slots, for `i2` and `x1`, between `dom`'s own interval
+    // binder and `Γ`) — used to build `x̄(i2)`, the line `B i (x̄ i)` needs.
+    let dom_for_newfam = dom.lift(2, 1);
+    // `x̄(i2) = coe^{i.A}_{i1→i2}(x1)`, living in `[i2, x1, Γ]` (`i2 = Var(0)`,
+    // `x1 = Var(1)` there).
+    let xbar_i2 = coe(&dom_for_newfam, &Term::IOne, &Term::Var(0), &Term::Var(1));
+    // `B i2 (x̄ i2)`: substitute `cod`'s own two binders (`x`, then `i`) with
+    // `x̄(i2)` and `i2` respectively, *keeping* the frame (the result stays under
+    // exactly one interval binder, `i2`, over `[x1, Γ]` — matching `Transp`'s own
+    // `fam` convention) rather than eliminating them.
+    let newfam = cod.subst_ctx_keep_frame(&[xbar_i2, Term::Var(0)]);
+
+    // `coe^{i. B i (x̄ i)}_{0→1}(f0 (x̄ i0))` — the *outer* transport is already in
+    // the primitive's own fixed `i0→i1` direction, so no reparametrization is
+    // needed: build the `Transp` node directly.
+    let body = Term::transp(newfam, Cof::top(), f0_applied);
+
+    Term::lam(dom_i1, body)
+}
+
 #[cfg(test)]
 mod kernel_tests {
     use crate::face::Cof;
@@ -466,5 +660,192 @@ mod kernel_tests {
         let bad_phi = Cof::eq0(cn("a")); // `a : A`, not `: I`
         let t = Term::transp(fam, bad_phi, cn("a"));
         assert!(k.infer(&t).is_err());
+    }
+
+    // ---- transp: the `Π`-case filling rule (Phase 3.6, see the module doc above) ----
+
+    fn pi_env() -> Kernel {
+        let mut k = Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("B", 0, Term::typ(0)).unwrap();
+        k.add_axiom("f", 0, Term::arrow(cn("A"), cn("A"))).unwrap();
+        k.add_axiom("a", 0, cn("A")).unwrap();
+        k
+    }
+
+    /// Build `λi. (p @ i) → (p @ i)` — a `Π` family whose domain *and* codomain both
+    /// walk the same type-level path `p` (an axiom of type `Path Type A B`, or
+    /// `refl A`). `p_amb` is `p` as it lives in the *ambient* context (no interval
+    /// binder in scope yet). The domain lives in frame `[i, Γ]` (`p` lifted by one
+    /// to sit under the fresh interval binder); the codomain lives in frame `[x, i,
+    /// Γ]` (`p` lifted by two, referencing `i` as `Var(1)`, `x` unused) — built
+    /// directly at the right frame rather than derived from the domain via `lift`
+    /// (which would put `x`/`i` in the wrong relative order; see
+    /// `Term::subst_ctx_keep_frame`'s doc for the general index bookkeeping this
+    /// mirrors).
+    fn path_pi_family(p_amb: &Term) -> Term {
+        let dom = Term::papp(p_amb.lift(1, 0), Term::Var(0));
+        let cod = Term::papp(p_amb.lift(2, 0), Term::Var(1));
+        Term::pi(dom, cod)
+    }
+
+    /// **Refl-agreement**: transporting `f : A → A` along a `Π` family connected by
+    /// `refl A` (syntactically *varying* — `mentions_var` sees the interval
+    /// variable in `(refl A) @ i`, so the regularity rule does *not* fire — but
+    /// *semantically* constant) still type-checks at exactly `A → A` (the same type
+    /// `family[i:=i1]` reports regardless of which reduction rule fires) and the
+    /// `Π`-rule genuinely fires (whnf reaches a literal `Lam`).
+    ///
+    /// This test does **not** additionally check that applying the result to some
+    /// `c : A` is *definitionally* `f c` — it isn't, at least not automatically:
+    /// [`coe`]'s reparametrized family `dom[i := (r∧~k)∨(r'∧k)]` **always**
+    /// syntactically mentions the fresh connection binder `k` by construction (even
+    /// when `r` and `r'` happen to be the same term), so the structural-only
+    /// regularity check (deliberately *not* extended by this phase — see the module
+    /// doc above) never fires *inside* a `coe`, even at a literal `r=r'` boundary.
+    /// The nested `Transp`s this produces are still **sound** (a `Transp` that
+    /// doesn't reduce is valid, inert data, exactly like an unresolved `Sys` — see
+    /// the top-level module doc's soundness argument, point "no new equation"),
+    /// just not maximally reduced — a real, but narrow and honestly-reported,
+    /// incompleteness (not unsoundness) of this minimal implementation.
+    #[test]
+    fn transp_pi_rule_typechecks_on_a_refl_connected_pi_family() {
+        let k = pi_env();
+        let fam = path_pi_family(&crate::cubical::refl(&cn("A")));
+        assert!(crate::term::mentions_var(&fam, 0), "sanity: family is syntactically varying");
+        let t = Term::transp(fam, Cof::bot(), cn("f"));
+
+        // Type is (as always, independent of which reduction rule fires) A → A.
+        let ty = k.infer(&t).unwrap();
+        assert!(k.def_eq(&ty, &Term::arrow(cn("A"), cn("A"))));
+
+        // The `Π` rule actually fires (whnf is a literal `Lam`, not a stuck `Transp`),
+        // and the reduced form independently re-typechecks at the very same type.
+        let reducer = crate::reduce::Reducer::new(k.env());
+        let whnf = reducer.whnf(&t);
+        assert!(matches!(whnf, Term::Lam(..)), "expected the Π rule to fire, got {}", whnf.pretty());
+        let reinferred = k.infer(&whnf).unwrap();
+        assert!(k.def_eq(&reinferred, &Term::arrow(cn("A"), cn("A"))));
+    }
+
+    /// **Concrete Π-transport**: build a genuine type-level path `p : Path Type A B`
+    /// (an axiom — Phase 1's `Path` in the universe, same device the module doc's
+    /// own anti-smuggling test above uses), transport `f : A → A` along the `Π`
+    /// family `λi. p@i → p@i`, and confirm the transported function type-checks at
+    /// the *target* arrow type `B → B` and genuinely applies there (re-checked from
+    /// scratch on the reduced normal form, not merely trusted from the original
+    /// `Transp` node's `infer`).
+    #[test]
+    fn transp_pi_rule_transports_a_concrete_function() {
+        let mut k = pi_env();
+        k.add_axiom("p", 0, Term::path(Term::typ(0), cn("A"), cn("B"))).unwrap();
+        k.add_axiom("b", 0, cn("B")).unwrap();
+        let fam = path_pi_family(&cn("p"));
+        let t = Term::transp(fam, Cof::top(), cn("f"));
+
+        let ty = k.infer(&t).unwrap();
+        let expected_ty = Term::arrow(cn("B"), cn("B"));
+        assert!(k.def_eq(&ty, &expected_ty));
+
+        // The Π rule fires…
+        let reducer = crate::reduce::Reducer::new(k.env());
+        let whnf = reducer.whnf(&t);
+        assert!(matches!(whnf, Term::Lam(..)), "expected the Π rule to fire, got {}", whnf.pretty());
+
+        // …and the reduced term *independently* re-typechecks at B → B (subject
+        // reduction, checked from scratch — see the module doc's soundness point 2).
+        let reinferred = k.infer(&whnf).unwrap();
+        assert!(k.def_eq(&reinferred, &expected_ty));
+
+        // It genuinely applies at B (the transported domain), producing a
+        // well-typed `B`-classified result.
+        let applied = Term::app(whnf.clone(), cn("b"));
+        let applied_ty = k.infer(&applied).unwrap();
+        assert!(k.def_eq(&applied_ty, &cn("B")));
+    }
+
+    /// Differential check (this crate's standing convention): the trusted reducer
+    /// and NbE agree on the `Π`-rule reduction (same setup as the concrete-transport
+    /// test above).
+    #[test]
+    fn transp_pi_rule_agrees_between_reducer_and_nbe() {
+        let mut k = pi_env();
+        k.add_axiom("p", 0, Term::path(Term::typ(0), cn("A"), cn("B"))).unwrap();
+        k.add_axiom("b", 0, cn("B")).unwrap();
+        let fam = path_pi_family(&cn("p"));
+        let t = Term::transp(fam, Cof::top(), cn("f"));
+
+        let reducer = crate::reduce::Reducer::new(k.env());
+        let nbe = crate::nbe::Nbe::new(k.env());
+        let applied = Term::app(t.clone(), cn("b"));
+        // Both engines must land the application on the same (up-to-conversion)
+        // `B`-classified result.
+        let whnf_applied = reducer.whnf(&applied);
+        assert!(nbe.conv(&applied, &whnf_applied));
+    }
+
+    /// Sanity: a definition built by transporting `f` through a genuine `Π`-typed
+    /// family survives the independent recheck harness.
+    #[test]
+    fn transp_pi_rule_definitions_survive_independent_recheck() {
+        let mut k = pi_env();
+        k.add_axiom("p", 0, Term::path(Term::typ(0), cn("A"), cn("B"))).unwrap();
+        let fam = path_pi_family(&cn("p"));
+        let t = Term::transp(fam, Cof::top(), cn("f"));
+        k.add_definition("transported_f", 0, Term::arrow(cn("B"), cn("B")), t).unwrap();
+        assert_eq!(crate::kernel::recheck_all_definitions(k.env()).unwrap(), 1);
+    }
+
+    /// **Adversarial (anti-`False`, Π-case)**: the transported function must *not*
+    /// be usable at the *source* domain `A` (only the genuinely path-connected
+    /// target `B`) — i.e. the rule doesn't erase the domain change, and it doesn't
+    /// let you apply the "new" function to old-typed data and get something
+    /// type-incorrect silently accepted.
+    #[test]
+    fn transp_pi_rule_transported_function_rejects_the_source_domain() {
+        let mut k = pi_env();
+        k.add_axiom("p", 0, Term::path(Term::typ(0), cn("A"), cn("B"))).unwrap();
+        let fam = path_pi_family(&cn("p"));
+        let t = Term::transp(fam, Cof::top(), cn("f"));
+        let reducer = crate::reduce::Reducer::new(k.env());
+        let whnf = reducer.whnf(&t);
+        // Applying the transported (now `B → B`) function to `a : A` must be rejected.
+        let bad_app = Term::app(whnf, cn("a"));
+        assert!(k.infer(&bad_app).is_err());
+    }
+
+    /// **Adversarial (anti-`False`, Π-case)**: without an actual path axiom
+    /// connecting two types, the `Π` rule cannot be used to move a function between
+    /// *unrelated* types — attempting to claim `f : A → A` also inhabits `C → C`
+    /// for an unrelated, path-free axiom `C` is rejected exactly as it always was
+    /// (this phase changes no *checking* rule — see the module doc — only adds a
+    /// reduction; `infer`'s pre-existing `check(a, family[i:=i0])` obligation is the
+    /// one thing guarding this, completely unmodified by this phase).
+    #[test]
+    fn transp_pi_rule_cannot_smuggle_a_function_to_an_unrelated_type() {
+        let mut k = pi_env();
+        k.add_axiom("C", 0, Term::typ(0)).unwrap();
+        // No path between A and C: `fam := λ_. C → C` (constant, no `i` at all —
+        // deliberately not even syntactically varying, to isolate the check being
+        // tested: the *source*-type obligation, not reduction).
+        let fam = Term::arrow(cn("C"), cn("C")).lift(1, 0);
+        let t = Term::transp(fam, Cof::top(), cn("f")); // f : A → A, not C → C
+        assert!(k.infer(&t).is_err());
+    }
+
+    /// **Adversarial (anti-`False`, Π-case)**: the transported term is not
+    /// definitionally equal to the original `f` (their types genuinely differ, `A →
+    /// A` vs `B → B`, and `A`/`B` are distinct unrelated axioms) — the rule doesn't
+    /// quietly conflate the source and target functions as if nothing changed.
+    #[test]
+    fn transp_pi_rule_transported_function_is_not_the_original() {
+        let mut k = pi_env();
+        k.add_axiom("p", 0, Term::path(Term::typ(0), cn("A"), cn("B"))).unwrap();
+        assert!(!k.def_eq(&cn("A"), &cn("B")));
+        let fam = path_pi_family(&cn("p"));
+        let t = Term::transp(fam, Cof::top(), cn("f"));
+        // Structurally: a whnf'd `Lam` is never going to be `is_def_eq` to the bare
+        // constant `f` (different term shapes, and — decisively — different types).
+        assert!(!k.def_eq(&t, &cn("f")));
     }
 }

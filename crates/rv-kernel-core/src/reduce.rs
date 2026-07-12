@@ -176,6 +176,15 @@ impl<'e> Reducer<'e> {
                 Term::Transp(fam, _phi, a) => {
                     if !crate::term::mentions_var(fam, 0) {
                         head = (**a).clone();
+                    } else if let Term::Pi(_g, dom, cod) = fam.as_ref() {
+                        // `Π`-case filling (see `crate::kan`'s "Phase 3.6" doc):
+                        // matched *syntactically* on the raw family (no `whnf`),
+                        // deliberately mirroring the regularity rule's own
+                        // structural-only convention just above — a family that
+                        // only *reduces* to a `Π` (e.g. behind a `Let`/`Const`)
+                        // stays stuck, exactly as a family that only reduces to
+                        // being interval-constant does for the regularity rule.
+                        head = crate::kan::transp_pi_rule(dom, cod, a);
                     } else {
                         break;
                     }

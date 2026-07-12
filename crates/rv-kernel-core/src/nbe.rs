@@ -274,6 +274,14 @@ impl<'a> Nbe<'a> {
             Term::Transp(fam, phi, a) => {
                 if !crate::term::mentions_var(fam, 0) {
                     self.eval(venv, a)
+                } else if let Term::Pi(_g, dom, cod) = fam.as_ref() {
+                    // `Π`-case filling (see `crate::kan`'s "Phase 3.6" doc, and
+                    // `crate::reduce::Reducer::whnf`'s matching arm — differentially
+                    // tested): the built term introduces no new *free* variable (every
+                    // fresh binder it creates is bound within it), so it's evaluated
+                    // against the very same `venv`.
+                    let built = crate::kan::transp_pi_rule(dom, cod, a);
+                    self.eval(venv, &built)
                 } else {
                     Rc::new(Value::Transp(
                         TranspClosure { env: venv.clone(), fam: fam.clone(), phi: phi.clone() },

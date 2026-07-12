@@ -216,6 +216,31 @@ impl Cof {
         }
     }
 
+    /// Mirrors [`Term::subst_ctx_keep_frame`] (the frame-preserving reparametrization
+    /// variant, used by the `Π`-case `transp` Kan rule — see `crate::kan`): same
+    /// substitution as [`Cof::subst_ctx_go`], but pass-through onto
+    /// [`Term::subst_ctx_keep_frame`] on each atom's subject rather than
+    /// [`Term::subst_ctx_go`], so a `Cof` nested inside a reparametrized family
+    /// (e.g. a `Transp`'s own guard, or a `Sys`/`Partial` branch guard within a `Π`
+    /// domain/codomain) keeps the same frame width as everything around it instead
+    /// of spuriously shrinking.
+    pub fn subst_ctx_keep_frame_go(&self, images: &[Term], depth: usize) -> Cof {
+        match self {
+            Cof::Bot => Cof::Bot,
+            Cof::Top => Cof::Top,
+            Cof::Atom(Atom::Eq0(t)) => Cof::eq0(t.subst_ctx_keep_frame_go(images, depth)),
+            Cof::Atom(Atom::Eq1(t)) => Cof::eq1(t.subst_ctx_keep_frame_go(images, depth)),
+            Cof::And(a, b) => Cof::and(
+                a.subst_ctx_keep_frame_go(images, depth),
+                b.subst_ctx_keep_frame_go(images, depth),
+            ),
+            Cof::Or(a, b) => Cof::or(
+                a.subst_ctx_keep_frame_go(images, depth),
+                b.subst_ctx_keep_frame_go(images, depth),
+            ),
+        }
+    }
+
     /// Mirrors [`Term::instantiate_levels`].
     pub fn instantiate_levels(&self, args: &[Level]) -> Cof {
         match self {
