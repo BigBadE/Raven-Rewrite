@@ -36,6 +36,7 @@ pub mod elab2;
 pub mod env;
 pub mod erase;
 pub mod generate;
+pub mod graded;
 pub mod inductive;
 pub mod infer;
 pub mod kernel;
