@@ -74,6 +74,14 @@ pub enum Value {
     Transp(TranspClosure, Rc<Value>),
     /// A **stuck** `hcomp` — `φ` isn't decided `⊤`, so no reduction rule applies yet.
     HComp(HCompClosure, Rc<Value>),
+
+    // ---- Step 1 of univalence: `Glue` (see `crate::term::Term::Glue`) ----
+    /// A **stuck** `Glue A [φ ↦ (T, e)]` — `φ` isn't decided `⊤` or `⊥` yet (see
+    /// [`Nbe::eval_face`]), so it stays as deferred data: `A`/`T`/`e` evaluated
+    /// eagerly (all three live in the very same context as `φ`, no extra binder —
+    /// exactly like [`Value::Partial`]'s `A`), `φ` kept raw alongside the captured
+    /// environment (the [`FaceClosure`] pattern).
+    Glue(Rc<Value>, FaceClosure, Rc<Value>, Rc<Value>),
 }
 
 /// Deferred face-formula data: a raw (unevaluated) [`Cof`]-guarded system's branches
@@ -362,6 +370,21 @@ impl<'a> Nbe<'a> {
                     }
                 }
             }
+            // `Glue A [φ ↦ (T, e)]` (see `crate::term::Term::Glue`, and
+            // `crate::reduce::Reducer::whnf`'s matching arm — differentially
+            // tested): the strictness laws — `φ` decided `⊤` reduces to `T`, `φ`
+            // decided `⊥` (no constraint) reduces to `A` — mirror `Value::Sys`'s
+            // "fire once decided" convention; otherwise stays stuck.
+            Term::Glue(a, phi, t, e) => match self.eval_face(venv, phi) {
+                Some(true) => self.eval(venv, t),
+                Some(false) => self.eval(venv, a),
+                None => Rc::new(Value::Glue(
+                    self.eval(venv, a),
+                    FaceClosure { env: venv.clone(), phi: phi.clone() },
+                    self.eval(venv, t),
+                    self.eval(venv, e),
+                )),
+            },
         }
     }
 
@@ -973,6 +996,10 @@ impl<'a> Nbe<'a> {
                 let qu = self.quote(level + 1, &uv);
                 Term::hcomp(qty, qphi, qu, self.quote(level, u0))
             }
+            Value::Glue(a, fc, t, e) => {
+                let qphi = self.quote_cof(level, &fc.env, &fc.phi);
+                Term::glue_ty(self.quote(level, a), qphi, self.quote(level, t), self.quote(level, e))
+            }
         }
     }
 
@@ -1079,6 +1106,12 @@ fn alpha_eta_eq(a: &Term, b: &Term) -> bool {
                 && crate::face::cof_equiv(p1, p2)
                 && alpha_eta_eq(u1, u2)
                 && alpha_eta_eq(u01, u02)
+        }
+        (Term::Glue(a1, p1, t1, e1), Term::Glue(a2, p2, t2, e2)) => {
+            alpha_eta_eq(a1, a2)
+                && crate::face::cof_equiv(p1, p2)
+                && alpha_eta_eq(t1, t2)
+                && alpha_eta_eq(e1, e2)
         }
         _ => false,
     }

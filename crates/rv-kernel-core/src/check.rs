@@ -19,7 +19,7 @@
 
 use crate::env::Env;
 use crate::face::{self, Atom, Cof};
-use crate::level::Level;
+use crate::level::{self, Level};
 use crate::reduce::Reducer;
 use crate::term::Term;
 use std::rc::Rc;
@@ -266,6 +266,32 @@ impl<'e> Checker<'e> {
                     );
                 }
                 Ok((**ty).clone())
+            }
+
+            // `Glue A [φ ↦ (T, e)] : Sort u`, given `A, T : Sort u` (the same
+            // universe — see `Term::Glue`'s "scoped simplification" doc) and
+            // `e : Equiv T A` (a *total*, not merely `φ`-partial, equivalence —
+            // the deliberate strengthening this increment makes over CCHM's
+            // general formation rule; see the module/type doc). No coverage or
+            // compatibility obligation is imposed on `φ` itself here (unlike
+            // `Term::Sys`'s `check_sys`) because this is a single-face former,
+            // not a multi-branch system.
+            Term::Glue(a, phi, t, e) => {
+                let sort_a = self.infer_sort(ctx, a)?;
+                self.check_cof_wellformed(ctx, phi)?;
+                let sort_t = self.infer_sort(ctx, t)?;
+                if !level::equiv(&sort_a, &sort_t) {
+                    return Err(format!(
+                        "Glue: the outer type T and the base type A must live in the same \
+                         universe (got T : Sort {sort_t:?}, A : Sort {sort_a:?})"
+                    ));
+                }
+                let equiv_ty = Term::apps(
+                    Term::cnst(crate::term::name("Equiv"), vec![sort_a.clone()]),
+                    [(**t).clone(), (**a).clone()],
+                );
+                self.check(ctx, e, &equiv_ty)?;
+                Ok(Term::Sort(sort_a))
             }
         }
     }
@@ -552,6 +578,15 @@ impl<'e> Checker<'e> {
                     && face::cof_equiv(p1, p2)
                     && ctx.with(Term::I, |c| self.compare(c, u1, u2))
                     && self.compare(ctx, u01, u02)
+            }
+            // `Glue` (see `crate::term::Term::Glue`): structural, same shape as
+            // `Partial`/`HComp` above — `φ` compares up to semantic cofibration
+            // equivalence, `A`/`T`/`e` structurally.
+            (Term::Glue(a1, p1, t1, e1), Term::Glue(a2, p2, t2, e2)) => {
+                self.compare(ctx, a1, a2)
+                    && face::cof_equiv(p1, p2)
+                    && self.compare(ctx, t1, t2)
+                    && self.compare(ctx, e1, e2)
             }
             _ => false,
         };

@@ -2242,6 +2242,14 @@ fn abstract_occurrences(e: &Term, target: &Term, k: usize) -> Term {
             abstract_occurrences(u, target, k + 1),
             abstract_occurrences(u0, target, k),
         ),
+        // Step 1 of univalence (see `rv_kernel_core::term::Term::Glue`): no
+        // surface syntax yet, kept structurally sound like `Transp`/`HComp` above.
+        Term::Glue(a, p, t, e) => Term::glue_ty(
+            abstract_occurrences(a, target, k),
+            abstract_occurrences_cof(p, target, k),
+            abstract_occurrences(t, target, k),
+            abstract_occurrences(e, target, k),
+        ),
     }
 }
 
@@ -2420,6 +2428,12 @@ pub(crate) fn replace_with_var(t: &Term, target: &Term, k: usize) -> Term {
                 go(u, target, k, depth + 1),
                 go(u0, target, k, depth),
             ),
+            Term::Glue(a, p, t2, e) => Term::glue_ty(
+                go(a, target, k, depth),
+                (**p).clone(),
+                go(t2, target, k, depth),
+                go(e, target, k, depth),
+            ),
         }
     }
     go(t, target, k, 0)
@@ -2475,6 +2489,12 @@ fn subst_db_var(t: &Term, d: usize, u: &Term) -> Term {
                 go(uu, d, u, depth + 1),
                 go(u0, d, u, depth),
             ),
+            Term::Glue(a, p, t2, e) => Term::glue_ty(
+                go(a, d, u, depth),
+                (**p).clone(),
+                go(t2, d, u, depth),
+                go(e, d, u, depth),
+            ),
         }
     }
     go(t, d, u, 0)
@@ -2511,6 +2531,9 @@ fn occurs_term(t: &Term, target: &Term) -> bool {
             Term::HComp(ty, _, u, u0) => {
                 go(ty, target, depth) || go(u, target, depth + 1) || go(u0, target, depth)
             }
+            Term::Glue(a, _, t2, e) => {
+                go(a, target, depth) || go(t2, target, depth) || go(e, target, depth)
+            }
         }
     }
     go(t, target, 0)
@@ -2540,6 +2563,9 @@ fn occurs_var(t: &Term, d: usize) -> bool {
             Term::HComp(ty, _, u, u0) => {
                 go(ty, d, depth) || go(u, d, depth + 1) || go(u0, d, depth)
             }
+            Term::Glue(a, _, t2, e) => {
+                go(a, d, depth) || go(t2, d, depth) || go(e, d, depth)
+            }
         }
     }
     go(t, d, 0)
@@ -2566,6 +2592,7 @@ fn occurs_const(n: &str, t: &Term) -> bool {
         Term::HComp(ty, _, u, u0) => {
             occurs_const(n, ty) || occurs_const(n, u) || occurs_const(n, u0)
         }
+        Term::Glue(a, _, t, e) => occurs_const(n, a) || occurs_const(n, t) || occurs_const(n, e),
     }
 }
 
@@ -2627,6 +2654,9 @@ fn is_closed_at(t: &Term, depth: usize) -> bool {
         Term::Transp(fam, _, a) => is_closed_at(fam, depth + 1) && is_closed_at(a, depth),
         Term::HComp(ty, _, u, u0) => {
             is_closed_at(ty, depth) && is_closed_at(u, depth + 1) && is_closed_at(u0, depth)
+        }
+        Term::Glue(a, _, t, e) => {
+            is_closed_at(a, depth) && is_closed_at(t, depth) && is_closed_at(e, depth)
         }
     }
 }

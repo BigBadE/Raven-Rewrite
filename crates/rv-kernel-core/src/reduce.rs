@@ -271,6 +271,22 @@ impl<'e> Reducer<'e> {
                         }
                     }
                 }
+                // `Glue A [φ ↦ (T,e)]` (see `crate::term::Term::Glue`): the two
+                // strictness laws — `φ` decided `⊤` reduces to `T` (CCHM's defining
+                // strictness property, the whole point of `Glue`); `φ` decided `⊥`
+                // (no constraint at all) reduces to plain `A`, mirroring `Term::Sys`'s
+                // "fire once decided" convention (an empty/never-satisfiable system
+                // degenerates to the ambient type). Otherwise stuck — a valid normal
+                // form, exactly like a stuck `Sys`/`HComp`.
+                Term::Glue(a, phi, t, _e) => {
+                    if crate::face::is_true(phi) {
+                        head = (**t).clone();
+                    } else if crate::face::is_false(phi) {
+                        head = (**a).clone();
+                    } else {
+                        break;
+                    }
+                }
                 // Sort, Var, Pi, I/IZero/IOne, PLam, PathP, Partial, or a stuck Const:
                 // weak-head normal.
                 _ => break,

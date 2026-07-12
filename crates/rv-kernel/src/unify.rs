@@ -209,6 +209,12 @@ impl Metas {
             Term::HComp(ty, p, u, u0) => {
                 Ok(Term::hcomp(self.zonk(ty)?, self.zonk_cof(p)?, self.zonk(u)?, self.zonk(u0)?))
             }
+            Term::Glue(a, p, t, e) => Ok(Term::glue_ty(
+                self.zonk(a)?,
+                self.zonk_cof(p)?,
+                self.zonk(t)?,
+                self.zonk(e)?,
+            )),
         }
     }
 
@@ -566,6 +572,12 @@ fn invert(meta: u32, image: &[usize], t: &Term, depth: usize) -> Result<Term, St
             invert(meta, image, u, depth + 1)?,
             invert(meta, image, u0, depth)?,
         )),
+        Term::Glue(a, p, t2, e) => Ok(Term::glue_ty(
+            invert(meta, image, a, depth)?,
+            (**p).clone(),
+            invert(meta, image, t2, depth)?,
+            invert(meta, image, e, depth)?,
+        )),
     }
 }
 
@@ -605,6 +617,7 @@ fn occurs(m: u32, t: &Term) -> bool {
         Term::Partial(_, a) => occurs(m, a),
         Term::Transp(fam, _, a) => occurs(m, fam) || occurs(m, a),
         Term::HComp(ty, _, u, u0) => occurs(m, ty) || occurs(m, u) || occurs(m, u0),
+        Term::Glue(a, _, t, e) => occurs(m, a) || occurs(m, t) || occurs(m, e),
     }
 }
 
