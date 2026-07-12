@@ -21,6 +21,7 @@
 
 pub mod check;
 pub mod circle;
+pub mod circle_cubical;
 pub mod coinductive;
 pub mod cubical;
 pub mod env;

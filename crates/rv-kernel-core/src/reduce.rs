@@ -14,7 +14,9 @@
 //! `is_def_eq` equated distinct types, ill-typed programs would slip through. The
 //! rules are the standard ones; we keep them total and structural.
 
-use crate::env::{CircleRole, Decl, Destructor, Env, HitRole, I2Role, QuotRole, Recursor, TruncRole};
+use crate::env::{
+    CircleRole, Decl, Destructor, Env, HitRole, I2Role, QuotRole, Recursor, S1cRole, TruncRole,
+};
 use crate::level::{self, Level};
 use crate::term::{Name, Term};
 
@@ -115,6 +117,20 @@ impl<'e> Reducer<'e> {
                     // that fires on a literal `I2.seg @ r` scrutinee.
                     Some(Decl::I2(c)) if c.role == I2Role::Rec => {
                         match self.try_i2_rec(&args) {
+                            Some(reduced) => {
+                                let (h, a) = reduced.unfold_apps();
+                                head = h;
+                                args = a;
+                            }
+                            None => break,
+                        }
+                    }
+                    // Cubical circle computation (see `crate::circle_cubical`): the
+                    // *computing* `S1c.rec`, with TWO ι-rules — a point rule (`base`)
+                    // and, the whole point of the module, a PATH rule that fires on a
+                    // literal `S1c.loop @ r` (a genuine SELF-loop) scrutinee.
+                    Some(Decl::S1c(c)) if c.role == S1cRole::Rec => {
+                        match self.try_s1c_rec(&args) {
                             Some(reduced) => {
                                 let (h, a) = reduced.unfold_apps();
                                 head = h;
@@ -648,6 +664,65 @@ impl<'e> Reducer<'e> {
                 {
                     let s = &args[S_POS];
                     let mut applied = Term::papp(s.clone(), (**r).clone());
+                    for extra in &args[SCRUT_POS + 1..] {
+                        applied = Term::app(applied, extra.clone());
+                    }
+                    return Some(applied);
+                }
+            }
+        }
+        None
+    }
+
+    /// Try the cubical-circle (`S1c`) computation rules (see
+    /// [`crate::circle_cubical`]) — the **computing** dependent recursor
+    /// `S1c.rec.{v} C b l x`. Spine positions: `C`@0, `b`@1, `l`@2, scrutinee `x`@3.
+    /// Two ι-rules:
+    ///
+    /// ```text
+    ///   S1c.rec C b l S1c.base        ↦  b
+    ///   S1c.rec C b l (S1c.loop @ r)  ↦  l @ r
+    /// ```
+    ///
+    /// Structurally identical to [`Self::try_i2_rec`] (one point constructor instead
+    /// of two, one path constructor whose two endpoints happen to *both* be `base` —
+    /// see [`crate::circle_cubical`]'s "Endpoint coherence, both ends" for why that
+    /// self-loop shape doesn't need any different reduction logic here: the rule
+    /// still only ever inspects `r`, never the path's endpoints). Returns `None`
+    /// (stuck/neutral) when not yet saturated to the scrutinee or the scrutinee
+    /// matches neither shape.
+    fn try_s1c_rec(&self, args: &[Term]) -> Option<Term> {
+        const B_POS: usize = 1;
+        const L_POS: usize = 2;
+        const SCRUT_POS: usize = 3;
+        if args.len() <= SCRUT_POS {
+            return None; // not yet applied to the S1c value
+        }
+        let scrut = self.whnf(&args[SCRUT_POS]);
+        // Point rule: scrutinee weak-head-reduces to a literal, nullary `S1c.base`.
+        let (pt_head, pt_args) = scrut.unfold_apps();
+        if let Term::Const(pt_name, _) = &pt_head {
+            if matches!(self.env.get(pt_name), Some(Decl::S1c(c)) if c.role == S1cRole::Base)
+                && pt_args.is_empty()
+            {
+                let mut applied = args[B_POS].clone();
+                for extra in &args[SCRUT_POS + 1..] {
+                    applied = Term::app(applied, extra.clone());
+                }
+                return Some(applied);
+            }
+        }
+        // Path rule: scrutinee is (weak-head) `PApp(p, r)` with `p`'s own weak-head
+        // form the literal, nullary `S1c.loop`.
+        if let Term::PApp(p, r) = &scrut {
+            let p_whnf = self.whnf(p);
+            let (loop_head, loop_args) = p_whnf.unfold_apps();
+            if let Term::Const(loop_name, _) = &loop_head {
+                if matches!(self.env.get(loop_name), Some(Decl::S1c(c)) if c.role == S1cRole::Loop)
+                    && loop_args.is_empty()
+                {
+                    let l = &args[L_POS];
+                    let mut applied = Term::papp(l.clone(), (**r).clone());
                     for extra in &args[SCRUT_POS + 1..] {
                         applied = Term::app(applied, extra.clone());
                     }

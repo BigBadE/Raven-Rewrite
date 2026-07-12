@@ -422,6 +422,46 @@ pub struct I2 {
     pub ty: Term,
 }
 
+/// Which of the four fixed **cubical circle** constants an [`S1c`] declaration is.
+///
+/// `S1c` (see [`crate::circle_cubical`]) is the cubical counterpart of [`Circle`]
+/// (`S¹`, `Eq`-based, propositional `loop`) in the same way [`I2`] is the cubical
+/// counterpart of the interval — here there is exactly *one* point constructor
+/// (`base`) and exactly *one* path constructor, but that path constructor is a
+/// genuine **self**-loop: `loop : Path S1c base base`, both endpoints `base`. The
+/// dependent recursor `S1c.rec`'s path ι-rule fires on `loop @ r`, computing it away
+/// to `l @ r` for the caller-supplied `l : PathP (λi. C (loop @ i)) b b` — the thing
+/// `S1.loop`'s `Eq`-classified, non-computing path cannot express.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum S1cRole {
+    /// The type former `S1c : Type 0`.
+    Type,
+    /// The point constructor `S1c.base : S1c`.
+    Base,
+    /// The cubical path constructor `S1c.loop : Path S1c S1c.base S1c.base` — a
+    /// genuine `PathP`/`PLam`-classified SELF-loop (see [`crate::cubical`]), not an
+    /// inductive `Eq`. Both endpoints are (definitionally) `S1c.base`.
+    Loop,
+    /// The **`Type`-valued, computing** dependent recursor
+    /// `S1c.rec.{v} : Π (C : S1c → Sort v) (b : C base)
+    ///   (l : PathP (λ i. C (loop @ i)) b b) (x : S1c), C x`.
+    /// Drives **two** ι-rules (see [`crate::circle_cubical`]):
+    ///   `S1c.rec C b l base ↦ b` (point ι-rule), and
+    ///   `S1c.rec C b l (loop @ r) ↦ l @ r` (the **path** ι-rule — the loop
+    ///   computes).
+    Rec,
+}
+
+/// A member of the fixed **cubical circle** schema — one of the four `S1c.*`
+/// constants. See [`S1cRole`] and [`crate::circle_cubical`] for the full schema and
+/// its soundness argument.
+#[derive(Clone, Debug)]
+pub struct S1c {
+    pub role: S1cRole,
+    pub num_levels: u32,
+    pub ty: Term,
+}
+
 /// A member of a **user-declared 1-HIT** family, installed by
 /// [`crate::hit::declare_hit`]. See [`HitRole`] for the per-constant breakdown and
 /// [`crate::hit`] for the schema's soundness argument and the supported class of HITs.
@@ -465,6 +505,7 @@ pub enum Decl {
     Circle(Rc<Circle>),
     Hit(Rc<Hit>),
     I2(Rc<I2>),
+    S1c(Rc<S1c>),
 }
 
 impl Decl {
@@ -483,6 +524,7 @@ impl Decl {
             Decl::Circle(c) => &c.ty,
             Decl::Hit(h) => &h.ty,
             Decl::I2(c) => &c.ty,
+            Decl::S1c(c) => &c.ty,
         }
     }
     /// How many universe parameters this entry abstracts over.
@@ -500,6 +542,7 @@ impl Decl {
             Decl::Circle(c) => c.num_levels,
             Decl::Hit(h) => h.num_levels,
             Decl::I2(c) => c.num_levels,
+            Decl::S1c(c) => c.num_levels,
         }
     }
 }
