@@ -128,7 +128,7 @@ impl Kernel {
     pub fn check_usage(&self, n: &str) -> Result<(), String> {
         match self.env.get(n) {
             Some(Decl::Def { ty, value, .. }) => crate::graded::check_usage_against(&self.env, value, ty)
-                .map_err(|e| format!("definition '{n}': usage discipline: {e}")),
+                .map_err(|e| format!("definition '{n}': {e}")),
             _ => Ok(()), // axioms/inductives/etc. carry no value to check usage of.
         }
     }
