@@ -137,7 +137,9 @@
 //! i.e. exactly the pieces whose soundness this module's argument depends on
 //! *excluding*.
 
-use crate::term::Term;
+use crate::face::Cof;
+use crate::level::Level;
+use crate::term::{name, Term};
 
 // ============================================================================
 // Phase 3.5: the De Morgan interval — connections, reversal, and definitional
@@ -408,6 +410,167 @@ pub fn funext(dom: &Term, h: &Term) -> Term {
 /// `⟨i⟩ f (p @ i)` — push `f` under the path.
 pub fn ap(f: &Term, p: &Term) -> Term {
     Term::plam(Term::app(f.lift(1, 0), Term::papp(p.lift(1, 0), Term::Var(0))))
+}
+
+// ============================================================================
+// Phase 3.7: `transport`/`subst`, and the `Path ↔ Eq` bridge.
+// ============================================================================
+//
+// `crate::kan`'s Phase 3 shipped `transp`'s **regularity** rule: transport along a
+// family that does not mention the interval variable is (definitionally) the
+// identity. That is already enough — with **no new checking or reduction rule** —
+// to derive the two classic Kan payoffs as plain `Term`-builders, exactly the way
+// [`refl`]/[`funext`]/[`ap`] above are plain builders over `PLam`/`PApp`:
+//
+// * [`transport`]: `Π (A B : Type). Path Type A B → A → B`, specialized to a
+//   concrete `p : Path Type A B` and `a : A` (mirroring how [`refl`]/[`ap`] above
+//   take their already-elaborated arguments rather than re-abstracting the
+//   universals — the universals are recovered from `p`'s/`a`'s own inferred types
+//   at the call site, exactly as an elaborator would fill them in).
+// * [`subst`]: `Π (A) (P : A → Type) (a b : A). Path A a b → P a → P b`, the
+//   transport of a *predicate* along a path — same idea, one level up (`P`
+//   supplies the varying family instead of `Path Type` itself).
+//
+// Both are literally `transp (λ i. ⟨family built from the path⟩) ⊥ ⟨input⟩` — the
+// `family` argument to the existing, unmodified [`crate::term::Term::transp`]. No
+// new primitive, no new reduction rule: `Checker::infer`'s `Term::Transp` arm (see
+// `crate::kan`) is exactly what type-checks these, unchanged.
+//
+// # Completeness gap (not a soundness one): `refl` doesn't collapse
+//
+// `crate::kan`'s regularity rule fires only when the family is *syntactically*
+// (structurally, `!mentions_var`) independent of the interval variable. For
+// `transport (refl A) a`, the family is `λ i. (refl A) @ i`, which — even though
+// `refl A`'s body doesn't depend on `i` at the *meta* level — is still, as a raw
+// term, `PApp(PLam(A-lifted), Var(0))`: it *does* mention `Var(0)` syntactically
+// (as the `PApp`'s argument), so `!mentions_var` is false and the identity rule
+// does **not** fire; only the *literal-PLam* β-rule reduces `(refl A) @ i` down to
+// `A` first (a `whnf`/`nbe` step *inside* the family, which the top-level
+// `!mentions_var` syntactic check never performs — it inspects the family's own
+// un-reduced head, not its head-normal form). So `transport (refl A) a` type-checks
+// at exactly `A` (`family[i:=i0] ≡ family[i:=i1] ≡ A` by conversion — the boundary
+// still holds *definitionally*, just not via the `Transp` regularity β-rule) but
+// stays *stuck* as a `Transp` normal form rather than *reducing* to `a`. This is
+// documented and adversarially pinned by
+// [`tests::transport_along_refl_typechecks_but_does_not_syntactically_collapse`]
+// below, and is exactly the same gap `crate::kan`'s own
+// `transp_pi_rule_typechecks_on_a_refl_connected_pi_family` test documents for the
+// `Π` case — a known, honestly-reported *incompleteness*, not unsoundness (a stuck
+// `Transp` is valid inert data, like any other neutral).
+//
+// # The `Path ↔ Eq` bridge
+//
+// [`path_to_eq`]/[`eq_to_path`] connect this cubical layer to the *inductive*
+// `Eq` (`crate::inductive::declare_eq`) the rest of the corpus (`examples/proofs/
+// *.rv`) is built on:
+//
+// * [`path_to_eq`] is `subst (λ x. Eq A a x) p (Eq.refl A a)` — literally an
+//   instance of [`subst`] above, no new machinery.
+// * [`eq_to_path`] eliminates `Eq A a b` (via `Eq.rec`) into the motive
+//   `λ (x:A) (_:Eq A a x). Path A a x`, with `refl a : Path A a a` as the
+//   `Eq.refl`-case — this is the standard "J only needs *one* endpoint, the other
+//   is `Eq`'s own index" trick; it needs no `hcomp`/box-filling because it's an
+//   elimination of the *inductive* `Eq` (already a first-class recursor in this
+//   kernel — see `crate::inductive::declare_eq`), not of `Path` itself (cubical `J`
+//   for `Path`, which *would* need `hcomp`, stays deferred).
+//
+// `Eq`'s declared signature (see `crate::inductive::declare_eq`): `Eq.{u} : Π
+// (A:Sort u) (a b:A). Prop` (so `Eq A a b` itself always lives in `Prop`,
+// regardless of `u`), `Eq.refl.{u} : Π (A:Sort u)(a:A). Eq A a a`, and
+// `Eq.rec.{u,v} : Π (A:Sort u)(a:A)(motive: Π(b:A). Eq A a b → Sort v)(refl_case:
+// motive a (Eq.refl A a))(b:A)(h:Eq A a b). motive b h`. [`eq_to_path`] instantiates
+// `Eq.rec`'s `v` at the **same** level `u` as `A` itself: `Path A a b`'s own sort is
+// exactly `A`'s sort (`Checker::infer`'s `Term::PathP` arm reports `Sort(infer_sort
+// (family))`, and the constant family `λ_.A` has the same sort as `A`) — see
+// [`eq_to_path`]'s doc for the concrete level bookkeeping.
+//
+// # Soundness
+//
+// Every one of these four functions is, definitionally, nothing but
+// [`crate::term::Term::transp`] (already proven sound in `crate::kan`) or
+// `Eq.rec` (an unmodified, pre-existing inductive recursor whose ι-rule is exactly
+// as sound as `Nat.rec`'s) wrapped in ordinary `Lam`/`App`/substitution — **no new
+// checking or reduction rule is added by this section**, so type-preservation and
+// canonicity are inherited, not re-argued. The adversarial tests below (in
+// `tests::bridge`) re-run this crate's standing "no `False`" attacks through the
+// new combinators specifically: `transport`/`subst` between two *closed, unrelated*
+// axiom types are constructible **only** given an actual `Path Type A B` witness
+// (which itself requires an axiom or a real proof — Phase 1's `refl` only proves
+// reflexivity, see `crate::cubical`'s own soundness argument above), and
+// `path_to_eq (refl a)`/`eq_to_path (Eq.refl a)` land at the *reflexive* endpoint,
+// never a distinct one.
+
+/// `transport p a : B`, given `p : Path Type A B` and `a : A` — moves `a` across a
+/// path *in the universe* using nothing but the existing `transp` primitive:
+/// `transp (λ i. p @ i) ⊥ a`. The boundary is exactly what makes this type-check:
+/// `(λi. p@i)[i:=i0] ≡ p@i0 ≡ A` and `[i:=i1] ≡ p@i1 ≡ B`, both by Phase 1's
+/// `path_boundary` rule (see the module doc above) — `Checker::infer`'s `Term::Transp`
+/// arm (`crate::kan`) then reports the result type as exactly `B`.
+///
+/// `φ` is passed as `⊥` (`Cof::bot()`): per `crate::kan`'s own established
+/// convention, `Transp`'s reduction rule never consults `φ`, so `⊥` is simply
+/// always a well-formed placeholder (this is also literally the task's own stated
+/// definition, `transp (λ i. p @ i) ⊥ a`).
+pub fn transport(p: &Term, a: &Term) -> Term {
+    let family = Term::papp(p.lift(1, 0), Term::Var(0));
+    Term::transp(family, Cof::bot(), a.clone())
+}
+
+/// `subst motive p pa : P b`, given `motive = P : A → Type`, `p : Path A a b`, and
+/// `pa : P a` — transports a *predicate* along a path: `transp (λ i. P (p @ i)) ⊥
+/// pa`. Same shape as [`transport`], one level up: the varying family here is `P`
+/// applied to the moving point `p @ i`, rather than `p @ i` itself.
+pub fn subst(motive: &Term, p: &Term, pa: &Term) -> Term {
+    let moving_point = Term::papp(p.lift(1, 0), Term::Var(0));
+    let family = Term::app(motive.lift(1, 0), moving_point);
+    Term::transp(family, Cof::bot(), pa.clone())
+}
+
+/// `path_to_eq level a_ty a p : Eq a_ty a b`, given `p : Path a_ty a b` — derived
+/// via [`subst`] at the motive `λ x. Eq A a x`, starting from `Eq.refl A a : Eq A a
+/// a`: `subst (λ x. Eq A a x) p (Eq.refl A a)`. `level` is `Eq`'s own universe
+/// parameter (`u` in `Eq.{u} : Π (A:Sort u) …` — see `crate::inductive::declare_eq`),
+/// i.e. the level at which `a_ty` itself is classified (`a_ty : Sort level`).
+pub fn path_to_eq(level: Level, a_ty: &Term, a: &Term, p: &Term) -> Term {
+    let eq_cnst = |args: [Term; 3]| Term::apps(Term::cnst(name("Eq"), vec![level.clone()]), args);
+    // motive := λ (x : a_ty). Eq a_ty a x   (a_ty/a lifted past the new binder)
+    let motive =
+        Term::lam(a_ty.clone(), eq_cnst([a_ty.lift(1, 0), a.lift(1, 0), Term::Var(0)]));
+    let refl_a =
+        Term::apps(Term::cnst(name("Eq.refl"), vec![level]), [a_ty.clone(), a.clone()]);
+    subst(&motive, p, &refl_a)
+}
+
+/// `eq_to_path level a_ty a b h : Path a_ty a b`, given `h : Eq a_ty a b` — the
+/// converse bridge, built by eliminating `h` (via `Eq.rec`) into the motive `λ (x :
+/// a_ty) (_ : Eq a_ty a x). Path a_ty a x` (constant in the `Eq`-proof argument),
+/// with [`refl`]`(a) : Path a_ty a a` as the `Eq.refl`-case. This needs no
+/// `hcomp`/box-filling — it is an elimination of the *inductive* `Eq` (an ordinary,
+/// pre-existing recursor), not cubical `J` for `Path` itself (which — the task
+/// explicitly defers — would need `hcomp`).
+///
+/// `level` instantiates *both* of `Eq.rec`'s universe parameters (`u` for `A`
+/// itself, `v` for the motive's target sort) at the same value: `Path a_ty a x`'s
+/// own sort is exactly `a_ty`'s sort (`Checker::infer`'s `Term::PathP` arm reports
+/// `Sort(infer_sort(family))`, and the constant family `λ_. a_ty` has, by
+/// definition, the same sort as `a_ty` itself) — so the motive's target sort `v`
+/// and `A`'s own sort `u` coincide here, both equal to `level`.
+pub fn eq_to_path(level: Level, a_ty: &Term, a: &Term, b: &Term, h: &Term) -> Term {
+    let eq_cnst = |args: [Term; 3]| Term::apps(Term::cnst(name("Eq"), vec![level.clone()]), args);
+    // motive := λ (x : a_ty) (_ : Eq a_ty a x). Path a_ty a x
+    //   under [a_ty]:            a_ty=Var? -- built directly at the right frame.
+    let motive = Term::lam(
+        a_ty.clone(),
+        Term::lam(
+            eq_cnst([a_ty.lift(1, 0), a.lift(1, 0), Term::Var(0)]),
+            Term::path(a_ty.lift(2, 0), a.lift(2, 0), Term::Var(1)),
+        ),
+    );
+    let refl_case = refl(a);
+    Term::apps(
+        Term::cnst(name("Eq.rec"), vec![level.clone(), level]),
+        [a_ty.clone(), a.clone(), motive, refl_case, b.clone(), h.clone()],
+    )
 }
 
 #[cfg(test)]
@@ -937,5 +1100,313 @@ mod phase_3_5_tests {
             t = Term::ijoin(Term::imeet(t.clone(), v(i)), Term::ineg(t));
         }
         let _ = normalize_interval(&t); // must not panic
+    }
+}
+
+/// Phase 3.7: [`transport`]/[`subst`] and the `Path ↔ Eq` bridge (see the module
+/// doc section above, "Phase 3.7").
+#[cfg(test)]
+mod bridge_tests {
+    use super::*;
+    use crate::inductive::declare_eq;
+    use crate::kernel::Kernel;
+    use crate::level::Level;
+    use crate::term::name;
+
+    fn cn(s: &str) -> Term {
+        Term::cnst(name(s), vec![])
+    }
+
+    /// `A B : Type 0` (i.e. `Sort 1`), `a b c : A`, `f : A -> A`, plus `Eq`
+    /// declared in the environment (needed for the bridge functions).
+    fn base_env() -> Kernel {
+        let mut k = Kernel::new();
+        declare_eq(k.env_mut()).unwrap();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("B", 0, Term::typ(0)).unwrap();
+        k.add_axiom("a", 0, cn("A")).unwrap();
+        k.add_axiom("b", 0, cn("A")).unwrap();
+        k.add_axiom("c", 0, cn("A")).unwrap();
+        k.add_axiom("f", 0, Term::arrow(cn("A"), cn("A"))).unwrap();
+        k
+    }
+
+    // ---- transport ----
+
+    /// `transport (refl A) a : A` — type-checks at exactly `A` (the trivial case).
+    #[test]
+    fn transport_along_refl_typechecks_at_the_same_type() {
+        let k = base_env();
+        let p = refl(&cn("A")); // Path Type A A
+        let t = transport(&p, &cn("a"));
+        let ty = k.infer(&t).unwrap();
+        assert!(k.def_eq(&ty, &cn("A")));
+    }
+
+    /// **Completeness gap, documented, not a soundness bug** (see the module doc):
+    /// `transport (refl A) a` does *not* syntactically collapse to `a` via the
+    /// `Transp` regularity rule, because `(refl A) @ i` is `PApp(PLam(..), Var(0))`
+    /// — a term that *does* mention `Var(0)` structurally — even though its value
+    /// never varies. It stays a stuck `Transp` normal form; still valid, inert data.
+    #[test]
+    fn transport_along_refl_typechecks_but_does_not_syntactically_collapse() {
+        let k = base_env();
+        let p = refl(&cn("A"));
+        let t = transport(&p, &cn("a"));
+        let reducer = crate::reduce::Reducer::new(k.env());
+        let whnf = reducer.whnf(&t);
+        assert!(matches!(whnf, Term::Transp(..)), "expected a stuck Transp, got {}", whnf.pretty());
+    }
+
+    /// **The real payoff**: transport along a genuine (axiomatized) path between two
+    /// *distinct* closed types moves `a : A` to a well-typed value of `B`.
+    #[test]
+    fn transport_along_a_real_path_moves_between_distinct_types() {
+        let mut k = base_env();
+        k.add_axiom("p", 0, Term::path(Term::typ(0), cn("A"), cn("B"))).unwrap();
+        let t = transport(&cn("p"), &cn("a"));
+        let ty = k.infer(&t).unwrap();
+        assert!(k.def_eq(&ty, &cn("B")));
+    }
+
+    /// **Adversarial (anti-`False`)**: `transport` cannot be used to manufacture a
+    /// value of an *unrelated*, path-free axiom type `C` — the underlying `Transp`
+    /// still requires `a`'s checked type to match the family's `i0` boundary.
+    #[test]
+    fn transport_cannot_smuggle_a_value_into_an_unrelated_type_without_a_path() {
+        let mut k = base_env();
+        k.add_axiom("C", 0, Term::typ(0)).unwrap();
+        // No path A -> C: build a fake "path" shape (refl C, wrong endpoint story)
+        // applied to `a : A` — must fail to type-check.
+        let fake_p = refl(&cn("C"));
+        let t = transport(&fake_p, &cn("a"));
+        assert!(k.infer(&t).is_err());
+    }
+
+    /// **Adversarial**: `transport` along a real `A`↔`B` path never produces a value
+    /// definitionally equal to some *other*, unrelated closed term of `B` — it stays
+    /// tied to (only) `a`, never conjuring `False`-style equations between `A`'s and
+    /// `B`'s distinct inhabitants.
+    #[test]
+    fn transport_result_is_not_confused_with_an_unrelated_b_value() {
+        let mut k = base_env();
+        k.add_axiom("p", 0, Term::path(Term::typ(0), cn("A"), cn("B"))).unwrap();
+        k.add_axiom("bb", 0, cn("B")).unwrap();
+        let t = transport(&cn("p"), &cn("a"));
+        // `t` stays a stuck, opaque `Transp` (family genuinely varies through the
+        // axiom `p`) — it must not be equated with an unrelated `B`-typed axiom.
+        assert!(!k.def_eq(&t, &cn("bb")));
+    }
+
+    // ---- subst ----
+
+    /// `subst (λ_. A) (refl A) a` — trivial motive, type-checks at `A`.
+    #[test]
+    fn subst_with_constant_motive_typechecks() {
+        let k = base_env();
+        let motive = Term::lam(cn("A"), cn("A").lift(1, 0));
+        let p = refl(&cn("a"));
+        let t = subst(&motive, &p, &cn("a"));
+        let ty = k.infer(&t).unwrap();
+        assert!(k.def_eq(&ty, &cn("A")));
+    }
+
+    /// The real use: `motive := λ x. Eq A a x` isn't needed here (that's
+    /// `path_to_eq`'s job) — instead exercise a genuinely *varying* predicate:
+    /// `motive := λ x. Path A a x`, transporting `refl a : motive a` along a real
+    /// path `p : Path A a b` to land at `motive b = Path A a b`.
+    #[test]
+    fn subst_transports_a_varying_predicate() {
+        let mut k = base_env();
+        k.add_axiom("p", 0, Term::path(cn("A"), cn("a"), cn("b"))).unwrap();
+        let motive = Term::lam(cn("A"), Term::path(cn("A").lift(1, 0), cn("a").lift(1, 0), Term::Var(0)));
+        let pa = refl(&cn("a")); // : motive a = Path A a a
+        let t = subst(&motive, &cn("p"), &pa);
+        let ty = k.infer(&t).unwrap();
+        let expected = Term::path(cn("A"), cn("a"), cn("b"));
+        assert!(k.def_eq(&ty, &expected));
+    }
+
+    /// **Adversarial**: `subst` requires the supplied `pa` to actually inhabit
+    /// `motive a` (the family's `i0` boundary) — a mismatched `pa` is rejected.
+    #[test]
+    fn subst_rejects_a_mismatched_starting_proof() {
+        let mut k = base_env();
+        k.add_axiom("p", 0, Term::path(cn("A"), cn("a"), cn("b"))).unwrap();
+        let motive = Term::lam(cn("A"), Term::path(cn("A").lift(1, 0), cn("a").lift(1, 0), Term::Var(0)));
+        // Wrong starting proof: `refl c : Path A c c`, not `Path A a a`.
+        let bad_pa = refl(&cn("c"));
+        let t = subst(&motive, &cn("p"), &bad_pa);
+        assert!(k.infer(&t).is_err());
+    }
+
+    // ---- Path ↔ Eq bridge ----
+
+    /// `path_to_eq (refl a) : Eq A a a` — the round-trip's base case: reflexivity in,
+    /// reflexivity out.
+    #[test]
+    fn path_to_eq_of_refl_lands_at_refl() {
+        let k = base_env();
+        let p = refl(&cn("a"));
+        let e = path_to_eq(Level::of_nat(1), &cn("A"), &cn("a"), &p);
+        let ty = k.infer(&e).unwrap();
+        let expected_ty = Term::apps(
+            Term::cnst(name("Eq"), vec![Level::of_nat(1)]),
+            [cn("A"), cn("a"), cn("a")],
+        );
+        assert!(k.def_eq(&ty, &expected_ty));
+    }
+
+    /// `path_to_eq p : Eq A a b` for a genuine (axiomatized) non-reflexive path.
+    #[test]
+    fn path_to_eq_of_a_real_path_lands_at_the_right_endpoints() {
+        let mut k = base_env();
+        k.add_axiom("p", 0, Term::path(cn("A"), cn("a"), cn("b"))).unwrap();
+        let e = path_to_eq(Level::of_nat(1), &cn("A"), &cn("a"), &cn("p"));
+        let ty = k.infer(&e).unwrap();
+        let expected_ty = Term::apps(
+            Term::cnst(name("Eq"), vec![Level::of_nat(1)]),
+            [cn("A"), cn("a"), cn("b")],
+        );
+        assert!(k.def_eq(&ty, &expected_ty));
+    }
+
+    /// `eq_to_path (Eq.refl a) : Path A a a` — the converse round-trip's base case.
+    #[test]
+    fn eq_to_path_of_refl_lands_at_refl() {
+        let k = base_env();
+        let refl_a =
+            Term::apps(Term::cnst(name("Eq.refl"), vec![Level::of_nat(1)]), [cn("A"), cn("a")]);
+        let p = eq_to_path(Level::of_nat(1), &cn("A"), &cn("a"), &cn("a"), &refl_a);
+        let ty = k.infer(&p).unwrap();
+        let expected_ty = Term::path(cn("A"), cn("a"), cn("a"));
+        assert!(k.def_eq(&ty, &expected_ty));
+        // And it genuinely reduces to the *literal* `refl a` (Eq.rec's ι-rule fires
+        // on the literal `Eq.refl` constructor, exactly as `Nat.rec` does on
+        // `Nat.zero`/`Nat.succ` — see `crate::inductive`).
+        assert!(k.def_eq(&p, &refl(&cn("a"))));
+    }
+
+    /// `eq_to_path h : Path A a b` for a genuine (axiomatized, non-refl) `Eq`
+    /// witness `h : Eq A a b`.
+    #[test]
+    fn eq_to_path_of_a_real_eq_witness_lands_at_the_right_endpoints() {
+        let mut k = base_env();
+        let eq_a_b = Term::apps(Term::cnst(name("Eq"), vec![Level::of_nat(1)]), [cn("A"), cn("a"), cn("b")]);
+        k.add_axiom("h", 0, eq_a_b).unwrap();
+        let p = eq_to_path(Level::of_nat(1), &cn("A"), &cn("a"), &cn("b"), &cn("h"));
+        let ty = k.infer(&p).unwrap();
+        let expected_ty = Term::path(cn("A"), cn("a"), cn("b"));
+        assert!(k.def_eq(&ty, &expected_ty));
+    }
+
+    /// **Round-trip**: `path_to_eq (eq_to_path h)` type-checks back at `Eq A a b`
+    /// (the same type `h` itself has) for a genuine, non-reflexive `h`.
+    #[test]
+    fn eq_path_eq_round_trip_typechecks() {
+        let mut k = base_env();
+        let eq_a_b = Term::apps(Term::cnst(name("Eq"), vec![Level::of_nat(1)]), [cn("A"), cn("a"), cn("b")]);
+        k.add_axiom("h", 0, eq_a_b.clone()).unwrap();
+        let p = eq_to_path(Level::of_nat(1), &cn("A"), &cn("a"), &cn("b"), &cn("h"));
+        let e = path_to_eq(Level::of_nat(1), &cn("A"), &cn("a"), &p);
+        let ty = k.infer(&e).unwrap();
+        assert!(k.def_eq(&ty, &eq_a_b));
+    }
+
+    /// **Round-trip**: `path_to_eq (refl a)` then `eq_to_path` of that lands back at
+    /// `Path A a a`. Note (same completeness gap as
+    /// [`tests::transport_along_refl_typechecks_but_does_not_syntactically_collapse`]):
+    /// `path_to_eq (refl a)` type-checks at `Eq A a a` but does *not* itself reduce
+    /// to the literal `Eq.refl A a` constructor (`subst`'s underlying `Transp` stays
+    /// stuck — the family syntactically mentions the interval variable via `PApp`),
+    /// so `Eq.rec`'s ι-rule (which only fires on a literal `Eq.refl` head) does not
+    /// fire either, and the round-trip's *result* is not further asserted
+    /// definitionally equal to the literal `refl a` — only its *type* is checked
+    /// here. This is honestly incomplete, not unsound: every intermediate term
+    /// still independently type-checks at its stated type.
+    #[test]
+    fn path_eq_path_round_trip_on_refl_typechecks() {
+        let k = base_env();
+        let p = refl(&cn("a"));
+        let e = path_to_eq(Level::of_nat(1), &cn("A"), &cn("a"), &p);
+        let p2 = eq_to_path(Level::of_nat(1), &cn("A"), &cn("a"), &cn("a"), &e);
+        let ty = k.infer(&p2).unwrap();
+        assert!(k.def_eq(&ty, &Term::path(cn("A"), cn("a"), cn("a"))));
+    }
+
+    /// **Adversarial (anti-`False`)**: `path_to_eq`/`eq_to_path` cannot manufacture
+    /// a witness connecting two *unrelated* closed values absent an actual
+    /// path/`Eq` proof — `path_to_eq` applied to a bogus "path" (built from `refl`
+    /// at the wrong point) is rejected by the underlying `subst`/`transp` check.
+    #[test]
+    fn bridge_cannot_manufacture_a_witness_between_unrelated_values() {
+        let k = base_env();
+        // `refl b : Path A b b`, not `Path A a b` — using it where `path_to_eq`
+        // expects a path *starting* at `a` must fail to type-check.
+        let bogus_p = refl(&cn("b"));
+        let e = path_to_eq(Level::of_nat(1), &cn("A"), &cn("a"), &bogus_p);
+        assert!(k.infer(&e).is_err());
+    }
+
+    /// **Adversarial**: distinct closed axioms `a`/`b`/`c` are never conflated by
+    /// the bridge — `eq_to_path` of a genuine `h : Eq A a b` never type-checks as
+    /// `Path A a c` (a different, unrelated target).
+    #[test]
+    fn eq_to_path_result_is_not_confused_with_an_unrelated_endpoint() {
+        let mut k = base_env();
+        let eq_a_b = Term::apps(Term::cnst(name("Eq"), vec![Level::of_nat(1)]), [cn("A"), cn("a"), cn("b")]);
+        k.add_axiom("h", 0, eq_a_b).unwrap();
+        let p = eq_to_path(Level::of_nat(1), &cn("A"), &cn("a"), &cn("b"), &cn("h"));
+        let ty = k.infer(&p).unwrap();
+        assert!(!k.def_eq(&ty, &Term::path(cn("A"), cn("a"), cn("c"))));
+    }
+
+    /// Sanity: definitions built through the bridge survive the independent recheck
+    /// harness (mirrors this crate's standing discipline for every phase).
+    #[test]
+    fn bridge_definitions_survive_independent_recheck() {
+        let mut k = base_env();
+        let refl_a =
+            Term::apps(Term::cnst(name("Eq.refl"), vec![Level::of_nat(1)]), [cn("A"), cn("a")]);
+        let expected_ty = Term::apps(
+            Term::cnst(name("Eq"), vec![Level::of_nat(1)]),
+            [cn("A"), cn("a"), cn("a")],
+        );
+        let e = path_to_eq(Level::of_nat(1), &cn("A"), &cn("a"), &refl(&cn("a")));
+        k.add_definition("e", 0, expected_ty, e).unwrap();
+        let p = eq_to_path(Level::of_nat(1), &cn("A"), &cn("a"), &cn("a"), &refl_a);
+        k.add_definition("p", 0, Term::path(cn("A"), cn("a"), cn("a")), p).unwrap();
+        assert_eq!(crate::kernel::recheck_all_definitions(k.env()).unwrap(), 2);
+    }
+
+    // ---- worked demonstration: cubical funext -> Eq-level function equality ----
+
+    /// `funext h : Path (A -> A) f g` (Phase 1's cubical `funext`, given pointwise
+    /// paths `h`), turned into an `Eq`-level function equality via [`path_to_eq`] —
+    /// the demonstration the task calls for: cubical `funext`/`ap`/`transport`
+    /// feeding an `Eq`-based goal, exactly the shape the existing `Eq`-based proof
+    /// corpus (`examples/proofs/*.rv`) is written against.
+    #[test]
+    fn funext_bridges_into_an_eq_level_function_equality() {
+        let mut k = base_env();
+        k.add_axiom("g", 0, Term::arrow(cn("A"), cn("A"))).unwrap();
+        // h : Π x:A. Path A (f x) (g x)
+        let h_ty = Term::pi(
+            cn("A"),
+            Term::path(cn("A"), Term::app(cn("f"), Term::Var(0)), Term::app(cn("g"), Term::Var(0))),
+        );
+        k.add_axiom("h", 0, h_ty).unwrap();
+        let fe = funext(&cn("A"), &cn("h")); // : Path (A -> A) f g
+        let arrow_ty = Term::arrow(cn("A"), cn("A"));
+        k.check(&fe, &Term::path(arrow_ty.clone(), cn("f"), cn("g"))).unwrap();
+
+        // Bridge it: Eq (A -> A) f g.
+        let e = path_to_eq(Level::of_nat(1), &arrow_ty, &cn("f"), &fe);
+        let ty = k.infer(&e).unwrap();
+        let expected = Term::apps(
+            Term::cnst(name("Eq"), vec![Level::of_nat(1)]),
+            [arrow_ty, cn("f"), cn("g")],
+        );
+        assert!(k.def_eq(&ty, &expected));
     }
 }
