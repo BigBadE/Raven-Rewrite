@@ -3,6 +3,12 @@
 //! (resource algebra + usage semiring) that disciplines plug into.
 use rv_core::Prop;
 
+pub mod lia;
+pub use lia::{
+    Atom, DisjunctCert, Disequality, EqClosure, FarkasCert, LiaCertificate, LinConstraint, LinExpr,
+    Literal, OpaqueAtom, Rat,
+};
+
 /// A verification obligation: prove `goal` under hypotheses `ctx`. Both are `Prop`.
 #[derive(Clone, Debug)]
 pub struct Obligation {
@@ -20,12 +26,24 @@ impl Obligation {
 /// Evidence that a goal holds.
 ///
 /// [`Certificate::Replay`] is checked directly against the original obligation;
-/// the producer of that certificate is therefore untrusted. `Trusted` remains a
-/// temporary escape hatch for decision procedures that have not yet learned to
-/// emit a replayable proof object.
+/// the producer of that certificate is therefore untrusted. [`Certificate::Lia`]
+/// carries a full, independently-checkable linear-arithmetic + congruence unsat
+/// certificate together with the DNF disjuncts it refutes, so its producer
+/// (`rv-solve`'s search) is *also* untrusted — anyone holding the `Certificate` can
+/// re-run [`lia::LiaCertificate::check`] via [`Certificate::check`]. `Trusted` remains
+/// a temporary escape hatch for decision procedures that have not yet learned to emit
+/// a replayable proof object.
 #[derive(Clone, Debug)]
 pub enum Certificate {
     Replay(ReplayCertificate),
+    /// A checkable linear-arithmetic / congruence refutation of `ctx ∧ ¬goal`.
+    ///
+    /// Holds both the structured [`LiaCertificate`] and the exact DNF `disjuncts`
+    /// (the literal lists) it was built against. [`Certificate::check`] re-verifies the
+    /// pair by pure arithmetic and union–find rebuild — calling nothing in the solver's
+    /// search. A tampered certificate (wrong Farkas coefficient, fabricated equality,
+    /// missing disjunct) fails to validate and the obligation is treated as unproved.
+    Lia { certificate: LiaCertificate, disjuncts: Vec<Vec<Literal>> },
     Trusted { by: &'static str },
 }
 
@@ -54,12 +72,28 @@ impl Certificate {
             Certificate::Replay(ReplayCertificate::ContextContainsGoal) => {
                 conjuncts_contain(&ob.ctx, &ob.goal)
             }
+            Certificate::Lia { certificate, disjuncts } => {
+                // Independently re-derive the DNF of `ctx ∧ ¬goal` for *this* obligation
+                // and require it to match the disjuncts the certificate ships with. This
+                // binds the certificate to the obligation: a producer cannot smuggle in a
+                // proof of some *other* (valid) formula. Then re-check the certificate
+                // against those disjuncts by pure arithmetic / union–find — calling
+                // nothing in the solver's search.
+                match lia::disjuncts_of(&ob.ctx, &ob.goal, lia::MAX_DISJUNCTS) {
+                    Some(derived) if &derived == disjuncts => certificate.check(disjuncts),
+                    _ => false,
+                }
+            }
             Certificate::Trusted { .. } => true,
         }
     }
 
+    /// A certificate is *replayable* (its producer untrusted) when the consumer can
+    /// re-verify it independently — the structural [`Certificate::Replay`] fragments and
+    /// the arithmetic [`Certificate::Lia`] certificate both qualify. Only
+    /// [`Certificate::Trusted`] leaves its producer in the trust base.
     pub fn is_replayable(&self) -> bool {
-        matches!(self, Certificate::Replay(_))
+        matches!(self, Certificate::Replay(_) | Certificate::Lia { .. })
     }
 }
 

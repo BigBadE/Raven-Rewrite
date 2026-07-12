@@ -66,6 +66,88 @@ fn compile_and_run_executes() {
     assert_eq!(run, Some(Ok(rv_vm::Value::Int(5))));
 }
 
+/// The trust-base payoff: an obligation discharged by the *arithmetic* solver now
+/// travels with a checkable [`rv_logic::Certificate::Lia`], and the driver-level
+/// re-check ([`rv_logic::Outcome::checks`], the exact call `analyze` makes at
+/// `obligations.iter().map(|ob| outcome.checks(ob))`) **rejects a tampered
+/// certificate** — so a wrong answer from the untrusted solver is caught by the tiny
+/// re-checker, not trusted. This is the property that moves rv-solve out of the trust
+/// base.
+#[test]
+fn driver_recheck_rejects_tampered_lia_certificate() {
+    use rv_core::{BinOp, Prop, Symbols, Term};
+    use rv_logic::{Certificate, DisjunctCert, FarkasCert, Obligation, Outcome, Rat};
+
+    // A genuinely valid linear obligation: `x > 0 ⟹ x >= 1` (over the integers).
+    let mut s = Symbols::new();
+    let x = Term::Var(s.intern("x"));
+    let ctx = Prop::Holds(Term::bin(BinOp::Gt, x.clone(), Term::Int(0)));
+    let goal = Prop::Holds(Term::bin(BinOp::Ge, x.clone(), Term::Int(1)));
+    let ob = Obligation::new(ctx, goal, "x>0 ⟹ x>=1");
+
+    let registry = rv_solve::default_registry();
+    let outcome = registry.discharge(&ob);
+
+    // It discharges, carrying a checkable Lia certificate, and the driver-level re-check
+    // accepts it.
+    let Outcome::Discharged(cert) = outcome else {
+        panic!("valid arithmetic obligation must discharge, got {outcome:?}");
+    };
+    assert!(matches!(cert, Certificate::Lia { .. }), "must be a checkable Lia certificate");
+    assert!(cert.is_replayable(), "Lia certificates are re-checkable, not trusted");
+    assert!(cert.check(&ob), "the honest certificate must re-check against the obligation");
+
+    // Tamper with it: zero out every Farkas multiplier so no combination is a positive
+    // constant. The structured certificate no longer proves UNSAT.
+    let Certificate::Lia { mut certificate, disjuncts } = cert else { unreachable!() };
+    for dj in &mut certificate.disjuncts {
+        if let DisjunctCert::LinearRefutation { branches } = dj {
+            for b in branches {
+                *b = FarkasCert { multipliers: b.multipliers.iter().map(|_| Rat::from_int(0)).collect() };
+            }
+        }
+    }
+    let tampered = Certificate::Lia { certificate, disjuncts };
+
+    // The driver-level re-check must now reject it: an unverified obligation.
+    assert!(!tampered.check(&ob), "the driver re-check must reject a tampered certificate");
+    let tampered_outcome = Outcome::Discharged(tampered);
+    assert!(!tampered_outcome.checks(&ob), "Outcome::checks must reject the tampered discharge");
+}
+
+/// A certificate is *bound* to its obligation: presenting a valid certificate for one
+/// obligation against a *different* obligation fails the driver-level re-check, even if
+/// the other obligation is itself valid. This prevents a producer from smuggling in a
+/// proof of some unrelated formula.
+#[test]
+fn driver_recheck_binds_certificate_to_its_obligation() {
+    use rv_core::{BinOp, Prop, Symbols, Term};
+    use rv_logic::{Certificate, Obligation, Outcome};
+
+    let mut s = Symbols::new();
+    let x = Term::Var(s.intern("x"));
+    let y = Term::Var(s.intern("y"));
+
+    let ob1 = Obligation::new(
+        Prop::Holds(Term::bin(BinOp::Gt, x.clone(), Term::Int(0))),
+        Prop::Holds(Term::bin(BinOp::Ge, x.clone(), Term::Int(1))),
+        "x",
+    );
+    let ob2 = Obligation::new(
+        Prop::Holds(Term::bin(BinOp::Gt, y.clone(), Term::Int(0))),
+        Prop::Holds(Term::bin(BinOp::Ge, y.clone(), Term::Int(1))),
+        "y",
+    );
+
+    let registry = rv_solve::default_registry();
+    let Outcome::Discharged(cert1) = registry.discharge(&ob1) else { panic!("ob1 must discharge") };
+    assert!(cert1.check(&ob1), "cert1 checks against its own obligation");
+    // The very same certificate, checked against a *different* obligation, is rejected —
+    // the re-derived disjuncts differ (variable `y` vs `x`).
+    assert!(!matches!(&cert1, Certificate::Lia { .. }) || !cert1.check(&ob2),
+        "a certificate must not validate against a different obligation");
+}
+
 /// An executable entry is available only after the complete verification result
 /// succeeds.  Running a program with an unresolved safety obligation would make
 /// `rvc` two different languages: one for checking and one for execution.
