@@ -276,14 +276,12 @@ impl RavenReport {
 }
 
 
-/// Verify a Raven `.rv` program through the dependent kernel, loading only the **logic**
-/// prelude (`Eq`, `And`/`Or`/`False`, `Not`/`Iff`) — *not* the full stdlib — so a `.rv` file
-/// is self-contained and brings its own data types (`enum`s) and proofs. This is the unified
-/// `.rv` surface's proof/verification path; obligations are discharged by the kernel.
-pub fn verify_rv(src: &str, entry: Option<&str>) -> Result<RavenReport, String> {
-    // The proof path now runs entirely through the **single** `rv-syntax` parser: the
-    // prelude and the program are parsed by one lexer+parser and translated to kernel
-    // Commands (see `unify`). The kernel re-checks every term.
+/// Build and run a `Session` (kernel + prelude + `src`) exactly the way [`verify_rv`] does,
+/// but return the live session instead of a summary report. Exists for tooling/tests that
+/// need to inspect the resulting environment after verification — e.g. the kernel's
+/// independent re-check harness ([`rv_kernel::recheck_all_definitions`]), which re-verifies
+/// every stored definition from scratch, ignoring how `Session` produced it.
+pub fn verify_rv_session(src: &str) -> Result<rv_kernel::verify::Session, String> {
     let mut session = rv_kernel::verify::Session::new();
     rv_kernel::logic::declare_logic(&mut session.k)?;
     session.k.install_quot()?;
@@ -292,6 +290,18 @@ pub fn verify_rv(src: &str, entry: Option<&str>) -> Result<RavenReport, String> 
     run_unified(&mut session, RAVEN_PRELUDE).map_err(|e| format!("in the standard prelude: {e}"))?;
     run_unified(&mut session, src)?;
     check_graded_usage(&session, src)?;
+    Ok(session)
+}
+
+/// Verify a Raven `.rv` program through the dependent kernel, loading only the **logic**
+/// prelude (`Eq`, `And`/`Or`/`False`, `Not`/`Iff`) — *not* the full stdlib — so a `.rv` file
+/// is self-contained and brings its own data types (`enum`s) and proofs. This is the unified
+/// `.rv` surface's proof/verification path; obligations are discharged by the kernel.
+pub fn verify_rv(src: &str, entry: Option<&str>) -> Result<RavenReport, String> {
+    // The proof path now runs entirely through the **single** `rv-syntax` parser: the
+    // prelude and the program are parsed by one lexer+parser and translated to kernel
+    // Commands (see `unify`). The kernel re-checks every term.
+    let session = verify_rv_session(src)?;
 
     // Grade-driven split (QTT erasure): partition the proof-fragment definitions into the
     // proofs that erase to nothing and the computational definitions that survive as

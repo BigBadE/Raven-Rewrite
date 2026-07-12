@@ -434,4 +434,12 @@ impl Env {
         self.decls.insert(n, d);
         Ok(())
     }
+
+    /// Iterate over every stored declaration (name, decl). Used by tooling that needs to
+    /// walk the whole environment — e.g. the independent re-check harness in
+    /// [`crate::kernel::recheck_all_definitions`] — never by the checker itself, which
+    /// only ever looks up declarations by name.
+    pub fn iter(&self) -> impl Iterator<Item = (&Name, &Decl)> {
+        self.decls.iter()
+    }
 }
