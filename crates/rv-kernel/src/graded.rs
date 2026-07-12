@@ -430,16 +430,28 @@ impl<'e> Graded<'e> {
             }
 
             // Step 1 of univalence (see `rv_kernel_core::term::Term::Glue`):
-            // `Glue A [φ ↦ (T, e)]` is itself a *type*, so — like `Partial φ A`
-            // above — every constituent (`A`, `T`, the equivalence `e`) is
-            // type-level here (scale-0). `glue`/`unglue` (which would carry
-            // genuine runtime data) are deferred, so there is no data-carrying
-            // case to conservatively sum over yet.
-            Term::Glue(a, _phi, t, e) => {
-                let ua = self.infer(a)?.scale(Grade::Zero);
-                let ut = self.infer(t)?.scale(Grade::Zero);
-                let ue = self.infer(e)?.scale(Grade::Zero);
-                Ok(ua.add(&ut).add(&ue))
+            // `Glue A […]` is itself a *type*, so — like `Partial φ A` above —
+            // every constituent (`A`, each branch's `T`/`e`) is type-level here
+            // (scale-0), summed over every branch.
+            Term::Glue(a, branches) => {
+                let mut u = self.infer(a)?.scale(Grade::Zero);
+                for (_phi, t, e) in branches.iter() {
+                    u = u.add(&self.infer(t)?.scale(Grade::Zero));
+                    u = u.add(&self.infer(e)?.scale(Grade::Zero));
+                }
+                Ok(u)
+            }
+            // `unglue A […] u`: `A` and every branch's `T`/`e` are type-level
+            // (scale-0), same as `Glue`; the scrutinee `u` carries genuine
+            // runtime data, so its usage is summed at ordinary grade.
+            Term::Unglue(a, branches, u_scrut) => {
+                let mut u = self.infer(a)?.scale(Grade::Zero);
+                for (_phi, t, e) in branches.iter() {
+                    u = u.add(&self.infer(t)?.scale(Grade::Zero));
+                    u = u.add(&self.infer(e)?.scale(Grade::Zero));
+                }
+                let uu = self.infer(u_scrut)?;
+                Ok(u.add(&uu))
             }
         }
     }

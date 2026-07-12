@@ -76,12 +76,37 @@ pub enum Value {
     HComp(HCompClosure, Rc<Value>),
 
     // ---- Step 1 of univalence: `Glue` (see `crate::term::Term::Glue`) ----
-    /// A **stuck** `Glue A [φ ↦ (T, e)]` — `φ` isn't decided `⊤` or `⊥` yet (see
-    /// [`Nbe::eval_face`]), so it stays as deferred data: `A`/`T`/`e` evaluated
-    /// eagerly (all three live in the very same context as `φ`, no extra binder —
-    /// exactly like [`Value::Partial`]'s `A`), `φ` kept raw alongside the captured
-    /// environment (the [`FaceClosure`] pattern).
-    Glue(Rc<Value>, FaceClosure, Rc<Value>, Rc<Value>),
+    /// A **stuck** `Glue A [φ_1 ↦ (T_1,e_1), …]` — no branch's `φ_k` is decided
+    /// `⊤`, and not every `φ_k` is decided `⊥` (see [`Nbe::eval_faces`]), so it
+    /// stays as deferred data: `A` and every branch's `T_k`/`e_k` evaluated
+    /// eagerly (all live in the very same context as the `φ`s, no extra binder —
+    /// exactly like [`Value::Partial`]'s `A`), the `φ_k`s kept raw alongside one
+    /// shared captured environment (the [`GlueClosure`] pattern, the multi-branch
+    /// analogue of [`FaceClosure`]).
+    Glue(Rc<Value>, GlueClosure),
+    /// A **stuck** `unglue A [φ_1 ↦ (T_1,e_1), …] u` — mirrors [`Value::Glue`]'s
+    /// stuck case, plus the scrutinee `u`.
+    Unglue(Rc<Value>, GlueClosure, Rc<Value>),
+}
+
+/// Deferred data for a stuck [`Value::Glue`]/[`Value::Unglue`]: the raw guards
+/// `φ_1, …, φ_n` together with their branches' *eagerly evaluated* `T_k`/`e_k`
+/// values, sharing one captured environment (used only to quote each `φ_k` back
+/// on demand, the [`FaceClosure`] pattern generalized to `n` branches).
+#[derive(Clone)]
+pub struct GlueClosure {
+    env: Rc<VEnv>,
+    branches: Rc<Vec<(Rc<Cof>, Rc<Value>, Rc<Value>)>>,
+}
+
+/// Result of scanning a `Glue`/`unglue`'s branch list's guards against a `venv`
+/// (see [`Nbe::eval_glue_branches`]): the first decided-`⊤` branch's evaluated
+/// `T`, or "every branch is decided `⊥`", or (if still undecided) every branch's
+/// evaluated `(φ, T, e)` for building the stuck [`Value::Glue`]/[`Value::Unglue`].
+enum GlueDecision {
+    Top(Rc<Value>),
+    Bot,
+    Stuck(Vec<(Rc<Cof>, Rc<Value>, Rc<Value>)>),
 }
 
 /// Deferred face-formula data: a raw (unevaluated) [`Cof`]-guarded system's branches
@@ -370,23 +395,86 @@ impl<'a> Nbe<'a> {
                     }
                 }
             }
-            // `Glue A [φ ↦ (T, e)]` (see `crate::term::Term::Glue`, and
+            // `Glue A [φ_1 ↦ (T_1,e_1), …]` (see `crate::term::Term::Glue`, and
             // `crate::reduce::Reducer::whnf`'s matching arm — differentially
-            // tested): the strictness laws — `φ` decided `⊤` reduces to `T`, `φ`
-            // decided `⊥` (no constraint) reduces to `A` — mirror `Value::Sys`'s
-            // "fire once decided" convention; otherwise stays stuck.
-            Term::Glue(a, phi, t, e) => match self.eval_face(venv, phi) {
-                Some(true) => self.eval(venv, t),
-                Some(false) => self.eval(venv, a),
-                None => Rc::new(Value::Glue(
+            // tested): the strictness laws, generalized to `n` branches — the
+            // first `φ_k` decided `⊤` reduces to `T_k`; every `φ_k` decided `⊥`
+            // reduces to `A` — mirror `Value::Sys`'s "fire once decided"
+            // convention; otherwise stays stuck.
+            Term::Glue(a, branches) => match self.eval_glue_branches(venv, branches) {
+                GlueDecision::Top(t) => t,
+                GlueDecision::Bot => self.eval(venv, a),
+                GlueDecision::Stuck(vbranches) => Rc::new(Value::Glue(
                     self.eval(venv, a),
-                    FaceClosure { env: venv.clone(), phi: phi.clone() },
-                    self.eval(venv, t),
-                    self.eval(venv, e),
+                    GlueClosure { env: venv.clone(), branches: Rc::new(vbranches) },
                 )),
             },
+            // `unglue A [φ_1 ↦ (T_1,e_1), …] u` (see `crate::term::Term::Unglue`):
+            // on a decided `⊤` branch, `e_k.f u`; off every branch (all `⊥`), the
+            // identity; otherwise stays stuck.
+            Term::Unglue(a, branches, u) => {
+                if let Some((_, t, e)) =
+                    branches.iter().find(|(phi, _, _)| self.eval_face(venv, phi) == Some(true))
+                {
+                    // `Equiv.f T A e u` (see `crate::reduce::Reducer::whnf`'s
+                    // `Term::Unglue` arm for why the level argument is an inert
+                    // placeholder — `Equiv.f`'s *value* never inspects it). Built
+                    // and evaluated as a genuine `Term`, not assembled directly
+                    // from a `Value::Stuck` head + `vapp`: `vapp` only fires ι/ν
+                    // rules on an already-neutral head, it does **not** δ-unfold a
+                    // plain `Decl::Def` like `Equiv.f` — going through `self.eval`
+                    // on the built term takes the ordinary `Term::Const` arm,
+                    // which does perform that unfolding.
+                    let ef_term = Term::apps(
+                        Term::cnst(crate::term::name("Equiv.f"), vec![level::Level::of_nat(0)]),
+                        [(**t).clone(), (**a).clone(), (**e).clone(), (**u).clone()],
+                    );
+                    self.eval(venv, &ef_term)
+                } else if branches.iter().all(|(phi, _, _)| self.eval_face(venv, phi) == Some(false)) {
+                    self.eval(venv, u)
+                } else {
+                    Rc::new(Value::Unglue(
+                        self.eval(venv, a),
+                        GlueClosure {
+                            env: venv.clone(),
+                            branches: Rc::new(
+                                branches
+                                    .iter()
+                                    .map(|(p, t, e)| (p.clone(), self.eval(venv, t), self.eval(venv, e)))
+                                    .collect(),
+                            ),
+                        },
+                        self.eval(venv, u),
+                    ))
+                }
+            }
         }
     }
+
+    /// Evaluate every branch's guard against `venv`; if the first decided-`⊤`
+    /// branch is found, eagerly evaluate *just its `T`* and return it (`unglue`
+    /// doesn't need it, `Glue`'s `Top` case does); if every branch is decided `⊥`,
+    /// report that; otherwise evaluate every branch's `T`/`e` (needed either way
+    /// for the stuck `Value`) and report the whole list.
+    fn eval_glue_branches(
+        &self,
+        venv: &Rc<VEnv>,
+        branches: &[(Rc<Cof>, Rc<Term>, Rc<Term>)],
+    ) -> GlueDecision {
+        if let Some((_, t, _)) = branches.iter().find(|(phi, _, _)| self.eval_face(venv, phi) == Some(true)) {
+            return GlueDecision::Top(self.eval(venv, t));
+        }
+        if branches.iter().all(|(phi, _, _)| self.eval_face(venv, phi) == Some(false)) {
+            return GlueDecision::Bot;
+        }
+        GlueDecision::Stuck(
+            branches
+                .iter()
+                .map(|(p, t, e)| (p.clone(), self.eval(venv, t), self.eval(venv, e)))
+                .collect(),
+        )
+    }
+
 
     /// Evaluate a single face atom's subject against `venv` and classify it: `Some`
     /// when the subject has evaluated all the way to a *decided* literal endpoint (so
@@ -996,9 +1084,21 @@ impl<'a> Nbe<'a> {
                 let qu = self.quote(level + 1, &uv);
                 Term::hcomp(qty, qphi, qu, self.quote(level, u0))
             }
-            Value::Glue(a, fc, t, e) => {
-                let qphi = self.quote_cof(level, &fc.env, &fc.phi);
-                Term::glue_ty(self.quote(level, a), qphi, self.quote(level, t), self.quote(level, e))
+            Value::Glue(a, gc) => {
+                let branches = gc
+                    .branches
+                    .iter()
+                    .map(|(p, t, e)| (self.quote_cof(level, &gc.env, p), self.quote(level, t), self.quote(level, e)))
+                    .collect();
+                Term::glue_ty_multi(self.quote(level, a), branches)
+            }
+            Value::Unglue(a, gc, u) => {
+                let branches = gc
+                    .branches
+                    .iter()
+                    .map(|(p, t, e)| (self.quote_cof(level, &gc.env, p), self.quote(level, t), self.quote(level, e)))
+                    .collect();
+                Term::unglue(self.quote(level, a), branches, self.quote(level, u))
             }
         }
     }
@@ -1107,11 +1207,20 @@ fn alpha_eta_eq(a: &Term, b: &Term) -> bool {
                 && alpha_eta_eq(u1, u2)
                 && alpha_eta_eq(u01, u02)
         }
-        (Term::Glue(a1, p1, t1, e1), Term::Glue(a2, p2, t2, e2)) => {
+        (Term::Glue(a1, b1), Term::Glue(a2, b2)) => {
             alpha_eta_eq(a1, a2)
-                && crate::face::cof_equiv(p1, p2)
-                && alpha_eta_eq(t1, t2)
-                && alpha_eta_eq(e1, e2)
+                && b1.len() == b2.len()
+                && b1.iter().zip(b2.iter()).all(|((p1, t1, e1), (p2, t2, e2))| {
+                    crate::face::cof_equiv(p1, p2) && alpha_eta_eq(t1, t2) && alpha_eta_eq(e1, e2)
+                })
+        }
+        (Term::Unglue(a1, b1, u1), Term::Unglue(a2, b2, u2)) => {
+            alpha_eta_eq(a1, a2)
+                && b1.len() == b2.len()
+                && b1.iter().zip(b2.iter()).all(|((p1, t1, e1), (p2, t2, e2))| {
+                    crate::face::cof_equiv(p1, p2) && alpha_eta_eq(t1, t2) && alpha_eta_eq(e1, e2)
+                })
+                && alpha_eta_eq(u1, u2)
         }
         _ => false,
     }
