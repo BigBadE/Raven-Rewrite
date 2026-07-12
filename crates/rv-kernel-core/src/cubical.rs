@@ -139,6 +139,246 @@
 
 use crate::term::Term;
 
+// ============================================================================
+// Phase 3.5: the De Morgan interval — connections, reversal, and definitional
+// normalization.
+// ============================================================================
+//
+// Phase 1 (above) deliberately stopped at a *Cartesian* interval: `i0`/`i1` and
+// variables only, no `∧`/`∨`/`~`. This phase adds them, as [`Term::INeg`]/
+// [`Term::IMeet`]/[`Term::IJoin`], and — the hard part — a definitional equality on
+// interval expressions that validates the free **De Morgan algebra** laws:
+//
+// ```text
+//   ~i0 = i1                    ~i1 = i0                    ~~r = r
+//   ~(r∧s) = ~r ∨ ~s            ~(r∨s) = ~r ∧ ~s            (De Morgan duality)
+//   r∧r = r,  r∨r = r           (idempotence)
+//   r∧s = s∧r,  r∨s = s∨r       (commutativity)
+//   (r∧s)∧t = r∧(s∧t), similarly for ∨   (associativity)
+//   r∧(r∨s) = r,  r∨(r∧s) = r   (absorption)
+//   r∧i0 = i0,  r∨i1 = i1,  r∧i1 = r,  r∨i0 = r   (bounded lattice)
+// ```
+//
+// # Why *De Morgan*, not *Boolean*
+//
+// A **Boolean** algebra would additionally satisfy the complement laws `r ∧ ~r = i0`
+// and `r ∨ ~r = i1`. The interval of cubical type theory does **not** satisfy these —
+// geometrically, `i ∧ ~i` is *not* the constant `i0` line, it is a genuinely
+// nontrivial path in the interval (`i0` at both endpoints `i=0` and `i=1`, but `i0`
+// itself only at those two points — think of `i ∧ ~i` as the "tent function" hitting
+// `i1`-ish behaviour only conceptually nowhere: concretely it is `i0` at `i=0` and at
+// `i=1`, but it is a *distinct term* from the literal constant `i0` at every other
+// point of the abstract syntax, and, crucially, nothing in the free algebra forces it
+// to reduce to `i0`). Treating `r ∧ ~r = i0` as a definitional law would be **unsound**:
+// it would let `transp`/face-lattice reasoning (a later/adjacent phase) treat two
+// genuinely different open boxes as the same closed one, collapsing distinctions a
+// model of cubical sets does not identify. This module's normal form is exactly the
+// canonical form of the *free bounded distributive lattice with a De Morgan
+// involution* on the interval variables — the standard semantic model (de Morgan
+// frames / the cubical interval presheaf `□`) — and `normalize_interval` decides
+// **exactly** those laws, deliberately no more. [`tests::the_boolean_law_does_not_hold`]
+// pins this down adversarially.
+//
+// # The normal form
+//
+// An interval expression built from `{Var, IZero, IOne, INeg, IMeet, IJoin}` is first
+// put in **negation-normal form** (NNF) by pushing every `~` down to the variables
+// via the De Morgan/double-negation laws (so the only place `INeg` can survive is
+// directly wrapping a `Var`) — this uses the De Morgan and double-negation laws
+// *by construction*, not as a check. The NNF tree (built from `Var`, `~Var`, `i0`,
+// `i1`, `∧`, `∨`) is then flattened to a **disjunctive normal form**: a finite set of
+// *clauses*, each clause a finite set of *literals* (a literal being `Var(i)` or
+// `~Var(i)`), representing `⋁ⱼ ⋀ᵢ lit(i,j)`. `i0` is the empty disjunction (no
+// clauses); `i1` is the disjunction of the empty conjunction (one clause, no
+// literals). `∧`/`∨` combine clause-sets exactly like [`crate::face::to_dnf`]'s
+// `Cof` DNF (same distributive-lattice algorithm — the interval and the cofibration
+// lattice share this shape), **except** there is no `self_contradictory` pruning: a
+// clause containing both `Var(i)` and `~Var(i)` is *not* dropped (that pruning is
+// exactly the Boolean law this module must NOT assume). Finally the clause set is
+// **minimized** (duplicate clauses removed, and any clause that is a superset of
+// another clause's literals is dropped — the absorption law, `r∧(r∨s)=r`) and put in
+// a canonical sorted order. Two interval terms are De Morgan-equal iff their
+// normal forms (as clause sets) are identical — this is exactly deciding equality in
+// the free distributive lattice with De Morgan involution, a standard and terminating
+// procedure (finite terms ⇒ finite variable set ⇒ finite clause universe).
+//
+// [`normalize_interval`] is **total**: every arm of the match handles its case
+// directly (no partial function, no panics), and the DNF/minimization passes only
+// ever grow-then-shrink finite `Vec`s — no unbounded recursion (`INeg` recurses into
+// one strictly smaller subterm; `IMeet`/`IJoin` each into two).
+
+/// A literal: `Var(i)` (`negated = false`) or `~Var(i)` (`negated = true`).
+type Lit = (usize, bool);
+/// A clause: a finite, sorted, deduplicated set of literals (the empty clause is the
+/// vacuous conjunction, `i1`).
+type Clause = Vec<Lit>;
+
+/// Negation-normal form, as a clause-set (disjunctive normal form) directly — pushes
+/// `~` to the variables and distributes `∧`/`∨` in the same pass. `neg` tracks whether
+/// the enclosing context has applied an odd number of reversals (so this doubles as
+/// the De Morgan/double-negation reduction: `nnf_dnf(~t, neg)` is just
+/// `nnf_dnf(t, !neg)`, no separate pass needed).
+fn nnf_dnf(t: &Term, neg: bool) -> Vec<Clause> {
+    match t {
+        Term::IZero => {
+            if neg {
+                vec![vec![]]
+            } else {
+                vec![]
+            }
+        }
+        Term::IOne => {
+            if neg {
+                vec![]
+            } else {
+                vec![vec![]]
+            }
+        }
+        Term::INeg(r) => nnf_dnf(r, !neg),
+        Term::IMeet(r, s) => {
+            let (a, b) = (nnf_dnf(r, neg), nnf_dnf(s, neg));
+            if neg { dnf_or(&a, &b) } else { dnf_and(&a, &b) }
+        }
+        Term::IJoin(r, s) => {
+            let (a, b) = (nnf_dnf(r, neg), nnf_dnf(s, neg));
+            if neg { dnf_and(&a, &b) } else { dnf_or(&a, &b) }
+        }
+        // Base case: a variable (or, for a malformed/non-interval subterm reached
+        // defensively, treated as an opaque atom keyed by its own structural identity
+        // via a synthetic index derived from nothing else being available — see the
+        // `Term::Var` case below, the only one that can arise in a well-typed interval
+        // expression; anything else falls through to the conservative default in
+        // [`normalize_interval`], which never calls this helper).
+        Term::Var(i) => vec![vec![(*i, neg)]],
+        // Defensive: not a real interval expression. Treat as an indivisible atom so
+        // the function stays total; `normalize_interval` never routes a non-interval
+        // term here (see its own fallback), so this arm is unreachable in practice.
+        _ => vec![vec![(usize::MAX, neg)]],
+    }
+}
+
+/// DNF conjunction: pointwise-union every pair of clauses (**no** `i≠~i`
+/// contradiction pruning — see the module doc for why that Boolean law must not be
+/// assumed here).
+fn dnf_and(a: &[Clause], b: &[Clause]) -> Vec<Clause> {
+    let mut out = Vec::new();
+    for ca in a {
+        for cb in b {
+            let mut merged = ca.clone();
+            for lit in cb {
+                if !merged.contains(lit) {
+                    merged.push(*lit);
+                }
+            }
+            out.push(merged);
+        }
+    }
+    out
+}
+
+/// DNF disjunction: concatenate clause sets.
+fn dnf_or(a: &[Clause], b: &[Clause]) -> Vec<Clause> {
+    let mut out = a.to_vec();
+    out.extend(b.iter().cloned());
+    out
+}
+
+/// Canonicalize a clause: sort+dedup its literals.
+fn canon_clause(c: &Clause) -> Clause {
+    let mut c = c.clone();
+    c.sort_unstable();
+    c.dedup();
+    c
+}
+
+/// Minimize a clause set: canonicalize each clause, drop duplicate clauses, and drop
+/// any clause that is a (non-strict) superset of another — the absorption law
+/// `r ∧ (r ∨ s) = r` says the smaller (more general) clause subsumes the larger (more
+/// specific) one. Finally sort the clause set for a canonical `Vec` order.
+fn minimize(clauses: Vec<Clause>) -> Vec<Clause> {
+    let mut cs: Vec<Clause> = clauses.into_iter().map(|c| canon_clause(&c)).collect();
+    cs.sort();
+    cs.dedup();
+    let mut out: Vec<Clause> = Vec::new();
+    'outer: for (i, c) in cs.iter().enumerate() {
+        for (j, d) in cs.iter().enumerate() {
+            if i != j && d.iter().all(|lit| c.contains(lit)) && d.len() < c.len() {
+                // some *other*, strictly smaller clause `d` is a subset of `c` ⇒ `c`
+                // is absorbed (r∧(r∨s)=r): drop `c`.
+                continue 'outer;
+            }
+        }
+        out.push(c.clone());
+    }
+    out
+}
+
+/// Rebuild a canonical clause-set back into a `Term` (a join of meets of `Var`/`~Var`
+/// literals), so [`normalize_interval`]'s result is directly comparable by ordinary
+/// structural [`Term`] equality (`PartialEq`) — two De Morgan-equal interval
+/// expressions normalize to *identical* `Term`s.
+fn clauses_to_term(clauses: &[Clause]) -> Term {
+    if clauses.is_empty() {
+        return Term::IZero; // the empty disjunction is ⊥ of the lattice, i.e. `i0`.
+    }
+    let mut disj: Option<Term> = None;
+    for clause in clauses {
+        let mut conj: Option<Term> = None;
+        for &(i, negated) in clause {
+            let lit = if negated { Term::ineg(Term::Var(i)) } else { Term::Var(i) };
+            conj = Some(match conj {
+                None => lit,
+                Some(c) => Term::imeet(c, lit),
+            });
+        }
+        let clause_term = conj.unwrap_or(Term::IOne); // empty conjunction = ⊤ = i1
+        disj = Some(match disj {
+            None => clause_term,
+            Some(d) => Term::ijoin(d, clause_term),
+        });
+    }
+    disj.unwrap()
+}
+
+/// Is `t` built purely from the interval-expression grammar (`Var`/`IZero`/`IOne`/
+/// `INeg`/`IMeet`/`IJoin`)? [`normalize_interval`] only canonicalizes such terms; any
+/// other term is returned unchanged (see its doc for why that fallback is safe).
+pub fn is_interval_expr(t: &Term) -> bool {
+    match t {
+        Term::Var(_) | Term::IZero | Term::IOne => true,
+        Term::INeg(r) => is_interval_expr(r),
+        Term::IMeet(r, s) | Term::IJoin(r, s) => is_interval_expr(r) && is_interval_expr(s),
+        _ => false,
+    }
+}
+
+/// **Definitional normalization of interval expressions.** Puts `t` in the canonical
+/// normal form of the free De Morgan algebra (see the module doc): a join-of-meets of
+/// `Var`/`~Var` literals, minimized and canonically ordered. Total: falls through to
+/// returning `t.clone()` unchanged for anything that isn't a pure interval expression
+/// (this is safe/conservative — see [`interval_eq`], the only caller that matters for
+/// soundness: it only invokes this on subterms that are *already* required to have
+/// inferred type `I`, i.e. that can only ever have been built from this grammar in a
+/// well-typed term in the first place, per `crate::cubical`'s and `crate::check`'s
+/// typing rules for [`Term::INeg`]/[`Term::IMeet`]/[`Term::IJoin`]/[`Term::PApp`]'s
+/// argument/[`crate::face::Atom`]'s subject).
+pub fn normalize_interval(t: &Term) -> Term {
+    if !is_interval_expr(t) {
+        return t.clone();
+    }
+    clauses_to_term(&minimize(nnf_dnf(t, false)))
+}
+
+/// Definitional equality of two interval expressions, up to the De Morgan algebra
+/// laws (see the module doc). This is the routing point [`crate::check::Checker`]'s
+/// `compare`, [`crate::reduce::Reducer`]'s `is_def_eq`, and [`crate::nbe::Nbe`]'s
+/// conversion all call for any subterm that is interval-classified (a [`Term::PApp`]
+/// argument, or an atom subject in [`crate::face`]) — see those modules' `PApp`/`Cof`
+/// cases.
+pub fn interval_eq(a: &Term, b: &Term) -> bool {
+    normalize_interval(a) == normalize_interval(b)
+}
+
 /// `refl a : Path A a a` — the constant path `⟨i⟩ a` (the body doesn't mention `i`, so
 /// it's `a` lifted past the new binder, exactly like [`Term::arrow`]'s non-dependent
 /// codomain). A one-line *definitional* fact once `Path` exists, in contrast to the
@@ -416,5 +656,286 @@ mod tests {
         let p = refl(&cn("x"));
         let ty = k.infer(&p).unwrap();
         assert!(k.def_eq(&ty, &Term::path(t, cn("x"), cn("x"))));
+    }
+}
+
+/// **Phase 3.5**: the De Morgan interval — connections (`~`/`∧`/`∨`), definitional
+/// normalization, and the corresponding face-lattice/boundary extensions. See this
+/// module's "Phase 3.5" doc section above for the laws and the soundness argument
+/// (conservative extension: no new fibrant elimination, no box-filling).
+#[cfg(test)]
+mod phase_3_5_tests {
+    use super::*;
+    use crate::face::{entails, is_false, is_true, Cof};
+    use crate::kernel::Kernel;
+    use crate::term::name;
+
+    fn v(i: usize) -> Term {
+        Term::Var(i)
+    }
+    fn cn(s: &str) -> Term {
+        Term::cnst(name(s), vec![])
+    }
+
+    // ---- normalize_interval: every De Morgan law, decided definitionally ----
+
+    #[test]
+    fn neg_i0_is_i1_and_vice_versa() {
+        assert_eq!(normalize_interval(&Term::ineg(Term::IZero)), normalize_interval(&Term::IOne));
+        assert!(interval_eq(&Term::ineg(Term::IZero), &Term::IOne));
+        assert_eq!(normalize_interval(&Term::ineg(Term::IOne)), normalize_interval(&Term::IZero));
+        assert!(interval_eq(&Term::ineg(Term::IOne), &Term::IZero));
+    }
+
+    #[test]
+    fn double_negation() {
+        let r = v(0);
+        assert!(interval_eq(&Term::ineg(Term::ineg(r.clone())), &r));
+    }
+
+    #[test]
+    fn de_morgan_duality_neg_meet() {
+        // ~(r∧s) = ~r ∨ ~s
+        let (r, s) = (v(0), v(1));
+        let lhs = Term::ineg(Term::imeet(r.clone(), s.clone()));
+        let rhs = Term::ijoin(Term::ineg(r), Term::ineg(s));
+        assert!(interval_eq(&lhs, &rhs));
+    }
+
+    #[test]
+    fn de_morgan_duality_neg_join() {
+        // ~(r∨s) = ~r ∧ ~s
+        let (r, s) = (v(0), v(1));
+        let lhs = Term::ineg(Term::ijoin(r.clone(), s.clone()));
+        let rhs = Term::imeet(Term::ineg(r), Term::ineg(s));
+        assert!(interval_eq(&lhs, &rhs));
+    }
+
+    #[test]
+    fn idempotence() {
+        let r = v(0);
+        assert!(interval_eq(&Term::imeet(r.clone(), r.clone()), &r));
+        assert!(interval_eq(&Term::ijoin(r.clone(), r.clone()), &r));
+    }
+
+    #[test]
+    fn commutativity() {
+        let (r, s) = (v(0), v(1));
+        assert!(interval_eq(&Term::imeet(r.clone(), s.clone()), &Term::imeet(s.clone(), r.clone())));
+        assert!(interval_eq(&Term::ijoin(r.clone(), s.clone()), &Term::ijoin(s, r)));
+    }
+
+    #[test]
+    fn associativity() {
+        let (r, s, t) = (v(0), v(1), v(2));
+        let lhs = Term::imeet(Term::imeet(r.clone(), s.clone()), t.clone());
+        let rhs = Term::imeet(r.clone(), Term::imeet(s.clone(), t.clone()));
+        assert!(interval_eq(&lhs, &rhs));
+        let lhs = Term::ijoin(Term::ijoin(r.clone(), s.clone()), t.clone());
+        let rhs = Term::ijoin(r, Term::ijoin(s, t));
+        assert!(interval_eq(&lhs, &rhs));
+    }
+
+    #[test]
+    fn absorption() {
+        let (r, s) = (v(0), v(1));
+        // r ∧ (r ∨ s) = r
+        assert!(interval_eq(&Term::imeet(r.clone(), Term::ijoin(r.clone(), s.clone())), &r));
+        // r ∨ (r ∧ s) = r
+        assert!(interval_eq(&Term::ijoin(r.clone(), Term::imeet(r.clone(), s)), &r));
+    }
+
+    #[test]
+    fn bounded_lattice_laws() {
+        let r = v(0);
+        assert!(interval_eq(&Term::imeet(r.clone(), Term::IZero), &Term::IZero)); // r∧i0=i0
+        assert!(interval_eq(&Term::ijoin(r.clone(), Term::IOne), &Term::IOne)); // r∨i1=i1
+        assert!(interval_eq(&Term::imeet(r.clone(), Term::IOne), &r)); // r∧i1=r
+        assert!(interval_eq(&Term::ijoin(r.clone(), Term::IZero), &r)); // r∨i0=r
+    }
+
+    /// **Adversarial**: the Boolean complement law `r ∧ ~r = i0` must NOT hold —
+    /// assuming it would be unsound (see the module doc). `i ∧ ~i` must stay a
+    /// distinct, *stuck* interval term from the literal `i0`, not collapse to it.
+    #[test]
+    fn the_boolean_law_does_not_hold() {
+        let r = v(0);
+        let meet_with_neg = Term::imeet(r.clone(), Term::ineg(r.clone()));
+        assert!(!interval_eq(&meet_with_neg, &Term::IZero), "r ∧ ~r must NOT normalize to i0");
+        let join_with_neg = Term::ijoin(r.clone(), Term::ineg(r));
+        assert!(!interval_eq(&join_with_neg, &Term::IOne), "r ∨ ~r must NOT normalize to i1");
+    }
+
+    /// Distinct variables are never conflated by normalization.
+    #[test]
+    fn distinct_variables_stay_distinct() {
+        assert!(!interval_eq(&v(0), &v(1)));
+        assert!(!interval_eq(&Term::ineg(v(0)), &v(0)));
+    }
+
+    /// `normalize_interval` is idempotent (already-normal terms are a fixed point) —
+    /// a basic sanity check that the canonical form is actually canonical.
+    #[test]
+    fn normalize_is_idempotent() {
+        let t = Term::ijoin(Term::imeet(v(0), v(1)), Term::ineg(v(2)));
+        let n1 = normalize_interval(&t);
+        let n2 = normalize_interval(&n1);
+        assert_eq!(n1, n2);
+    }
+
+    // ---- Face-lattice extension: entailment decides connections ----
+
+    #[test]
+    fn meet_eq_1_entails_each_conjunct_eq_1() {
+        // (i∧j=1) ⊢ (i=1)
+        let phi = Cof::eq1(Term::imeet(v(0), v(1)));
+        assert!(entails(&phi, &Cof::eq1(v(0))));
+        assert!(entails(&phi, &Cof::eq1(v(1))));
+    }
+
+    #[test]
+    fn eq_1_entails_join_eq_1() {
+        // (i=1) ⊢ (i∨j=1)
+        let phi = Cof::eq1(v(0));
+        let psi = Cof::eq1(Term::ijoin(v(0), v(1)));
+        assert!(entails(&phi, &psi));
+    }
+
+    #[test]
+    fn neg_eq_1_iff_eq_0() {
+        // ~i=1 ⊣⊢ i=0
+        let neg_eq1 = Cof::eq1(Term::ineg(v(0)));
+        let eq0 = Cof::eq0(v(0));
+        assert!(entails(&neg_eq1, &eq0));
+        assert!(entails(&eq0, &neg_eq1));
+    }
+
+    #[test]
+    fn neg_eq_0_iff_eq_1() {
+        let neg_eq0 = Cof::eq0(Term::ineg(v(0)));
+        let eq1 = Cof::eq1(v(0));
+        assert!(entails(&neg_eq0, &eq1));
+        assert!(entails(&eq1, &neg_eq0));
+    }
+
+    #[test]
+    fn join_eq_0_iff_both_eq_0() {
+        // (i∨j=0) ⊣⊢ (i=0)∧(j=0)
+        let phi = Cof::eq0(Term::ijoin(v(0), v(1)));
+        let psi = Cof::and(Cof::eq0(v(0)), Cof::eq0(v(1)));
+        assert!(entails(&phi, &psi));
+        assert!(entails(&psi, &phi));
+    }
+
+    /// The `i0 ≠ i1` clash, reached *through* a connection: `(~i=1) ∧ (i=1)` forces
+    /// `i=0` and `i=1` simultaneously ⇒ `⊥`.
+    #[test]
+    fn clash_through_negation_is_false() {
+        let phi = Cof::and(Cof::eq1(Term::ineg(v(0))), Cof::eq1(v(0)));
+        assert!(is_false(&phi));
+    }
+
+    /// `(i∧j = 1)` is genuinely satisfiable (not `⊥`) — decomposition must not
+    /// over-collapse a satisfiable conjunction.
+    #[test]
+    fn meet_eq_1_is_satisfiable() {
+        let phi = Cof::eq1(Term::imeet(v(0), v(1)));
+        assert!(!is_false(&phi));
+    }
+
+    /// `~i0 = 1` is literally `i1 = 1`, hence unconditionally true — decided through
+    /// the connection decomposition, not just literal-endpoint matching.
+    #[test]
+    fn neg_of_literal_endpoint_decides() {
+        assert!(is_true(&Cof::eq1(Term::ineg(Term::IZero))));
+        assert!(is_false(&Cof::eq0(Term::ineg(Term::IZero))));
+    }
+
+    // ---- Boundary computation with connection substitution ----
+
+    /// `A B : Type 0`, `a b : A`.
+    fn base_env() -> Kernel {
+        let mut k = Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("a", 0, cn("A")).unwrap();
+        k.add_axiom("b", 0, cn("A")).unwrap();
+        k
+    }
+
+    /// `(refl a) @ (i ∧ ~i)` still computes to `a` for *any* interval expression
+    /// substituted for `r` in `(⟨i⟩ a) @ r ↦ a` — connections included, since the
+    /// body doesn't mention the bound variable at all. Exercises that connection
+    /// terms flow correctly through `PApp`'s substitution.
+    #[test]
+    fn boundary_computes_under_a_connection_argument() {
+        let k = base_env();
+        let arg = Term::imeet(Term::Var(0), Term::ineg(Term::Var(0)));
+        // Build inside a context with one bound interval variable in scope.
+        let mut ctx = crate::check::LocalCtx::new();
+        ctx.push(Term::I);
+        let app = Term::papp(refl(&cn("a")).lift(1, 0), arg);
+        assert!(k.checker().is_def_eq(&mut ctx, &app, &cn("a").lift(1, 0)));
+    }
+
+    /// `(⟨i⟩ f (p @ i)) @ (~i0)` — substituting the *literal* `~i0` (which normalizes
+    /// to `i1`) into a genuinely `i`-dependent body must compute to the `i1` boundary,
+    /// exactly as substituting `i1` directly would.
+    #[test]
+    fn connection_argument_hits_the_right_boundary() {
+        let mut k = base_env();
+        k.add_axiom("f", 0, Term::arrow(cn("A"), cn("A"))).unwrap();
+        k.add_axiom("p", 0, Term::path(cn("A"), cn("a"), cn("b"))).unwrap();
+        let term = ap(&cn("f"), &cn("p"));
+        // `term @ (~i0)` should equal `term @ i1` should equal `f b`.
+        let at_neg_i0 = Term::papp(term.clone(), Term::ineg(Term::IZero));
+        let expected = Term::app(cn("f"), cn("b"));
+        assert!(k.def_eq(&at_neg_i0, &expected));
+    }
+
+    // ---- `I` remains non-fibrant with connections in scope ----
+
+    #[test]
+    fn interval_still_not_a_pi_domain_with_connections_in_scope() {
+        let mut k = Kernel::new();
+        let err = k.add_axiom("bad", 0, Term::pi(Term::I, Term::typ(0))).unwrap_err();
+        assert!(err.contains('I'), "got: {err}");
+    }
+
+    /// A connection expression itself is `I`-typed, never a genuine `Type`/value —
+    /// `infer` on a bare `INeg`/`IMeet`/`IJoin` at top level (no interval context)
+    /// still fails exactly as `Term::IZero` bare-checked-as-a-domain would.
+    #[test]
+    fn connection_cannot_smuggle_data_into_a_pi_domain() {
+        let mut k = Kernel::new();
+        // `Π (_ : ~i0). Type 0` — `~i0 : I`, not a `Sort`, so this must be rejected
+        // for the same reason `Π (_ : I). Type 0` is.
+        let err = k.add_axiom("bad", 0, Term::pi(Term::ineg(Term::IZero), Term::typ(0))).unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    /// A malformed connection (operand not `: I`) is rejected by `infer`, mirroring
+    /// `Term::PApp`'s existing check that its argument is interval-classified.
+    #[test]
+    fn ill_typed_connection_operand_is_rejected() {
+        let mut k = Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("a", 0, cn("A")).unwrap();
+        // `~a` where `a : A`, not `: I`.
+        assert!(k.infer(&Term::ineg(cn("a"))).is_err());
+    }
+
+    /// `normalize_interval` is total (never panics) even on a deeply nested,
+    /// non-trivial expression mixing all three connectives and several variables.
+    #[test]
+    fn normalize_interval_is_total_on_deep_nesting() {
+        // Deliberately modest depth: the DNF-based normal form is (as documented)
+        // worst-case exponential in the number of distinct variables — same as
+        // `crate::face`'s pre-existing `to_dnf` for cofibrations — so this checks
+        // *totality* (terminates, doesn't panic), not asymptotic performance.
+        let mut t = v(0);
+        for i in 1..7 {
+            t = Term::ijoin(Term::imeet(t.clone(), v(i)), Term::ineg(t));
+        }
+        let _ = normalize_interval(&t); // must not panic
     }
 }

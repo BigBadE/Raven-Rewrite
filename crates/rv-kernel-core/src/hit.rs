@@ -257,6 +257,8 @@ fn occurs_const(t: &Term, id: &Name) -> bool {
         Term::PathP(fam, a0, a1) => {
             occurs_const(fam, id) || occurs_const(a0, id) || occurs_const(a1, id)
         }
+        Term::INeg(r) => occurs_const(r, id),
+        Term::IMeet(r, s) | Term::IJoin(r, s) => occurs_const(r, id) || occurs_const(s, id),
         Term::Sort(_) | Term::Var(_) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => false,
         Term::Sys(branches) => branches.iter().any(|(_, t)| occurs_const(t, id)),
         Term::Partial(_, a) => occurs_const(a, id),

@@ -364,6 +364,16 @@ impl<'e> Graded<'e> {
             // under that same binder, and its two endpoints are ordinary (erased,
             // scale-0, since it's a type) subterms.
             Term::I | Term::IZero | Term::IOne => Ok(Usage::empty()),
+            // Phase 3.5 (De Morgan interval, see `rv_kernel_core::cubical`): reversal
+            // and the two connections are themselves interval expressions — like
+            // `PApp`'s `r` argument below, any variable occurrence inside them is
+            // interval-typed, never a runtime resource, so scaled to `0`.
+            Term::INeg(r) => Ok(self.infer(r)?.scale(Grade::Zero)),
+            Term::IMeet(r, s) | Term::IJoin(r, s) => {
+                let ur = self.infer(r)?.scale(Grade::Zero);
+                let us = self.infer(s)?.scale(Grade::Zero);
+                Ok(ur.add(&us))
+            }
             Term::PLam(body) => {
                 let ub = self.under(&Term::I, |s| s.infer(body))?;
                 let (u0, urest) = ub.pop_binder();

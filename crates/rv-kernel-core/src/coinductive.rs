@@ -497,6 +497,8 @@ fn mentions_var(t: &Term, k: usize) -> bool {
         Term::PathP(fam, a0, a1) => {
             mentions_var(fam, k + 1) || mentions_var(a0, k) || mentions_var(a1, k)
         }
+        Term::INeg(r) => mentions_var(r, k),
+        Term::IMeet(r, s) | Term::IJoin(r, s) => mentions_var(r, k) || mentions_var(s, k),
         Term::Sort(_) | Term::Const(..) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => false,
         Term::Sys(branches) => {
             branches.iter().any(|(p, t)| crate::face::mentions_var(p, k) || mentions_var(t, k))

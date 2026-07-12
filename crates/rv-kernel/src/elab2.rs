@@ -2115,6 +2115,17 @@ fn abstract_occurrences(e: &Term, target: &Term, k: usize) -> Term {
         // Phase-1 cubical (see `rv_kernel_core::cubical`): the elaborator doesn't yet
         // produce these (no surface syntax), but keep them structurally sound —
         // `PLam`/`PathP`'s family reuse the ordinary `Var` binder (one extra `k + 1`).
+        // Phase 3.5 (De Morgan interval, see `rv_kernel_core::cubical`): same "no
+        // surface syntax yet, but structurally sound" treatment as `PApp` below.
+        Term::INeg(r) => Term::ineg(abstract_occurrences(r, target, k)),
+        Term::IMeet(r, s) => Term::imeet(
+            abstract_occurrences(r, target, k),
+            abstract_occurrences(s, target, k),
+        ),
+        Term::IJoin(r, s) => Term::ijoin(
+            abstract_occurrences(r, target, k),
+            abstract_occurrences(s, target, k),
+        ),
         Term::PLam(b) => Term::plam(abstract_occurrences(b, target, k + 1)),
         Term::PApp(p, r) => {
             Term::papp(abstract_occurrences(p, target, k), abstract_occurrences(r, target, k))
@@ -2290,6 +2301,9 @@ pub(crate) fn replace_with_var(t: &Term, target: &Term, k: usize) -> Term {
                 go(v, target, k, depth),
                 go(b, target, k, depth + 1),
             ),
+            Term::INeg(r) => Term::ineg(go(r, target, k, depth)),
+            Term::IMeet(r, s) => Term::imeet(go(r, target, k, depth), go(s, target, k, depth)),
+            Term::IJoin(r, s) => Term::ijoin(go(r, target, k, depth), go(s, target, k, depth)),
             Term::PLam(b) => Term::plam(go(b, target, k, depth + 1)),
             Term::PApp(p, r) => Term::papp(go(p, target, k, depth), go(r, target, k, depth)),
             Term::PathP(fam, a0, a1) => Term::pathp(
@@ -2346,6 +2360,9 @@ fn subst_db_var(t: &Term, d: usize, u: &Term) -> Term {
                 go(v, d, u, depth),
                 go(b, d, u, depth + 1),
             ),
+            Term::INeg(r) => Term::ineg(go(r, d, u, depth)),
+            Term::IMeet(r, s) => Term::imeet(go(r, d, u, depth), go(s, d, u, depth)),
+            Term::IJoin(r, s) => Term::ijoin(go(r, d, u, depth), go(s, d, u, depth)),
             Term::PLam(b) => Term::plam(go(b, d, u, depth + 1)),
             Term::PApp(p, r) => Term::papp(go(p, d, u, depth), go(r, d, u, depth)),
             Term::PathP(fam, a0, a1) => Term::pathp(
@@ -2394,6 +2411,8 @@ fn occurs_term(t: &Term, target: &Term) -> bool {
             Term::Let(_, x, y, z) => {
                 go(x, target, depth) || go(y, target, depth) || go(z, target, depth + 1)
             }
+            Term::INeg(r) => go(r, target, depth),
+            Term::IMeet(r, s) | Term::IJoin(r, s) => go(r, target, depth) || go(s, target, depth),
             Term::PLam(b) => go(b, target, depth + 1),
             Term::PApp(p, r) => go(p, target, depth) || go(r, target, depth),
             Term::PathP(fam, a0, a1) => {
@@ -2421,6 +2440,8 @@ fn occurs_var(t: &Term, d: usize) -> bool {
             Term::Let(_, x, y, z) => {
                 go(x, d, depth) || go(y, d, depth) || go(z, d, depth + 1)
             }
+            Term::INeg(r) => go(r, d, depth),
+            Term::IMeet(r, s) | Term::IJoin(r, s) => go(r, d, depth) || go(s, d, depth),
             Term::PLam(b) => go(b, d, depth + 1),
             Term::PApp(p, r) => go(p, d, depth) || go(r, d, depth),
             Term::PathP(fam, a0, a1) => {
@@ -2444,6 +2465,8 @@ fn occurs_const(n: &str, t: &Term) -> bool {
         Term::App(f, a) => occurs_const(n, f) || occurs_const(n, a),
         Term::Lam(d, b) | Term::Pi(_, d, b) => occurs_const(n, d) || occurs_const(n, b),
         Term::Let(_, x, y, z) => occurs_const(n, x) || occurs_const(n, y) || occurs_const(n, z),
+        Term::INeg(r) => occurs_const(n, r),
+        Term::IMeet(r, s) | Term::IJoin(r, s) => occurs_const(n, r) || occurs_const(n, s),
         Term::PLam(b) => occurs_const(n, b),
         Term::PApp(p, r) => occurs_const(n, p) || occurs_const(n, r),
         Term::PathP(fam, a0, a1) => {
@@ -2498,6 +2521,8 @@ fn is_closed_at(t: &Term, depth: usize) -> bool {
         Term::Let(_, x, y, z) => {
             is_closed_at(x, depth) && is_closed_at(y, depth) && is_closed_at(z, depth + 1)
         }
+        Term::INeg(r) => is_closed_at(r, depth),
+        Term::IMeet(r, s) | Term::IJoin(r, s) => is_closed_at(r, depth) && is_closed_at(s, depth),
         Term::PLam(b) => is_closed_at(b, depth + 1),
         Term::PApp(p, r) => is_closed_at(p, depth) && is_closed_at(r, depth),
         Term::PathP(fam, a0, a1) => {

@@ -282,6 +282,46 @@ fn literal_atom(a: &Atom) -> Option<bool> {
     }
 }
 
+/// **Phase 3.5** (De Morgan interval connections, see `crate::cubical`): does an
+/// atom's subject have a *connective* head (`~`/`∧`/`∨`) that can be pushed past the
+/// `= 0`/`= 1` and turned into an equivalent, *strictly smaller* [`Cof`]? Implements
+/// exactly the four decomposition laws the task requires (all four are theorems of
+/// the two-element Boolean semantics `{0,1}` that the *values* of interval variables
+/// range over — not to be confused with the De Morgan-*algebra* laws on interval
+/// *terms* themselves, which `crate::cubical::normalize_interval` decides separately;
+/// these are about what it means for a connective expression to *equal the literal
+/// endpoint* `0`/`1`, which is a stronger, fully-decided statement than mere term
+/// equality):
+///
+/// ```text
+///   (r ∧ s = 1)  ⟺  (r = 1) ∧ (s = 1)      (r ∨ s = 1)  ⟺  (r = 1) ∨ (s = 1)
+///   (r ∧ s = 0)  ⟺  (r = 0) ∨ (s = 0)      (r ∨ s = 0)  ⟺  (r = 0) ∧ (s = 0)
+///   (~r = 1)     ⟺  (r = 0)                (~r = 0)     ⟺  (r = 1)
+/// ```
+///
+/// Returns `None` for a subject that is already a bare `Var`/`IZero`/`IOne` (the base
+/// case `to_dnf` handles directly) — the recursion this feeds always strictly shrinks
+/// the subject term, so it terminates.
+fn connection_atom(a: &Atom) -> Option<Cof> {
+    match a {
+        Atom::Eq1(Term::INeg(r)) => Some(Cof::eq0((**r).clone())),
+        Atom::Eq0(Term::INeg(r)) => Some(Cof::eq1((**r).clone())),
+        Atom::Eq1(Term::IMeet(r, s)) => {
+            Some(Cof::and(Cof::eq1((**r).clone()), Cof::eq1((**s).clone())))
+        }
+        Atom::Eq1(Term::IJoin(r, s)) => {
+            Some(Cof::or(Cof::eq1((**r).clone()), Cof::eq1((**s).clone())))
+        }
+        Atom::Eq0(Term::IMeet(r, s)) => {
+            Some(Cof::or(Cof::eq0((**r).clone()), Cof::eq0((**s).clone())))
+        }
+        Atom::Eq0(Term::IJoin(r, s)) => {
+            Some(Cof::and(Cof::eq0((**r).clone()), Cof::eq0((**s).clone())))
+        }
+        _ => None,
+    }
+}
+
 /// Does `clause` contain both `r = 0` and `r = 1` for the same (structurally
 /// identical) subject `r`? This is the one nontrivial axiom of the face lattice
 /// (`i0 ≠ i1`).
@@ -303,7 +343,15 @@ fn to_dnf(phi: &Cof) -> Vec<Clause> {
         Cof::Atom(a) => match literal_atom(a) {
             Some(true) => vec![Vec::new()],
             Some(false) => Vec::new(),
-            None => vec![vec![a.clone()]],
+            // Phase 3.5: a connective subject (`~`/`∧`/`∨`) decomposes into a
+            // strictly smaller, semantically equivalent `Cof` (see
+            // `connection_atom`'s doc) — recurse on that instead of treating the
+            // whole connective expression as one opaque, un-analyzable atom (which
+            // would make e.g. `(i∧j=1) ⊢ (i=1)` undecidable/false).
+            None => match connection_atom(a) {
+                Some(expanded) => to_dnf(&expanded),
+                None => vec![vec![a.clone()]],
+            },
         },
         Cof::And(a, b) => {
             let da = to_dnf(a);

@@ -42,6 +42,15 @@ pub enum Value {
     IZero,
     /// The right interval endpoint.
     IOne,
+    /// **Phase 3.5** (De Morgan interval, see `crate::cubical`): reversal/meet/join,
+    /// kept as plain structural values (no eager simplification in the evaluator —
+    /// the one normalization authority is `crate::cubical::normalize_interval`,
+    /// applied at comparison time by [`Nbe::conv`]/`alpha_eta_eq` on the *quoted*
+    /// term, exactly like `Value::Sys`/`Value::Partial` defer their face-formula
+    /// reasoning to `crate::face` rather than reimplementing it here).
+    INeg(Rc<Value>),
+    IMeet(Rc<Value>, Rc<Value>),
+    IJoin(Rc<Value>, Rc<Value>),
     /// A path abstraction `⟨i⟩ body` — the interval-binder analogue of `Value::Lam`.
     PLam(Closure),
     /// `PathP (λi. family) a0 a1`, the semantic form of [`crate::term::Term::PathP`].
@@ -225,6 +234,9 @@ impl<'a> Nbe<'a> {
             Term::I => Rc::new(Value::I),
             Term::IZero => Rc::new(Value::IZero),
             Term::IOne => Rc::new(Value::IOne),
+            Term::INeg(r) => Rc::new(Value::INeg(self.eval(venv, r))),
+            Term::IMeet(r, s) => Rc::new(Value::IMeet(self.eval(venv, r), self.eval(venv, s))),
+            Term::IJoin(r, s) => Rc::new(Value::IJoin(self.eval(venv, r), self.eval(venv, s))),
             Term::PLam(b) => {
                 Rc::new(Value::PLam(Closure { env: venv.clone(), body: b.clone() }))
             }
@@ -290,18 +302,20 @@ impl<'a> Nbe<'a> {
     }
 
     /// Evaluate a single face atom's subject against `venv` and classify it: `Some`
-    /// when the subject has evaluated all the way to a literal `IZero`/`IOne` (so the
-    /// atom is *decided*), `None` when it's still an open interval variable.
+    /// when the subject has evaluated all the way to a *decided* literal endpoint (so
+    /// the atom is decided), `None` when it's still genuinely open. Phase 3.5 (De
+    /// Morgan interval, see `crate::cubical`): goes through [`interval_endpoint`],
+    /// which additionally decides connections (`~`/`∧`/`∨`) whose value is forced by
+    /// their operands even when built from a mix of literals and open variables (e.g.
+    /// `i0 ∧ j` is decided `0` regardless of `j`) — the semantic-value analogue of
+    /// `crate::face`'s `connection_atom` decomposition, kept as an independent
+    /// implementation per this module's differential-testing convention.
     fn eval_face_atom(&self, venv: &Rc<VEnv>, atom: &Atom) -> Option<bool> {
         let (subject, want_one) = match atom {
             Atom::Eq0(t) => (t, false),
             Atom::Eq1(t) => (t, true),
         };
-        match &*self.eval(venv, subject) {
-            Value::IZero => Some(!want_one),
-            Value::IOne => Some(want_one),
-            _ => None,
-        }
+        interval_endpoint(&self.eval(venv, subject)).map(|is_one| is_one == want_one)
     }
 
     /// Three-valued evaluation of a cofibration against `venv` (`Some(true)` =
@@ -727,6 +741,9 @@ impl<'a> Nbe<'a> {
             Value::I => Term::I,
             Value::IZero => Term::IZero,
             Value::IOne => Term::IOne,
+            Value::INeg(r) => Term::ineg(self.quote(level, r)),
+            Value::IMeet(r, s) => Term::imeet(self.quote(level, r), self.quote(level, s)),
+            Value::IJoin(r, s) => Term::ijoin(self.quote(level, r), self.quote(level, s)),
             Value::PLam(clo) => {
                 let body = self.apply(clo, Rc::new(Value::Stuck(Head::Var(level), Vec::new())));
                 Term::plam(self.quote(level + 1, &body))
@@ -789,9 +806,46 @@ impl<'a> Nbe<'a> {
     }
 }
 
+/// Phase 3.5 (De Morgan interval, see `crate::cubical`): does `v` — a semantic
+/// interval value, possibly built from `~`/`∧`/`∨` over literals and open
+/// variables — evaluate to a *decided* endpoint? `Some(true)` = forced to `i1`,
+/// `Some(false)` = forced to `i0`, `None` = still open (depends on an undecided
+/// variable in a way the connective can't short-circuit). Total: strictly structural
+/// recursion on `v`, which is already fully (weak-head, and for these constructors
+/// eagerly) evaluated.
+fn interval_endpoint(v: &Value) -> Option<bool> {
+    match v {
+        Value::IZero => Some(false),
+        Value::IOne => Some(true),
+        Value::INeg(r) => interval_endpoint(r).map(|b| !b),
+        Value::IMeet(r, s) => match (interval_endpoint(r), interval_endpoint(s)) {
+            (Some(false), _) | (_, Some(false)) => Some(false),
+            (Some(true), Some(true)) => Some(true),
+            _ => None,
+        },
+        Value::IJoin(r, s) => match (interval_endpoint(r), interval_endpoint(s)) {
+            (Some(true), _) | (_, Some(true)) => Some(true),
+            (Some(false), Some(false)) => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Compare two normal-form terms up to α-equivalence, η, and grade-blindness on `Π`.
 fn alpha_eta_eq(a: &Term, b: &Term) -> bool {
     match (a, b) {
+        // Phase 3.5 (De Morgan interval, see `crate::cubical`): identical arm to
+        // `check::Checker::compare`/`reduce::Reducer::is_def_eq` — kept in lockstep
+        // across all three independent conversion checkers (differentially tested).
+        // Only fires when a genuine connective head is present, so plain `Var`/`Var`
+        // (needed for this normal-form comparator's η cases below) is untouched.
+        (Term::INeg(..) | Term::IMeet(..) | Term::IJoin(..), _)
+        | (_, Term::INeg(..) | Term::IMeet(..) | Term::IJoin(..))
+            if crate::cubical::is_interval_expr(a) && crate::cubical::is_interval_expr(b) =>
+        {
+            crate::cubical::interval_eq(a, b)
+        }
         (Term::Sort(l1), Term::Sort(l2)) => level::equiv(l1, l2),
         (Term::Var(i), Term::Var(j)) => i == j,
         (Term::Const(n1, l1), Term::Const(n2, l2)) => {
