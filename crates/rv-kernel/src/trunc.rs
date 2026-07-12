@@ -112,6 +112,24 @@
 //! interaction with path constructors exactly right without an interval is delicate, and
 //! an unsound eliminator here would let `False` be derived. See the module docs for the
 //! precise reasoning. Truncation alone is standard, closed, and sound.
+//!
+//! **Note (why this differs from `Quot.rec`):** [`crate::quotient`] *does* offer a sound
+//! dependent, `Type`-valued eliminator (`Quot.rec`), because `Quot`'s path constructor
+//! `Quot.sound` is *indexed by a user relation* `R a b` — the respectfulness premise
+//! `resp : Π a b, R a b → (transport (f a) = f b)` is stated pointwise over that
+//! relation's actual witnesses, and there is exactly one path constructor to respect.
+//! `Trunc.eq`, by contrast, is a path *between every pair* of already-identified points
+//! `x y : ∥A∥` (not just pairs reachable via one witnessed relation on the underlying
+//! `A`) with no user-supplied index to case on — a fully general dependent
+//! `Trunc.rec` would need `C : ∥A∥ → Sort v` together with, *for every `x`*, a proof that
+//! `C x` is a mere proposition (so all its paths are automatically respected, including
+//! the ones `eq` produces between representatives with no witness data to induct on).
+//! Wiring that guard through this kernel's fixed-schema installer and the reducer's
+//! ι-rule — without accidentally admitting a case that lets two distinct `tr a`/`tr b`
+//! collapse when `C` is *not* actually propositional — is a materially larger, separate
+//! change than generalizing `Quot.lift` to `Quot.rec` was, so it is intentionally not
+//! attempted here; `Trunc.ind`/`Trunc.lift` (`Prop`-only dependent elimination, plus
+//! non-dependent recursion into any `Sort v`) remain the supported forms.
 
 use crate::env::{Decl, Env, Trunc, TruncRole};
 use crate::level::Level;

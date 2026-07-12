@@ -227,6 +227,13 @@ pub enum QuotRole {
     /// The `Prop`-eliminator `Quot.ind` (no computation rule; sound by proof
     /// irrelevance — see [`crate::quotient`]).
     Ind,
+    /// The **dependent** recursor `Quot.rec A R C f resp : Π (q : Quot A R), C q`,
+    /// eliminating into an arbitrary `Sort v` (not just `Prop`) given a respectfulness
+    /// premise transporting `f a` to `f b` along `Quot.sound` whenever `R a b`. Drives
+    /// the same-shaped ι-rule `Quot.rec … C f resp (Quot.mk … a) ↦ f a` (its argument
+    /// spine positions coincide with `Lift`'s: `f` at index 3, the scrutinee at index
+    /// 5) — see [`crate::quotient`].
+    Rec,
 }
 
 /// Which of the five fixed **propositional-truncation** constants a [`Trunc`]

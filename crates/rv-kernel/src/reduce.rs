@@ -62,8 +62,10 @@ impl<'e> Reducer<'e> {
                         }
                         None => break,
                     },
-                    // Quotient computation: `Quot.lift … f resp (Quot.mk … a) ↦ f a`.
-                    Some(Decl::Quot(q)) if q.role == QuotRole::Lift => {
+                    // Quotient computation: `Quot.lift … f resp (Quot.mk … a) ↦ f a`, and
+                    // identically for the dependent `Quot.rec` (same spine positions —
+                    // see `try_quot_lift`'s doc comment).
+                    Some(Decl::Quot(q)) if q.role == QuotRole::Lift || q.role == QuotRole::Rec => {
                         match self.try_quot_lift(&args) {
                             Some(reduced) => {
                                 let (h, a) = reduced.unfold_apps();
@@ -236,6 +238,13 @@ impl<'e> Reducer<'e> {
     /// `resp` exactly as Lean does — its only role is to have been *type-checked to
     /// exist*, guaranteeing `f` respects `R`. Returns `None` (stuck/neutral) when not
     /// saturated to the scrutinee or the scrutinee is not a `Quot.mk`.
+    ///
+    /// Also drives the **dependent** recursor `Quot.rec`: its argument spine
+    /// `[A, R, C, f, resp, q]` places `f` and the scrutinee `q` at the exact same
+    /// indices (`C` merely occupies the slot `B` occupied for `Quot.lift`), so the same
+    /// ι-rule `Quot.rec … f resp (Quot.mk … a) ↦ f a` applies unchanged; soundness for
+    /// the dependent case comes from `resp`'s (richer, `Eq.rec`-transporting) type
+    /// having been checked to exist — see `crate::quotient`'s doc comment.
     fn try_quot_lift(&self, args: &[Term]) -> Option<Term> {
         const F_POS: usize = 3;
         const SCRUT_POS: usize = 5;
