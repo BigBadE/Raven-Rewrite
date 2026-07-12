@@ -158,6 +158,7 @@
 //! `add_definition`'s call sites or a bypass that shouldn't exist — fails loudly instead of
 //! silently riding on elaboration's say-so.
 
+pub mod cubical_surface;
 pub mod effect;
 pub mod elab;
 pub mod elab2;

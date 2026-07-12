@@ -1,0 +1,64 @@
+// The cubical layer (Path/PathP, interval literals/connections, and the derived
+// operators refl/ap/pfunext/transport/psubst/J/ptrans/path_to_eq/eq_to_path), plus
+// the interval HIT `I2`, exercised end-to-end from `.rv` surface syntax
+// (`rvc --verify`). See `crates/rv-kernel/src/cubical_surface.rs` and
+// `crates/rv-kernel/src/elab2.rs`'s `Expr::{IZero,IOne,INeg,IMeet,IJoin,PLam,PApp,
+// PathTy,PathPTy}` handling for how each surface form lowers to the kernel's
+// `PathP`/`PLam`/`PApp`/interval terms.
+
+enum Nat { Zero, Succ(Nat) }
+
+// `succ` as a proof-fragment `def` (not an executable `fn`) — `succ` is used inside
+// the kernel-only cubical demos below, and only proof-fragment declarations are
+// visible to the kernel (see `rv_syntax::classify`/`crate::unify::module_to_commands`).
+def succ : Nat -> Nat := fun (n: Nat) => Nat::Succ(n)
+
+// ---- refl : the constant path -----------------------------------------------
+def refl_zero : Path(Nat, Nat::Zero, Nat::Zero) := refl(Nat, Nat::Zero)
+
+// ---- plam/papp : building a path directly by interval abstraction, and
+//      eliminating it back at both endpoints ---------------------------------
+def const_path : Path(Nat, Nat::Zero, Nat::Zero) := plam(fun i => Nat::Zero)
+def const_path_at_i0 : Nat := papp(const_path, i0)
+def const_path_at_i1 : Nat := papp(const_path, i1)
+
+// ---- the dependent path type `PathP`, at a constant family -----------------
+def dep_const_path : PathP(fun i => Nat, Nat::Zero, Nat::Zero) := plam(fun i => Nat::Zero)
+
+// ---- ap : push a function through a path ------------------------------------
+def ap_succ : Path(Nat, Nat::Succ(Nat::Zero), Nat::Succ(Nat::Zero)) :=
+    ap(Nat, Nat, Nat::Zero, Nat::Zero, succ, refl(Nat, Nat::Zero))
+
+// ---- pfunext : dependent function extensionality, a direct cubical proof ---
+def funext_succ : Path(forall (_: Nat), Nat, succ, succ) :=
+    pfunext(Nat, fun (_: Nat) => Nat, succ, succ, fun (x: Nat) => refl(Nat, succ(x)))
+
+// ---- transport : move a value across a path *in the universe* --------------
+def transported_zero : Nat := transport(Nat, Nat, refl(Type, Nat), Nat::Zero)
+
+// ---- J : path induction -------------------------------------------------
+def j_demo : Path(Nat, Nat::Zero, Nat::Zero) :=
+    J(Nat, Nat::Zero,
+      fun (x: Nat) (p: Path(Nat, Nat::Zero, x)) => Path(Nat, Nat::Zero, Nat::Zero),
+      refl(Nat, Nat::Zero),
+      Nat::Zero, refl(Nat, Nat::Zero))
+
+// ---- ptrans : transitivity of Path, derived via J ---------------------------
+def ptrans_demo : Path(Nat, Nat::Zero, Nat::Zero) :=
+    ptrans(Nat, Nat::Zero, Nat::Zero, Nat::Zero, refl(Nat, Nat::Zero), refl(Nat, Nat::Zero))
+
+// ---- the Path <-> Eq bridge ---------------------------------------------
+def as_eq : Nat::Zero == Nat::Zero := path_to_eq(Nat, Nat::Zero, Nat::Zero, refl(Nat, Nat::Zero))
+def as_path : Path(Nat, Nat::Zero, Nat::Zero) := eq_to_path(Nat, Nat::Zero, Nat::Zero, Eq::refl(Nat, Nat::Zero))
+
+// ---- the interval HIT `I2`: a computing path constructor ---------------
+// `I2.rec C c0 c1 s (I2.seg @ r)` reduces to `s @ r` (the path ι-rule) — here at
+// `r = i0`, which lands (by endpoint coherence) on the same value the point
+// ι-rule gives directly for `I2.zero`.
+def i2_seg_at_i0 : Nat :=
+    I2.rec(fun (_: I2) => Nat, Nat::Zero, Nat::Zero, refl(Nat, Nat::Zero), papp(I2.seg, i0))
+
+// The two `I2.rec` routes to `Nat::Zero` (the point ι-rule and the path ι-rule at
+// its `i0` boundary) genuinely compute to the same value — checked by the kernel
+// via `==`, not just visual inspection.
+def i2_endpoint_coherence : i2_seg_at_i0 == Nat::Zero := Eq::refl(Nat, Nat::Zero)

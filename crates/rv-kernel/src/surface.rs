@@ -84,6 +84,34 @@ pub enum Expr {
     /// abstracted from the expected type. Only valid in a checking position. This is the
     /// ergonomic fix for pushing a function through a stuck `match`.
     ByCases(Box<Expr>, Box<Expr>, Box<Expr>),
+
+    // --- cubical layer surface forms (see `crate::elab2::Infer`'s handling and
+    // `rv_kernel_core::cubical`) — the interval `I` is deliberately not a fibrant
+    // type (`Checker::infer`'s `Term::I` arm), so these are genuine surface syntax
+    // rather than ordinary installed functions: they manipulate the interval the way
+    // `Checker` itself does (via `LocalCtx`), never via an ordinary `Term::Pi` domain.
+    /// The interval endpoint `i0 : I`.
+    IZero,
+    /// The interval endpoint `i1 : I`.
+    IOne,
+    /// De Morgan reversal `~r` of an interval expression.
+    INeg(Box<Expr>),
+    /// De Morgan meet `r ∧ s` of two interval expressions.
+    IMeet(Box<Expr>, Box<Expr>),
+    /// De Morgan join `r ∨ s` of two interval expressions.
+    IJoin(Box<Expr>, Box<Expr>),
+    /// Path abstraction `plam(fun i => body)` — binds `i : I` (not an ordinary
+    /// function domain) and elaborates `body` under it, producing a `PLam`.
+    PLam(String, Box<Expr>),
+    /// Path application `papp(p, r)` — eliminates a `Path`/`PathP`-typed `p` at the
+    /// interval expression `r`.
+    PApp(Box<Expr>, Box<Expr>),
+    /// The non-dependent path type `Path(A, a, b)`.
+    PathTy(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// The dependent path type `PathP(fun i => family, a0, a1)` — `i : I` binds the
+    /// varying family (not an ordinary function domain, same as [`Expr::PLam`]).
+    PathPTy(String, Box<Expr>, Box<Expr>, Box<Expr>),
+
     /// A source-located wrapper: the inner expression annotated with its byte range in the
     /// source. The elaborator treats this transparently (it peels through to the inner) but
     /// records the range so a type error can be pointed at the precise offending sub-term.

@@ -212,12 +212,21 @@ impl<'a> Eraser<'a> {
                 let ty = Checker::new(self.env).infer(&mut self.ctx(), head)?;
                 self.erase(head, &ty)
             }
-            // A path abstraction/application encountered as an atom (no expected type
-            // supplied): infer its type the same way `Lam` does above.
-            Term::PLam(..) | Term::PApp(..) => {
-                let ty = Checker::new(self.env).infer(&mut self.ctx(), head)?;
-                self.erase(head, &ty)
-            }
+            // A path abstraction/application encountered as an atom in a
+            // runtime-relevant position (not already short-circuited to `Opaque` by
+            // `expected_is_prop` above — the common case for a `Path`/`PathP`-typed
+            // proof). Mirrors `Term::Transp`/`Term::HComp` below: erasing this to
+            // genuine runtime data isn't supported yet, so this is an honest `Err`
+            // (silently swallowed by callers like `rv_driver::verify_rv`'s QTT report,
+            // never a hard failure) rather than recursing into `self.erase(head, &ty)`
+            // with `ty` freshly inferred from `head` itself — which, for a `head` that
+            // still isn't `Prop`-classified after that, would call straight back into
+            // this same arm with the same term and loop forever.
+            Term::PLam(..) | Term::PApp(..) => Err(
+                "erasure of a path abstraction/application in a runtime-relevant \
+                 position is not yet supported"
+                    .to_string(),
+            ),
             Term::App(..) | Term::Let(..) => self.erase(head, &Term::Sort(crate::Level::Zero)),
         }
     }

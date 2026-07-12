@@ -276,6 +276,83 @@ impl<'a> Infer<'a> {
                 let (tb, tbty) = r?;
                 Ok((Term::let_(tty, tval.clone(), tb), tbty.instantiate(&tval)))
             }
+
+            // ---- cubical layer: interval literals/connections, path abstraction/
+            // application, and the two path-type formers. `I` is deliberately not a
+            // fibrant type (see `rv_kernel_core::check::Checker::infer`'s `Term::I`
+            // arm), so these bind `i : I` directly on `self.locals` (exactly the way
+            // `Checker` itself extends `LocalCtx` for `PLam`/`PathP`/`Transp`) rather
+            // than going through an ordinary `Π`/`λ`.
+            Expr::IZero => Ok((Term::IZero, Term::I)),
+            Expr::IOne => Ok((Term::IOne, Term::I)),
+            Expr::INeg(r) => {
+                let rt = self.check(r, &Term::I)?;
+                Ok((Term::ineg(rt), Term::I))
+            }
+            Expr::IMeet(r, s) => {
+                let rt = self.check(r, &Term::I)?;
+                let st = self.check(s, &Term::I)?;
+                Ok((Term::imeet(rt, st), Term::I))
+            }
+            Expr::IJoin(r, s) => {
+                let rt = self.check(r, &Term::I)?;
+                let st = self.check(s, &Term::I)?;
+                Ok((Term::ijoin(rt, st), Term::I))
+            }
+            Expr::PLam(v, body) => {
+                self.locals.push((v.clone(), Term::I));
+                let r = self.infer(body);
+                self.locals.pop();
+                let (bt, bty) = r?;
+                let a0 = bt.instantiate(&Term::IZero);
+                let a1 = bt.instantiate(&Term::IOne);
+                Ok((Term::plam(bt), Term::pathp(bty, a0, a1)))
+            }
+            Expr::PApp(p, r) => {
+                let (pt, pty) = self.infer(p)?;
+                let ptyw = self.force_whnf(&pty);
+                let Term::PathP(fam, _, _) = &ptyw else {
+                    return Err(format!(
+                        "`papp`: expected a `Path`/`PathP`-typed first argument, got {}",
+                        pty.pretty()
+                    ));
+                };
+                let fam = (**fam).clone();
+                let rt = self.check(r, &Term::I)?;
+                Ok((Term::papp(pt, rt.clone()), fam.instantiate(&rt)))
+            }
+            Expr::PathTy(a_ty, a, b) => {
+                let (at, _) = self.infer(a_ty)?;
+                let at_z = self.metas.zonk(&at)?;
+                let u = Checker::new(self.env)
+                    .infer_sort(&mut self.local_ctx(), &at_z)
+                    .map_err(|e| format!("`Path`: {e}"))?;
+                let a_t = self.check(a, &at)?;
+                let b_t = self.check(b, &at)?;
+                Ok((Term::path(at, a_t, b_t), Term::Sort(u)))
+            }
+            Expr::PathPTy(v, family, a0, a1) => {
+                self.locals.push((v.clone(), Term::I));
+                let r = self.infer(family);
+                self.locals.pop();
+                let (famt, _famty) = r?;
+                let a0_ty = famt.instantiate(&Term::IZero);
+                let a1_ty = famt.instantiate(&Term::IOne);
+                let a0_t = self.check(a0, &a0_ty)?;
+                let a1_t = self.check(a1, &a1_ty)?;
+                // `PathP`'s own sort is `infer_sort(family)` computed *under* the
+                // interval binder — mirrors `Checker::infer`'s `Term::PathP` arm.
+                self.locals.push((v.clone(), Term::I));
+                let famt_z = self.metas.zonk(&famt);
+                let lvl_res = famt_z.and_then(|fz| {
+                    Checker::new(self.env)
+                        .infer_sort(&mut self.local_ctx(), &fz)
+                        .map_err(|e| format!("`PathP`: {e}"))
+                });
+                self.locals.pop();
+                let lvl = lvl_res?;
+                Ok((Term::pathp(famt, a0_t, a1_t), Term::Sort(lvl)))
+            }
         }
     }
 
@@ -2239,6 +2316,16 @@ fn subst_var(e: &Expr, name: &str, repl: &Expr) -> Expr {
                 })
                 .collect(),
         ),
+        Expr::IZero | Expr::IOne => e.clone(),
+        Expr::INeg(r) => Expr::INeg(bx(r)),
+        Expr::IMeet(r, s) => Expr::IMeet(bx(r), bx(s)),
+        Expr::IJoin(r, s) => Expr::IJoin(bx(r), bx(s)),
+        // The interval binder `v` lives in a separate namespace from ordinary
+        // (`Expr::Var`) pattern names, so it never shadows `name` here.
+        Expr::PLam(v, body) => Expr::PLam(v.clone(), bx(body)),
+        Expr::PApp(p, r) => Expr::PApp(bx(p), bx(r)),
+        Expr::PathTy(a_ty, a, b) => Expr::PathTy(bx(a_ty), bx(a), bx(b)),
+        Expr::PathPTy(v, fam, a0, a1) => Expr::PathPTy(v.clone(), bx(fam), bx(a0), bx(a1)),
     }
 }
 
@@ -2505,7 +2592,14 @@ fn expr_uses_dot_rec(e: &crate::surface::Expr) -> bool {
         Match(s, arms) => expr_uses_dot_rec(s) || arm_uses_rec(arms),
         ByCases(a, b, c) => expr_uses_dot_rec(a) || expr_uses_dot_rec(b) || expr_uses_dot_rec(c),
         Spanned(_, inner) => expr_uses_dot_rec(inner),
-        Type(_) | Prop | Sort(_) | Hole | Decide => false,
+        Type(_) | Prop | Sort(_) | Hole | Decide | IZero | IOne => false,
+        INeg(r) => expr_uses_dot_rec(r),
+        IMeet(r, s) | IJoin(r, s) | PApp(r, s) => expr_uses_dot_rec(r) || expr_uses_dot_rec(s),
+        PLam(_, body) => expr_uses_dot_rec(body),
+        PathTy(a, b, c) => expr_uses_dot_rec(a) || expr_uses_dot_rec(b) || expr_uses_dot_rec(c),
+        PathPTy(_, fam, a0, a1) => {
+            expr_uses_dot_rec(fam) || expr_uses_dot_rec(a0) || expr_uses_dot_rec(a1)
+        }
     }
 }
 

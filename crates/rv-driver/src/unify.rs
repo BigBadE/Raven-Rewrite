@@ -266,13 +266,38 @@ impl Tr<'_> {
 
     fn expr(&self, e: &Expr) -> Result<KExpr, String> {
         Ok(match e {
+            // The cubical layer's interval literals: reserved names, not ordinary
+            // variables (see `rv_kernel::surface::Expr::{IZero,IOne}`).
+            Expr::Var(s) if self.name(*s) == "i0" => KExpr::IZero,
+            Expr::Var(s) if self.name(*s) == "i1" => KExpr::IOne,
             Expr::Var(s) => KExpr::Var(self.name(*s), None),
+            // The cubical layer's remaining surface forms: `I` is not fibrant, so
+            // these route to `KExpr::{INeg,IMeet,IJoin,PLam,PApp,PathTy,PathPTy}`
+            // (see `rv_kernel::surface::Expr` and `rv_kernel::elab2::Infer`) instead
+            // of ordinary function application — no `rv-syntax` grammar change is
+            // needed since they're all written with plain call syntax. Reachable via
+            // both `Expr::Call` (body position, `f(a, b)`) and `Expr::Apply` with a
+            // `Var` callee (type position, `f(a, b)` parsed through `parse_type`'s
+            // application spine) — see [`Self::cubical_form`].
             Expr::Call { func, args } => {
-                self.apply(KExpr::Var(self.name(*func), None), args)?
+                if let Some(k) = self.cubical_form(&self.name(*func), args)? {
+                    k
+                } else {
+                    self.apply(KExpr::Var(self.name(*func), None), args)?
+                }
             }
             Expr::Apply { callee, args } => {
-                let c = self.expr(callee)?;
-                self.apply(c, args)?
+                let special = match callee.as_ref() {
+                    Expr::Var(s) => self.cubical_form(&self.name(*s), args)?,
+                    _ => None,
+                };
+                match special {
+                    Some(k) => k,
+                    None => {
+                        let c = self.expr(callee)?;
+                        self.apply(c, args)?
+                    }
+                }
             }
             Expr::EnumCtor { enum_name, variant, args } => {
                 self.apply(KExpr::Var(self.dotted(*enum_name, *variant), None), args)?
@@ -363,6 +388,62 @@ impl Tr<'_> {
                 ))
             }
         })
+    }
+
+    /// Recognize one of the cubical layer's reserved call-forms (`i_neg`/`i_meet`/
+    /// `i_join`/`papp`/`plam`/`Path`/`PathP`) applied to exactly its expected arity,
+    /// translating it to the matching `KExpr` variant. Returns `None` for any other
+    /// name/arity, so the caller falls back to ordinary application.
+    fn cubical_form(&self, fname: &str, args: &[Expr]) -> Result<Option<KExpr>, String> {
+        Ok(match (fname, args.len()) {
+            ("i_neg", 1) => Some(KExpr::INeg(Box::new(self.expr(&args[0])?))),
+            ("i_meet", 2) => {
+                Some(KExpr::IMeet(Box::new(self.expr(&args[0])?), Box::new(self.expr(&args[1])?)))
+            }
+            ("i_join", 2) => {
+                Some(KExpr::IJoin(Box::new(self.expr(&args[0])?), Box::new(self.expr(&args[1])?)))
+            }
+            ("papp", 2) => {
+                Some(KExpr::PApp(Box::new(self.expr(&args[0])?), Box::new(self.expr(&args[1])?)))
+            }
+            ("plam", 1) => {
+                let (v, body) = self.interval_fun(&args[0])?;
+                Some(KExpr::PLam(v, Box::new(body)))
+            }
+            ("Path", 3) => Some(KExpr::PathTy(
+                Box::new(self.expr(&args[0])?),
+                Box::new(self.expr(&args[1])?),
+                Box::new(self.expr(&args[2])?),
+            )),
+            ("PathP", 3) => {
+                let (v, fam) = self.interval_fun(&args[0])?;
+                Some(KExpr::PathPTy(
+                    v,
+                    Box::new(fam),
+                    Box::new(self.expr(&args[1])?),
+                    Box::new(self.expr(&args[2])?),
+                ))
+            }
+            _ => None,
+        })
+    }
+
+    /// Extract a single-parameter proof-fragment lambda `fun i => body` (as used for
+    /// `plam(fun i => …)`/`PathP(fun i => …, a0, a1)`'s family) into its bound name
+    /// and elaborated body. The parameter is deliberately *not* type-annotated here —
+    /// it is bound at `I` (the interval) by the kernel elaborator, not by an ordinary
+    /// `Π`-domain (see `rv_kernel::surface::Expr::PLam`/`PathPTy`).
+    fn interval_fun(&self, e: &Expr) -> Result<(String, KExpr), String> {
+        match e {
+            Expr::Fun { params, body } if params.len() == 1 => {
+                Ok((self.name(params[0].0), self.expr(body)?))
+            }
+            _ => Err(
+                "expected a single-parameter path-abstraction `fun i => …` here (the interval \
+                 binder for `plam`/`PathP`)"
+                    .to_string(),
+            ),
+        }
     }
 
     /// Apply `head` to a list of argument expressions (left-associated `App`s).

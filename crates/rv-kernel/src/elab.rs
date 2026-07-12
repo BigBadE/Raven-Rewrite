@@ -184,6 +184,19 @@ impl<'a> Elaborator<'a> {
                  (use them in a `def`/`fn` with a declared type)"
                     .into(),
             ),
+            Expr::IZero
+            | Expr::IOne
+            | Expr::INeg(..)
+            | Expr::IMeet(..)
+            | Expr::IJoin(..)
+            | Expr::PLam(..)
+            | Expr::PApp(..)
+            | Expr::PathTy(..)
+            | Expr::PathPTy(..) => Err(
+                "the cubical layer's surface forms are only supported by the inferring \
+                 elaborator (`crate::elab2`)"
+                    .into(),
+            ),
         }
     }
 

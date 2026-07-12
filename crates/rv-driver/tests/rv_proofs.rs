@@ -213,6 +213,15 @@ fn trunc_demo() {
     check("trunc_demo.rv");
 }
 
+/// The cubical layer (`Path`/`PathP`, interval literals/connections, `plam`/`papp`,
+/// and the derived `refl`/`ap`/`pfunext`/`transport`/`psubst`/`J`/`ptrans`/
+/// `path_to_eq`/`eq_to_path`), plus the interval HIT `I2` — see
+/// `crates/rv-kernel/src/cubical_surface.rs` and `crates/rv-kernel/src/elab2.rs`.
+#[test]
+fn cubical() {
+    check("cubical.rv");
+}
+
 #[test]
 fn graded_demo() {
     check("graded_demo.rv");

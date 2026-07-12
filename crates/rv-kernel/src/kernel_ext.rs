@@ -55,6 +55,17 @@ pub trait KernelExt {
     /// proof.
     fn install_funext(&mut self) -> Result<(), String>;
 
+    /// Install the fixed **interval HIT** schema (`I2`, `I2.zero`, `I2.one`,
+    /// `I2.seg`, `I2.rec`) — see [`rv_kernel_core::interval_hit`].
+    fn install_interval_hit(&mut self) -> Result<(), String>;
+
+    /// Install the surfaced **cubical layer**: interval literals/connections
+    /// (`i0`/`i1`/`ineg`/`imeet`/`ijoin`), `Path`/`PathP`/`plam`/`papp`, and the
+    /// derived operators `refl`/`ap`/`pfunext`/`transport`/`subst`/`J`/`trans`/
+    /// `path_to_eq`/`eq_to_path` — see [`crate::cubical_surface`]. Requires `Eq` to
+    /// already be declared.
+    fn install_cubical(&mut self) -> Result<(), String>;
+
     /// Check the QTT usage discipline (`crate::graded`) of the stored definition
     /// `name`: a graded binder (linear `1`/erased `0`) in its type must be used
     /// accordingly in its value. Ungraded (`ω`, the default) binders always pass, so
@@ -89,6 +100,14 @@ impl KernelExt for Kernel {
 
     fn install_funext(&mut self) -> Result<(), String> {
         crate::funext::install_funext(self.env_mut())
+    }
+
+    fn install_interval_hit(&mut self) -> Result<(), String> {
+        rv_kernel_core::interval_hit::install_interval_hit(self.env_mut())
+    }
+
+    fn install_cubical(&mut self) -> Result<(), String> {
+        crate::cubical_surface::install_cubical(self.env_mut())
     }
 
     fn check_usage(&self, n: &str) -> Result<(), String> {
