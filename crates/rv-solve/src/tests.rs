@@ -6,9 +6,8 @@
 use super::{
     check_certificate, default_registry, prove_with_certificate, DisjunctCert, FarkasCert,
 };
-use crate::linear::Rat;
 use rv_core::{BinOp, Prop, Sym, Symbols, Term};
-use rv_logic::Obligation;
+use rv_logic::{Obligation, Rat};
 
 // --- small builders so the tests read like the math ------------------------
 

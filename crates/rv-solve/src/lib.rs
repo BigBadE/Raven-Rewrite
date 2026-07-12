@@ -76,17 +76,19 @@
 use rv_core::Prop;
 use rv_logic::{Certificate, Obligation, Outcome, ReplayCertificate, Solver, SolverRegistry};
 
-mod certificate;
-mod equality;
 mod linear;
-mod normalize;
 
-pub use certificate::{Certificate as UnsatCertificate, DisjunctCert, FarkasCert};
-pub use normalize::{Atom, Literal, OpaqueAtom};
+// The checkable certificate data types and the propositional/linear normalization now
+// live in `rv-logic` (the trust base), so a consumer of an `Outcome` can re-verify a
+// discharge without depending on this crate's search. We re-export them for API stability
+// and keep *producing* them here from the (untrusted) search.
+pub use rv_logic::{
+    Atom, DisjunctCert, FarkasCert, LiaCertificate as UnsatCertificate, Literal, OpaqueAtom,
+};
 
-use certificate::Certificate as UnsatCert;
-use equality::EqClosure;
-use linear::{Disequality, LinConstraint};
+use linear::Disequality;
+use rv_logic::lia::MAX_DISJUNCTS;
+use rv_logic::{EqClosure, LiaCertificate as UnsatCert, LinConstraint};
 
 /// Build a registry preloaded with the built-in solvers, ready to `.discharge(&ob)`.
 ///
@@ -159,11 +161,6 @@ fn conjuncts_contain(ctx: &Prop, goal: &Prop) -> bool {
 // Linear-integer-arithmetic solver
 // ===========================================================================
 
-/// Above this many disjuncts in the enumerated DNF we give up (return `Failed`).
-/// DNF size is worst-case exponential; this slice's formulas are tiny, so a
-/// generous-but-finite cap keeps us from pathological blow-up while staying sound.
-const MAX_DISJUNCTS: usize = 4096;
-
 /// The linear-arithmetic + opaque-atom prover described in the module docs.
 struct LiaSolver;
 
@@ -181,7 +178,13 @@ impl Solver for LiaSolver {
             // conservatively report `Failed` rather than an unchecked `Discharged`.
             ProveResult::Unsat { certificate, disjuncts } => {
                 if certificate.check(&disjuncts) {
-                    Outcome::Discharged(Certificate::trusted("lia"))
+                    // Hand the *checkable* certificate to the caller rather than a bare
+                    // `Trusted` marker: the driver/db will re-run `Certificate::check`,
+                    // re-derive the disjuncts from the obligation, and re-validate the
+                    // Farkas / congruence proof — so this solver is out of the trust base.
+                    // The self-check here is just an early sanity gate; it is *not* what
+                    // the consumer relies on.
+                    Outcome::Discharged(Certificate::Lia { certificate, disjuncts })
                 } else {
                     Outcome::Failed(Some(
                         "internal: emitted certificate failed self-check".into(),
@@ -207,14 +210,10 @@ enum ProveResult {
 /// certificate. This is the untrusted engine behind both [`LiaSolver`] and the public
 /// [`prove_with_certificate`].
 fn prove(ob: &Obligation) -> ProveResult {
-    // We prove `ctx ⟹ goal` by refuting `ctx ∧ ¬goal`.
-    let formula =
-        Prop::And(Box::new(ob.ctx.clone()), Box::new(Prop::Not(Box::new(ob.goal.clone()))));
-
-    // Push negations to the leaves (NNF), then enumerate the DNF as a list of
-    // conjunctions-of-literals. `dnf` returns None if it overflows the cap.
-    let nnf = normalize::to_nnf(&formula, false);
-    let disjuncts = match normalize::dnf(&nnf, MAX_DISJUNCTS) {
+    // NNF + DNF enumeration lives in rv-logic (so the *checker* can re-derive the
+    // identical disjunct list); we call the same routine here to drive the search.
+    // `None` ⇒ the DNF overflowed the cap.
+    let disjuncts = match rv_logic::lia::disjuncts_of(&ob.ctx, &ob.goal, MAX_DISJUNCTS) {
         Some(d) => d,
         None => return ProveResult::Unknown(Some("formula too large for DNF enumeration".into())),
     };
@@ -244,25 +243,26 @@ fn prove(ob: &Obligation) -> ProveResult {
 }
 
 /// Public API: attempt to prove `ctx ⟹ goal` and, on success, return a checkable unsat
-/// [`UnsatCertificate`](certificate::Certificate) **together with the DNF disjuncts it
-/// is proven against** — the pair [`UnsatCertificate::check`](certificate::Certificate::check)
-/// expects. Returns `None` when the obligation could not be refuted.
+/// [`UnsatCertificate`] **together with the DNF disjuncts it is proven against** — the
+/// pair [`UnsatCertificate::check`] expects. Returns `None` when the obligation could not
+/// be refuted.
 ///
-/// The certificate is independently re-verifiable: `cert.check(&disjuncts)` re-derives
-/// every constraint from the literals and re-checks by pure arithmetic, calling nothing
-/// in the search. See [`check_certificate`] for the convenience wrapper.
+/// The certificate is independently re-verifiable (the type lives in `rv-logic`):
+/// `cert.check(&disjuncts)` re-derives every constraint from the literals and re-checks by
+/// pure arithmetic, calling nothing in the search. See [`check_certificate`].
 pub fn prove_with_certificate(
     ob: &Obligation,
-) -> Option<(certificate::Certificate, Vec<Vec<Literal>>)> {
+) -> Option<(UnsatCertificate, Vec<Vec<Literal>>)> {
     match prove(ob) {
         ProveResult::Unsat { certificate, disjuncts } => Some((certificate, disjuncts)),
         ProveResult::Unknown(_) => None,
     }
 }
 
-/// Public API: re-verify a certificate against the disjuncts it claims to refute. This
-/// is the tiny trusted checker; it performs only arithmetic and substitution.
-pub fn check_certificate(cert: &certificate::Certificate, disjuncts: &[Vec<Literal>]) -> bool {
+/// Public API: re-verify a certificate against the disjuncts it claims to refute. This is
+/// the tiny trusted checker (defined in `rv-logic`); it performs only arithmetic and
+/// substitution.
+pub fn check_certificate(cert: &UnsatCertificate, disjuncts: &[Vec<Literal>]) -> bool {
     cert.check(disjuncts)
 }
 
