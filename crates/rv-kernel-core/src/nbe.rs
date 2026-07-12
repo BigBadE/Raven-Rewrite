@@ -312,6 +312,24 @@ impl<'a> Nbe<'a> {
                             self.eval(venv, u0),
                         )),
                     }
+                } else if let Term::PathP(fam, a0, a1) = ty.as_ref() {
+                    // `PathP`-case filling (see `crate::kan`'s "Phase 3.9" doc, and
+                    // `crate::reduce::Reducer::whnf`'s matching arm — differentially
+                    // tested): only fires when `u` is itself a literal `Sys`; the
+                    // built term introduces no new *free* variable, so it's
+                    // evaluated against the very same `venv`.
+                    match crate::kan::hcomp_pathp_rule(fam, a0, a1, phi, u, u0) {
+                        Some(built) => self.eval(venv, &built),
+                        None => Rc::new(Value::HComp(
+                            HCompClosure {
+                                env: venv.clone(),
+                                ty: self.eval(venv, ty),
+                                phi: phi.clone(),
+                                u: u.clone(),
+                            },
+                            self.eval(venv, u0),
+                        )),
+                    }
                 } else {
                     Rc::new(Value::HComp(
                         HCompClosure {
