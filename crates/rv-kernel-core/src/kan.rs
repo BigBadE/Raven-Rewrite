@@ -319,6 +319,74 @@ pub(crate) fn coe(dom: &Term, r: &Term, r_prime: &Term, a: &Term) -> Term {
     Term::transp(reparam, Cof::top(), a.clone())
 }
 
+// ============================================================================
+// Normalization-aware regularity: closing the `refl`-computation completeness gap.
+// ============================================================================
+//
+// The regularity rule above (`!mentions_var(fam, 0)`, checked at the call sites in
+// `crate::reduce::Reducer::whnf` and `crate::nbe::Nbe::eval`) is *purely syntactic*:
+// it inspects the family's raw, un-reduced structure. This misses the extremely
+// common case where the family is only *definitionally*, not *syntactically*,
+// independent of the interval variable — most importantly `transport (refl A) a`,
+// `subst`/`J` at `refl` (see `crate::cubical`'s documented "Completeness gap" for the
+// full account of why: e.g. `transport (refl A) a`'s family is `λi. (refl A) @ i =
+// λi. PApp(PLam(A↑), Var(0))`, which *does* mention `Var(0)` syntactically — as the
+// `PApp`'s argument — even though the family is, up to one β-step, the constant `A`.
+//
+// [`family_is_constant`] closes this gap the *sound* way: instead of trusting only
+// the family's raw syntax, it fully **computes** the family (via `crate::nbe::Nbe`'s
+// already-proven-sound evaluator/quoter — the same machinery `Checker::compare`/
+// `Reducer::is_def_eq` trust for every other definitional-equality question in this
+// kernel) under a *fresh, wholly opaque* neutral standing in for the interval
+// variable, then re-runs the exact same structural `mentions_var` check on the
+// **result**. This is a strictly larger, still fully sound, class than the original
+// check:
+//
+// * **Soundness.** `mentions_var(normalize(fam), 0) == false` means the interval
+//   variable's *fully computed, canonical* normal form contains no occurrence of the
+//   fresh neutral standing in for it — i.e. `fam` evaluates to the *same* normal form
+//   no matter what (well-typed) interval term is substituted for `Var(0)` (NbE's
+//   normal forms are canonical: two terms differ only if they're not definitionally
+//   equal). That is exactly "the family is constant, definitionally" — precisely the
+//   hypothesis the original regularity rule's soundness argument (`crate::cubical`'s
+//   and this module's own docs above) already rests on, just established by
+//   computation instead of by inspecting raw syntax. No new axiom, no consultation of
+//   `φ` (the probe never looks at it), no shortcut: firing this rule can only ever
+//   collapse a `Transp` to its input `a` when the two really are related by an
+//   honest, verifiable, computed identity of the whole line of types/values.
+// * **The critical non-example still stays stuck.** For the `φ=⊤`/type-path-axiom
+//   smuggle attack (`transp` along a *genuinely varying* `p : Path Type A B` axiom,
+//   family `λi. p @ i` with `p` an opaque `Const`/`Var`, not a literal `PLam`): the
+//   fresh neutral substituted for `Var(0)` propagates straight through the *opaque*
+//   `PApp(p, ·)` head (nothing reduces it away — `p` has no `PLam`/`ι`-rule to fire,
+//   it's neutral) and survives, unchanged, all the way into the quoted normal form —
+//   so `mentions_var` on the result is still `true`, and the probe correctly refuses
+//   to fire. See `kernel_tests::normalization_aware_regularity_does_not_smuggle_a_
+//   type_change_through_an_axiomatized_path` below, which pins this down directly
+//   (extending, not just re-running, the module's standing anti-`False` attack).
+// * **Sizing, not a soundness knob.** `crate::term::free_var_bound(fam)` computes how
+//   many free variables (beyond the interval binder itself) `fam` mentions, purely so
+//   `Nbe::normalize_open` can hand each of them a distinct fresh neutral instead of
+//   panicking on an out-of-range index — an over-generous bound is harmless (extra
+//   unused fresh neutrals change nothing), it exists only to avoid a panic, and it
+//   never influences *which* terms this function judges constant.
+pub(crate) fn family_is_constant(env: &Env, fam: &Term) -> bool {
+    // Fast path: the original, purely syntactic check — avoids paying for a full
+    // evaluation/quote round-trip in the overwhelmingly common case (an already
+    // syntactically-constant family, or a family that's obviously non-constant at
+    // its very head, e.g. `Pi`/an inductive being transported pointwise).
+    if !mentions_var(fam, 0) {
+        return true;
+    }
+    // `fam` sits under one (not-yet-introduced) interval binder plus however many
+    // ambient free variables it itself references (`Var(1)`, `Var(2)`, … beyond the
+    // interval variable at `Var(0)`) — `free_var_bound` sizes the fresh-neutral
+    // context so every one of them gets a binding.
+    let depth = crate::term::free_var_bound(fam).max(1);
+    let normalized = crate::nbe::Nbe::new(env).normalize_open(depth, fam);
+    !mentions_var(&normalized, 0)
+}
+
 /// The `Π`-case `transp` filling rule (see the module doc's "The `Π` computation
 /// rule"). `dom`/`cod` are the two components of the family's `Π` head (`dom` under
 /// one interval binder, `cod` under that *and* the `Π`'s own domain binder — exactly
@@ -1291,6 +1359,56 @@ mod kernel_tests {
         // Directly: whnf leaves the head as a stuck `Transp`, not `a`.
         let whnf = reducer.whnf(&t);
         assert!(matches!(whnf, Term::Transp(..)), "expected a stuck Transp, got {}", whnf.pretty());
+        // Directly against `family_is_constant` itself (not just its call sites):
+        // the axiom-headed family must be judged non-constant even after full
+        // computation — the fresh neutral standing in for the interval variable
+        // propagates straight through the opaque `PApp(p, ·)` head (no `PLam`/
+        // ι-rule ever fires on it) and survives into the normal form.
+        assert!(!super::family_is_constant(k.env(), &Term::papp(cn("p").lift(1, 0), Term::Var(0))));
+    }
+
+    /// **Adversarial, normalization-aware regularity specifically**: wrapping the
+    /// same type-level path axiom attack in extra, genuinely-reducible scaffolding
+    /// (an outer `App(Lam(...), ...)` β-redex around the family, and the family
+    /// itself built through an extra `refl`-composed layer) must still leave
+    /// `family_is_constant` — and hence the `Transp` it guards — stuck. This is the
+    /// case the *original*, purely syntactic regularity check could never even be
+    /// tempted by (it never reduces anything), but the new normalization-aware
+    /// extension explicitly computes through scaffolding like this, so it is the
+    /// one that most needs a dedicated adversarial pin: over-firing here would mean
+    /// the fresh interval-neutral got silently "reduced away" through the opaque
+    /// `p`, which must never happen.
+    #[test]
+    fn normalization_aware_regularity_does_not_smuggle_a_type_change_through_scaffolding() {
+        let mut k = base_env();
+        k.add_axiom("p", 0, Term::path(Term::typ(0), cn("A"), cn("B"))).unwrap();
+        // `(λ_:A. p @ i) a`-shaped scaffolding: a genuinely-collapsible outer
+        // β-redex (an identity-shaped `Lam`/`App` around the family) wrapped around
+        // the still-opaque `p @ i` — the redex itself reduces away (that's the
+        // "scaffolding"), but must NOT drag the interval dependency on the opaque
+        // axiom `p` away with it.
+        let scaffolded = Term::app(Term::lam(cn("A"), Term::papp(cn("p").lift(2, 0), Term::Var(1))), cn("a"));
+        // Sanity: after the outer β-redex reduces, this is exactly `p @ i` (`i` =
+        // the outer transp binder, `Var(0)`) — the same family the sibling test
+        // above (`transp_along_a_type_level_path_axiom_does_not_smuggle_a_type_change`)
+        // exercises directly, just reached here through an extra layer of
+        // genuinely-reducible scaffolding.
+        let reducer = crate::reduce::Reducer::new(k.env());
+        assert_eq!(reducer.whnf(&scaffolded), Term::papp(cn("p"), Term::Var(0)));
+        assert!(
+            !super::family_is_constant(k.env(), &scaffolded),
+            "the opaque path axiom must never be judged constant, even through extra reducible scaffolding"
+        );
+        let t = Term::transp(scaffolded, Cof::top(), cn("a"));
+        let ty = k.infer(&t).unwrap();
+        assert!(k.def_eq(&ty, &cn("B")));
+        let whnf = reducer.whnf(&t);
+        assert!(
+            matches!(whnf, Term::Transp(..)),
+            "expected a stuck Transp even through scaffolding, got {}",
+            whnf.pretty()
+        );
+        assert!(!reducer.is_def_eq(&t, &cn("a")));
     }
 
     /// **Adversarial**: no closed, non-stuck term of `Path Type A B` can itself be
@@ -1506,25 +1624,24 @@ mod kernel_tests {
         Term::pi(dom, cod)
     }
 
-    /// **Refl-agreement**: transporting `f : A → A` along a `Π` family connected by
-    /// `refl A` (syntactically *varying* — `mentions_var` sees the interval
-    /// variable in `(refl A) @ i`, so the regularity rule does *not* fire — but
-    /// *semantically* constant) still type-checks at exactly `A → A` (the same type
-    /// `family[i:=i1]` reports regardless of which reduction rule fires) and the
-    /// `Π`-rule genuinely fires (whnf reaches a literal `Lam`).
+    /// **Refl-agreement, now via normalization-aware regularity**: transporting
+    /// `f : A → A` along a `Π` family connected by `refl A` (syntactically
+    /// *varying* — `mentions_var` sees the interval variable in `(refl A) @ i`, so
+    /// the *original*, purely syntactic half of the regularity rule does not fire on
+    /// its own — but *semantically*, hence now also *computationally* via
+    /// `crate::kan::family_is_constant`, constant) type-checks at exactly `A → A`
+    /// and reduces straight to `f` itself: the whole `Π`-headed family normalizes to
+    /// the constant `A → A`, so `family_is_constant` fires *before* the `Π`-case
+    /// filling rule is even consulted — a strictly better result than routing
+    /// through [`transp_pi_rule`] (which would produce a semantically-equal but
+    /// differently-shaped `Lam`, per this test's previous, narrower version).
     ///
-    /// This test does **not** additionally check that applying the result to some
-    /// `c : A` is *definitionally* `f c` — it isn't, at least not automatically:
-    /// [`coe`]'s reparametrized family `dom[i := (r∧~k)∨(r'∧k)]` **always**
-    /// syntactically mentions the fresh connection binder `k` by construction (even
-    /// when `r` and `r'` happen to be the same term), so the structural-only
-    /// regularity check (deliberately *not* extended by this phase — see the module
-    /// doc above) never fires *inside* a `coe`, even at a literal `r=r'` boundary.
-    /// The nested `Transp`s this produces are still **sound** (a `Transp` that
-    /// doesn't reduce is valid, inert data, exactly like an unresolved `Sys` — see
-    /// the top-level module doc's soundness argument, point "no new equation"),
-    /// just not maximally reduced — a real, but narrow and honestly-reported,
-    /// incompleteness (not unsoundness) of this minimal implementation.
+    /// [`coe`]'s own reparametrized family `dom[i := (r∧~k)∨(r'∧k)]` still always
+    /// syntactically mentions the fresh connection binder `k`, and — unlike a
+    /// top-level `Transp`'s family — is genuinely *not* constant in the general case
+    /// (only at the special boundary `r=r'`, which `family_is_constant`'s
+    /// normalization *would* also catch if invoked there; `coe` isn't the direct
+    /// object of this test, its own `Π`-rule call sites are covered elsewhere).
     #[test]
     fn transp_pi_rule_typechecks_on_a_refl_connected_pi_family() {
         let k = pi_env();
@@ -1536,11 +1653,11 @@ mod kernel_tests {
         let ty = k.infer(&t).unwrap();
         assert!(k.def_eq(&ty, &Term::arrow(cn("A"), cn("A"))));
 
-        // The `Π` rule actually fires (whnf is a literal `Lam`, not a stuck `Transp`),
-        // and the reduced form independently re-typechecks at the very same type.
+        // Normalization-aware regularity fires directly: whnf is exactly `f`, not a
+        // stuck `Transp` and not a `Π`-rule-built `Lam`.
         let reducer = crate::reduce::Reducer::new(k.env());
         let whnf = reducer.whnf(&t);
-        assert!(matches!(whnf, Term::Lam(..)), "expected the Π rule to fire, got {}", whnf.pretty());
+        assert_eq!(whnf, cn("f"), "expected regularity to fire, got {}", whnf.pretty());
         let reinferred = k.infer(&whnf).unwrap();
         assert!(k.def_eq(&reinferred, &Term::arrow(cn("A"), cn("A"))));
     }

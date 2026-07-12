@@ -316,6 +316,17 @@ pub(crate) fn mentions_var(phi: &Cof, k: usize) -> bool {
     }
 }
 
+/// Mirrors [`crate::term::free_var_bound`] over a `Cof`'s atom subjects, at a given
+/// nesting `depth` (used by that function's own `Sys`/`Partial`/`Transp`/`HComp`
+/// cases — see its doc for why this sizing helper exists).
+pub(crate) fn free_var_bound(phi: &Cof, depth: usize) -> usize {
+    match phi {
+        Cof::Bot | Cof::Top => 0,
+        Cof::Atom(Atom::Eq0(t)) | Cof::Atom(Atom::Eq1(t)) => crate::term::free_var_bound_at(t, depth),
+        Cof::And(a, b) | Cof::Or(a, b) => free_var_bound(a, depth).max(free_var_bound(b, depth)),
+    }
+}
+
 /// A conjunctive clause: a finite set of atoms, all required to hold simultaneously.
 /// `Vec::new()` is the empty conjunction, `⊤`.
 type Clause = Vec<Atom>;

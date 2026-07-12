@@ -182,13 +182,15 @@ impl<'e> Reducer<'e> {
                 }
                 // `transp` (see `crate::kan`): the **regularity rule** — transport
                 // along a family that doesn't actually vary is the identity. This
-                // is checked *structurally* (`!mentions_var(fam, 0)`), never via
+                // is checked *structurally* first (`!mentions_var(fam, 0)`), then,
+                // if that fails, via full computation
+                // (`crate::kan::family_is_constant` — see its doc for the
+                // normalization-aware extension and soundness argument); never via
                 // `φ` (see `crate::kan`'s soundness argument for why a `φ = ⊤`
                 // shortcut here would be UNSOUND: `φ` is unrelated to whether the
-                // family genuinely depends on the interval variable). This is the
-                // only Kan rule this phase implements; anything else stays stuck.
+                // family genuinely depends on the interval variable).
                 Term::Transp(fam, _phi, a) => {
-                    if !crate::term::mentions_var(fam, 0) {
+                    if crate::kan::family_is_constant(self.env, fam) {
                         head = (**a).clone();
                     } else if let Term::Pi(_g, dom, cod) = fam.as_ref() {
                         // `Π`-case filling (see `crate::kan`'s "Phase 3.6" doc):
