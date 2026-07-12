@@ -521,6 +521,123 @@ pub(crate) fn transp_pi_rule(dom: &Term, cod: &Term, a0: &Term) -> Term {
 //    [`kernel_tests::hcomp_pi_rule_cannot_conjure_an_inhabitant_of_an_unrelated_axiom`]
 //    and [`kernel_tests::hcomp_pi_rule_does_not_conflate_branches_at_different_arguments`].
 
+// ============================================================================
+// Phase 3.8: the `PathP`-case `hcomp` filling rule — INVESTIGATED AND DECLINED.
+// ============================================================================
+//
+// This section documents a rule that was **designed, precisely constructed, and
+// then declined** after an adversarial re-typecheck showed it fails this crate's
+// own soundness bar — per the standing instruction ("if you cannot make it
+// demonstrably sound this pass, implement the largest sound subset (or nothing),
+// and report honestly"). Nothing from this section is wired into
+// `reduce.rs`/`nbe.rs`; `hcomp` at a `PathP` type stays stuck, exactly as before
+// this pass (an honest incompleteness, not a silently-missing feature — see below
+// for why "stuck" is the *only* sound option available right now).
+//
+// # The rule, as CCHM states it
+//
+// ```text
+//   hcomp (PathP C a b) φ u u0
+//     ↦  ⟨j⟩ hcomp (C j)
+//                 ( φ ∨ (j=0) ∨ (j=1) )
+//                 [ φ      ↦ (u i) @ j
+//                 , (j=0)  ↦ a
+//                 , (j=1)  ↦ b ]
+//                 (u0 @ j)
+// ```
+//
+// Mirroring [`hcomp_pi_rule`]'s own construction discipline (only fire on a
+// *syntactically* literal `u : Term::Sys`, so its branches `t_k` are concrete and
+// can be pushed through `@ j`), the natural translation into this crate's terms
+// is: for `u = Sys [(ψ_1,t_1), …, (ψ_n,t_n)]` (each `t_k : PathP C a b`, frame
+// `[i,Γ]`, `C` the fixed family living in frame `[j,Γ]` — exactly `PathP`'s own
+// binder convention, matching a fresh `⟨j⟩` one-for-one), build:
+//
+// ```text
+//   new_u  := Sys [ (ψ_1.lift(1,1), PApp(t_1.lift(1,1), Var(1))), …    -- tube, pushed through @j
+//                 , (j=0,           a.lift(2,0))                       -- left endpoint face
+//                 , (j=1,           b.lift(2,0)) ]                     -- right endpoint face
+//   result := PLam( HComp(C, φ.lift(1,0) ∨ (j=0) ∨ (j=1), new_u, PApp(u0.lift(1,0), Var(0))) )
+// ```
+//
+// (index bookkeeping — `lift(1,1)` inserting the fresh `j` binder below the new
+// inner `hcomp`'s own interval binder, `lift(2,0)` inserting *both* fresh binders
+// above the ambient context — mirrors [`hcomp_pi_rule`]'s own `lift(1,1)`/`lift(1,0)`
+// conventions exactly, just with one extra binder since `PathP`'s `PLam` wraps
+// *outside* the new `hcomp`'s own interval binder, unlike `Π`'s domain variable
+// which sits *outside* the whole term).
+//
+// # Why this fails an independent re-typecheck — the compatibility gap
+//
+// The critical difference from the `Π` case: `Π` has **no boundary constraint** —
+// `hcomp_pi_rule`'s rebuilt `Sys` only ever has the *original* `n` (reindexed)
+// branches, so its compatibility obligations are exactly the *original* system's
+// (already checked, `App(-,x)` being a congruence — see that rule's soundness
+// argument, point 1). `PathP`, by contrast, injects **two brand-new branches**
+// (`j=0 ↦ a`, `j=1 ↦ b`) that structurally **overlap** every tube branch
+// (`ψ_k.lift(1,1) ∧ (j=0)` is essentially never `⊥` — `j` is a fresh variable
+// unconstrained by any `ψ_k`, which never mentions it). [`crate::check::Checker::check_sys`]
+// (see `check.rs`) requires every such overlap to satisfy **unconditional**
+// `is_def_eq(t_i, t_j)` — a *purely structural/`whnf` comparison of the two raw
+// branch terms *as they stand*, with no notion of "assuming the cofibration holds,
+// substitute and then compare" (contrast the textbook cubical metatheory, where
+// this compatibility is *semantic*, checked only "under" the face — i.e. after
+// substituting the pinned interval variable). Concretely, that means the tube
+// branch `PApp(t_k.lift(1,1), Var(1))` — a term that **genuinely, syntactically
+// mentions the fresh, still-abstract path coordinate `j = Var(1)`** — would need to
+// be `is_def_eq` to the *j-independent* endpoint term `a.lift(2,0)` **without ever
+// substituting a concrete value for `j`**. The one existing mechanism that could
+// help here, [`crate::check::Checker::path_boundary`] (see `check.rs`), is
+// deliberately narrow: it only recognizes `p @ i0`/`p @ i1` for a **literal**
+// `Term::IZero`/`Term::IOne` argument (see `crate::cubical`'s module doc, "the
+// boundary equation also holds for neutral p") — it does *not*, and structurally
+// *cannot*, fire for `p @ Var(1))` where `Var(1)` is an ordinary bound variable
+// that merely *happens* to be pinned to `i0`/`i1` by an enclosing cofibration guard
+// the compatibility check never consults.
+//
+// This is not a corner case avoidable by more careful construction — it is
+// **structural**: the only way `PApp(t_k.lift(1,1), Var(1))` could be
+// unconditionally `is_def_eq` to a `j`-independent term is if `t_k` is *itself*
+// (syntactically, after whnf) a `PLam` whose body doesn't depend on its own bound
+// variable at all (the `Π`-case rule's "regularity"-style degenerate case) — i.e.
+// this would only ever fire for constant/`refl`-like paths, which is a useless
+// subset of `PathP` (real cubical programs' `hcomp` fillers are essentially always
+// non-constant paths — that's the entire point of composing them). For any
+// **opaque** `PathP`-typed value (a free variable, an axiom, an unresolved
+// application) — the overwhelmingly common case — the construction is rejected
+// outright.
+//
+// [`kernel_tests::hcomp_pathp_rule_declined_naive_cchm_construction_fails_check_sys_compatibility`]
+// makes this concrete and adversarially reproducible: builds exactly the assembled
+// term the rule above would produce, for an ordinary axiom `p : Path A a0 a1`
+// (opaque — no special structure to exploit), and confirms `Checker::infer`
+// rejects it with precisely `check_sys`'s "branches disagree on their overlap"
+// error. Were this rule wired into `reduce.rs`/`nbe.rs` regardless, it would
+// silently break **subject reduction**: a well-typed `HComp(PathP …, φ, u, u0)`
+// term (checked once, via the *original* `n`-branch system, which never needed
+// this compatibility) would `whnf`-reduce to a form that the very same checker,
+// run again from scratch, rejects — exactly the class of bug this crate's
+// "independently re-typechecks" testing discipline exists to catch (see
+// [`transp_pi_rule`]'s and [`hcomp_pi_rule`]'s own soundness arguments, point 2,
+// both of which — unlike this one — *pass* that test).
+//
+// # What would it take to ship this — out of scope for this pass
+//
+// The blocker is in `check_sys`'s compatibility condition itself: making it
+// *cofibration-aware* (checking `t_i ≡ t_j` only after substituting the interval
+// variables an overlap pins down, i.e. genuinely "under" `φ_i ∧ φ_j` rather than
+// unconditionally) is a substantive, independently soundness-critical change to
+// `crate::check` — it would need its own adversarial scrutiny (does substituting
+// under a *satisfiable-but-not-decided* overlap ever let two genuinely different
+// closed terms be conflated? almost certainly a delicate argument) entirely
+// separate from, and larger than, "add one more Kan filling rule". Bundling that
+// redesign into this already soundness-critical pass is exactly the kind of
+// "ship something you can't stand behind" this task explicitly warns against.
+// **Declined, not shipped** — `hcomp` at a `PathP` type remains stuck, an honest,
+// tested incompleteness. `J`, HIT composition, and `Glue` remain deferred as
+// before (see the top-level module doc), now joined by this specific,
+// precisely-diagnosed `PathP`-case gap for any future pass to pick up.
+
 /// The `Π`-case `hcomp` filling rule (see the module doc's "Phase 3.7" section).
 /// `dom`/`cod` are the fixed `Π`'s two components (same binder convention as
 /// [`Term::Pi`]); `phi`/`u0` live in the ambient context; `u` is the checked line
@@ -1189,5 +1306,66 @@ mod kernel_tests {
         let u = Term::sys(vec![(Cof::top(), cn("g").lift(1, 0))]); // line is g
         let t = Term::hcomp(Term::arrow(cn("A"), cn("A")), Cof::bot(), u, cn("f")); // cap claims f
         assert!(k.infer(&t).is_err());
+    }
+
+    // ---- hcomp: the `PathP`-case rule — INVESTIGATED AND DECLINED (see the module
+    // doc's "Phase 3.8" section for the full account). This test is the concrete,
+    // reproducible adversarial evidence backing that decision: it shows the naive
+    // CCHM assembled-system construction fails this kernel's own `check_sys`
+    // compatibility condition for a perfectly ordinary (opaque axiom) `PathP`
+    // value — i.e. the construction is not merely "not yet proven sound", it is
+    // demonstrably **rejected by the existing, unmodified, trusted checker** the
+    // moment you try to independently re-typecheck it, for any non-degenerate input.
+    #[test]
+    fn hcomp_pathp_rule_declined_naive_cchm_construction_fails_check_sys_compatibility() {
+        let mut k = Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("a0", 0, cn("A")).unwrap();
+        k.add_axiom("a1", 0, cn("A")).unwrap();
+        k.add_axiom("p", 0, Term::path(cn("A"), cn("a0"), cn("a1"))).unwrap();
+
+        // u = <i> [top -> p], u0 = p  (constant line, always well-typed hcomp)
+        let u = cn("p").lift(1, 0);
+        let u = Term::sys(vec![(Cof::top(), u)]);
+        let t = Term::hcomp(Term::path(cn("A"), cn("a0"), cn("a1")), Cof::top(), u, cn("p"));
+        // sanity: original hcomp is well-typed
+        k.infer(&t).unwrap();
+
+        // Now build the naive assembled reduction candidate:
+        // PLam( HComp( A (constant fam), phi' , [top -> p@j, j=0 -> a0, j=1 -> a1], p@j-at-cap ) )
+        let fam = cn("A").lift(1, 0); // constant family, frame [j, Γ]
+        let new_phi = Cof::or(Cof::or(Cof::top(), Cof::eq0(Term::Var(0))), Cof::eq1(Term::Var(0)));
+        // tube branch: p lifted into frame [i', j, Γ], applied @ j (Var(1))
+        let p_lifted = cn("p").lift(1, 0).lift(1, 1); // into [i', j, Γ]
+        let tube = Term::papp(p_lifted, Term::Var(1));
+        let e0 = cn("a0").lift(2, 0);
+        let e1 = cn("a1").lift(2, 0);
+        let new_u = Term::sys(vec![
+            (Cof::top(), tube),
+            (Cof::eq0(Term::Var(1)), e0),
+            (Cof::eq1(Term::Var(1)), e1),
+        ]);
+        let new_u0 = Term::papp(cn("p").lift(1, 0), Term::Var(0));
+        let body = Term::hcomp(fam, new_phi, new_u, new_u0);
+        let candidate = Term::plam(body);
+
+        // The naive construction must be *rejected* by the existing, unmodified
+        // `check_sys` — this is the whole point of the test (see the module doc's
+        // "Phase 3.8" section): were this to unexpectedly succeed, the analysis
+        // there would be wrong and the rule would need re-examining before ever
+        // being wired into `reduce.rs`/`nbe.rs`.
+        let result = k.infer(&candidate);
+        assert!(
+            result.is_err(),
+            "expected check_sys to reject the naive PathP-hcomp construction (the tube \
+             branch, applied at a *symbolic* path coordinate `j`, cannot be unconditionally \
+             `is_def_eq` to the endpoint `a0`/`a1` for an opaque axiom `p` — see the module \
+             doc); got Ok({result:?}) instead, meaning the prior analysis needs revisiting"
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("disagree on their overlap"),
+            "expected check_sys's compatibility-condition error specifically, got: {msg}"
+        );
     }
 }
