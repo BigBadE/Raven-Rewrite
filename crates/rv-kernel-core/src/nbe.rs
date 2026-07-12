@@ -441,23 +441,39 @@ impl<'a> Nbe<'a> {
 
     /// User-declared 1-HIT computation rule (see [`crate::hit`]), NbE counterpart of
     /// [`crate::reduce::Reducer::try_hit_rec`]: for `H.rec.{v} P case_0 .. resp_.. t`,
-    /// fires `case_i` when `t` is stuck on the `i`-th (nullary) point constructor of
-    /// the *same* HIT `id` as the `H.rec` head; otherwise stays stuck. Never fires
-    /// across two different declared HITs (guarded by comparing `id`s) or on a path
-    /// constructor.
+    /// fires when `t` is stuck on the `i`-th point constructor of the *same* HIT `id`
+    /// as the `H.rec` head, fully applied to its declared fields — substituting a
+    /// recursive `H.rec` call for each field of type `H` itself (see the reducer's
+    /// doc comment for the exact rule); otherwise stays stuck. Never fires across two
+    /// different declared HITs (guarded by comparing `id`s) or on a path constructor.
     fn try_hit_rec(&self, h: Head, spine: Vec<Rc<Value>>) -> Rc<Value> {
-        if let Head::Const(rname, _) = &h {
+        if let Head::Const(rname, ls) = &h {
             if let Some(Decl::Hit(hh)) = self.env.get(rname) {
                 if let HitRole::Rec { num_points, num_paths } = hh.role {
                     let scrut_pos = 1 + num_points as usize + num_paths as usize;
                     if spine.len() > scrut_pos {
                         if let Value::Stuck(Head::Const(pname, _), pargs) = &*spine[scrut_pos] {
-                            if pargs.is_empty() {
-                                if let Some(Decl::Hit(p)) = self.env.get(pname) {
-                                    if p.id == hh.id {
-                                        if let HitRole::Point { index } = p.role {
-                                            let case_pos = 1 + index as usize;
+                            if let Some(Decl::Hit(p)) = self.env.get(pname) {
+                                if p.id == hh.id {
+                                    if let HitRole::Point { index, fields } = &p.role {
+                                        if pargs.len() == fields.len() {
+                                            let case_pos = 1 + *index as usize;
                                             let mut v = spine[case_pos].clone();
+                                            for (arg, is_rec) in pargs.iter().zip(fields.iter()) {
+                                                let b = if *is_rec {
+                                                    let mut rc = Rc::new(Value::Stuck(
+                                                        Head::Const(rname.clone(), ls.clone()),
+                                                        Vec::new(),
+                                                    ));
+                                                    for a in &spine[..scrut_pos] {
+                                                        rc = self.vapp(rc, a.clone());
+                                                    }
+                                                    self.vapp(rc, arg.clone())
+                                                } else {
+                                                    arg.clone()
+                                                };
+                                                v = self.vapp(v, b);
+                                            }
                                             for extra in &spine[scrut_pos + 1..] {
                                                 v = self.vapp(v, extra.clone());
                                             }

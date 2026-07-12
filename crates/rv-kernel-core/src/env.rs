@@ -352,10 +352,14 @@ pub struct Circle {
 pub enum HitRole {
     /// The type former `H : Type 0`.
     Type,
-    /// A (nullary) point constructor, tagged with its `0`-based index among the
-    /// declared point constructors — this is what the `Rec`/`Ind` ι-rules match on and
-    /// what a path constructor's `lhs`/`rhs` refer to.
-    Point { index: u32 },
+    /// A point constructor, tagged with its `0`-based index among the declared point
+    /// constructors — this is what the `Rec`/`Ind` ι-rules match on and what a path
+    /// constructor's `lhs`/`rhs` refer to — plus its field list: `fields[j] == true`
+    /// means field `j` is a **recursive** occurrence of `H` itself (the ι-rule
+    /// substitutes a recursive `H.rec` call for it); `false` means a non-recursive
+    /// field of some fixed, closed (`H`-free) type. `fields.len()` is this point
+    /// constructor's arity — `0` recovers the original nullary case.
+    Point { index: u32, fields: Rc<Vec<bool>> },
     /// A path constructor `H.<name> : Eq H point[lhs] point[rhs]`, holding only
     /// propositionally (through `Eq`) — never definitionally, and with no reduction
     /// rule of its own. `lhs`/`rhs` are point-constructor indices.
