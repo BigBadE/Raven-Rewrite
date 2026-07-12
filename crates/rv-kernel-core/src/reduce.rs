@@ -15,8 +15,8 @@
 //! rules are the standard ones; we keep them total and structural.
 
 use crate::env::{CircleRole, Decl, Destructor, Env, HitRole, QuotRole, Recursor, TruncRole};
-use crate::level;
-use crate::term::Term;
+use crate::level::{self, Level};
+use crate::term::{Name, Term};
 
 /// A reducer bound to an environment.
 pub struct Reducer<'e> {
@@ -112,7 +112,7 @@ impl<'e> Reducer<'e> {
                     // User-declared 1-HIT computation (see `crate::hit`):
                     // `H.rec.{v} P case_0 .. resp_0 .. (H.p_i) ↦ case_i`.
                     Some(Decl::Hit(hh)) if matches!(hh.role, HitRole::Rec { .. }) => {
-                        match self.try_hit_rec(hh, &args) {
+                        match self.try_hit_rec(n, ls, hh, &args) {
                             Some(reduced) => {
                                 let (h, a) = reduced.unfold_apps();
                                 head = h;
@@ -466,13 +466,17 @@ impl<'e> Reducer<'e> {
     }
 
     /// Try a **user-declared 1-HIT** computation rule (see [`crate::hit`]): for
-    /// `H.rec.{v} P case_0 .. case_{n-1} resp_0 .. resp_{m-1} t`, fires `case_i` when
-    /// `t` weak-head-reduces to the `i`-th (nullary) point constructor *of the same
-    /// HIT `id`* as `hh`. Never fires on a path constructor (its type is `Eq H _ _`,
-    /// not `H` — ill-typed as a scrutinee) or on a point constructor belonging to a
-    /// *different* declared HIT (guarded by comparing `id`s), and stays stuck on a
-    /// neutral scrutinee.
-    fn try_hit_rec(&self, hh: &crate::env::Hit, args: &[Term]) -> Option<Term> {
+    /// `H.rec.{v} P case_0 .. case_{n-1} resp_0 .. resp_{m-1} t`, fires when `t`
+    /// weak-head-reduces to the `i`-th point constructor *of the same HIT `id`* as
+    /// `hh`, fully applied to its fields — `H.rec ... (H.p_i a_0 .. a_{k-1}) ↦
+    /// case_i b_0 .. b_{k-1}` where `b_j = a_j` for a non-recursive field and `b_j =
+    /// H.rec ... a_j` (a recursive call) for a field of type `H` itself. Never fires
+    /// on a path constructor (its type is `Eq H _ _`, not `H` — ill-typed as a
+    /// scrutinee), on a point constructor belonging to a *different* declared HIT
+    /// (guarded by comparing `id`s), or when the scrutinee is not fully applied to its
+    /// declared fields (stuck, e.g. a partially-applied point constructor or a
+    /// neutral).
+    fn try_hit_rec(&self, rname: &Name, ls: &[Level], hh: &crate::env::Hit, args: &[Term]) -> Option<Term> {
         let HitRole::Rec { num_points, num_paths } = hh.role else { return None };
         let scrut_pos = 1 + num_points as usize + num_paths as usize;
         if args.len() <= scrut_pos {
@@ -483,18 +487,31 @@ impl<'e> Reducer<'e> {
         let Term::Const(pt_name, _) = &pt_head else {
             return None;
         };
-        let index = match self.env.get(pt_name) {
-            Some(Decl::Hit(p)) if p.id == hh.id => match p.role {
-                HitRole::Point { index } => index,
+        let (index, fields) = match self.env.get(pt_name) {
+            Some(Decl::Hit(p)) if p.id == hh.id => match &p.role {
+                HitRole::Point { index, fields } => (*index, fields.clone()),
                 _ => return None,
             },
             _ => return None,
         };
-        if !pt_args.is_empty() {
-            return None; // point constructors are nullary
+        if pt_args.len() != fields.len() {
+            return None; // not fully applied to its declared fields — stuck
         }
         let case_pos = 1 + index as usize;
         let mut applied = args[case_pos].clone();
+        for (arg, is_rec) in pt_args.iter().zip(fields.iter()) {
+            let b = if *is_rec {
+                // Recursive call on this field: `H.rec.{v} <same P/case/resp> arg`.
+                let mut rc = Term::cnst(rname.clone(), ls.to_vec());
+                for a in &args[..scrut_pos] {
+                    rc = Term::app(rc, a.clone());
+                }
+                Term::app(rc, arg.clone())
+            } else {
+                arg.clone()
+            };
+            applied = Term::app(applied, b);
+        }
         for extra in &args[scrut_pos + 1..] {
             applied = Term::app(applied, extra.clone());
         }
