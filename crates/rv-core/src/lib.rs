@@ -30,30 +30,126 @@ impl Symbols {
     }
 }
 
-/// A fixed-width integer type: its signedness and bit width. Bounds are computed
-/// in `i128` (so every supported width — up to 32-bit unsigned / 64-bit signed —
-/// fits without overflow).
+/// A fixed-width integer type: its signedness and bit width.
+///
+/// Supported widths are `8, 16, 32, 64, 128` (both signednesses). Bounds are
+/// exposed as `i128`, which represents every bound exactly **except** the maximum
+/// of a 128-bit *unsigned* type (`u128::MAX == 2^128 - 1`), which does not fit in
+/// `i128`. For that one case [`IntTy::max`] saturates to `i128::MAX` and the exact
+/// value is available via [`IntTy::max_u128`].
+///
+/// ## Why the bounds are not always embeddable in a [`Term`]
+///
+/// `Term::Int` carries an `i64` (the kernel's constant representation, matched
+/// exhaustively across the trusted solver). Bounds outside the `i64` range —
+/// `u64::MAX`, and all of `i128`/`u128` — therefore cannot be embedded as literal
+/// [`Term`]s. The verifier accounts for this by clamping/dropping such bounds *in
+/// the sound direction* (see [`IntTy::overflow_lo_i64`]/[`IntTy::overflow_hi_i64`]
+/// for overflow *obligations* and [`IntTy::assume_lo_i64`]/[`IntTy::assume_hi_i64`]
+/// for range *assumptions*), never by truncating them (which would silently emit
+/// a wrong bound).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct IntTy {
     pub signed: bool,
     pub bits: u8,
 }
 impl IntTy {
-    /// The smallest representable value.
+    /// The smallest representable value, as `i128`.
+    ///
+    /// Exact for every supported width: an unsigned type's minimum is `0`, and a
+    /// signed `N`-bit type's minimum `-2^(N-1)` fits in `i128` for `N <= 128`
+    /// (`i128::MIN` for `N == 128`). Panic-free for all widths `<= 128`.
     pub fn min(&self) -> i128 {
-        if self.signed {
-            -(1i128 << (self.bits - 1))
-        } else {
-            0
+        if !self.signed {
+            return 0;
         }
+        if self.bits >= 128 {
+            // `-2^127` is exactly `i128::MIN`; computing it via a shift + negate
+            // would overflow, so return the constant directly.
+            return i128::MIN;
+        }
+        -(1i128 << (self.bits - 1))
     }
-    /// The largest representable value.
+    /// The largest representable value, as `i128`.
+    ///
+    /// Exact for every supported width **except** 128-bit unsigned, whose true
+    /// maximum `2^128 - 1` exceeds `i128::MAX`; that case saturates to `i128::MAX`
+    /// (use [`IntTy::max_u128`] for the exact value). Panic-free for all widths
+    /// `<= 128`.
     pub fn max(&self) -> i128 {
         if self.signed {
+            if self.bits >= 128 {
+                return i128::MAX; // exactly `2^127 - 1`
+            }
             (1i128 << (self.bits - 1)) - 1
         } else {
+            if self.bits >= 127 {
+                // `2^127 - 1 == i128::MAX`; `2^128 - 1` saturates to it too. The
+                // naive `(1 << bits) - 1` would overflow `i128` for these widths.
+                return i128::MAX;
+            }
             (1i128 << self.bits) - 1
         }
+    }
+    /// The exact largest representable value as an unsigned 128-bit magnitude.
+    ///
+    /// Unlike [`IntTy::max`] this loses no precision for `u128` (`u128::MAX`). For
+    /// signed types it returns the (non-negative) signed maximum widened to `u128`.
+    pub fn max_u128(&self) -> u128 {
+        if self.signed {
+            if self.bits >= 128 {
+                return i128::MAX as u128;
+            }
+            (1u128 << (self.bits - 1)) - 1
+        } else if self.bits >= 128 {
+            u128::MAX
+        } else {
+            (1u128 << self.bits) - 1
+        }
+    }
+
+    /// The lower bound of the **overflow-obligation** range, as an `i64` safe to
+    /// embed in a `Term`. Clamped *inward* (`max(true_min, i64::MIN)`) so that the
+    /// obligation range is always a **subset** of the true range: proving
+    /// `x >= overflow_lo_i64()` is at least as strong as proving `x >= true_min`,
+    /// hence sound (it can never accept an overflowing value). For any supported
+    /// width the true minimum is `<= 0 <= i64::MAX`, so this is a pure clamp.
+    pub fn overflow_lo_i64(&self) -> i64 {
+        let m = self.min();
+        if m < i64::MIN as i128 {
+            i64::MIN
+        } else {
+            m as i64
+        }
+    }
+    /// The upper bound of the **overflow-obligation** range, as an `i64` safe to
+    /// embed in a `Term`. Clamped *inward* (`min(true_max, i64::MAX)`) so the
+    /// obligation range stays a subset of the true range (sound but possibly
+    /// incomplete for values in `(i64::MAX, true_max]`).
+    pub fn overflow_hi_i64(&self) -> i64 {
+        let m = self.max();
+        if m > i64::MAX as i128 {
+            i64::MAX
+        } else {
+            m as i64
+        }
+    }
+    /// The type's true minimum as an `i64`, or `None` when it does not fit in `i64`.
+    ///
+    /// Used for a range **assumption** (a hypothesis we add): an assumption must be
+    /// weaker-or-equal to the truth, so a bound that cannot be represented exactly
+    /// is *dropped* (returns `None`) rather than clamped — clamping an assumption
+    /// inward would assert a *false* fact and be unsound.
+    pub fn assume_lo_i64(&self) -> Option<i64> {
+        let m = self.min();
+        (i64::MIN as i128..=i64::MAX as i128).contains(&m).then_some(m as i64)
+    }
+    /// The type's true maximum as an `i64`, or `None` when it does not fit in `i64`
+    /// (e.g. `u64`, `i128`, `u128`). See [`IntTy::assume_lo_i64`] for why an
+    /// unrepresentable assumption bound is dropped rather than clamped.
+    pub fn assume_hi_i64(&self) -> Option<i64> {
+        let m = self.max();
+        (i64::MIN as i128..=i64::MAX as i128).contains(&m).then_some(m as i64)
     }
 }
 
@@ -319,5 +415,65 @@ mod tests {
         assert_eq!(type_of(&t, &ctx), Ok(Ty::Bool));
         let s = subst_term(&t, x, &Term::Int(3));
         assert_eq!(type_of(&s, &HashMap::new()), Ok(Ty::Bool));
+    }
+
+    #[test]
+    fn small_int_bounds_are_exact() {
+        let u8t = IntTy { signed: false, bits: 8 };
+        assert_eq!((u8t.min(), u8t.max()), (0, 255));
+        let i8t = IntTy { signed: true, bits: 8 };
+        assert_eq!((i8t.min(), i8t.max()), (-128, 127));
+        let i32t = IntTy { signed: true, bits: 32 };
+        assert_eq!((i32t.min(), i32t.max()), (i32::MIN as i128, i32::MAX as i128));
+        // Exact bounds fit `i64`, so both the obligation and assumption helpers
+        // reproduce them precisely.
+        assert_eq!(i32t.overflow_lo_i64(), i32::MIN as i64);
+        assert_eq!(i32t.overflow_hi_i64(), i32::MAX as i64);
+        assert_eq!(i32t.assume_lo_i64(), Some(i32::MIN as i64));
+        assert_eq!(i32t.assume_hi_i64(), Some(i32::MAX as i64));
+    }
+
+    #[test]
+    fn signed_128_bounds_are_panic_free_and_exact() {
+        let i128t = IntTy { signed: true, bits: 128 };
+        assert_eq!(i128t.min(), i128::MIN);
+        assert_eq!(i128t.max(), i128::MAX);
+        // Neither bound fits `i64`, so an assumption drops both sides ...
+        assert_eq!(i128t.assume_lo_i64(), None);
+        assert_eq!(i128t.assume_hi_i64(), None);
+        // ... while an obligation clamps inward to the representable `i64` window,
+        // which is a subset of the true `i128` range (hence sound).
+        assert_eq!(i128t.overflow_lo_i64(), i64::MIN);
+        assert_eq!(i128t.overflow_hi_i64(), i64::MAX);
+    }
+
+    #[test]
+    fn unsigned_128_bounds_are_correct() {
+        let u128t = IntTy { signed: false, bits: 128 };
+        assert_eq!(u128t.min(), 0);
+        // `max()` saturates (u128::MAX does not fit i128) ...
+        assert_eq!(u128t.max(), i128::MAX);
+        // ... but the exact magnitude is available and correct.
+        assert_eq!(u128t.max_u128(), u128::MAX);
+        assert_eq!(u128t.overflow_lo_i64(), 0);
+        assert_eq!(u128t.overflow_hi_i64(), i64::MAX);
+        assert_eq!(u128t.assume_lo_i64(), Some(0));
+        assert_eq!(u128t.assume_hi_i64(), None);
+    }
+
+    #[test]
+    fn u64_upper_bound_is_dropped_not_wrapped_for_assumptions() {
+        // Regression: `u64::MAX as i64 == -1`. A range *assumption* must NEVER
+        // assert `x <= -1` for an unsigned value (that is false and would let the
+        // path prove anything). The exact `u64` maximum does not fit `i64`, so the
+        // assumption drops the upper bound instead.
+        let u64t = IntTy { signed: false, bits: 64 };
+        assert_eq!(u64t.max(), u64::MAX as i128);
+        assert_eq!(u64t.assume_hi_i64(), None);
+        assert_eq!(u64t.assume_lo_i64(), Some(0));
+        // The obligation upper bound is clamped inward to `i64::MAX` (a subset of
+        // `[0, u64::MAX]`), never the wrapped `-1`.
+        assert_eq!(u64t.overflow_hi_i64(), i64::MAX);
+        assert_eq!(u64t.overflow_lo_i64(), 0);
     }
 }
