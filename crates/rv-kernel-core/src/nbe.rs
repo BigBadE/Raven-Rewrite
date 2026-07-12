@@ -294,6 +294,24 @@ impl<'a> Nbe<'a> {
             Term::HComp(ty, phi, u, u0) => {
                 if self.eval_face(venv, phi) == Some(true) {
                     self.eval(&venv.cons(Rc::new(Value::IOne)), u)
+                } else if let Term::Pi(_g, dom, cod) = ty.as_ref() {
+                    // `Π`-case filling (see `crate::kan`'s "Phase 3.7" doc, and
+                    // `crate::reduce::Reducer::whnf`'s matching arm — differentially
+                    // tested): only fires when `u` is itself a literal `Sys`; the
+                    // built term introduces no new *free* variable, so it's
+                    // evaluated against the very same `venv`.
+                    match crate::kan::hcomp_pi_rule(dom, cod, phi, u, u0) {
+                        Some(built) => self.eval(venv, &built),
+                        None => Rc::new(Value::HComp(
+                            HCompClosure {
+                                env: venv.clone(),
+                                ty: self.eval(venv, ty),
+                                phi: phi.clone(),
+                                u: u.clone(),
+                            },
+                            self.eval(venv, u0),
+                        )),
+                    }
                 } else {
                     Rc::new(Value::HComp(
                         HCompClosure {

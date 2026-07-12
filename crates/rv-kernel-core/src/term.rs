@@ -175,8 +175,10 @@ pub enum Term {
     Transp(Rc<Term>, Rc<Cof>, Rc<Term>),
     /// `hcomp A φ u u0` — homogeneous composition: given a cap `u0 : A` and a system
     /// `u` (a term under one interval binder, of type `Partial φ A` at every point of
-    /// the line), produces the composite at `i1`. Only the trivial (`φ = ⊤`) rule is
-    /// implemented — see `crate::kan`.
+    /// the line), produces the composite at `i1`. The trivial (`φ = ⊤`) rule is
+    /// always implemented; when `A` is syntactically a `Π` and `u` is syntactically a
+    /// `Sys`, the `Π`-case filling rule additionally fires (pushing the composition
+    /// pointwise into the codomain) — see `crate::kan`.
     HComp(Rc<Term>, Rc<Cof>, Rc<Term>, Rc<Term>),
 }
 

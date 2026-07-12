@@ -194,9 +194,19 @@ impl<'e> Reducer<'e> {
                 // (the cap coherence, `u(i0) ≡ u0`, was already enforced at
                 // check-time — see `Checker::infer`'s `Term::HComp` arm). Otherwise
                 // stuck.
-                Term::HComp(_ty, phi, u, _u0) => {
+                Term::HComp(ty, phi, u, u0) => {
                     if crate::face::is_true(phi) {
                         head = u.instantiate(&Term::IOne);
+                    } else if let Term::Pi(_g, dom, cod) = ty.as_ref() {
+                        // `Π`-case filling (see `crate::kan`'s "Phase 3.7" doc):
+                        // matched *syntactically* on the raw type (no `whnf`),
+                        // mirroring `transp`'s own structural-only convention; only
+                        // fires when `u` is itself a literal `Sys` (see
+                        // `crate::kan::hcomp_pi_rule`'s doc for why).
+                        match crate::kan::hcomp_pi_rule(dom, cod, phi, u, u0) {
+                            Some(built) => head = built,
+                            None => break,
+                        }
                     } else {
                         break;
                     }
