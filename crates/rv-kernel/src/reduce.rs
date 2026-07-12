@@ -14,7 +14,7 @@
 //! `is_def_eq` equated distinct types, ill-typed programs would slip through. The
 //! rules are the standard ones; we keep them total and structural.
 
-use crate::env::{Decl, Destructor, Env, QuotRole, Recursor, TruncRole};
+use crate::env::{CircleRole, Decl, Destructor, Env, QuotRole, Recursor, TruncRole};
 use crate::level;
 use crate::term::Term;
 
@@ -78,6 +78,17 @@ impl<'e> Reducer<'e> {
                     // Truncation computation: `Trunc.lift … f resp (Trunc.tr … a) ↦ f a`.
                     Some(Decl::Trunc(t)) if t.role == TruncRole::Lift => {
                         match self.try_trunc_lift(&args) {
+                            Some(reduced) => {
+                                let (h, a) = reduced.unfold_apps();
+                                head = h;
+                                args = a;
+                            }
+                            None => break,
+                        }
+                    }
+                    // Circle computation: `S¹.rec P pt lp S¹.base ↦ pt`.
+                    Some(Decl::Circle(c)) if c.role == CircleRole::Rec => {
+                        match self.try_circle_rec(&args) {
                             Some(reduced) => {
                                 let (h, a) = reduced.unfold_apps();
                                 head = h;
@@ -335,6 +346,49 @@ impl<'e> Reducer<'e> {
         let a = &tr_args[1];
         let f = &args[F_POS];
         let mut applied = Term::app(f.clone(), a.clone());
+        // Re-attach any over-application beyond the scrutinee.
+        for extra in &args[SCRUT_POS + 1..] {
+            applied = Term::app(applied, extra.clone());
+        }
+        Some(applied)
+    }
+
+    /// Try the single **circle** computation rule (the point-constructor ι-rule for the
+    /// fixed `S¹.rec` constant):
+    ///
+    /// ```text
+    ///   S¹.rec.{v} P pt lp S¹.base  ↦  pt
+    /// ```
+    ///
+    /// `S¹.rec`'s spine is `[P, pt, lp, t, extra…]`; the scrutinee `t` is at index 3 and
+    /// `pt` at index 1. We fire only when `t` weak-head-reduces to the literal (nullary)
+    /// `S¹.base` constant, discarding `lp` — its only role is to have been *type-checked
+    /// to exist*, guaranteeing `pt` respects the `loop` path constructor. It NEVER fires
+    /// on the path constructor `S¹.loop` (that is not an `S¹.base` head — `loop` is a
+    /// proof of `Eq S¹ base base`, not itself a `S¹` value). Returns `None` (stuck/neutral)
+    /// when not saturated to the scrutinee or the scrutinee is not `S¹.base`.
+    fn try_circle_rec(&self, args: &[Term]) -> Option<Term> {
+        const PT_POS: usize = 1;
+        const SCRUT_POS: usize = 3;
+        if args.len() <= SCRUT_POS {
+            return None; // not yet applied to the circle value
+        }
+        let scrut = self.whnf(&args[SCRUT_POS]);
+        let (base_head, base_args) = scrut.unfold_apps();
+        let Term::Const(base_name, _) = &base_head else {
+            return None;
+        };
+        match self.env.get(base_name) {
+            Some(Decl::Circle(c)) if c.role == CircleRole::Base => {}
+            _ => return None,
+        }
+        // `S¹.base` is nullary — any (well-typed) scrutinee reaching this point applies it
+        // to no arguments.
+        if !base_args.is_empty() {
+            return None;
+        }
+        let pt = &args[PT_POS];
+        let mut applied = pt.clone();
         // Re-attach any over-application beyond the scrutinee.
         for extra in &args[SCRUT_POS + 1..] {
             applied = Term::app(applied, extra.clone());
