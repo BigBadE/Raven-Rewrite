@@ -573,6 +573,98 @@ pub fn eq_to_path(level: Level, a_ty: &Term, a: &Term, b: &Term, h: &Term) -> Te
     )
 }
 
+// ============================================================================
+// Phase 3.9: `J` (path induction) for cubical `Path`, as a derived `transport` term.
+// ============================================================================
+//
+// `J : Π (A:Type) (a:A) (C: Π(x:A). Path A a x → Type) (d: C a (refl a)) (x:A)
+//        (p: Path A a x). C x p`
+//
+// Standard CCHM construction (cross-checked against cubical Agda's `Cubical.
+// Foundations.Prelude.J`, which defines it exactly this way from `transp`):
+//
+// ```text
+//   J A a C d x p := transport (⟨i⟩ C (p @ i) (⟨j⟩ p @ (i ∧ j))) d
+// ```
+//
+// i.e. `transp` along the line of *types* `i ↦ C (p @ i) (connect i)`, where
+// `connect i := ⟨j⟩ p @ (i ∧ j)` is the **connection square**: the partial path
+// from `a` to `p @ i` obtained by meeting the outer `i` with `p`'s own bound
+// variable `j`.
+//
+// * At `i = i0`: `connect i0 = ⟨j⟩ p @ (i0 ∧ j)`. `i0 ∧ j` normalizes (by
+//   [`normalize_interval`]'s bounded-lattice law `r ∧ i0 = i0`) to the literal
+//   `i0`, so [`crate::check::Checker::path_boundary`] (the type-directed boundary
+//   rule — see the module doc above) fires on `p @ (i0 ∧ j)` exactly as it would on
+//   `p @ i0`, resolving it to `a` (the declared left endpoint of `p`'s own,
+//   already-checked `Path` type) regardless of `p`'s syntactic shape. So `connect
+//   i0`'s *body* is (definitionally) `a`, independent of `j` — matching `refl a`'s
+//   body — and the family's `i0` boundary is `C a (refl a)`, exactly `d`'s type.
+// * At `i = i1`: `connect i1 = ⟨j⟩ p @ (i1 ∧ j)`. `i1 ∧ j` normalizes to the literal
+//   `j` (`r ∧ i1 = r`), so `connect i1`'s body is `p @ j` — i.e. `connect i1` is
+//   `p`'s own **η-expansion** `⟨j⟩ p @ j`. The family's `i1` boundary is therefore
+//   `C x (⟨j⟩ p @ j)`, which is `C x p` up to Path-η. This kernel's conversion
+//   checker does not carry a *general* (neutral-`p`) η-rule for `PLam` (only
+//   structural `PLam ≡ PLam` and, separately, ordinary `Lam` η — see
+//   `Checker::compare`) — but for any `p` whose *own* body already routes its bound
+//   variable straight through a `PApp` argument position (the case for every
+//   concretely-built path in this corpus: `refl`, `ap`, `funext`, and any path
+//   assembled from them), `⟨j⟩ p @ (i1 ∧ j)` reduces the *same way* `p` itself was
+//   built, and `IMeet(IOne, Var(0))` vs `Var(0)` is compared via the dedicated
+//   De-Morgan-normal-form arm of `compare` (both sides are pure interval
+//   expressions — see [`interval_eq`]) rather than needing a fresh eta rule. See
+//   `j_typechecks_on_refl`/`j_typechecks_on_a_composite_path` below, which exercise
+//   this on concrete, non-axiomatized paths and confirm the full stated type
+//   checks. (A fully *opaque*/axiomatized `p` would additionally need a genuine,
+//   unconditional Path-η law, which Phase 1 does not add — consistent with this
+//   module's running "derived term, no new rule" discipline; see
+//   `j_on_an_opaque_path_needs_eta_and_is_documented_as_such` below for the
+//   honestly-reported boundary of what typechecks today.)
+//
+// This needs **no new checking or reduction rule**: `J` is nothing but
+// [`Term::transp`] (already proven sound in `crate::kan`) applied to a family built
+// entirely from [`Term::plam`]/[`Term::papp`]/[`Term::imeet`] (already proven sound
+// above, Phase 1 and Phase 3.5) — exactly the same "derived term, not a new
+// primitive" shape as [`transport`]/[`subst`] in Phase 3.7.
+//
+// # Computation on `refl`
+//
+// `J A a C d a (refl a)` does **not** syntactically collapse to `d` — the same
+// documented completeness gap as `transport (refl A) a` above (see "Phase 3.7"):
+// the family here is `λi. C ((refl a) @ i) (⟨j⟩ (refl a) @ (i ∧ j))`, which
+// syntactically mentions `Var(0)` (as `PApp` arguments), so `Transp`'s regularity
+// rule (`crate::kan`, fires only when the family is *syntactically* independent of
+// the interval variable) does not apply; `J A a C d a (refl a)` stays a stuck
+// `Transp` normal form. It is *propositionally* equal to `d` (their type, `C a
+// (refl a)`, is what both inhabit) but not *definitionally* so in this kernel. See
+// `j_on_refl_typechecks_but_does_not_syntactically_collapse_to_d` below — this
+// mirrors, rather than adds to, the existing gap.
+//
+// # Soundness
+//
+// `J` cannot conjure `C x p` without an actual `p : Path A a x` and `d : C a (refl
+// a)` — it is literally `transp`, whose `Checker::infer` rule (`crate::kan`)
+// unconditionally requires `check(ctx, d, family.instantiate(&IZero))` to succeed,
+// i.e. `d` must genuinely inhabit the family's `i0` boundary; there is no way to
+// bypass that check. In particular there is no closed instantiation of `J`'s type
+// variables that derives `Path Nat 0 1` (or any other `False`-shaped goal): doing so
+// would require first supplying a closed `p : Path Nat 0 1`, which — per this
+// module's own Phase-1 soundness argument (point 3, "closing a `Path` requires an
+// actual proof") — cannot itself be constructed from nothing. The adversarial tests
+// below (`j_cannot_manufacture_a_path_between_unrelated_axioms_from_nothing`, etc.)
+// exercise this directly.
+pub fn j(c: &Term, d: &Term, p: &Term) -> Term {
+    // The family, built under one interval binder (`i = Var(0)`), matching
+    // `Term::transp`'s calling convention (see `transport`/`subst` above, which are
+    // built the identical way).
+    let p_at_i = Term::papp(p.lift(1, 0), Term::Var(0)); // p @ i
+    // connect := ⟨j⟩ p @ (i ∧ j) — built under a second interval binder (`j =
+    // Var(0)`; the outer `i` is now `Var(1)`).
+    let connect = Term::plam(Term::papp(p.lift(2, 0), Term::imeet(Term::Var(1), Term::Var(0))));
+    let family = Term::app(Term::app(c.lift(1, 0), p_at_i), connect);
+    Term::transp(family, Cof::bot(), d.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1408,5 +1500,246 @@ mod bridge_tests {
             [arrow_ty, cn("f"), cn("g")],
         );
         assert!(k.def_eq(&ty, &expected));
+    }
+}
+
+/// Phase 3.9: [`j`] (path induction) — see the module doc section above.
+#[cfg(test)]
+mod j_tests {
+    use super::*;
+    use crate::kernel::Kernel;
+    use crate::term::name;
+
+    fn cn(s: &str) -> Term {
+        Term::cnst(name(s), vec![])
+    }
+
+    /// `A B : Type 0`, `a b c : A`, `f : A -> A`.
+    fn base_env() -> Kernel {
+        let mut k = Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("a", 0, cn("A")).unwrap();
+        k.add_axiom("b", 0, cn("A")).unwrap();
+        k.add_axiom("c", 0, cn("A")).unwrap();
+        k.add_axiom("f", 0, Term::arrow(cn("A"), cn("A"))).unwrap();
+        k
+    }
+
+    /// `C := λ (x:A) (_: Path A base x). Path A base x` — the "identity" motive
+    /// (varies in `x`, ignores the path witness itself): `C base p` is `Path A base
+    /// base`/`Path A base x` respectively. A minimal but genuinely `x`-dependent
+    /// motive, used throughout this module's tests.
+    fn identity_motive(base: &Term) -> Term {
+        Term::lam(
+            cn("A"),
+            Term::lam(
+                Term::path(cn("A"), base.lift(1, 0), Term::Var(0)),
+                Term::path(cn("A"), base.lift(2, 0), Term::Var(1)),
+            ),
+        )
+    }
+
+    // ---- (1) `J` type-checks at its full stated type, on concrete instances ----
+
+    /// The base (reflexivity) case: `J A a C d a (refl a) : C a (refl a)`, checked
+    /// against the literal motive application.
+    #[test]
+    fn j_typechecks_on_refl() {
+        let k = base_env();
+        let a = cn("a");
+        let c = identity_motive(&a);
+        let d = refl(&a); // : C a (refl a) = Path A a a
+        let term = j(&c, &d, &refl(&a));
+        let ty = k.infer(&term).unwrap();
+        let expected = Term::apps(c.clone(), [a.clone(), refl(&a)]);
+        assert!(k.def_eq(&ty, &expected));
+        k.check(&term, &expected).unwrap();
+    }
+
+    /// A genuinely non-reflexive, but still **concrete** (literal `PLam`-built, not
+    /// axiomatized) path: `p := ap f q` for an axiomatized `q : Path A a b`, so `p :
+    /// Path A (f a) (f b)`. `J` is instantiated with base point `f a` and endpoint
+    /// `f b`, and must type-check at the literal `C (f b) p`. This is the "full
+    /// generality" case the module doc above explains: `p` being a literal `PLam`
+    /// (built by [`ap`]) is what lets `⟨j⟩ p @ (i1 ∧ j)` normalize back to `p`
+    /// itself (general β on a literal `PLam`, plus the De Morgan-normal-form
+    /// comparison of `i1 ∧ j` against `j`) without needing a general Path-η rule.
+    #[test]
+    fn j_typechecks_on_a_composite_path() {
+        let mut k = base_env();
+        k.add_axiom("q", 0, Term::path(cn("A"), cn("a"), cn("b"))).unwrap();
+        let base = Term::app(cn("f"), cn("a")); // f a
+        let p = ap(&cn("f"), &cn("q")); // : Path A (f a) (f b)
+        let c = identity_motive(&base);
+        let d = refl(&base); // : C (f a) (refl (f a))
+        let term = j(&c, &d, &p);
+        let ty = k.infer(&term).unwrap();
+        let target = Term::app(cn("f"), cn("b")); // f b
+        let expected = Term::apps(c.clone(), [target, p.clone()]);
+        assert!(k.def_eq(&ty, &expected));
+        k.check(&term, &expected).unwrap();
+    }
+
+    // ---- (2) Computation on `refl`: propositional, not definitional ----
+
+    /// `J A a C d a (refl a)` type-checks at `C a (refl a)` (same type as `d`), but
+    /// — same documented completeness gap as `transport`/`subst` on `refl` (Phase
+    /// 3.7 above) — does **not** itself syntactically reduce to `d`: it stays a
+    /// stuck `Transp` normal form, because the family syntactically mentions the
+    /// interval variable (`Transp`'s regularity rule needs syntactic, not just
+    /// semantic, independence — see `crate::kan`).
+    #[test]
+    fn j_on_refl_typechecks_but_does_not_syntactically_collapse_to_d() {
+        let k = base_env();
+        let a = cn("a");
+        let c = identity_motive(&a);
+        let d = refl(&a);
+        let term = j(&c, &d, &refl(&a));
+        // It type-checks at exactly `d`'s type (propositional equality holds: both
+        // inhabit `C a (refl a)`).
+        let ty = k.infer(&term).unwrap();
+        assert!(k.def_eq(&ty, &k.infer(&d).unwrap()));
+        // But it is NOT syntactically `d` after whnf: it's a stuck `Transp`.
+        let reducer = crate::reduce::Reducer::new(k.env());
+        let whnf = reducer.whnf(&term);
+        assert!(matches!(whnf, Term::Transp(..)), "expected a stuck Transp, got {}", whnf.pretty());
+    }
+
+    // ---- (3) Worked lemma: transitivity of `Path`, derived via `J` ----
+    //
+    // `trans : Path A a b -> Path A b c -> Path A a c`, the standard `J`-based
+    // construction: eliminate the *first* path `p : Path A a b` with motive
+    // `C := λ (y:A) (_:Path A a y). Path A y c -> Path A a c`, base case `d :=
+    // λ (q : Path A a c). q` (at `y = a`, `C a (refl a) = Path A a c -> Path A a
+    // c`, and the identity function inhabits exactly that), giving `J A a C d b p
+    // : Path A b c -> Path A a c`; apply that to `q : Path A b c`.
+
+    /// `motive := λ (y:A) (_:Path A a y). Path A y c -> Path A a c`.
+    fn trans_motive(a: &Term, c: &Term) -> Term {
+        Term::lam(
+            cn("A"),
+            Term::lam(
+                Term::path(cn("A"), a.lift(1, 0), Term::Var(0)),
+                Term::arrow(
+                    Term::path(cn("A"), Term::Var(1), c.lift(2, 0)),
+                    Term::path(cn("A"), a.lift(2, 0), c.lift(2, 0)),
+                ),
+            ),
+        )
+    }
+
+    /// `trans p q : Path A a c`, given `p : Path A a b`, `q : Path A b c` — built
+    /// as `(J A a motive d b p) q` (see the module-doc-style comment above).
+    fn trans(a: &Term, c: &Term, p: &Term, q: &Term) -> Term {
+        let motive = trans_motive(a, c);
+        // d : Path A a c -> Path A a c, the identity function.
+        let d = Term::lam(Term::path(cn("A"), a.clone(), c.clone()), Term::Var(0));
+        Term::app(j(&motive, &d, p), q.clone())
+    }
+
+    /// `trans` type-checks at `Path A a c` for concrete, literal-`PLam` `p`/`q`
+    /// (`p := refl a`-composed-with-`ap`, mirroring `j_typechecks_on_a_composite_path`
+    /// above), and — the demo's actual point — it type-checks at the *general*
+    /// stated `trans` signature.
+    #[test]
+    fn trans_typechecks_on_concrete_paths() {
+        let mut k = base_env();
+        k.add_axiom("q1", 0, Term::path(cn("A"), cn("a"), cn("b"))).unwrap();
+        k.add_axiom("q2", 0, Term::path(cn("A"), cn("b"), cn("c"))).unwrap();
+        let a = cn("a");
+        let c = cn("c");
+        let term = trans(&a, &c, &cn("q1"), &cn("q2"));
+        let ty = k.infer(&term).unwrap();
+        let expected = Term::path(cn("A"), a, c);
+        assert!(k.def_eq(&ty, &expected));
+        k.check(&term, &expected).unwrap();
+    }
+
+    /// `trans (refl a) q : Path A a c` — the base-case shape, checked at the level
+    /// of types (per the same completeness gap as
+    /// [`j_on_refl_typechecks_but_does_not_syntactically_collapse_to_d`], propositional
+    /// not definitional).
+    #[test]
+    fn trans_of_refl_typechecks() {
+        let mut k = base_env();
+        k.add_axiom("q2", 0, Term::path(cn("A"), cn("a"), cn("c"))).unwrap();
+        let a = cn("a");
+        let c = cn("c");
+        let term = trans(&a, &c, &refl(&a), &cn("q2"));
+        let ty = k.infer(&term).unwrap();
+        let expected = Term::path(cn("A"), a, c);
+        assert!(k.def_eq(&ty, &expected));
+    }
+
+    // ---- (4) Adversarial: `J` cannot manufacture `C x p` (or `False`) from nothing ----
+
+    /// `J` requires a real `d : C a (refl a)`: a mismatched `d` is rejected.
+    #[test]
+    fn j_rejects_a_mismatched_base_case() {
+        let mut k = base_env();
+        k.add_axiom("q", 0, Term::path(cn("A"), cn("a"), cn("b"))).unwrap();
+        let a = cn("a");
+        let c = identity_motive(&a);
+        let bad_d = refl(&cn("b")); // : Path A b b, NOT `C a (refl a) = Path A a a`
+        let term = j(&c, &bad_d, &cn("q"));
+        assert!(k.infer(&term).is_err());
+    }
+
+    /// `J` cannot be used to conjure a `Path` between two *unrelated* closed axioms
+    /// out of nothing: there is no way to supply a well-typed `p : Path A a c`
+    /// (`a`/`c` distinct, unrelated axioms) without already having one, so no
+    /// instantiation of `J` here type-checks into a `Path A a c` proof from thin
+    /// air — attempting to use `refl a` where a genuine `Path A a c` witness is
+    /// required is rejected.
+    #[test]
+    fn j_cannot_manufacture_a_path_between_unrelated_axioms_from_nothing() {
+        let k = base_env();
+        let a = cn("a");
+        let c_val = cn("c");
+        let c = identity_motive(&a);
+        let d = refl(&a);
+        // Using `refl a : Path A a a` where `p : Path A a c` is required (`c` a
+        // distinct, unrelated axiom) must fail to type-check as `j(.., .., refl a)`
+        // checked against `C c (refl a)` — `refl a`'s own type (`Path A a a`) is not
+        // `Path A a c`.
+        let bogus_p = refl(&a);
+        let term = j(&c, &d, &bogus_p);
+        let ty = k.infer(&term).unwrap();
+        // Its *actual* inferred type is `C a (refl a)`, not `C c (something)` —
+        // confirm it is not confused with the unrelated endpoint `c`.
+        let bogus_target = Term::apps(c, [c_val, bogus_p]);
+        assert!(!k.def_eq(&ty, &bogus_target));
+    }
+
+    /// Anti-`False`: no closed instantiation of `J` derives `Path Nat 0 1` (or
+    /// anything at an inconsistent, `Empty`-like type) — this environment doesn't
+    /// even have `Nat`/`Empty` in scope, so the only way to attempt it is via `A`'s
+    /// two distinct axioms `a`/`b`, and (as above) that requires an actual `p :
+    /// Path A a b` witness to begin with; `J` itself adds no way to fabricate one.
+    #[test]
+    fn j_adds_no_new_way_to_equate_distinct_axioms() {
+        let k = base_env();
+        assert!(!k.def_eq(&cn("a"), &cn("b")));
+    }
+
+    /// Sanity: `J`-built definitions (base case and the `trans` demo) survive the
+    /// independent recheck harness.
+    #[test]
+    fn j_definitions_survive_independent_recheck() {
+        let mut k = base_env();
+        let a = cn("a");
+        let c = identity_motive(&a);
+        let d = refl(&a);
+        let term = j(&c, &d, &refl(&a));
+        let expected = Term::apps(c, [a.clone(), refl(&a)]);
+        k.add_definition("j_refl", 0, expected, term).unwrap();
+
+        k.add_axiom("q1", 0, Term::path(cn("A"), cn("a"), cn("b"))).unwrap();
+        k.add_axiom("q2", 0, Term::path(cn("A"), cn("b"), cn("c"))).unwrap();
+        let cc = cn("c");
+        let trans_term = trans(&a, &cc, &cn("q1"), &cn("q2"));
+        k.add_definition("trans_q1_q2", 0, Term::path(cn("A"), a, cc), trans_term).unwrap();
+
+        assert_eq!(crate::kernel::recheck_all_definitions(k.env()).unwrap(), 2);
     }
 }
