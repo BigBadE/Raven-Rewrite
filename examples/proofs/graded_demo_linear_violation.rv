@@ -1,0 +1,14 @@
+// Negative control for the QTT usage-graded binder syntax (see `graded_demo.rv`): a
+// `:1` (linear) binder used **twice** must be REJECTED by `rvc --verify`'s usage pass,
+// not silently accepted. Exercised by the driver test
+// `graded_binder_linear_violation_rejected` (`crates/rv-driver/tests/rv_proofs.rs`),
+// which asserts `verify_rv` returns `Err` mentioning "usage discipline".
+
+enum Nat { Zero, Succ(Nat) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+
+// `x` is declared linear (`:1`) but used twice in `plus(x, x)` — must be rejected.
+def dupLinear() : (x :1 Nat) -> Nat := fun (x :1 Nat) => plus(x, x)

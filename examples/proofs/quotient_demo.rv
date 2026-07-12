@@ -1,0 +1,48 @@
+// A worked example exercising the sound `Quot` primitive (`Quot`, `Quot.mk`,
+// `Quot.sound`, `Quot.lift`, `Quot.ind`) from surface `.rv` syntax.
+//
+// `Quot`'s five constants are installed once into every kernel session (see
+// `rv-driver`'s `verify_rv`/`vm_eval`/`nbe_eval`), so they are usable by their
+// dotted names directly — no declaration needed in this file. The relation `R`
+// used here relates every pair of `Nat`s (the "collapse everything" quotient),
+// so `Quot Nat R` is a one-point type and any two `Quot.mk`s of it are equal.
+
+enum Nat { Zero, Succ(Nat) }
+
+// The always-true relation on `Nat`: every two naturals are related.
+def AlwaysR(a: Nat, b: Nat) : Prop := True
+
+// Every pair of naturals satisfies `AlwaysR`.
+fn always_holds(a: Nat, b: Nat) -> AlwaysR(a, b) {
+    True::intro
+}
+
+// The quotient of `Nat` by `AlwaysR` — a one-point type.
+def NatQ() : Type := Quot(Nat, AlwaysR)
+
+// The class of `Zero` and the class of `Succ(Zero)` in the quotient.
+def q0() : NatQ() := Quot.mk(Nat, AlwaysR, Nat::Zero)
+def q1() : NatQ() := Quot.mk(Nat, AlwaysR, Nat::Succ(Nat::Zero))
+
+// `Quot.sound`: since `AlwaysR(Zero, Succ(Zero))` holds, their classes are
+// *propositionally* equal — the defining property of a quotient.
+fn q0_eq_q1() -> q0() == q1() {
+    Quot.sound(Nat, AlwaysR, Nat::Zero, Nat::Succ(Nat::Zero), always_holds(Nat::Zero, Nat::Succ(Nat::Zero)))
+}
+
+// `Quot.lift`: any `R`-respecting function `Nat -> B` factors through the
+// quotient. Here the constant function `_ -> Nat::Zero` trivially respects
+// `AlwaysR` (its result never depends on the argument).
+fn constZero(n: Nat) -> Nat {
+    Nat::Zero
+}
+fn constZero_respects(a: Nat, b: Nat, h: AlwaysR(a, b)) -> constZero(a) == constZero(b) {
+    Eq::refl(Nat, Nat::Zero)
+}
+def liftedConstZero() : NatQ() -> Nat := Quot.lift(Nat, AlwaysR, Nat, constZero, constZero_respects)
+
+// The lift computes on a class exactly as the original function on its
+// representative (the quotient's ι rule) — check it definitionally.
+fn lift_computes() -> liftedConstZero()(q0()) == Nat::Zero {
+    Eq::refl(Nat, Nat::Zero)
+}

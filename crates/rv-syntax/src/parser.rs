@@ -602,16 +602,24 @@ impl<'a> Parser<'a> {
                 j += 1;
             }
             if j > self.pos && self.toks.get(j).map(|t| &t.tok) == Some(&Tok::Colon) {
-                // `(x y … : T) -> rest` → a dependent function type binding x, y, … : T.
+                // `(x y … : T) -> rest` → a dependent function type binding x, y, … : T,
+                // optionally graded `(x :1 T) -> rest` / `(x :0 T) -> rest` (a QTT usage
+                // grade shared by every name in the group — see
+                // `Self::parse_binder_grade`). This is the working spelling for a `Π`/
+                // `forall` type in a *type position* (`def f(..) : (x :1 T) -> U := ..`);
+                // the `forall x : T, body` keyword form is the equivalent for expression
+                // position (inside a body), parsed by `Self::parse_forall`.
                 let mut names = Vec::new();
                 while matches!(self.peek(), Tok::Ident(_)) {
                     names.push(self.ident("as a dependent binder name")?);
                 }
                 self.expect(&Tok::Colon, "in a dependent binder group")?;
+                let grade = self.parse_binder_grade();
                 let bty = self.parse_type()?;
                 self.expect(&Tok::RParen, "after a dependent binder group")?;
                 self.expect(&Tok::Arrow, "after a dependent binder `(x : T)`")?;
                 let bty_e = self.ty_to_expr(bty)?;
+                let bty_e = self.apply_grade_marker(grade, bty_e);
                 let rest = self.parse_type()?;
                 let body = self.ty_to_expr(rest)?;
                 let params = names.into_iter().map(|n| (n, Box::new(bty_e.clone()))).collect();
@@ -1137,8 +1145,44 @@ impl<'a> Parser<'a> {
         Ok(Expr::MatchExpr { scrut: Box::new(scrut), arms })
     }
 
-    /// `fun binder+ "=>" body` — a dependent lambda. Each binder is `(name : type)` or a
-    /// bare `name`.
+    /// An optional QTT usage **grade** annotation right after a binder's `:`, before its
+    /// type: `:0` (erased — never used at runtime), `:1` (linear — used exactly once),
+    /// or no annotation at all (unrestricted/`ω`, the default — existing code is
+    /// unaffected). A type never *starts* with a bare integer literal, so peeking a
+    /// leading `0`/`1` token here is unambiguous with an actual type. When a grade is
+    /// present, the type is wrapped as `__rv_grade0(T)` / `__rv_grade1(T)` — a marker
+    /// application that `rv-driver`'s `unify` module and the kernel's `elab2` inferring
+    /// elaborator recognise and strip off, building a graded `Π`/`λ` instead of the
+    /// default unrestricted one. See `crates/rv-kernel/src/elab2.rs`'s `strip_grade`.
+    fn parse_binder_grade(&mut self) -> Option<i64> {
+        match self.peek() {
+            Tok::Int(0) => {
+                self.bump();
+                Some(0)
+            }
+            Tok::Int(1) => {
+                self.bump();
+                Some(1)
+            }
+            _ => None,
+        }
+    }
+
+    /// Wrap `ty` in the `__rv_grade0`/`__rv_grade1` marker application for `grade`, if
+    /// `grade` is `Some`; otherwise return `ty` unchanged. See [`Self::parse_binder_grade`].
+    fn apply_grade_marker(&mut self, grade: Option<i64>, ty: Expr) -> Expr {
+        match grade {
+            Some(g) => {
+                let marker = self.syms.intern(if g == 0 { "__rv_grade0" } else { "__rv_grade1" });
+                Expr::Apply { callee: Box::new(Expr::Var(marker)), args: vec![ty] }
+            }
+            None => ty,
+        }
+    }
+
+    /// `fun binder+ "=>" body` — a dependent lambda. Each binder is `(name : type)`,
+    /// `(name :0 type)` / `(name :1 type)` (a graded binder — see
+    /// [`Self::parse_binder_grade`]), or a bare `name`.
     fn parse_fun(&mut self) -> Result<Expr, String> {
         self.eat_kw("fun");
         let mut params = Vec::new();
@@ -1146,8 +1190,10 @@ impl<'a> Parser<'a> {
             if self.eat(&Tok::LParen) {
                 let name = self.ident("as a fun parameter")?;
                 let ty = if self.eat(&Tok::Colon) {
+                    let grade = self.parse_binder_grade();
                     let t = self.parse_type()?;
-                    Some(Box::new(self.ty_to_expr(t)?))
+                    let e = self.ty_to_expr(t)?;
+                    Some(Box::new(self.apply_grade_marker(grade, e)))
                 } else {
                     None
                 };
@@ -1165,7 +1211,9 @@ impl<'a> Parser<'a> {
         Ok(Expr::Fun { params, body: Box::new(body) })
     }
 
-    /// `forall binder+ "," body` — a dependent function *type*.
+    /// `forall binder+ "," body` — a dependent function *type*. Each binder is
+    /// `(name : type)` or `(name :0/:1 type)` (a graded binder — see
+    /// [`Self::parse_binder_grade`]).
     fn parse_forall(&mut self) -> Result<Expr, String> {
         self.eat_kw("forall");
         let mut params = Vec::new();
@@ -1173,9 +1221,11 @@ impl<'a> Parser<'a> {
             self.expect(&Tok::LParen, "to open a forall binder")?;
             let name = self.ident("as a forall binder")?;
             self.expect(&Tok::Colon, "after a forall binder name")?;
+            let grade = self.parse_binder_grade();
             let t = self.parse_type()?;
             self.expect(&Tok::RParen, "after a forall binder")?;
-            params.push((name, Box::new(self.ty_to_expr(t)?)));
+            let e = self.ty_to_expr(t)?;
+            params.push((name, Box::new(self.apply_grade_marker(grade, e))));
         }
         self.expect(&Tok::Comma, "after forall binders")?;
         let body = self.parse_expr()?;

@@ -1,0 +1,49 @@
+// A worked example exercising the sound propositional-truncation primitive `Trunc`
+// (`Trunc`, `Trunc.tr`, `Trunc.eq`, `Trunc.lift`, `Trunc.ind`) from surface `.rv`
+// syntax. `Trunc`'s five constants are installed once into every kernel session
+// (see `rv-driver`'s `verify_rv`/`vm_eval`/`nbe_eval`), so — like `Quot` — they are
+// usable by their dotted names directly, with no declaration needed in this file.
+//
+//   Trunc.{u}      : Π (A : Sort u), Prop
+//   Trunc.tr.{u}   : Π (A : Sort u), A → Trunc A
+//   Trunc.eq.{u}   : Π (A : Sort u) (x y : Trunc A), Eq (Trunc A) x y   -- any two
+//                    truncated points are equal: `Trunc A` is a mere proposition.
+//   Trunc.lift.{u v} : Π (A : Sort u) (P : Sort v) (f : A -> P)
+//                      (resp : Π (x y : A), Eq P (f x) (f y)), Trunc A -> P
+//   Trunc.ind      : the dependent `Prop`-eliminator.
+
+enum Nat { Zero, Succ(Nat) }
+
+// "There exists a `Nat`" — truncated, so it forgets *which* one; only the fact of
+// having one survives.
+def SomeNat() : Prop := Trunc(Nat)
+
+// Two different witnesses truncate to the same proof.
+fn tr0() -> SomeNat() {
+    Trunc.tr(Nat, Nat::Zero)
+}
+fn tr1() -> SomeNat() {
+    Trunc.tr(Nat, Nat::Succ(Nat::Zero))
+}
+
+// `Trunc.eq`: any two proofs of a truncated proposition are equal, regardless of
+// which witness built them.
+fn tr0_eq_tr1() -> tr0() == tr1() {
+    Trunc.eq(Nat, tr0(), tr1())
+}
+
+// `Trunc.lift`: a truncated `Nat` can still be turned into `True` (a
+// witness-independent fact), since the constant map trivially respects equality.
+fn isNatConst(n: Nat) -> Prop {
+    True
+}
+fn hasNat_respects(x: Nat, y: Nat) -> isNatConst(x) == isNatConst(y) {
+    Eq::refl(Prop, True)
+}
+def hasNat() : SomeNat() -> Prop := Trunc.lift(Nat, Prop, isNatConst, hasNat_respects)
+
+// The lift computes on a truncated witness exactly as the original function on
+// that witness (the truncation's ι rule) — check it definitionally.
+fn lift_computes() -> hasNat()(tr0()) == True {
+    Eq::refl(Prop, True)
+}

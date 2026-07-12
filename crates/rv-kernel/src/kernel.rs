@@ -117,6 +117,22 @@ impl Kernel {
         crate::trunc::install_trunc(&mut self.env)
     }
 
+    /// Check the QTT usage discipline (`crate::graded`) of the stored definition
+    /// `name`: a graded binder (linear `1`/erased `0`) in its type must be used
+    /// accordingly in its value. Ungraded (`ω`, the default) binders always pass, so
+    /// this only ever rejects code that actually opts into a grade annotation — it is
+    /// **not** run automatically by [`Kernel::add_definition`] (existing callers, and
+    /// the `graded` module's own unit tests, rely on `add_definition` alone never
+    /// enforcing usage). The surface layer (the `fun`/`forall` graded-binder syntax)
+    /// calls this explicitly after elaborating each proof-fragment declaration.
+    pub fn check_usage(&self, n: &str) -> Result<(), String> {
+        match self.env.get(n) {
+            Some(Decl::Def { ty, value, .. }) => crate::graded::check_usage_against(&self.env, value, ty)
+                .map_err(|e| format!("definition '{n}': usage discipline: {e}")),
+            _ => Ok(()), // axioms/inductives/etc. carry no value to check usage of.
+        }
+    }
+
     /// Infer the type of a closed term against the current environment.
     pub fn infer(&self, t: &Term) -> Result<Term, String> {
         reject_meta(t)?;

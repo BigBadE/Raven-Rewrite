@@ -210,6 +210,23 @@ fn proof_decl_names(
         .collect()
 }
 
+/// Check the **QTT usage discipline** ([`rv_kernel::Kernel::check_usage`]) of every
+/// proof-fragment declaration in `src` against `session`'s now-elaborated environment. A
+/// graded binder (`fun (x :1 T) => …`, `forall (x :0 T), …` — see `rv-syntax`'s
+/// `Parser::parse_binder_grade`) used off its declared discipline (linear used twice or
+/// never, erased used relevantly) is rejected here with a clear message. Ungraded (`ω`,
+/// the default) code is untouched — `check_usage` always passes it — so this never
+/// rejects a proof that doesn't opt into grades.
+fn check_graded_usage(session: &rv_kernel::verify::Session, src: &str) -> Result<(), String> {
+    let mut syms = rv_core::Symbols::new();
+    let Ok(module) = rv_syntax::parse(src, &mut syms) else { return Ok(()) };
+    let frags = rv_syntax::classify(&module);
+    for name in proof_decl_names(&module, &frags, &syms) {
+        session.k.check_usage(&name)?;
+    }
+    Ok(())
+}
+
 /// Find the [`Fragment`](rv_syntax::Fragment) of the top-level `fn` named `name`, if any.
 fn entry_fragment(
     module: &rv_syntax::ast::Module,
@@ -269,8 +286,11 @@ pub fn verify_rv(src: &str, entry: Option<&str>) -> Result<RavenReport, String> 
     // Commands (see `unify`). The kernel re-checks every term.
     let mut session = rv_kernel::verify::Session::new();
     rv_kernel::logic::declare_logic(&mut session.k)?;
+    session.k.install_quot()?;
+    session.k.install_trunc()?;
     run_unified(&mut session, RAVEN_PRELUDE).map_err(|e| format!("in the standard prelude: {e}"))?;
     run_unified(&mut session, src)?;
+    check_graded_usage(&session, src)?;
 
     // Grade-driven split (QTT erasure): partition the proof-fragment definitions into the
     // proofs that erase to nothing and the computational definitions that survive as
@@ -322,6 +342,8 @@ pub fn verify_rv(src: &str, entry: Option<&str>) -> Result<RavenReport, String> 
 pub fn vm_eval(src: &str, entry: &str) -> Result<Value, String> {
     let mut session = rv_kernel::verify::Session::new();
     rv_kernel::logic::declare_logic(&mut session.k)?;
+    session.k.install_quot()?;
+    session.k.install_trunc()?;
     run_unified(&mut session, RAVEN_PRELUDE).map_err(|e| format!("in the standard prelude: {e}"))?;
     run_unified(&mut session, src)?;
     erased_vm::run_entry_on_vm(session.k.env(), entry)
@@ -333,6 +355,8 @@ pub fn vm_eval(src: &str, entry: &str) -> Result<Value, String> {
 pub fn nbe_eval(src: &str, entry: &str) -> Result<Value, String> {
     let mut session = rv_kernel::verify::Session::new();
     rv_kernel::logic::declare_logic(&mut session.k)?;
+    session.k.install_quot()?;
+    session.k.install_trunc()?;
     run_unified(&mut session, RAVEN_PRELUDE).map_err(|e| format!("in the standard prelude: {e}"))?;
     run_unified(&mut session, src)?;
     let t = session.eval(entry)?;

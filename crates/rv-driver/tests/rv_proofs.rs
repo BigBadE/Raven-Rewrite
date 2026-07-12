@@ -197,3 +197,36 @@ fn mutual_trees() {
     let run = report.run.unwrap().unwrap();
     assert!(run.contains("Succ") && run.contains("Zero"), "expected a size-2 Nat, got {run}");
 }
+
+// --- Quotient types, propositional truncation, and QTT-graded binders reachable from
+// `.rv` surface syntax (`Quot`/`Trunc`'s dotted-name constants installed by the driver;
+// the `(x :1 T) -> U` / `fun (x :1 T) => …` graded-binder spelling checked by the
+// kernel's usage pass — see `crates/rv-kernel/src/graded.rs`). ---
+
+#[test]
+fn quotient_demo() {
+    check("quotient_demo.rv");
+}
+
+#[test]
+fn trunc_demo() {
+    check("trunc_demo.rv");
+}
+
+#[test]
+fn graded_demo() {
+    check("graded_demo.rv");
+}
+
+#[test]
+fn graded_binder_linear_violation_rejected() {
+    // A `:1` (linear) binder used twice must be a hard verification error, not silently
+    // accepted — the whole point of the usage discipline.
+    let path = format!(
+        "{}/../../examples/proofs/graded_demo_linear_violation.rv",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let src = std::fs::read_to_string(&path).unwrap();
+    let err = verify_rv(&src, None).unwrap_err();
+    assert!(err.contains("usage discipline"), "expected a usage-discipline error, got: {err}");
+}
