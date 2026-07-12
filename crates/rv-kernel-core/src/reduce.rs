@@ -186,7 +186,17 @@ impl<'e> Reducer<'e> {
                         // being interval-constant does for the regularity rule.
                         head = crate::kan::transp_pi_rule(dom, cod, a);
                     } else {
-                        break;
+                        // Parametrized-inductive filling (see `crate::kan`'s
+                        // "Phase 3.10" doc): matched *syntactically* (no `whnf`)
+                        // on both the family and the argument, mirroring every
+                        // other rule in this arm. Only fires when the family is
+                        // headed by a non-indexed user inductive with exactly one
+                        // varying parameter and the argument is a literal
+                        // fully-applied constructor of matching shape.
+                        match crate::kan::transp_inductive_rule(self.env, fam, a) {
+                            Some(built) => head = built,
+                            None => break,
+                        }
                     }
                 }
                 // `hcomp` (see `crate::kan`): the **trivial-system rule** — when `φ`
