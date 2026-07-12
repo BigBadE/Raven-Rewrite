@@ -1,0 +1,409 @@
+//! Surfacing `rv_kernel_core`'s cubical layer (`Path`/`PathP`, `PLam`/`PApp`, the
+//! interval, and the derived operators `refl`/`ap`/`transport`/`subst`/`J`/`trans`/
+//! `path_to_eq`/`eq_to_path`) as ordinary, by-name-callable `.rv` constants.
+//!
+//! ## Why definitions, not new surface grammar
+//!
+//! The cubical layer's building blocks (`Term::I`/`IZero`/`IOne`/`INeg`/`IMeet`/
+//! `IJoin`, `Term::PLam`/`PApp`/`PathP`, and the derived combinators in
+//! [`rv_kernel_core::cubical`]) are *terms*, not new binder forms the parser needs to
+//! know about. Every one of them can be packaged as an ordinary, fully-explicit
+//! **function** — `Path`, `PathP`, `plam`, `papp`, `i0`, `i1`, `ineg`, `imeet`,
+//! `ijoin`, `refl`, `ap`, `pfunext`, `transport`, `subst`, `J`, `trans`, `path_to_eq`,
+//! `eq_to_path` — installed once as [`rv_kernel_core::env::Decl::Def`] constants
+//! (exactly like [`crate::funext::install_funext`]) and then referenced from `.rv`
+//! source through the ordinary `Expr::Var`/`Expr::Call` path — no grammar change
+//! needed in `rv-syntax` at all. This mirrors how `Quot`/`Trunc`'s constants are
+//! already surfaced (installed once, then just names).
+//!
+//! Each constant's declared TYPE is checked well-formed, and its VALUE is
+//! type-checked against that type, by the ordinary [`rv_kernel_core::check::Checker`]
+//! at install time — nothing here is trusted beyond what `add_definition`/
+//! `install_funext` already are: a bug in this module can only make installation
+//! *fail*, never make an unsound term verify (the kernel re-checks everything).
+//!
+//! `plam`'s calling convention makes it usable from `.rv` without any interval-binder
+//! syntax: it takes an ordinary function `f : Π (i:I). A i` (written as a ordinary
+//! `fun i => …` in the proof fragment, since `I` is just another type) and produces
+//! `PathP A (f i0) (f i1)`; `papp p r` eliminates it. `Path A a b` is the
+//! non-dependent special case (`PathP` with a constant family).
+
+use rv_kernel_core::check::{Checker, LocalCtx};
+use rv_kernel_core::cubical;
+use rv_kernel_core::env::{Decl, Env};
+use rv_kernel_core::level::Level;
+use rv_kernel_core::term::{name, Term};
+
+/// A tiny named-variable context for building deep terms by name instead of by
+/// hand-counted de Bruijn indices — identical in spirit to [`crate::funext`]'s
+/// private `Ctx` helper, duplicated here (small enough, and keeps this module
+/// self-contained).
+#[derive(Clone)]
+struct Ctx(Vec<&'static str>);
+impl Ctx {
+    fn v(&self, n: &str) -> Term {
+        let pos = self.0.iter().rposition(|&x| x == n).unwrap_or_else(|| panic!("unbound '{n}'"));
+        Term::Var(self.0.len() - 1 - pos)
+    }
+    fn push(&self, n: &'static str) -> Ctx {
+        let mut v = self.0.clone();
+        v.push(n);
+        Ctx(v)
+    }
+}
+fn lam(ctx: &Ctx, dom: Term, n: &'static str, f: impl FnOnce(&Ctx) -> Term) -> Term {
+    Term::lam(dom, f(&ctx.push(n)))
+}
+fn pi(ctx: &Ctx, dom: Term, n: &'static str, f: impl FnOnce(&Ctx) -> Term) -> Term {
+    Term::pi(dom, f(&ctx.push(n)))
+}
+
+/// `Eq.{lvl} T x y`.
+fn eq_app(lvl: Level, t: Term, x: Term, y: Term) -> Term {
+    Term::apps(Term::cnst(name("Eq"), vec![lvl]), [t, x, y])
+}
+
+/// Install one constant, type-checking its value against its type first.
+fn install(env: &mut Env, n: &str, num_levels: u32, ty: Term, value: Term) -> Result<(), String> {
+    if env.contains(n) {
+        return Err(format!("'{n}' is already declared"));
+    }
+    {
+        let chk = Checker::new(env);
+        chk.infer_sort(&mut LocalCtx::new(), &ty).map_err(|e| format!("{n}: type is not well-formed: {e}"))?;
+        chk.check(&mut LocalCtx::new(), &value, &ty).map_err(|e| format!("{n}: value does not match type: {e}"))?;
+    }
+    env.insert(name(n), Decl::Def { num_levels, ty, value })
+}
+
+/// Install the whole surfaced cubical layer: `i0`/`i1`/`ineg`/`imeet`/`ijoin`, `Path`/
+/// `PathP`/`plam`/`papp`, and the derived operators `refl`/`ap`/`pfunext`/
+/// `transport`/`subst`/`J`/`trans`/`path_to_eq`/`eq_to_path`. Requires `Eq` (the
+/// inductive equality) to already be declared — only `path_to_eq`/`eq_to_path` need
+/// it, but it is required up front for a single, simple precondition.
+pub fn install_cubical(env: &mut Env) -> Result<(), String> {
+    if !env.contains("Eq") {
+        return Err("the surfaced cubical layer requires 'Eq' to already be declared".to_string());
+    }
+
+    let root = Ctx(vec![]);
+
+    // NOTE: `i0`/`i1`/`ineg`/`imeet`/`ijoin`/`Path`/`PathP`/`plam`/`papp` are **not**
+    // installed here as ordinary `Decl::Def` constants: `I` (the interval) is
+    // deliberately *not* a fibrant type (see `rv_kernel_core::check::Checker::infer`'s
+    // `Term::I` arm — `infer_sort(I)` errors on purpose, so `I` can never be an
+    // ordinary `Π`-domain). Those forms are instead genuine surface syntax, handled
+    // directly by [`crate::elab2::Infer`] (see `crate::surface::Expr::{IZero,IOne,
+    // INeg,IMeet,IJoin,PLam,PApp,PathTy,PathPTy}`), which manipulates the interval the
+    // same way `Checker` itself does — via `LocalCtx`, never via `Term::Pi`.
+
+    // ---- Path.{u} : Pi (A:Sort u) (a b:A). Sort u ------------------------------
+    {
+        let u = Level::param(0);
+        let ty = pi(&root, Term::Sort(u.clone()), "A", |c1| {
+            pi(c1, c1.v("A"), "a", |c2| pi(c2, c2.v("A"), "b", |_| Term::Sort(u.clone())))
+        });
+        let value = lam(&root, Term::Sort(u.clone()), "A", |c1| {
+            lam(c1, c1.v("A"), "a", |c2| lam(c2, c2.v("A"), "b", |c3| Term::path(c3.v("A"), c3.v("a"), c3.v("b"))))
+        });
+        install(env, "Path", 1, ty, value)?;
+    }
+
+    // ---- refl.{u} : Pi (A:Sort u)(a:A). Path A a a -----------------------------
+    {
+        let u = Level::param(0);
+        let ty = pi(&root, Term::Sort(u.clone()), "A", |c1| {
+            pi(c1, c1.v("A"), "a", |c2| Term::path(c2.v("A"), c2.v("a"), c2.v("a")))
+        });
+        let value = lam(&root, Term::Sort(u), "A", |c1| lam(c1, c1.v("A"), "a", |c2| cubical::refl(&c2.v("a"))));
+        install(env, "refl", 1, ty, value)?;
+    }
+
+    // ---- ap.{u,v} : Pi (A:Sort u)(B:Sort v)(a b:A)(f:A->B)(p: Path A a b).
+    //                    Path B (f a) (f b) --------------------------------------
+    {
+        let u = Level::param(0);
+        let v = Level::param(1);
+        let ty = pi(&root, Term::Sort(u.clone()), "A", |c1| {
+            pi(c1, Term::Sort(v.clone()), "B", |c2| {
+                pi(c2, c2.v("A"), "a", |c3| {
+                    pi(c3, c3.v("A"), "b", |c4| {
+                        let ab = Term::arrow(c4.v("A"), c4.v("B"));
+                        pi(c4, ab, "f", |c5| {
+                            let path_ab = Term::path(c5.v("A"), c5.v("a"), c5.v("b"));
+                            pi(c5, path_ab, "p", |c6| {
+                                Term::path(c6.v("B"), Term::app(c6.v("f"), c6.v("a")), Term::app(c6.v("f"), c6.v("b")))
+                            })
+                        })
+                    })
+                })
+            })
+        });
+        let value = lam(&root, Term::Sort(u), "A", |c1| {
+            lam(c1, Term::Sort(v), "B", |c2| {
+                lam(c2, c2.v("A"), "a", |c3| {
+                    lam(c3, c3.v("A"), "b", |c4| {
+                        let ab = Term::arrow(c4.v("A"), c4.v("B"));
+                        lam(c4, ab, "f", |c5| {
+                            let path_ab = Term::path(c5.v("A"), c5.v("a"), c5.v("b"));
+                            lam(c5, path_ab, "p", |c6| cubical::ap(&c6.v("f"), &c6.v("p")))
+                        })
+                    })
+                })
+            })
+        });
+        install(env, "ap", 2, ty, value)?;
+    }
+
+    // ---- pfunext.{u,v} : dependent function extensionality, direct cubical proof --
+    // Pi (A:Sort u)(B:A->Sort v)(f g: Pi x:A. B x)
+    //    (h: Pi x:A. Path (B x) (f x) (g x)). Path (Pi x:A. B x) f g
+    {
+        let u = Level::param(0);
+        let v = Level::param(1);
+        // `pix(c) := Pi (x:A). B x`, rebuilt fresh at whichever context `c` is passed
+        // (rather than cloning one precomputed term and hand-lifting it past a varying
+        // number of intervening binders — `Ctx::v`'s by-name lookup makes this the
+        // less error-prone way to reuse a subterm across several different depths).
+        let pix = |c: &Ctx| pi(c, c.v("A"), "x", |c2| Term::app(c2.v("B"), c2.v("x")));
+        let ty = pi(&root, Term::Sort(u.clone()), "A", |c1| {
+            let bty = Term::arrow(c1.v("A"), Term::Sort(v.clone()));
+            pi(c1, bty, "B", |c2| {
+                let ft = pix(c2);
+                pi(c2, ft, "f", |c3| {
+                    let gt = pix(c3);
+                    pi(c3, gt, "g", |c4| {
+                        let hty = pi(c4, c4.v("A"), "x", |c5| {
+                            Term::path(
+                                Term::app(c5.v("B"), c5.v("x")),
+                                Term::app(c5.v("f"), c5.v("x")),
+                                Term::app(c5.v("g"), c5.v("x")),
+                            )
+                        });
+                        pi(c4, hty, "h", |c5| Term::path(pix(c5), c5.v("f"), c5.v("g")))
+                    })
+                })
+            })
+        });
+        let value = lam(&root, Term::Sort(u), "A", |c1| {
+            let bty = Term::arrow(c1.v("A"), Term::Sort(v));
+            lam(c1, bty, "B", |c2| {
+                let ft = pix(c2);
+                lam(c2, ft, "f", |c3| {
+                    let gt = pix(c3);
+                    lam(c3, gt, "g", |c4| {
+                        let hty = pi(c4, c4.v("A"), "x", |c5| {
+                            Term::path(
+                                Term::app(c5.v("B"), c5.v("x")),
+                                Term::app(c5.v("f"), c5.v("x")),
+                                Term::app(c5.v("g"), c5.v("x")),
+                            )
+                        });
+                        lam(c4, hty, "h", |c5| cubical::funext(&c5.v("A"), &c5.v("h")))
+                    })
+                })
+            })
+        });
+        install(env, "pfunext", 2, ty, value)?;
+    }
+
+    // ---- transport.{u} : Pi (A B:Sort u)(p:Path (Sort u) A B)(a:A). B ----------
+    {
+        let u = Level::param(0);
+        let ty = pi(&root, Term::Sort(u.clone()), "A", |c1| {
+            pi(c1, Term::Sort(u.clone()), "B", |c2| {
+                let path_ty = Term::path(Term::Sort(u.clone()), c2.v("A"), c2.v("B"));
+                pi(c2, path_ty, "p", |c3| pi(c3, c3.v("A"), "a", |c4| c4.v("B")))
+            })
+        });
+        let value = lam(&root, Term::Sort(u.clone()), "A", |c1| {
+            lam(c1, Term::Sort(u.clone()), "B", |c2| {
+                let path_ty = Term::path(Term::Sort(u.clone()), c2.v("A"), c2.v("B"));
+                lam(c2, path_ty, "p", |c3| lam(c3, c3.v("A"), "a", |c4| cubical::transport(&c4.v("p"), &c4.v("a"))))
+            })
+        });
+        install(env, "transport", 1, ty, value)?;
+    }
+
+    // ---- psubst.{u,v} : Pi (A:Sort u)(P:A->Sort v)(a b:A)(p:Path A a b)(pa: P a). P b
+    {
+        let u = Level::param(0);
+        let v = Level::param(1);
+        let ty = pi(&root, Term::Sort(u.clone()), "A", |c1| {
+            let pty = Term::arrow(c1.v("A"), Term::Sort(v.clone()));
+            pi(c1, pty, "P", |c2| {
+                pi(c2, c2.v("A"), "a", |c3| {
+                    pi(c3, c3.v("A"), "b", |c4| {
+                        let path_ab = Term::path(c4.v("A"), c4.v("a"), c4.v("b"));
+                        pi(c4, path_ab, "p", |c5| {
+                            let pa = Term::app(c5.v("P"), c5.v("a"));
+                            pi(c5, pa, "pa", |c6| Term::app(c6.v("P"), c6.v("b")))
+                        })
+                    })
+                })
+            })
+        });
+        let value = lam(&root, Term::Sort(u), "A", |c1| {
+            let pty = Term::arrow(c1.v("A"), Term::Sort(v));
+            lam(c1, pty, "P", |c2| {
+                lam(c2, c2.v("A"), "a", |c3| {
+                    lam(c3, c3.v("A"), "b", |c4| {
+                        let path_ab = Term::path(c4.v("A"), c4.v("a"), c4.v("b"));
+                        lam(c4, path_ab, "p", |c5| {
+                            let pa = Term::app(c5.v("P"), c5.v("a"));
+                            lam(c5, pa, "pa", |c6| cubical::subst(&c6.v("P"), &c6.v("p"), &c6.v("pa")))
+                        })
+                    })
+                })
+            })
+        });
+        install(env, "psubst", 2, ty, value)?;
+    }
+
+    // ---- J.{u,v} : Pi (A:Sort u)(a:A)(C: Pi(x:A). Path A a x -> Sort v)
+    //                   (d: C a (refl a))(x:A)(p: Path A a x). C x p ------------
+    {
+        let u = Level::param(0);
+        let v = Level::param(1);
+        let cty = |c: &Ctx| {
+            pi(c, c.v("A"), "x", |c2| {
+                let path_ax = Term::path(c2.v("A"), c2.v("a"), c2.v("x"));
+                Term::arrow(path_ax, Term::Sort(v.clone()))
+            })
+        };
+        let ty = pi(&root, Term::Sort(u.clone()), "A", |c1| {
+            pi(c1, c1.v("A"), "a", |c2| {
+                let ct = cty(c2);
+                pi(c2, ct, "C", |c3| {
+                    let refl_a = cubical::refl(&c3.v("a"));
+                    let d_ty = Term::apps(c3.v("C"), [c3.v("a"), refl_a]);
+                    pi(c3, d_ty, "d", |c4| {
+                        pi(c4, c4.v("A"), "x", |c5| {
+                            let path_ax = Term::path(c5.v("A"), c5.v("a"), c5.v("x"));
+                            pi(c5, path_ax, "p", |c6| {
+                                Term::apps(c6.v("C"), [c6.v("x"), c6.v("p")])
+                            })
+                        })
+                    })
+                })
+            })
+        });
+        let value = lam(&root, Term::Sort(u), "A", |c1| {
+            lam(c1, c1.v("A"), "a", |c2| {
+                let ct = cty(c2);
+                lam(c2, ct, "C", |c3| {
+                    let refl_a = cubical::refl(&c3.v("a"));
+                    let d_ty = Term::apps(c3.v("C"), [c3.v("a"), refl_a]);
+                    lam(c3, d_ty, "d", |c4| {
+                        lam(c4, c4.v("A"), "x", |c5| {
+                            let path_ax = Term::path(c5.v("A"), c5.v("a"), c5.v("x"));
+                            lam(c5, path_ax, "p", |c6| cubical::j(&c6.v("C"), &c6.v("d"), &c6.v("p")))
+                        })
+                    })
+                })
+            })
+        });
+        install(env, "J", 2, ty, value)?;
+    }
+
+    // ---- ptrans.{u} : Pi (A:Sort u)(a b c:A)(p: Path A a b)(q: Path A b c). Path A a c
+    // Derived via `J`, standard proof: eliminate `p` with motive
+    // `C := \(y:A)(_:Path A a y). Path A y c -> Path A a c`, base case `d := \(q:Path A
+    // a c). q`, giving `J .. p : Path A b c -> Path A a c`; apply to `q`.
+    {
+        let u = Level::param(0);
+        let ty = pi(&root, Term::Sort(u.clone()), "A", |c1| {
+            pi(c1, c1.v("A"), "a", |c2| {
+                pi(c2, c2.v("A"), "b", |c3| {
+                    pi(c3, c3.v("A"), "c", |c4| {
+                        let path_ab = Term::path(c4.v("A"), c4.v("a"), c4.v("b"));
+                        pi(c4, path_ab, "p", |c5| {
+                            let path_bc = Term::path(c5.v("A"), c5.v("b"), c5.v("c"));
+                            pi(c5, path_bc, "q", |c6| Term::path(c6.v("A"), c6.v("a"), c6.v("c")))
+                        })
+                    })
+                })
+            })
+        });
+        let value = lam(&root, Term::Sort(u), "A", |c1| {
+            lam(c1, c1.v("A"), "a", |c2| {
+                lam(c2, c2.v("A"), "b", |c3| {
+                    lam(c3, c3.v("A"), "c", |c4| {
+                        let path_ab = Term::path(c4.v("A"), c4.v("a"), c4.v("b"));
+                        lam(c4, path_ab, "p", |c5| {
+                            let path_bc = Term::path(c5.v("A"), c5.v("b"), c5.v("c"));
+                            lam(c5, path_bc, "q", |c6| {
+                                // motive := \(y:A)(_:Path A a y). Path A y c -> Path A a c
+                                let a = c6.v("a");
+                                let cc = c6.v("c");
+                                let motive = lam(c6, c6.v("A"), "y", |m1| {
+                                    let path_ay = Term::path(m1.v("A"), a.clone().lift(1, 0), m1.v("y"));
+                                    lam(m1, path_ay, "_h", |m2| {
+                                        Term::arrow(
+                                            Term::path(m2.v("A"), m2.v("y"), cc.clone().lift(2, 0)),
+                                            Term::path(m2.v("A"), a.clone().lift(2, 0), cc.clone().lift(2, 0)),
+                                        )
+                                    })
+                                });
+                                // d : Path A a c -> Path A a c, the identity.
+                                let d = lam(c6, Term::path(c6.v("A"), c6.v("a"), c6.v("c")), "z", |z| z.v("z"));
+                                Term::app(cubical::j(&motive, &d, &c6.v("p")), c6.v("q"))
+                            })
+                        })
+                    })
+                })
+            })
+        });
+        install(env, "ptrans", 1, ty, value)?;
+    }
+
+    // ---- path_to_eq.{u} : Pi (A:Sort u)(a b:A)(p:Path A a b). Eq A a b ---------
+    {
+        let u = Level::param(0);
+        let ty = pi(&root, Term::Sort(u.clone()), "A", |c1| {
+            pi(c1, c1.v("A"), "a", |c2| {
+                pi(c2, c2.v("A"), "b", |c3| {
+                    let path_ab = Term::path(c3.v("A"), c3.v("a"), c3.v("b"));
+                    pi(c3, path_ab, "p", |c4| eq_app(u.clone(), c4.v("A"), c4.v("a"), c4.v("b")))
+                })
+            })
+        });
+        let value = lam(&root, Term::Sort(u.clone()), "A", |c1| {
+            lam(c1, c1.v("A"), "a", |c2| {
+                lam(c2, c2.v("A"), "b", |c3| {
+                    let path_ab = Term::path(c3.v("A"), c3.v("a"), c3.v("b"));
+                    lam(c3, path_ab, "p", |c4| {
+                        cubical::path_to_eq(u.clone(), &c4.v("A"), &c4.v("a"), &c4.v("p"))
+                    })
+                })
+            })
+        });
+        install(env, "path_to_eq", 1, ty, value)?;
+    }
+
+    // ---- eq_to_path.{u} : Pi (A:Sort u)(a b:A)(h:Eq A a b). Path A a b ---------
+    {
+        let u = Level::param(0);
+        let ty = pi(&root, Term::Sort(u.clone()), "A", |c1| {
+            pi(c1, c1.v("A"), "a", |c2| {
+                pi(c2, c2.v("A"), "b", |c3| {
+                    let eq_ab = eq_app(u.clone(), c3.v("A"), c3.v("a"), c3.v("b"));
+                    pi(c3, eq_ab, "h", |c4| Term::path(c4.v("A"), c4.v("a"), c4.v("b")))
+                })
+            })
+        });
+        let value = lam(&root, Term::Sort(u.clone()), "A", |c1| {
+            lam(c1, c1.v("A"), "a", |c2| {
+                lam(c2, c2.v("A"), "b", |c3| {
+                    let eq_ab = eq_app(u.clone(), c3.v("A"), c3.v("a"), c3.v("b"));
+                    lam(c3, eq_ab, "h", |c4| {
+                        cubical::eq_to_path(u.clone(), &c4.v("A"), &c4.v("a"), &c4.v("b"), &c4.v("h"))
+                    })
+                })
+            })
+        });
+        install(env, "eq_to_path", 1, ty, value)?;
+    }
+
+    Ok(())
+}

@@ -343,6 +343,46 @@ fn unify_nf(
             c2.push((**d1).clone());
             unify_child(env, metas, &c2, b1, b2, gen0)
         }
+        // The cubical layer: `PathP`'s family lives under one extra (interval)
+        // binder — exactly like `Pi`/`Lam`'s codomain/body — so it recurses the
+        // same way, plus the two (binder-free) endpoints. `PLam`'s body likewise
+        // lives under one extra interval binder. `I` itself has no checkable
+        // members other than the two literal endpoints/a bound variable (see
+        // `rv_kernel_core::check::Checker::infer`'s `Term::I` arm), so pushing it
+        // as a "domain" here (mirroring `Pi`/`Lam`) is just bookkeeping — nothing
+        // ever asks for its sort.
+        (Term::PathP(f1, a01, a11), Term::PathP(f2, a02, a12)) => {
+            let mut c2 = ctx.clone();
+            c2.push(rv_kernel_core::term::Term::I);
+            unify_child(env, metas, &c2, f1, f2, gen0)?;
+            unify_child(env, metas, ctx, a01, a02, gen0)?;
+            unify_child(env, metas, ctx, a11, a12, gen0)
+        }
+        (Term::PLam(b1), Term::PLam(b2)) => {
+            let mut c2 = ctx.clone();
+            c2.push(rv_kernel_core::term::Term::I);
+            unify_child(env, metas, &c2, b1, b2, gen0)
+        }
+        (Term::PApp(p1, r1), Term::PApp(p2, r2)) => {
+            unify_child(env, metas, ctx, p1, p2, gen0)?;
+            unify_child(env, metas, ctx, r1, r2, gen0)
+        }
+        // Interval expressions: compared up to the De Morgan algebra laws (the
+        // same routing point `rv_kernel_core::check::Checker::compare`/
+        // `rv_kernel_core::reduce::Reducer::is_def_eq` use), not structurally —
+        // `i_meet(r,s)` and `i_meet(s,r)` are the same interval point, for
+        // instance. None of these ever contain a metavariable in a well-typed
+        // term (an interval expression's only free variables are bound interval
+        // variables), so this is a plain equality check, no `Metas` solving.
+        (Term::I, Term::I) => Ok(()),
+        (Term::IZero, Term::IZero) | (Term::IOne, Term::IOne) => Ok(()),
+        (a, b) if rv_kernel_core::cubical::is_interval_expr(a) && rv_kernel_core::cubical::is_interval_expr(b) => {
+            if rv_kernel_core::cubical::interval_eq(a, b) {
+                Ok(())
+            } else {
+                Err(format!("cannot unify interval expressions\n  {}\nwith\n  {}", a.pretty(), b.pretty()))
+            }
+        }
         (Term::App(..), Term::App(..)) => {
             // Both heads are now rigid (flex heads were intercepted above).
             let (h1, a1) = a.unfold_apps();
