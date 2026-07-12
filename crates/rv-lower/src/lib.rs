@@ -837,6 +837,48 @@ struct Holder { o: Option<i64> }";
     }
 
     #[test]
+    fn refinement_alias_parameter_becomes_a_precondition() {
+        // A parameter typed as a refinement alias carries the alias predicate as
+        // an implicit precondition: the callee may assume it, and callers must
+        // establish it. Here `d: NonZero` must contribute `d != 0` to `pre`, so
+        // `pre` is no longer trivially `True`.
+        let src = "\
+type NonZero = i64 where self != 0;
+fn safe_div(a: i64, d: NonZero) -> i64 { return a / d; }";
+        let (prog, mut syms) = lower_src(src);
+        let f = prog
+            .funcs
+            .iter()
+            .find(|f| f.name == syms.intern("safe_div"))
+            .expect("safe_div");
+        assert_ne!(
+            f.pre,
+            rv_core::Prop::True,
+            "the `NonZero` parameter alias should contribute a precondition"
+        );
+    }
+
+    #[test]
+    fn refinement_alias_return_becomes_a_postcondition() {
+        // A refinement alias in return position is postcondition sugar: the alias
+        // predicate over `result` must appear in `post`.
+        let src = "\
+type Pos = i64 where self > 0;
+fn one() -> Pos { return 1; }";
+        let (prog, mut syms) = lower_src(src);
+        let f = prog
+            .funcs
+            .iter()
+            .find(|f| f.name == syms.intern("one"))
+            .expect("one");
+        assert_ne!(
+            f.post,
+            rv_core::Prop::True,
+            "the `Pos` return alias should contribute a postcondition"
+        );
+    }
+
+    #[test]
     fn desugars_inherent_method_call_to_mangled_call() {
         // (c) `impl Point { fn sum(self) -> i64 {..} }` + `p.sum()` desugars to a
         // Call of the mangled function `Point::sum` with the receiver as first arg.

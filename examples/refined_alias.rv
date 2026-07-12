@@ -1,0 +1,26 @@
+// Refined type aliases: `type T = U where p` is lowered to a runtime base type
+// `U` plus a predicate `p` (written over the reserved `self`) that PARTICIPATES
+// in verification exactly like a parameter refinement `x: U where p`.
+//
+// Here `NonZero = i64 where self != 0`:
+//   * `let k: NonZero = 5;`  checks `5 != 0` at the binding site, then assumes it.
+//   * `d: NonZero` on `safe_div` becomes the implicit precondition `d != 0`, so
+//     the body's `a / d` discharges its division-by-zero obligation, and every
+//     caller must prove its argument is non-zero.
+//
+// Flipping `k` to `0` makes the binding-site check fail (see `alias_bad.rv` in
+// the tests); with `5` the whole program verifies.
+//
+// `rvc examples/refined_alias.rv --run` verifies and runs main() = Int(2).
+
+type NonZero = i64 where self != 0;
+
+fn safe_div(a: i64, d: NonZero) -> i64 {
+  // No explicit `requires d != 0;` — the `NonZero` alias supplies it.
+  return a / d;
+}
+
+fn main() -> i64 {
+  let k: NonZero = 5;
+  return safe_div(10, k);
+}
