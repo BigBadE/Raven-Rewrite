@@ -133,7 +133,10 @@ pub fn elaborate(prog: Program<Parsed>, syms: &Symbols) -> Result<Elaborated, St
             syms: &mut syms,
             obligations: &mut obligations,
         };
-        vc.run(low);
+        // A malformed CFG (e.g. a terminator targeting a non-existent block, which
+        // a buggy lowering could hand us) is surfaced as a clean `Err` rather than a
+        // panic deep inside symbolic execution.
+        vc.run(low)?;
     }
 
     // Carry the (phase-independent) type definitions through to the Lowerable
@@ -730,9 +733,22 @@ fn resolve_proj_ty(base: &Ty, proj: &[Proj], types: &HashMap<Sym, TypeDef>) -> T
 /// Conjoin the range fact `w.min <= term <= w.max` for a sized-integer value
 /// onto a path. Used to record that an `IntN` parameter / result is in range.
 fn range_assumption(path: Prop, term: &Term, w: rv_core::IntTy) -> Prop {
-    let lo = Prop::Holds(Term::bin(BinOp::Ge, term.clone(), Term::Int(w.min() as i64)));
-    let hi = Prop::Holds(Term::bin(BinOp::Le, term.clone(), Term::Int(w.max() as i64)));
-    path.and(lo).and(hi)
+    // An assumption must be *weaker-or-equal* to the truth: only conjoin a bound
+    // when the width's true bound is exactly representable as an `i64` (the kernel
+    // `Term::Int` carrier). A bound outside the `i64` range — `u64::MAX`, and all
+    // of `i128`/`u128` — is DROPPED rather than truncated. Truncating (the previous
+    // `w.max() as i64`) turned `u64::MAX` into `-1`, so a `u64` parameter would
+    // have carried the *false* assumption `param <= -1`, poisoning the path (from
+    // which anything is provable). Dropping the unrepresentable side keeps the
+    // assumption sound (merely weaker).
+    let mut out = path;
+    if let Some(lo) = w.assume_lo_i64() {
+        out = out.and(Prop::Holds(Term::bin(BinOp::Ge, term.clone(), Term::Int(lo))));
+    }
+    if let Some(hi) = w.assume_hi_i64() {
+        out = out.and(Prop::Holds(Term::bin(BinOp::Le, term.clone(), Term::Int(hi))));
+    }
+    out
 }
 
 /// Whether a type can take part in integer arithmetic: the default `Int`, a
@@ -913,7 +929,11 @@ struct VcGen<'a> {
 
 impl VcGen<'_> {
     /// Run symbolic execution from the entry block.
-    fn run(&mut self, low: &Function<Lowerable>) {
+    ///
+    /// Returns `Err` if the CFG is malformed (a terminator, or the entry, names a
+    /// block id that does not exist). On a well-formed CFG this always returns
+    /// `Ok(())` and is behaviourally identical to plain forward execution.
+    fn run(&mut self, low: &Function<Lowerable>) -> Result<(), String> {
         // Initialize parameters to their named symbolic variables. A sized-integer
         // (`IntN`) parameter additionally carries the implicit fact that its value
         // is within the type's range — the invariant that makes width-checked
@@ -937,23 +957,32 @@ impl VcGen<'_> {
             loop_headers: HashMap::new(),
             points_to: HashMap::new(),
         };
-        self.exec_block(self.f.entry, state);
+        self.exec_block(self.f.entry, state)
     }
 
     /// Look up a block by id (CFGs here are small; linear search is fine).
-    fn block(&self, id: BlockId) -> &Block<Parsed> {
-        self.f.blocks.iter().find(|b| b.id == id).expect("dangling block id")
+    ///
+    /// Returns `Err` for a dangling id (a reference to a block not present in the
+    /// function) so a malformed CFG becomes a clean rejection rather than a panic.
+    fn block(&self, id: BlockId) -> Result<&Block<Parsed>, String> {
+        self.f
+            .blocks
+            .iter()
+            .find(|b| b.id == id)
+            .ok_or_else(|| format!("malformed CFG: dangling block id {}", id.0))
     }
 
     /// Symbolically execute a block and recurse into its successors.
-    fn exec_block(&mut self, id: BlockId, mut state: State) {
+    ///
+    /// Returns `Err` if this block or any block reachable from it names a dangling
+    /// id; `Ok(())` for any well-formed CFG.
+    fn exec_block(&mut self, id: BlockId, mut state: State) -> Result<(), String> {
         // A block whose first statements are `Invariant`s is a loop header. The
         // FIRST time we reach it on this path we switch to the invariant scheme
         // (entry check + havoc/assume + one body pass) instead of plain forward
         // execution. The scheme marks the header visited so the back-edge stops.
-        if !state.visited.contains(&id) && self.loop_invariants(id).is_some() {
-            self.exec_loop_header(id, state);
-            return;
+        if !state.visited.contains(&id) && self.loop_invariants(id)?.is_some() {
+            return self.exec_loop_header(id, state);
         }
 
         // Loop guard: a back-edge into an already-visited block stops this path.
@@ -968,25 +997,23 @@ impl VcGen<'_> {
                     self.emit(state.path.clone(), goal, "loop invariant preserved");
                 }
             }
-            return;
+            return Ok(());
         }
         // Clone the block out so we don't hold a borrow of `self` across the
         // `&mut self` statement/terminator calls below.
-        let blk_idx = self.f.blocks.iter().position(|b| b.id == id).expect("dangling block id");
-
-        let stmts = self.f.blocks[blk_idx].stmts.clone();
+        let stmts = self.block(id)?.stmts.clone();
         for stmt in &stmts {
             self.exec_stmt(stmt, &mut state);
         }
 
-        self.exec_terminator(id, state);
+        self.exec_terminator(id, state)
     }
 
     /// Execute a block's terminator, recursing into successors. Factored out so the
     /// loop-header path can reuse it after the havoc/assume setup.
-    fn exec_terminator(&mut self, id: BlockId, state: State) {
+    fn exec_terminator(&mut self, id: BlockId, state: State) -> Result<(), String> {
         // Re-borrow the terminator (immutably) via a clone of what we need.
-        match self.block(id).term {
+        match self.block(id)?.term {
             Terminator::Goto(b) => self.exec_block(b, state),
             Terminator::Branch { ref cond, then_blk, else_blk } => {
                 let cond = cond.clone();
@@ -994,11 +1021,11 @@ impl VcGen<'_> {
                 // then-branch assumes cond, else-branch assumes !cond.
                 let mut then_state = state.clone();
                 then_state.path = then_state.path.and(Prop::Holds(c.clone()));
-                self.exec_block(then_blk, then_state);
+                self.exec_block(then_blk, then_state)?;
 
                 let mut else_state = state;
                 else_state.path = else_state.path.and(Prop::Holds(Term::un(UnOp::Not, c)));
-                self.exec_block(else_blk, else_state);
+                self.exec_block(else_blk, else_state)
             }
             Terminator::Match { ref scrutinee, ref arms, otherwise } => {
                 // Explore each arm's target as a separate path. The kernel `Term`
@@ -1009,11 +1036,12 @@ impl VcGen<'_> {
                 let arms = arms.clone();
                 let _ = self.term_of_operand(&scrutinee, &state);
                 for arm in &arms {
-                    self.exec_block(arm.target, state.clone());
+                    self.exec_block(arm.target, state.clone())?;
                 }
                 if let Some(other) = otherwise {
-                    self.exec_block(other, state);
+                    self.exec_block(other, state)?;
                 }
+                Ok(())
             }
             Terminator::Return(ref op) => {
                 let op = op.clone();
@@ -1021,6 +1049,7 @@ impl VcGen<'_> {
                 let ret_term = self.term_of_operand(&op, &state);
                 let goal = self.subst_result(&self.f.post, &ret_term);
                 self.emit(state.path.clone(), goal, "postcondition");
+                Ok(())
             }
             // PANIC: a `panic` ABORTS — this is a DIVERGING path. It has no
             // successors and does not return, so the function's postcondition need
@@ -1031,29 +1060,26 @@ impl VcGen<'_> {
             // nothing for the postcondition to constrain. NOTE: we are NOT proving
             // panic-freedom — reaching a panic is *permitted* and just aborts.
             // Proving panics unreachable would be a strictly stronger future check.
-            Terminator::Panic => { /* diverges: stop this path, emit nothing */ }
+            Terminator::Panic => Ok(()), // diverges: stop this path, emit nothing
             Terminator::Drop { next, .. } => self.exec_block(next, state),
         }
     }
 
     /// The leading `Invariant` propositions of a block, if it is a loop header.
-    /// Returns `None` for any block that does not start with an `Invariant`.
-    fn loop_invariants(&self, id: BlockId) -> Option<Vec<Prop>> {
-        let blk = self.block(id);
-        let invs: Vec<Prop> = blk
+    ///
+    /// `Ok(None)` for any (existing) block that does not start with an `Invariant`;
+    /// `Err` if `id` is a dangling block reference.
+    fn loop_invariants(&self, id: BlockId) -> Result<Option<Vec<Prop>>, String> {
+        let invs: Vec<Prop> = self
+            .block(id)?
             .stmts
             .iter()
-            .take_while(|s| matches!(s, Stmt::Invariant(_)))
-            .map(|s| match s {
-                Stmt::Invariant(p) => p.clone(),
-                _ => unreachable!(),
+            .map_while(|s| match s {
+                Stmt::Invariant(p) => Some(p.clone()),
+                _ => None,
             })
             .collect();
-        if invs.is_empty() {
-            None
-        } else {
-            Some(invs)
-        }
+        Ok(if invs.is_empty() { None } else { Some(invs) })
     }
 
     /// Loop-invariant reasoning for a header block carrying `Stmt::Invariant`s.
@@ -1081,8 +1107,14 @@ impl VcGen<'_> {
     ///     without an intervening Return". Assigned-local detection is syntactic.
     ///   * Only a single symbolic iteration is explored; nested loops are handled
     ///     by recursion (an inner header re-triggers this scheme).
-    fn exec_loop_header(&mut self, header: BlockId, state: State) {
-        let invs = self.loop_invariants(header).expect("called on a loop header");
+    fn exec_loop_header(&mut self, header: BlockId, state: State) -> Result<(), String> {
+        // The caller only reaches here when `loop_invariants(header)` was `Some`,
+        // but re-derive it fallibly rather than assuming (no library panics on a
+        // malformed CFG). An empty result would mean the header stopped being a
+        // header between calls, which cannot happen on immutable IR.
+        let invs = self.loop_invariants(header)?.ok_or_else(|| {
+            format!("internal error: exec_loop_header on non-header block {}", header.0)
+        })?;
 
         // (a) ENTRY: each invariant must hold on the way in.
         for inv in &invs {
@@ -1092,7 +1124,7 @@ impl VcGen<'_> {
 
         // Compute the loop body (header + blocks reachable before a Return) and the
         // set of locals it assigns.
-        let body = self.loop_body_blocks(header);
+        let body = self.loop_body_blocks(header)?;
         let assigned = self.assigned_locals(&body);
 
         // (b) HAVOC: fresh var for every assigned local; reset the path to True and
@@ -1116,11 +1148,11 @@ impl VcGen<'_> {
 
         // (c) Execute the header's statements (skipping the invariants, which are
         // no-ops in `exec_stmt`) and then its terminator, exploring the body once.
-        let stmts = self.block(header).stmts.clone();
+        let stmts = self.block(header)?.stmts.clone();
         for stmt in &stmts {
             self.exec_stmt(stmt, &mut body_state);
         }
-        self.exec_terminator(header, body_state);
+        self.exec_terminator(header, body_state)
     }
 
     /// Blocks belonging to a loop body: the header plus everything reachable from
@@ -1128,14 +1160,14 @@ impl VcGen<'_> {
     /// bounded by the function's blocks. We approximate with forward reachability
     /// from the header that does not pass through a `Return`, which is adequate for
     /// the structured loops this slice produces.
-    fn loop_body_blocks(&self, header: BlockId) -> HashSet<BlockId> {
+    fn loop_body_blocks(&self, header: BlockId) -> Result<HashSet<BlockId>, String> {
         let mut body = HashSet::new();
         let mut stack = vec![header];
         while let Some(id) = stack.pop() {
             if !body.insert(id) {
                 continue;
             }
-            for succ in self.successors(id) {
+            for succ in self.successors(id)? {
                 // The back-edge to the header is part of the loop but we don't
                 // recurse past it (its body is already being collected).
                 if succ == header {
@@ -1144,12 +1176,12 @@ impl VcGen<'_> {
                 stack.push(succ);
             }
         }
-        body
+        Ok(body)
     }
 
-    /// The successor blocks of a block's terminator.
-    fn successors(&self, id: BlockId) -> Vec<BlockId> {
-        match &self.block(id).term {
+    /// The successor blocks of a block's terminator (`Err` on a dangling id).
+    fn successors(&self, id: BlockId) -> Result<Vec<BlockId>, String> {
+        Ok(match &self.block(id)?.term {
             Terminator::Goto(b) => vec![*b],
             Terminator::Branch { then_blk, else_blk, .. } => vec![*then_blk, *else_blk],
             Terminator::Match { arms, otherwise, .. } => {
@@ -1162,7 +1194,7 @@ impl VcGen<'_> {
             // A Panic aborts: no successors (also bounds the body search).
             Terminator::Panic => vec![],
             Terminator::Drop { next, .. } => vec![*next],
-        }
+        })
     }
 
     /// The set of locals assigned (whole-local or via a projection) anywhere in the
@@ -1611,7 +1643,13 @@ impl VcGen<'_> {
     /// default machine `i64` range.
     fn overflow_range(&self, a: &Operand, b: &Operand) -> (i64, i64) {
         match int_result_ty(&self.operand_ty(a), &self.operand_ty(b)) {
-            Some(Ty::IntN(w)) => (w.min() as i64, w.max() as i64),
+            // Clamp the width's true range *inward* to the `i64`-representable
+            // window (see `IntTy::overflow_lo_i64`/`overflow_hi_i64`). The clamped
+            // range is a subset of the true range, so proving the result lies in it
+            // implies no overflow — sound for widths (`u64`, `i128`, `u128`) whose
+            // exact bounds cannot be embedded in a `Term::Int`. The previous
+            // `w.max() as i64` truncated instead (e.g. `u64::MAX -> -1`).
+            Some(Ty::IntN(w)) => (w.overflow_lo_i64(), w.overflow_hi_i64()),
             _ => (i64::MIN, i64::MAX),
         }
     }
@@ -2607,6 +2645,67 @@ mod tests {
         let subst = HashMap::from([(t, Ty::Int)]);
         let err = check_generic_bounds(&sig, &subst, &syms).expect_err("must reject");
         assert!(err.contains("i64"), "message should name the primitive: {err}");
+    }
+
+    /// Range *assumptions* for a width whose bounds fit `i64` carry both sides
+    /// exactly; a width whose bound overflows `i64` DROPS that side rather than
+    /// wrapping it. This is the soundness fix for `u64`: `u64::MAX as i64 == -1`
+    /// must never become the assumption `x <= -1` (which, for an unsigned value, is
+    /// false and would let the path prove anything).
+    #[test]
+    fn range_assumption_drops_unrepresentable_bounds() {
+        let mut syms = Symbols::new();
+        let x = syms.intern("x");
+        let term = Term::Var(x);
+
+        // i32: both bounds representable, both conjoined.
+        let i32w = rv_core::IntTy { signed: true, bits: 32 };
+        let p = range_assumption(Prop::True, &term, i32w);
+        let lo = Prop::Holds(Term::bin(BinOp::Ge, term.clone(), Term::Int(i32::MIN as i64)));
+        let hi = Prop::Holds(Term::bin(BinOp::Le, term.clone(), Term::Int(i32::MAX as i64)));
+        assert_eq!(p, Prop::True.and(lo).and(hi));
+
+        // u64: upper bound (`u64::MAX`) does not fit i64 → dropped. Only `x >= 0`.
+        let u64w = rv_core::IntTy { signed: false, bits: 64 };
+        let p = range_assumption(Prop::True, &term, u64w);
+        assert_eq!(p, Prop::Holds(Term::bin(BinOp::Ge, term.clone(), Term::Int(0))));
+        // The dangerous `x <= -1` assumption must be absent.
+        let bogus = Prop::Holds(Term::bin(BinOp::Le, term.clone(), Term::Int(-1)));
+        assert_ne!(p, Prop::True.and(bogus));
+
+        // i128: neither bound fits i64 → both dropped, the path is unchanged.
+        let i128w = rv_core::IntTy { signed: true, bits: 128 };
+        assert_eq!(range_assumption(Prop::True, &term, i128w), Prop::True);
+    }
+
+    /// A malformed CFG — a terminator naming a block id that does not exist — is
+    /// surfaced as a clean `Err` from `elaborate`, not a panic inside symbolic
+    /// execution. (Regression for the former `.expect("dangling block id")`.)
+    #[test]
+    fn malformed_cfg_dangling_block_is_rejected_not_panicking() {
+        let mut syms = Symbols::new();
+        let f = syms.intern("f");
+        // A single entry block that jumps to a non-existent block id.
+        let prog = Program {
+            trait_impls: vec![],
+            types: vec![],
+            funcs: vec![func(
+                f,
+                vec![],
+                vec![],
+                Prop::True,
+                Prop::True,
+                vec![],
+                Terminator::Goto(BlockId(99)),
+            )],
+        };
+        let res = elaborate(prog, &syms);
+        assert!(res.is_err(), "dangling block id must be rejected, not accepted");
+        let err = res.err().unwrap();
+        assert!(
+            err.contains("dangling block id") || err.contains("malformed CFG"),
+            "expected a malformed-CFG diagnostic, got: {err}"
+        );
     }
 
     /// An unbounded generic parameter imposes no obligation: any instantiation is

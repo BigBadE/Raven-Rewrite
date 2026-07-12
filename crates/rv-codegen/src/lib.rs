@@ -339,6 +339,15 @@ impl FnBuilder<'_> {
             return reg;
         };
         let bits = w.bits as u32;
+        // Only sub-word widths narrow. Widths `>= 64` (including 128-bit types,
+        // which the 64-bit VM models at the machine word) are the native
+        // representation and need no mask; returning `reg` unchanged also keeps the
+        // shift/mask arithmetic below from overflowing on a 128-bit width. In
+        // practice `narrowing_width` never yields these (it guards `bits < 64`);
+        // this is defense-in-depth so the helper is total.
+        if bits >= 64 {
+            return reg;
+        }
         if w.signed {
             let shift = 64 - bits;
             let shamt = self.fresh();
@@ -798,6 +807,36 @@ mod tests {
         assert!(
             !code.iter().any(|i| matches!(i, Instr::Bin(_, BinOp::BitAnd, _, _))),
             "a copy must not emit a mask: {code:?}"
+        );
+    }
+
+    /// A checked `+` into a 128-bit local is NOT narrowed and — crucially — does
+    /// not panic. The 64-bit VM models a 128-bit value at the machine word, so like
+    /// the other `>= 64`-bit widths it takes the native representation with no mask
+    /// or sign-extension (a naive `64 - 128` / `1 << 128` would have overflowed).
+    #[test]
+    fn i128_result_is_not_narrowed_and_does_not_panic() {
+        let mut syms = Symbols::new();
+        let i128_ty = Ty::IntN(IntTy { signed: true, bits: 128 });
+        let rv = RValue::WrappingBin(BinOp::Add, imm(2), imm(3));
+        let bc = compile(&one_assign_fn(i128_ty, rv, &mut syms), &syms);
+        let code = &bc.funcs[0].code;
+        assert!(
+            !code.iter().any(|i| matches!(
+                i,
+                Instr::Bin(_, BinOp::BitAnd | BinOp::Shl | BinOp::Shr, _, _)
+            )),
+            "a 128-bit result must not be narrowed on the 64-bit VM: {code:?}"
+        );
+
+        // Same for u128.
+        let u128_ty = Ty::IntN(IntTy { signed: false, bits: 128 });
+        let rv = RValue::WrappingBin(BinOp::Add, imm(2), imm(3));
+        let bc = compile(&one_assign_fn(u128_ty, rv, &mut syms), &syms);
+        let code = &bc.funcs[0].code;
+        assert!(
+            !code.iter().any(|i| matches!(i, Instr::Bin(_, BinOp::BitAnd, _, _))),
+            "a 128-bit result must not be masked on the 64-bit VM: {code:?}"
         );
     }
 }

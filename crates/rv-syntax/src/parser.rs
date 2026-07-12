@@ -1576,6 +1576,12 @@ fn fixed_int_ty(name: &str) -> Option<rv_core::IntTy> {
         "u32" => (false, 32),
         "u64" | "usize" => (false, 64),
         "isize" => (true, 64),
+        // 128-bit spellings. Their *type* (range/overflow reasoning) is modeled
+        // exactly by the verifier's width machinery ([`rv_core::IntTy`] bounds); on
+        // the current 64-bit VM their runtime values are modeled at the 64-bit
+        // machine word, as `isize`/`usize` are.
+        "i128" => (true, 128),
+        "u128" => (false, 128),
         _ => return None,
     };
     Some(rv_core::IntTy { signed, bits })

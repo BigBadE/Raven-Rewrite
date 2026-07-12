@@ -66,6 +66,15 @@ mod tests {
     }
 
     #[test]
+    fn parses_128_bit_integer_types() {
+        let mut syms = Symbols::new();
+        let module = parse("fn f(x: u128) -> i128 { return x; }", &mut syms).unwrap();
+        let Item::Fn(f) = &module.items[0] else { panic!("expected function") };
+        assert_eq!(f.params[0].ty, Ty::IntN(rv_core::IntTy { signed: false, bits: 128 }));
+        assert_eq!(f.ret, Some(Ty::IntN(rv_core::IntTy { signed: true, bits: 128 })));
+    }
+
+    #[test]
     fn scalar_parameter_refinement_stays_executable() {
         let mut syms = Symbols::new();
         let module = parse("fn recip(x: i64 where x != 0) -> i64 { return 1 / x; }", &mut syms)
