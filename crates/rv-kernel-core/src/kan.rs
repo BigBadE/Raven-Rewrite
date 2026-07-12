@@ -607,36 +607,48 @@ pub(crate) fn transp_pi_rule(dom: &Term, cod: &Term, a0: &Term) -> Term {
 // application) — the overwhelmingly common case — the construction is rejected
 // outright.
 //
-// [`kernel_tests::hcomp_pathp_rule_declined_naive_cchm_construction_fails_check_sys_compatibility`]
-// makes this concrete and adversarially reproducible: builds exactly the assembled
-// term the rule above would produce, for an ordinary axiom `p : Path A a0 a1`
-// (opaque — no special structure to exploit), and confirms `Checker::infer`
-// rejects it with precisely `check_sys`'s "branches disagree on their overlap"
-// error. Were this rule wired into `reduce.rs`/`nbe.rs` regardless, it would
-// silently break **subject reduction**: a well-typed `HComp(PathP …, φ, u, u0)`
-// term (checked once, via the *original* `n`-branch system, which never needed
-// this compatibility) would `whnf`-reduce to a form that the very same checker,
-// run again from scratch, rejects — exactly the class of bug this crate's
-// "independently re-typechecks" testing discipline exists to catch (see
-// [`transp_pi_rule`]'s and [`hcomp_pi_rule`]'s own soundness arguments, point 2,
-// both of which — unlike this one — *pass* that test).
+// **UPDATE (later pass):** this blocker has since been fixed at its root —
+// `crate::check::Checker::check_sys`'s compatibility condition is now
+// **restriction-aware** (see `crate::face::restrict_clause_term`'s doc): two
+// overlapping branches need only agree *after* substituting the interval
+// endpoints their overlap's DNF clauses force, exactly cubical type theory's
+// "compatible system" condition, rather than the unconditional (symbolic)
+// equality this section originally diagnosed as the blocker. The enlarged system
+// this section describes now passes `check_sys` — see
+// [`kernel_tests::hcomp_pathp_rule_enlarged_system_now_passes_restriction_aware_check_sys`]
+// (the former `..._declined_naive_cchm_construction_fails_check_sys_compatibility`,
+// repurposed to confirm acceptance). The rest of this section is kept as the
+// historical diagnosis of *why* the old, unconditional check rejected it — still
+// accurate as an account of the old rule — but the "declined, not shipped"
+// conclusion below no longer describes the compatibility condition itself, only
+// the fact that the `PathP`-case *reduction* rule (wiring this into
+// `reduce.rs`/`nbe.rs`) is still a separate, not-yet-taken step.
 //
-// # What would it take to ship this — out of scope for this pass
+// Builds exactly the assembled term the rule above would produce, for an ordinary
+// axiom `p : Path A a0 a1` (opaque — no special structure to exploit); under the
+// *old* unconditional `check_sys`, `Checker::infer` rejected it with precisely
+// `check_sys`'s "branches disagree on their overlap" error, because
+// `PApp(t_k.lift(1,1), Var(1))` — a term that **genuinely, syntactically mentions
+// the fresh, still-abstract path coordinate `j = Var(1)`** — could not be shown
+// unconditionally `is_def_eq` to the *j-independent* endpoint term `a0`/`a1`
+// without substituting a concrete value for `j`. Restriction-aware `check_sys`
+// closes exactly this gap: on the `(j=0)` overlap clause, restricting the tube
+// branch substitutes `j := i0`, giving `p @ i0`, which the pre-existing
+// `path_boundary` equation already knows is `≡ a0` for *any* `p : PathP …` —
+// opaque axioms included. Symmetrically for `(j=1)`/`a1`.
 //
-// The blocker is in `check_sys`'s compatibility condition itself: making it
-// *cofibration-aware* (checking `t_i ≡ t_j` only after substituting the interval
-// variables an overlap pins down, i.e. genuinely "under" `φ_i ∧ φ_j` rather than
-// unconditionally) is a substantive, independently soundness-critical change to
-// `crate::check` — it would need its own adversarial scrutiny (does substituting
-// under a *satisfiable-but-not-decided* overlap ever let two genuinely different
-// closed terms be conflated? almost certainly a delicate argument) entirely
-// separate from, and larger than, "add one more Kan filling rule". Bundling that
-// redesign into this already soundness-critical pass is exactly the kind of
-// "ship something you can't stand behind" this task explicitly warns against.
-// **Declined, not shipped** — `hcomp` at a `PathP` type remains stuck, an honest,
-// tested incompleteness. `J`, HIT composition, and `Glue` remain deferred as
-// before (see the top-level module doc), now joined by this specific,
-// precisely-diagnosed `PathP`-case gap for any future pass to pick up.
+// Were the *reduction* rule wired into `reduce.rs`/`nbe.rs` without this fix, it
+// would have silently broken **subject reduction**: a well-typed
+// `HComp(PathP …, φ, u, u0)` term (checked once, via the *original* `n`-branch
+// system, which never needed this compatibility) would `whnf`-reduce to a form
+// that the very same checker, run again from scratch, rejected — exactly the
+// class of bug this crate's "independently re-typechecks" testing discipline
+// exists to catch (see [`transp_pi_rule`]'s and [`hcomp_pi_rule`]'s own soundness
+// arguments, point 2). That risk is now retired for the *typing* side; the
+// reduction rule itself is still not wired in (a separate, smaller step:
+// generalize `hcomp_pi_rule`'s construction discipline to the `PathP` case and
+// add differential reducer/NbE tests), and `J`, HIT composition, and `Glue`
+// remain deferred as before (see the top-level module doc).
 
 /// The `Π`-case `hcomp` filling rule (see the module doc's "Phase 3.7" section).
 /// `dom`/`cod` are the fixed `Π`'s two components (same binder convention as
@@ -1308,16 +1320,26 @@ mod kernel_tests {
         assert!(k.infer(&t).is_err());
     }
 
-    // ---- hcomp: the `PathP`-case rule — INVESTIGATED AND DECLINED (see the module
-    // doc's "Phase 3.8" section for the full account). This test is the concrete,
-    // reproducible adversarial evidence backing that decision: it shows the naive
-    // CCHM assembled-system construction fails this kernel's own `check_sys`
-    // compatibility condition for a perfectly ordinary (opaque axiom) `PathP`
-    // value — i.e. the construction is not merely "not yet proven sound", it is
-    // demonstrably **rejected by the existing, unmodified, trusted checker** the
-    // moment you try to independently re-typecheck it, for any non-degenerate input.
+    // ---- hcomp: the `PathP`-case rule — the naive CCHM assembled-system
+    // construction, once (see the module doc's "Phase 3.8" section) adversarial
+    // evidence that this kernel's *unconditional* `check_sys` compatibility
+    // condition was too strict to accept it. `crate::check::Checker::check_sys`'s
+    // compatibility condition is now **restriction-aware** (see `crate::face`'s
+    // `restrict_clause_term` doc): two overlapping branches need only agree *after*
+    // substituting the interval endpoints their overlap forces, which is exactly
+    // the standard cubical "compatible system" condition. This test is the payoff:
+    // the tube branch `p @ j` and the endpoint branch `j=0 ↦ a0` overlap on exactly
+    // `(j=0)`, and restricting the tube along that clause substitutes `j := i0`,
+    // giving `p @ i0` — definitionally equal to `a0` by the `PathP` boundary
+    // equation (`crate::check::Checker::path_boundary`), for *any* `p : Path A a0
+    // a1`, opaque axiom included. Symmetrically for `j=1 ↦ a1`. So the enlarged
+    // system built by the (still not wired-in) `PathP`-case `hcomp` rule now passes
+    // `check_sys` — confirming the diagnosed blocker is fixed, even though the
+    // reduction rule itself remains a separate, not-yet-taken step (`hcomp` at
+    // `PathP` still doesn't *reduce* through this shape; only the `Sys` it would
+    // produce is now accepted as well-typed).
     #[test]
-    fn hcomp_pathp_rule_declined_naive_cchm_construction_fails_check_sys_compatibility() {
+    fn hcomp_pathp_rule_enlarged_system_now_passes_restriction_aware_check_sys() {
         let mut k = Kernel::new();
         k.add_axiom("A", 0, Term::typ(0)).unwrap();
         k.add_axiom("a0", 0, cn("A")).unwrap();
@@ -1331,7 +1353,7 @@ mod kernel_tests {
         // sanity: original hcomp is well-typed
         k.infer(&t).unwrap();
 
-        // Now build the naive assembled reduction candidate:
+        // Build the enlarged CCHM assembled reduction candidate:
         // PLam( HComp( A (constant fam), phi' , [top -> p@j, j=0 -> a0, j=1 -> a1], p@j-at-cap ) )
         let fam = cn("A").lift(1, 0); // constant family, frame [j, Γ]
         let new_phi = Cof::or(Cof::or(Cof::top(), Cof::eq0(Term::Var(0))), Cof::eq1(Term::Var(0)));
@@ -1349,23 +1371,17 @@ mod kernel_tests {
         let body = Term::hcomp(fam, new_phi, new_u, new_u0);
         let candidate = Term::plam(body);
 
-        // The naive construction must be *rejected* by the existing, unmodified
-        // `check_sys` — this is the whole point of the test (see the module doc's
-        // "Phase 3.8" section): were this to unexpectedly succeed, the analysis
-        // there would be wrong and the rule would need re-examining before ever
-        // being wired into `reduce.rs`/`nbe.rs`.
+        // The restriction-aware `check_sys` now accepts this: the tube branch
+        // overlaps the `j=0`/`j=1` branches only on those literal clauses, and
+        // restricting the tube there yields `p @ i0 ≡ a0` / `p @ i1 ≡ a1` via the
+        // `PathP` boundary equation — no unconditional (symbolic-`j`) equality is
+        // ever demanded.
         let result = k.infer(&candidate);
         assert!(
-            result.is_err(),
-            "expected check_sys to reject the naive PathP-hcomp construction (the tube \
-             branch, applied at a *symbolic* path coordinate `j`, cannot be unconditionally \
-             `is_def_eq` to the endpoint `a0`/`a1` for an opaque axiom `p` — see the module \
-             doc); got Ok({result:?}) instead, meaning the prior analysis needs revisiting"
-        );
-        let msg = result.unwrap_err();
-        assert!(
-            msg.contains("disagree on their overlap"),
-            "expected check_sys's compatibility-condition error specifically, got: {msg}"
+            result.is_ok(),
+            "expected the restriction-aware check_sys to accept the enlarged PathP-hcomp \
+             system (tube and endpoint branches agree after restricting to their overlap); \
+             got Err({result:?})"
         );
     }
 }

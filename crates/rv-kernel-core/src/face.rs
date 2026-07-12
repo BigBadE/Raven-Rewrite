@@ -63,11 +63,15 @@
 //! branch is then checked at `A`, and finally the **compatibility condition** is
 //! enforced (`Checker::check`'s `check_sys`): for every pair of branches `i ≠ j`
 //! whose overlap `φ_i ∧ φ_j` is *not* `⊥` (i.e. could actually be inhabited), `t_i`
-//! and `t_j` must be **definitionally equal** — checked with the kernel's existing,
-//! already-sound `is_def_eq`. This is exactly the compatibility rule of cubical type
-//! theory's partial-element systems (Cohen et al., §4): the pieces must literally
-//! agree wherever they overlap, or the system doesn't denote a single partial
-//! element at all.
+//! and `t_j` must be **definitionally equal after restricting to the overlap** —
+//! for every clause `C` of `to_dnf(φ_i ∧ φ_j)`, substitute the interval endpoints
+//! `C` forces (see [`restrict_clause_term`]) into both branches, then compare with
+//! the kernel's existing, already-sound `is_def_eq`. This is exactly the
+//! compatibility rule of cubical type theory's partial-element systems (Cohen et
+//! al., §4.2): the pieces must agree wherever they overlap — literally, at every
+//! point of the overlapping sub-cube — or the system doesn't denote a single
+//! partial element at all; see [`restrict_clause_term`]'s doc for why "restrict
+//! along every DNF clause, then compare" is *exactly* that condition, no looser.
 //!
 //! Reduction (`crate::reduce::Reducer::whnf`, and independently in
 //! `crate::nbe::Nbe`): a system reduces to branch `t_i` as soon as `φ_i` **is
@@ -198,6 +202,28 @@ impl Cof {
     /// [`Term::instantiate`]'s analogue: substitute `Var(0)`.
     pub fn instantiate(&self, arg: &Term) -> Cof {
         self.subst(0, arg)
+    }
+
+    /// [`Term::replace_free_var`]'s analogue: pin the free variable at de Bruijn
+    /// `depth` to a literal endpoint in every atom's subject, *without* removing the
+    /// binder (no index-shifting of other free variables) — see that method's doc.
+    /// Used by [`restrict_clause_term`] to restrict a branch guard itself (not just
+    /// its payload) under an overlap clause.
+    pub(crate) fn replace_free_var(&self, depth: usize, replacement: &Term) -> Cof {
+        match self {
+            Cof::Bot => Cof::Bot,
+            Cof::Top => Cof::Top,
+            Cof::Atom(Atom::Eq0(t)) => Cof::eq0(t.replace_free_var(depth, replacement)),
+            Cof::Atom(Atom::Eq1(t)) => Cof::eq1(t.replace_free_var(depth, replacement)),
+            Cof::And(a, b) => Cof::and(
+                a.replace_free_var(depth, replacement),
+                b.replace_free_var(depth, replacement),
+            ),
+            Cof::Or(a, b) => Cof::or(
+                a.replace_free_var(depth, replacement),
+                b.replace_free_var(depth, replacement),
+            ),
+        }
     }
 
     /// Mirrors [`Term::subst_ctx`]'s parallel-substitution-of-a-block, at a given
@@ -403,6 +429,93 @@ fn to_dnf(phi: &Cof) -> Vec<Clause> {
             out
         }
     }
+}
+
+/// **Restriction-aware compatibility**: the clauses of `to_dnf(φ_i ∧ φ_j)` (the
+/// satisfiable overlap of two branch guards), each clause exposed as its forced
+/// endpoint assignments, ready for [`restrict_clause_term`] to apply to both
+/// branch payloads before comparing them. Public to `crate::check` (the only other
+/// consumer): `check_sys`'s compatibility loop calls this once per overlapping
+/// branch pair, then restricts and `is_def_eq`-compares the two payloads under
+/// *every* returned clause (never fewer — see [`restrict_clause_term`]'s doc for
+/// the soundness argument).
+pub(crate) fn overlap_clauses(phi_i: &Cof, phi_j: &Cof) -> Vec<Clause> {
+    to_dnf(&Cof::and(phi_i.clone(), phi_j.clone()))
+}
+
+/// **Restriction**: apply one DNF clause's forced endpoint assignments to a term —
+/// the cubical "agree *under* the face" operation that makes `check_sys`'s
+/// compatibility condition exactly the standard one (Cohen–Coquand–Huber–Mörtberg,
+/// *Cubical Type Theory*, §4.2's "compatible system": `t_i` and `t_j` are only
+/// required to be equal **after restricting along** `φ_i ∧ φ_j`, not unconditionally).
+///
+/// # Why this is sound — and no looser than "agree on the overlap"
+///
+/// A clause `C` produced by [`to_dnf`] is a conjunction of atoms `(r_1=ε_1) ∧ … ∧
+/// (r_k=ε_k)`; by [`to_dnf`]'s own invariant (every atom surviving `literal_atom`'s
+/// and `connection_atom`'s simplification/decomposition is a genuine, still-abstract
+/// interval variable — see this module's doc, "Cofibrations are not first-class
+/// terms" and `connection_atom`'s doc) each `r_i` is exactly a bound variable
+/// `Term::Var(k_i)`, never a literal endpoint or a connective expression. So "the
+/// point(s) of the interval cube satisfying `C`" is *exactly* "every valuation that
+/// sends `Var(k_i) ↦ ε_i` for each `i`, and is otherwise unconstrained" — restricting
+/// a term along `C` therefore means substituting each `Var(k_i) := ε_i` and leaving
+/// every other (unconstrained-by-`C`) variable exactly as it stands, which is
+/// precisely [`Term::replace_free_var`] applied once per atom (order-independent,
+/// since the `k_i` are pairwise distinct within a satisfiable clause — a
+/// self-contradictory clause pinning the same `r` twice was already dropped by
+/// [`self_contradictory`] inside `to_dnf`).
+///
+/// Doing this for *every* clause of the overlap's DNF (never a subset, and never
+/// skipping the whole check when the overlap is merely satisfiable-but-undecided)
+/// is exactly "agree on the overlap cofibration `φ_i ∧ φ_j`", no weaker: the DNF
+/// clauses partition (up to overlap at their own shared boundaries, which just
+/// means both clauses independently impose *their own* correct obligation) the
+/// overlap's sub-cube into the finitely many literal sub-cubes it's actually made
+/// of, and a term's value at every point of a sub-cube is exactly its value after
+/// restricting along that sub-cube's defining clause. An overlap where the two
+/// payloads genuinely differ at some point still fails: that point lives in some
+/// clause `C`, and restricting along `C` exposes the disagreement exactly as
+/// unrestricted comparison would if `C` were the *only* thing pinned. This is why
+/// [`check::Checker::check_sys`] must still reject on the *first* clause that fails
+/// — it must not weaken to "some clause agrees" (`any`), only ever "every clause
+/// agrees" (`all`), or it would silently accept branches that disagree on part of
+/// their overlap.
+pub(crate) fn restrict_clause_term(clause: &Clause, t: &Term) -> Term {
+    let mut out = t.clone();
+    for atom in clause {
+        let (subject, lit) = match atom {
+            Atom::Eq0(s) => (s, Term::IZero),
+            Atom::Eq1(s) => (s, Term::IOne),
+        };
+        if let Term::Var(k) = subject {
+            out = out.replace_free_var(*k, &lit);
+        }
+        // `to_dnf`'s invariant (see this function's doc) guarantees every surviving
+        // atom subject is a bare `Var` — literal endpoints were eliminated by
+        // `literal_atom`, connective heads decomposed away by `connection_atom`. No
+        // other subject shape can reach here; nothing is silently skipped.
+    }
+    out
+}
+
+/// [`restrict_clause_term`]'s analogue for a [`Cof`] (needed if a branch's *own*
+/// guard, not just its payload, must be restricted — kept alongside for symmetry
+/// and future Kan-phase reuse; `check_sys`'s current compatibility loop only needs
+/// the `Term` version).
+#[allow(dead_code)]
+pub(crate) fn restrict_clause_cof(clause: &Clause, phi: &Cof) -> Cof {
+    let mut out = phi.clone();
+    for atom in clause {
+        let (subject, lit) = match atom {
+            Atom::Eq0(s) => (s, Term::IZero),
+            Atom::Eq1(s) => (s, Term::IOne),
+        };
+        if let Term::Var(k) = subject {
+            out = out.replace_free_var(*k, &lit);
+        }
+    }
+    out
 }
 
 /// The distinct atom subjects mentioned across a set of clauses (deduped by
@@ -804,5 +917,161 @@ mod kernel_tests {
         let k = base_env();
         let sys = Term::sys(vec![(Cof::top(), cn("a"))]);
         assert!(k.infer(&sys).is_err());
+    }
+
+    // ---- restriction-aware compatibility (the new capability) ----
+
+    /// **The new capability, adversarial-positive**: two branches that disagree
+    /// *unconditionally* but agree **after restricting to their overlap** are now
+    /// accepted — this is exactly what the old (unconditional) `check_sys` used to
+    /// reject and what this pass is meant to fix. Build `⟨i⟩ [top ↦ a, (i=0) ↦ p @
+    /// i]` where `p : Path A c a` (so `p @ i` is a genuinely `i`-dependent, opaque
+    /// term, not literally `a`): the overlap of `top` and `(i=0)` is `(i=0)`, and
+    /// restricting `p @ i` along `i := i0` gives `p @ i0`, which the `PathP`
+    /// boundary equation equates with `a` (`p`'s declared right endpoint) — while
+    /// the *unrestricted* terms `a` and `p @ i` are not unconditionally `is_def_eq`
+    /// (i` is a free variable, `p` is an opaque axiom).
+    #[test]
+    fn branches_agreeing_only_after_restriction_are_now_accepted() {
+        let mut k = base_env();
+        // p : Path A a c — p @ i0 ≡ a (the endpoint restriction lands on).
+        k.add_axiom("p", 0, Term::path(cn("A"), cn("a"), cn("c"))).unwrap();
+        let i = Term::Var(0);
+        let sys_body = Term::sys(vec![
+            (Cof::top(), cn("a").lift(1, 0)),
+            (Cof::eq0(i.clone()), Term::papp(cn("p").lift(1, 0), i)),
+        ]);
+        let ty_body = Term::partial(Cof::top(), cn("A").lift(1, 0));
+        let mut ctx = crate::check::LocalCtx::new();
+        ctx.push(Term::I);
+        // Would have been rejected by the old unconditional `is_def_eq(a, p@i)` check.
+        k.checker().check(&mut ctx, &sys_body, &ty_body).unwrap();
+    }
+
+    /// **Adversarial-negative**: branches that disagree even *after* restricting to
+    /// every clause of their overlap are still rejected — restriction-awareness
+    /// must never become "accept if any clause could conceivably work"; it has to
+    /// remain "every clause must agree" or it stops being sound. `[top ↦ a, top ↦
+    /// b]` overlaps on `top` itself (the vacuous clause `[]`, restriction is the
+    /// identity), so this is unchanged from the old unconditional check and must
+    /// still fail — distinct axioms `a`/`b` are never equal.
+    #[test]
+    fn branches_disagreeing_even_after_restriction_are_still_rejected() {
+        let k = base_env();
+        let ty = Term::partial(Cof::top(), cn("A"));
+        let sys = Term::sys(vec![(Cof::top(), cn("a")), (Cof::top(), cn("b"))]);
+        let err = k.check(&sys, &ty).unwrap_err();
+        assert!(err.contains("disagree"), "got: {err}");
+    }
+
+    /// **Adversarial-negative, multi-clause**: an overlap whose DNF has *several*
+    /// clauses must have the branches agree on *every one* of them, not merely one.
+    /// `⟨i⟩⟨j⟩ [ (i=0) ↦ a, ((i=0)∧(j=0)) ∨ ((i=0)∧(j=1)) ↦ q @ j ]` (`q : Path A a
+    /// c`) is engineered so restricting along the `(i=0)∧(j=0)` clause substitutes
+    /// `j := i0`, giving `q @ i0 ≡ a` (agrees with branch 1's `a`) — but the
+    /// `(i=0)∧(j=1)` clause substitutes `j := i1`, giving `q @ i1 ≡ c`, which
+    /// disagrees with `a` (distinct axioms). The system must still be rejected:
+    /// one bad clause is enough, even though the *other* clause agrees.
+    #[test]
+    fn one_disagreeing_clause_among_several_still_rejects_the_whole_system() {
+        let mut k = base_env();
+        // q : Path A a c — q @ i0 ≡ a (agrees with branch 1), q @ i1 ≡ c (disagrees).
+        k.add_axiom("q", 0, Term::path(cn("A"), cn("a"), cn("c"))).unwrap();
+        let i = Term::Var(1); // outer interval binder
+        let j = Term::Var(0); // inner interval binder
+        // branch 1: guard (i=0), payload `a` (constant in j)
+        // branch 2: guard ((i=0)∧(j=0)) ∨ ((i=0)∧(j=1)) — semantically the same
+        // sub-cube as branch 1's guard (restricted to satisfiable j), so it
+        // genuinely overlaps on two distinct DNF clauses — payload `q @ j`.
+        let phi2 = Cof::or(
+            Cof::and(Cof::eq0(i.clone()), Cof::eq0(j.clone())),
+            Cof::and(Cof::eq0(i.clone()), Cof::eq1(j.clone())),
+        );
+        let payload2 = Term::papp(cn("q").lift(2, 0), j);
+        let sys_body = Term::sys(vec![(Cof::eq0(i.clone()), cn("a").lift(2, 0)), (phi2, payload2)]);
+        let ty_body = Term::partial(Cof::eq0(i), cn("A").lift(2, 0));
+        let mut ctx = crate::check::LocalCtx::new();
+        ctx.push(Term::I); // i
+        ctx.push(Term::I); // j
+        let err = k.checker().check(&mut ctx, &sys_body, &ty_body).unwrap_err();
+        assert!(err.contains("disagree"), "got: {err}");
+    }
+
+    /// **Restriction only substitutes forced endpoints**: a branch depending on a
+    /// genuinely *unconstrained* interval variable is compared symbolically on that
+    /// variable, not spuriously equated. `⟨i⟩⟨j⟩ [top ↦ p @ j, (i=0) ↦ p @ j]`
+    /// (both branches share the *same* `j`-dependent payload) must check fine
+    /// regardless — this isn't really testing restriction (the payloads are
+    /// syntactically identical) so much as confirming restriction doesn't error out
+    /// or misbehave when the overlap's clause (`i=0`) doesn't mention `j` at all:
+    /// `j` stays exactly `Var(0)` (unsubstituted) in both restricted copies, and
+    /// `is_def_eq` finds them equal structurally, without restriction accidentally
+    /// touching the wrong variable.
+    #[test]
+    fn restriction_leaves_unconstrained_variables_symbolic() {
+        let mut k = base_env();
+        k.add_axiom("p", 0, Term::path(cn("A"), cn("c"), cn("a"))).unwrap();
+        let j = Term::Var(0);
+        let sys_body = Term::sys(vec![
+            (Cof::top(), Term::papp(cn("p").lift(2, 0), j.clone())),
+            (Cof::eq0(Term::Var(1)), Term::papp(cn("p").lift(2, 0), j)),
+        ]);
+        let ty_body = Term::partial(Cof::top(), cn("A").lift(2, 0));
+        let mut ctx = crate::check::LocalCtx::new();
+        ctx.push(Term::I); // i
+        ctx.push(Term::I); // j
+        k.checker().check(&mut ctx, &sys_body, &ty_body).unwrap();
+    }
+
+    /// **Unsatisfiable overlap imposes no constraint**: `(i=0)` and `(i=1)` never
+    /// overlap (`i0 ≠ i1`), so wildly incompatible payloads on those two guards
+    /// (`a` vs `b`, distinct axioms) must still check fine — `overlap_clauses`
+    /// (called from `check_sys`) is never even reached with a satisfiable overlap,
+    /// so no restriction/comparison is attempted at all.
+    #[test]
+    fn unsatisfiable_overlap_imposes_no_constraint_even_with_wildly_different_payloads() {
+        let k = base_env();
+        let i = Term::Var(0);
+        let sys_body = Term::sys(vec![
+            (Cof::eq0(i.clone()), cn("a").lift(1, 0)),
+            (Cof::eq1(i), cn("b").lift(1, 0)),
+        ]);
+        let ty_body = Term::partial(
+            Cof::or(Cof::eq0(Term::Var(0)), Cof::eq1(Term::Var(0))),
+            cn("A").lift(1, 0),
+        );
+        let mut ctx = crate::check::LocalCtx::new();
+        ctx.push(Term::I);
+        k.checker().check(&mut ctx, &sys_body, &ty_body).unwrap();
+    }
+
+    /// **Adversarial, can't sneak a proof of `False`-like nonsense in through
+    /// restriction**: an axiom type `E` with no introduced terms stays uninhabited
+    /// even when the (now looser, restriction-aware) compatibility check is used to
+    /// accept a system — restriction only ever compares two already-*independently
+    /// type-checked* branch payloads (`check_sys` still runs `self.check(ctx, t, a)`
+    /// on every branch *before* the compatibility loop), it never manufactures a new
+    /// term. Concretely: no term of type `E` exists, so a system at `Partial ⊤ E`
+    /// can't even be assembled in the first place, restriction-aware or not.
+    #[test]
+    fn restriction_aware_compatibility_still_cannot_conjure_an_inhabitant_of_an_unrelated_axiom() {
+        let mut k = base_env();
+        k.add_axiom("E", 0, Term::typ(0)).unwrap();
+        k.add_axiom("p", 0, Term::path(cn("A"), cn("c"), cn("a"))).unwrap();
+        let ty = Term::partial(Cof::top(), cn("E"));
+        // Reuse the same shape that succeeds at `A` (restriction would make the
+        // branches agree there) but check it against the unrelated, uninhabited `E`
+        // — must still fail, at the per-branch check, before compatibility even runs.
+        let i = Term::Var(0);
+        let sys_body = Term::sys(vec![
+            (Cof::top(), cn("a").lift(1, 0)),
+            (Cof::eq0(i.clone()), Term::papp(cn("p").lift(1, 0), i)),
+        ]);
+        let mut ctx = crate::check::LocalCtx::new();
+        ctx.push(Term::I);
+        assert!(k
+            .checker()
+            .check(&mut ctx, &sys_body, &ty.lift(1, 0))
+            .is_err());
     }
 }
