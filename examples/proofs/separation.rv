@@ -170,8 +170,12 @@ fn sing_here(l: Nat, pi: Nat, v: Nat)
 //
 // Two heaps compose location-wise (`hunion`): where only one owns a location the cell survives;
 // where BOTH own it, their permissions ADD (`padd`) — the partial-commutative-monoid join of a
-// separation algebra. Raven lacks function extensionality, so heap agreement is stated POINTWISE
-// as `(q: Nat) -> h1(q) == h2(q)`, and every separation law is proved at that level.
+// separation algebra. The kernel now has `funext` (derived from quotients — see
+// `crates/rv-kernel/src/funext.rs`), so the star laws below state REAL heap equality
+// (`h1 == h2`), each proved by discharging the pointwise obligation `(q:Nat) -> h1(q) == h2(q)`
+// and lifting it with `funext`. `half_split_heap` still returns the pointwise proof directly:
+// it feeds `bool_case`'s per-location case split rather than composing with another heap law,
+// so keeping it pointwise there is simpler and loses nothing.
 
 fn ccombine(x: Option<Pair<Nat, Nat>>, y: Option<Pair<Nat, Nat>>) -> Option<Pair<Nat, Nat>> {
     match x {
@@ -191,17 +195,18 @@ fn hunion(h1: Nat -> Option<Pair<Nat, Nat>>, h2: Nat -> Option<Pair<Nat, Nat>>)
     fun (q: Nat) => ccombine(h1(q), h2(q))
 }
 
-// emp is a UNIT of union, pointwise (monoid identity).
-fn hunion_emp_left(h: Nat -> Option<Pair<Nat, Nat>>)
-    -> (q: Nat) -> hunion(emp(), h)(q) == h(q) {
-    fun (q: Nat) => Eq::refl(Option<Pair<Nat, Nat>>, h(q))
+// emp is a UNIT of union — REAL heap equality (`funext` turns the pointwise agreement below
+// into an honest `Eq` on the heaps themselves, not just their readouts).
+fn hunion_emp_left(h: Nat -> Option<Pair<Nat, Nat>>) -> hunion(emp(), h) == h {
+    funext(Nat, Option<Pair<Nat, Nat>>, hunion(emp(), h), h,
+      fun (q: Nat) => Eq::refl(Option<Pair<Nat, Nat>>, h(q)))
 }
-fn hunion_emp_right(h: Nat -> Option<Pair<Nat, Nat>>)
-    -> (q: Nat) -> hunion(h, emp())(q) == h(q) {
-    fun (q: Nat) => match h(q) {
-      | Option::None    => Eq::refl(Option<Pair<Nat, Nat>>, Option::None(Pair<Nat, Nat>))
-      | Option::Some(c) => Eq::refl(Option<Pair<Nat, Nat>>, Option::Some(Pair<Nat, Nat>, c))
-    }
+fn hunion_emp_right(h: Nat -> Option<Pair<Nat, Nat>>) -> hunion(h, emp()) == h {
+    funext(Nat, Option<Pair<Nat, Nat>>, hunion(h, emp()), h,
+      fun (q: Nat) => match h(q) {
+        | Option::None    => Eq::refl(Option<Pair<Nat, Nat>>, Option::None(Pair<Nat, Nat>))
+        | Option::Some(c) => Eq::refl(Option<Pair<Nat, Nat>>, Option::Some(Pair<Nat, Nat>, c))
+      })
 }
 
 // DISJOINTNESS at one location, as an indexed inductive: constructors ONLY for the "at most one
@@ -236,13 +241,14 @@ fn cdisj_symm(x: Option<Pair<Nat, Nat>>, y: Option<Pair<Nat, Nat>>, d: CDisj(x, 
     }
 }
 
-// UNION COMMUTATIVITY (pointwise), given pointwise disjointness — `P * Q` and `Q * P` describe
-// the same heap. This plus `cdisj_symm` is separation-conjunction commutativity at the model
-// level (`P * Q |- Q * P`).
+// UNION COMMUTATIVITY, given pointwise disjointness — `P * Q` and `Q * P` describe the SAME
+// heap (real `Eq`, via `funext`). This plus `cdisj_symm` is separation-conjunction
+// commutativity at the model level (`P * Q |- Q * P`).
 fn hunion_comm(h1: Nat -> Option<Pair<Nat, Nat>>, h2: Nat -> Option<Pair<Nat, Nat>>,
     d: (q: Nat) -> CDisj(h1(q), h2(q)))
-    -> (q: Nat) -> hunion(h1, h2)(q) == hunion(h2, h1)(q) {
-    fun (q: Nat) => ccombine_comm(h1(q), h2(q), d(q))
+    -> hunion(h1, h2) == hunion(h2, h1) {
+    funext(Nat, Option<Pair<Nat, Nat>>, hunion(h1, h2), hunion(h2, h1),
+      fun (q: Nat) => ccombine_comm(h1(q), h2(q), d(q)))
 }
 
 // CELL-COMBINE ASSOCIATIVITY — the heart of separating-conjunction associativity. Permissions
@@ -270,11 +276,13 @@ fn ccombine_assoc(x: Option<Pair<Nat, Nat>>, y: Option<Pair<Nat, Nat>>, z: Optio
     }
 }
 
-// UNION ASSOCIATIVITY (pointwise) — separating-conjunction associativity at the model level.
+// UNION ASSOCIATIVITY — separating-conjunction associativity at the model level, as real
+// heap `Eq` (via `funext`, no disjointness needed — `ccombine_assoc` holds unconditionally).
 fn hunion_assoc(h1: Nat -> Option<Pair<Nat, Nat>>, h2: Nat -> Option<Pair<Nat, Nat>>,
     h3: Nat -> Option<Pair<Nat, Nat>>)
-    -> (q: Nat) -> hunion(hunion(h1, h2), h3)(q) == hunion(h1, hunion(h2, h3))(q) {
-    fun (q: Nat) => ccombine_assoc(h1(q), h2(q), h3(q))
+    -> hunion(hunion(h1, h2), h3) == hunion(h1, hunion(h2, h3)) {
+    funext(Nat, Option<Pair<Nat, Nat>>, hunion(hunion(h1, h2), h3), hunion(h1, hunion(h2, h3)),
+      fun (q: Nat) => ccombine_assoc(h1(q), h2(q), h3(q)))
 }
 
 // ===========================================================================================

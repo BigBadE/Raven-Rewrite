@@ -30,6 +30,8 @@ fn separation_logic_proofs_check_in_kernel() {
     let src = include_str!("../../../examples/proofs/separation.rv");
     let mut s = Session::new();
     rv_kernel::logic::declare_logic(&mut s.k).expect("logic prelude");
+    s.k.install_quot().expect("quotient schema");
+    s.k.install_funext().expect("funext (derived from quotients)");
     s.run(PRELUDE).expect("equality prelude should check");
     match s.run(src) {
         Ok(()) => {}
