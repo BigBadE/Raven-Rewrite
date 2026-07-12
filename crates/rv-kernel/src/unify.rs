@@ -209,12 +209,20 @@ impl Metas {
             Term::HComp(ty, p, u, u0) => {
                 Ok(Term::hcomp(self.zonk(ty)?, self.zonk_cof(p)?, self.zonk(u)?, self.zonk(u0)?))
             }
-            Term::Glue(a, p, t, e) => Ok(Term::glue_ty(
-                self.zonk(a)?,
-                self.zonk_cof(p)?,
-                self.zonk(t)?,
-                self.zonk(e)?,
-            )),
+            Term::Glue(a, branches) => {
+                let branches = branches
+                    .iter()
+                    .map(|(p, t, e)| Ok((self.zonk_cof(p)?, self.zonk(t)?, self.zonk(e)?)))
+                    .collect::<Result<_, String>>()?;
+                Ok(Term::glue_ty_multi(self.zonk(a)?, branches))
+            }
+            Term::Unglue(a, branches, u) => {
+                let branches = branches
+                    .iter()
+                    .map(|(p, t, e)| Ok((self.zonk_cof(p)?, self.zonk(t)?, self.zonk(e)?)))
+                    .collect::<Result<_, String>>()?;
+                Ok(Term::unglue(self.zonk(a)?, branches, self.zonk(u)?))
+            }
         }
     }
 
@@ -572,12 +580,24 @@ fn invert(meta: u32, image: &[usize], t: &Term, depth: usize) -> Result<Term, St
             invert(meta, image, u, depth + 1)?,
             invert(meta, image, u0, depth)?,
         )),
-        Term::Glue(a, p, t2, e) => Ok(Term::glue_ty(
-            invert(meta, image, a, depth)?,
-            (**p).clone(),
-            invert(meta, image, t2, depth)?,
-            invert(meta, image, e, depth)?,
-        )),
+        Term::Glue(a, branches) => {
+            let branches = branches
+                .iter()
+                .map(|(p, t2, e)| {
+                    Ok(((**p).clone(), invert(meta, image, t2, depth)?, invert(meta, image, e, depth)?))
+                })
+                .collect::<Result<_, String>>()?;
+            Ok(Term::glue_ty_multi(invert(meta, image, a, depth)?, branches))
+        }
+        Term::Unglue(a, branches, u) => {
+            let branches = branches
+                .iter()
+                .map(|(p, t2, e)| {
+                    Ok(((**p).clone(), invert(meta, image, t2, depth)?, invert(meta, image, e, depth)?))
+                })
+                .collect::<Result<_, String>>()?;
+            Ok(Term::unglue(invert(meta, image, a, depth)?, branches, invert(meta, image, u, depth)?))
+        }
     }
 }
 
@@ -617,7 +637,10 @@ fn occurs(m: u32, t: &Term) -> bool {
         Term::Partial(_, a) => occurs(m, a),
         Term::Transp(fam, _, a) => occurs(m, fam) || occurs(m, a),
         Term::HComp(ty, _, u, u0) => occurs(m, ty) || occurs(m, u) || occurs(m, u0),
-        Term::Glue(a, _, t, e) => occurs(m, a) || occurs(m, t) || occurs(m, e),
+        Term::Glue(a, branches) => occurs(m, a) || branches.iter().any(|(_, t, e)| occurs(m, t) || occurs(m, e)),
+        Term::Unglue(a, branches, u) => {
+            occurs(m, a) || branches.iter().any(|(_, t, e)| occurs(m, t) || occurs(m, e)) || occurs(m, u)
+        }
     }
 }
 

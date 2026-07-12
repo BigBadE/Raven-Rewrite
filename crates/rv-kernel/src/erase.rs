@@ -209,8 +209,11 @@ impl<'a> Eraser<'a> {
             // these yet (mirrors `Term::Sys` above); treat as unsupported rather than
             // silently opaque, since — unlike `PathP`/`Partial` — they compute actual
             // runtime data, not a type former.
-            Term::Transp(..) | Term::HComp(..) => {
-                Err("erasure of `transp`/`hcomp` is not yet supported".to_string())
+            // `unglue` carries genuine runtime data (its scrutinee `u`) via
+            // `Equiv.f` on the decided-`⊤` face — same footing as `Transp`/`HComp`:
+            // not yet supported as an erasure target.
+            Term::Transp(..) | Term::HComp(..) | Term::Unglue(..) => {
+                Err("erasure of `transp`/`hcomp`/`unglue` is not yet supported".to_string())
             }
             // A λ encountered as an atom: erase against its inferred type.
             Term::Lam(..) => {

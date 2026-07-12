@@ -266,8 +266,13 @@ fn occurs_const(t: &Term, id: &Name) -> bool {
         Term::HComp(ty, _, u, u0) => {
             occurs_const(ty, id) || occurs_const(u, id) || occurs_const(u0, id)
         }
-        Term::Glue(a, _, t2, e) => {
-            occurs_const(a, id) || occurs_const(t2, id) || occurs_const(e, id)
+        Term::Glue(a, branches) => {
+            occurs_const(a, id) || branches.iter().any(|(_, t2, e)| occurs_const(t2, id) || occurs_const(e, id))
+        }
+        Term::Unglue(a, branches, u) => {
+            occurs_const(a, id)
+                || branches.iter().any(|(_, t2, e)| occurs_const(t2, id) || occurs_const(e, id))
+                || occurs_const(u, id)
         }
     }
 }

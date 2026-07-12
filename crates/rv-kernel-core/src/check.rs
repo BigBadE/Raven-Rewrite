@@ -268,32 +268,107 @@ impl<'e> Checker<'e> {
                 Ok((**ty).clone())
             }
 
-            // `Glue A [φ ↦ (T, e)] : Sort u`, given `A, T : Sort u` (the same
-            // universe — see `Term::Glue`'s "scoped simplification" doc) and
-            // `e : Equiv T A` (a *total*, not merely `φ`-partial, equivalence —
-            // the deliberate strengthening this increment makes over CCHM's
-            // general formation rule; see the module/type doc). No coverage or
-            // compatibility obligation is imposed on `φ` itself here (unlike
-            // `Term::Sys`'s `check_sys`) because this is a single-face former,
-            // not a multi-branch system.
-            Term::Glue(a, phi, t, e) => {
-                let sort_a = self.infer_sort(ctx, a)?;
-                self.check_cof_wellformed(ctx, phi)?;
-                let sort_t = self.infer_sort(ctx, t)?;
-                if !level::equiv(&sort_a, &sort_t) {
-                    return Err(format!(
-                        "Glue: the outer type T and the base type A must live in the same \
-                         universe (got T : Sort {sort_t:?}, A : Sort {sort_a:?})"
-                    ));
+            // `Glue A [φ_1 ↦ (T_1,e_1), …] : Sort u`, given `A, T_k : Sort u` (same
+            // universe for every branch — see `Term::Glue`'s doc) and each
+            // `e_k : Equiv T_k A` (a *total*, not merely `φ_k`-partial,
+            // equivalence). Requires the branch list to be non-empty (an empty
+            // `Glue` would be `Glue A []`, which is just `A` — reject rather than
+            // silently permit a degenerate encoding), and every pair of branches
+            // to be **compatible on their overlap** (see `Term::Glue`'s doc and
+            // `check_sys`'s own compatibility loop, which this mirrors exactly).
+            Term::Glue(a, branches) => {
+                if branches.is_empty() {
+                    return Err("Glue: the branch list [φ ↦ (T,e), …] must be non-empty".to_string());
                 }
-                let equiv_ty = Term::apps(
-                    Term::cnst(crate::term::name("Equiv"), vec![sort_a.clone()]),
-                    [(**t).clone(), (**a).clone()],
-                );
-                self.check(ctx, e, &equiv_ty)?;
+                let sort_a = self.infer_sort(ctx, a)?;
+                for (phi, t, e) in branches.iter() {
+                    self.check_cof_wellformed(ctx, phi)?;
+                    let sort_t = self.infer_sort(ctx, t)?;
+                    if !level::equiv(&sort_a, &sort_t) {
+                        return Err(format!(
+                            "Glue: every branch's T and the base type A must live in the same \
+                             universe (got T : Sort {sort_t:?}, A : Sort {sort_a:?})"
+                        ));
+                    }
+                    let equiv_ty = Term::apps(
+                        Term::cnst(crate::term::name("Equiv"), vec![sort_a.clone()]),
+                        [(**t).clone(), (**a).clone()],
+                    );
+                    self.check(ctx, e, &equiv_ty)?;
+                }
+                self.check_glue_branches_compatible(ctx, branches)?;
                 Ok(Term::Sort(sort_a))
             }
+            // `unglue A [φ_1 ↦ (T_1,e_1), …] u : A` — same branch obligations as
+            // `Glue` (this is its elimination form: `u` must inhabit the `Glue`
+            // type built from exactly these branches), plus `u : Glue A […]`.
+            Term::Unglue(a, branches, u) => {
+                if branches.is_empty() {
+                    return Err("unglue: the branch list [φ ↦ (T,e), …] must be non-empty".to_string());
+                }
+                let sort_a = self.infer_sort(ctx, a)?;
+                for (phi, t, e) in branches.iter() {
+                    self.check_cof_wellformed(ctx, phi)?;
+                    let sort_t = self.infer_sort(ctx, t)?;
+                    if !level::equiv(&sort_a, &sort_t) {
+                        return Err(format!(
+                            "unglue: every branch's T and the base type A must live in the same \
+                             universe (got T : Sort {sort_t:?}, A : Sort {sort_a:?})"
+                        ));
+                    }
+                    let equiv_ty = Term::apps(
+                        Term::cnst(crate::term::name("Equiv"), vec![sort_a.clone()]),
+                        [(**t).clone(), (**a).clone()],
+                    );
+                    self.check(ctx, e, &equiv_ty)?;
+                }
+                self.check_glue_branches_compatible(ctx, branches)?;
+                let glue_ty = Term::Glue((*a).clone(), branches.clone());
+                self.check(ctx, u, &glue_ty)?;
+                Ok((**a).clone())
+            }
         }
+    }
+
+    /// The compatibility obligation shared by [`Term::Glue`] and [`Term::Unglue`]:
+    /// on any overlap `φ_i ∧ φ_j` (`i≠j`) that isn't `⊥`, `T_i ≡ T_j` and
+    /// `e_i ≡ e_j` **under restriction to the overlap** — exactly `check_sys`'s
+    /// compatibility loop (see its doc for the full soundness argument), applied
+    /// to `(T,e)` pairs instead of a single branch term.
+    fn check_glue_branches_compatible(
+        &self,
+        ctx: &mut LocalCtx,
+        branches: &[(Rc<Cof>, Rc<Term>, Rc<Term>)],
+    ) -> Result<(), String> {
+        for i in 0..branches.len() {
+            for j in (i + 1)..branches.len() {
+                let overlap = Cof::and((*branches[i].0).clone(), (*branches[j].0).clone());
+                if face::is_false(&overlap) {
+                    continue;
+                }
+                for clause in face::overlap_clauses(&branches[i].0, &branches[j].0) {
+                    let ti = face::restrict_clause_term(&clause, &branches[i].1);
+                    let tj = face::restrict_clause_term(&clause, &branches[j].1);
+                    if !self.is_def_eq(ctx, &ti, &tj) {
+                        return Err(format!(
+                            "incompatible Glue: branches {i} and {j} disagree on their overlapping T \
+                             (φ_{i} ∧ φ_{j} is satisfiable, but the branch types are not definitionally \
+                             equal after restricting to the overlapping face)"
+                        ));
+                    }
+                    let ei = face::restrict_clause_term(&clause, &branches[i].2);
+                    let ej = face::restrict_clause_term(&clause, &branches[j].2);
+                    if !self.is_def_eq(ctx, &ei, &ej) {
+                        return Err(format!(
+                            "incompatible Glue: branches {i} and {j} disagree on their overlapping e \
+                             (φ_{i} ∧ φ_{j} is satisfiable, but the branch equivalences are not \
+                             definitionally equal after restricting to the overlapping face)"
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Check that a cofibration's every atom subject is genuinely interval-classified.
@@ -582,11 +657,20 @@ impl<'e> Checker<'e> {
             // `Glue` (see `crate::term::Term::Glue`): structural, same shape as
             // `Partial`/`HComp` above — `φ` compares up to semantic cofibration
             // equivalence, `A`/`T`/`e` structurally.
-            (Term::Glue(a1, p1, t1, e1), Term::Glue(a2, p2, t2, e2)) => {
+            (Term::Glue(a1, b1), Term::Glue(a2, b2)) => {
                 self.compare(ctx, a1, a2)
-                    && face::cof_equiv(p1, p2)
-                    && self.compare(ctx, t1, t2)
-                    && self.compare(ctx, e1, e2)
+                    && b1.len() == b2.len()
+                    && b1.iter().zip(b2.iter()).all(|((p1, t1, e1), (p2, t2, e2))| {
+                        face::cof_equiv(p1, p2) && self.compare(ctx, t1, t2) && self.compare(ctx, e1, e2)
+                    })
+            }
+            (Term::Unglue(a1, b1, u1), Term::Unglue(a2, b2, u2)) => {
+                self.compare(ctx, a1, a2)
+                    && b1.len() == b2.len()
+                    && b1.iter().zip(b2.iter()).all(|((p1, t1, e1), (p2, t2, e2))| {
+                        face::cof_equiv(p1, p2) && self.compare(ctx, t1, t2) && self.compare(ctx, e1, e2)
+                    })
+                    && self.compare(ctx, u1, u2)
             }
             _ => false,
         };

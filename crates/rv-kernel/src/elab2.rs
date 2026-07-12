@@ -2244,11 +2244,32 @@ fn abstract_occurrences(e: &Term, target: &Term, k: usize) -> Term {
         ),
         // Step 1 of univalence (see `rv_kernel_core::term::Term::Glue`): no
         // surface syntax yet, kept structurally sound like `Transp`/`HComp` above.
-        Term::Glue(a, p, t, e) => Term::glue_ty(
+        Term::Glue(a, branches) => Term::glue_ty_multi(
             abstract_occurrences(a, target, k),
-            abstract_occurrences_cof(p, target, k),
-            abstract_occurrences(t, target, k),
-            abstract_occurrences(e, target, k),
+            branches
+                .iter()
+                .map(|(p, t, e)| {
+                    (
+                        abstract_occurrences_cof(p, target, k),
+                        abstract_occurrences(t, target, k),
+                        abstract_occurrences(e, target, k),
+                    )
+                })
+                .collect(),
+        ),
+        Term::Unglue(a, branches, u) => Term::unglue(
+            abstract_occurrences(a, target, k),
+            branches
+                .iter()
+                .map(|(p, t, e)| {
+                    (
+                        abstract_occurrences_cof(p, target, k),
+                        abstract_occurrences(t, target, k),
+                        abstract_occurrences(e, target, k),
+                    )
+                })
+                .collect(),
+            abstract_occurrences(u, target, k),
         ),
     }
 }
@@ -2428,11 +2449,20 @@ pub(crate) fn replace_with_var(t: &Term, target: &Term, k: usize) -> Term {
                 go(u, target, k, depth + 1),
                 go(u0, target, k, depth),
             ),
-            Term::Glue(a, p, t2, e) => Term::glue_ty(
+            Term::Glue(a, branches) => Term::glue_ty_multi(
                 go(a, target, k, depth),
-                (**p).clone(),
-                go(t2, target, k, depth),
-                go(e, target, k, depth),
+                branches
+                    .iter()
+                    .map(|(p, t2, e)| ((**p).clone(), go(t2, target, k, depth), go(e, target, k, depth)))
+                    .collect(),
+            ),
+            Term::Unglue(a, branches, u) => Term::unglue(
+                go(a, target, k, depth),
+                branches
+                    .iter()
+                    .map(|(p, t2, e)| ((**p).clone(), go(t2, target, k, depth), go(e, target, k, depth)))
+                    .collect(),
+                go(u, target, k, depth),
             ),
         }
     }
@@ -2489,11 +2519,14 @@ fn subst_db_var(t: &Term, d: usize, u: &Term) -> Term {
                 go(uu, d, u, depth + 1),
                 go(u0, d, u, depth),
             ),
-            Term::Glue(a, p, t2, e) => Term::glue_ty(
+            Term::Glue(a, branches) => Term::glue_ty_multi(
                 go(a, d, u, depth),
-                (**p).clone(),
-                go(t2, d, u, depth),
-                go(e, d, u, depth),
+                branches.iter().map(|(p, t2, e)| ((**p).clone(), go(t2, d, u, depth), go(e, d, u, depth))).collect(),
+            ),
+            Term::Unglue(a, branches, uu) => Term::unglue(
+                go(a, d, u, depth),
+                branches.iter().map(|(p, t2, e)| ((**p).clone(), go(t2, d, u, depth), go(e, d, u, depth))).collect(),
+                go(uu, d, u, depth),
             ),
         }
     }
@@ -2531,8 +2564,13 @@ fn occurs_term(t: &Term, target: &Term) -> bool {
             Term::HComp(ty, _, u, u0) => {
                 go(ty, target, depth) || go(u, target, depth + 1) || go(u0, target, depth)
             }
-            Term::Glue(a, _, t2, e) => {
-                go(a, target, depth) || go(t2, target, depth) || go(e, target, depth)
+            Term::Glue(a, branches) => {
+                go(a, target, depth) || branches.iter().any(|(_, t2, e)| go(t2, target, depth) || go(e, target, depth))
+            }
+            Term::Unglue(a, branches, u) => {
+                go(a, target, depth)
+                    || branches.iter().any(|(_, t2, e)| go(t2, target, depth) || go(e, target, depth))
+                    || go(u, target, depth)
             }
         }
     }
@@ -2563,8 +2601,13 @@ fn occurs_var(t: &Term, d: usize) -> bool {
             Term::HComp(ty, _, u, u0) => {
                 go(ty, d, depth) || go(u, d, depth + 1) || go(u0, d, depth)
             }
-            Term::Glue(a, _, t2, e) => {
-                go(a, d, depth) || go(t2, d, depth) || go(e, d, depth)
+            Term::Glue(a, branches) => {
+                go(a, d, depth) || branches.iter().any(|(_, t2, e)| go(t2, d, depth) || go(e, d, depth))
+            }
+            Term::Unglue(a, branches, u) => {
+                go(a, d, depth)
+                    || branches.iter().any(|(_, t2, e)| go(t2, d, depth) || go(e, d, depth))
+                    || go(u, d, depth)
             }
         }
     }
@@ -2592,7 +2635,14 @@ fn occurs_const(n: &str, t: &Term) -> bool {
         Term::HComp(ty, _, u, u0) => {
             occurs_const(n, ty) || occurs_const(n, u) || occurs_const(n, u0)
         }
-        Term::Glue(a, _, t, e) => occurs_const(n, a) || occurs_const(n, t) || occurs_const(n, e),
+        Term::Glue(a, branches) => {
+            occurs_const(n, a) || branches.iter().any(|(_, t, e)| occurs_const(n, t) || occurs_const(n, e))
+        }
+        Term::Unglue(a, branches, u) => {
+            occurs_const(n, a)
+                || branches.iter().any(|(_, t, e)| occurs_const(n, t) || occurs_const(n, e))
+                || occurs_const(n, u)
+        }
     }
 }
 
@@ -2655,8 +2705,13 @@ fn is_closed_at(t: &Term, depth: usize) -> bool {
         Term::HComp(ty, _, u, u0) => {
             is_closed_at(ty, depth) && is_closed_at(u, depth + 1) && is_closed_at(u0, depth)
         }
-        Term::Glue(a, _, t, e) => {
-            is_closed_at(a, depth) && is_closed_at(t, depth) && is_closed_at(e, depth)
+        Term::Glue(a, branches) => {
+            is_closed_at(a, depth) && branches.iter().all(|(_, t, e)| is_closed_at(t, depth) && is_closed_at(e, depth))
+        }
+        Term::Unglue(a, branches, u) => {
+            is_closed_at(a, depth)
+                && branches.iter().all(|(_, t, e)| is_closed_at(t, depth) && is_closed_at(e, depth))
+                && is_closed_at(u, depth)
         }
     }
 }

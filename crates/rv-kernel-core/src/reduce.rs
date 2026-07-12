@@ -271,18 +271,49 @@ impl<'e> Reducer<'e> {
                         }
                     }
                 }
-                // `Glue A [φ ↦ (T,e)]` (see `crate::term::Term::Glue`): the two
-                // strictness laws — `φ` decided `⊤` reduces to `T` (CCHM's defining
-                // strictness property, the whole point of `Glue`); `φ` decided `⊥`
-                // (no constraint at all) reduces to plain `A`, mirroring `Term::Sys`'s
-                // "fire once decided" convention (an empty/never-satisfiable system
-                // degenerates to the ambient type). Otherwise stuck — a valid normal
+                // `Glue A [φ_1 ↦ (T_1,e_1), …]` (see `crate::term::Term::Glue`): the
+                // two strictness laws, generalized to `n` branches — the *first*
+                // branch whose `φ_k` is decided `⊤` reduces to `T_k` (CCHM's defining
+                // strictness property; compatible branches agree wherever more than
+                // one fires, so "first" is a sound, arbitrary tie-break); if *every*
+                // `φ_k` is decided `⊥`, reduces to plain `A`, mirroring `Term::Sys`'s
+                // "fire once decided" convention. Otherwise stuck — a valid normal
                 // form, exactly like a stuck `Sys`/`HComp`.
-                Term::Glue(a, phi, t, _e) => {
-                    if crate::face::is_true(phi) {
+                Term::Glue(a, branches) => {
+                    if let Some((_, t, _)) = branches.iter().find(|(phi, _, _)| crate::face::is_true(phi)) {
                         head = (**t).clone();
-                    } else if crate::face::is_false(phi) {
+                    } else if branches.iter().all(|(phi, _, _)| crate::face::is_false(phi)) {
                         head = (**a).clone();
+                    } else {
+                        break;
+                    }
+                }
+                // `unglue A [φ_1 ↦ (T_1,e_1), …] u` (see `crate::term::Term::Unglue`):
+                // on a decided `⊤` face, `unglue` is that branch's `e_k.f`; off every
+                // face (all decided `⊥`), `unglue` is the identity; otherwise stuck.
+                Term::Unglue(a, branches, u) => {
+                    if let Some((_, t, e)) = branches.iter().find(|(phi, _, _)| crate::face::is_true(phi)) {
+                        // `Equiv.f T A e u` — the level argument is a genuine
+                        // universe-polymorphism parameter of `Equiv.f`'s *type*
+                        // only; its declared *value* (see `crate::equiv`'s
+                        // `declare_equiv_projections`) never inspects the level at
+                        // all (it just unpacks `e`'s `f` field via `Equiv.rec`'s
+                        // ι-rule), so any placeholder level reduces to the same
+                        // normal form here — untyped `whnf` has no sort available
+                        // to plug in the "real" one.
+                        let ef = crate::term::Term::apps(
+                            crate::term::Term::cnst(
+                                crate::term::name("Equiv.f"),
+                                vec![crate::level::Level::of_nat(0)],
+                            ),
+                            [(**t).clone(), (**a).clone(), (**e).clone(), (**u).clone()],
+                        );
+                        let (h, mut a2) = ef.unfold_apps();
+                        a2.extend(args);
+                        head = h;
+                        args = a2;
+                    } else if branches.iter().all(|(phi, _, _)| crate::face::is_false(phi)) {
+                        head = (**u).clone();
                     } else {
                         break;
                     }
