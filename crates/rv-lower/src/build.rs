@@ -203,6 +203,17 @@ impl<'a> FnBuilder<'a> {
                     self.set_local_ty(dst, self.types.resolve_ty(ty, &std::collections::HashSet::new()));
                 }
                 self.lower_into_local(dst, init, syms)?;
+                // An explicit ADT annotation (`let r: Widget = ..`) is authoritative
+                // for later field access / match / method resolution — even when the
+                // initializer is opaque to `adt_of_expr` (e.g. a generic call whose
+                // erased return type is nonetheless known concretely here). A
+                // refinement *alias* names a scalar base, not an ADT, so it is
+                // excluded (its own handling runs below).
+                if let Some(AstTy::Adt(name)) = ty {
+                    if self.types.is_adt(*name) {
+                        self.set_local_adt(dst, *name);
+                    }
+                }
                 // Best-effort: propagate a known ADT type from the initializer so
                 // later field access / match on this local can resolve.
                 if let Some(adt) = self.adt_of_expr(init) {

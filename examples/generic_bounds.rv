@@ -1,0 +1,39 @@
+// Generic trait bounds are ENFORCED at call sites.
+//
+// `apply<T: Show>(x: T)` may only be instantiated at a type that has a matching
+// `impl Show for T`. `Widget` does; a call `apply(w)` therefore elaborates, and
+// the erased return value is usable as a `Widget` (so `.show()` resolves).
+//
+// Swapping in a type without `impl Show for _` is rejected in inference with:
+//   type `Gadget` does not implement trait `Show` required by generic parameter `T`
+// (see the `generic_bound_violation_is_rejected` test in rv-infer).
+//
+// `rvc examples/generic_bounds.rv --run` borrow-checks, verifies, and runs
+// main() = Int(7).
+
+trait Show {
+  fn show(self) -> i64;
+}
+
+struct Widget {
+  id: i64,
+}
+
+impl Show for Widget {
+  fn show(self) -> i64 {
+    return self.id;
+  }
+}
+
+// `T` is constrained to implement `Show`; the bound is checked wherever `apply`
+// is instantiated.
+fn apply<T: Show>(x: T) -> T {
+  return x;
+}
+
+fn main() -> i64 {
+  let w: Widget = Widget { id: 7 };
+  // `apply(w)` instantiates `T = Widget`, which satisfies `T: Show`.
+  let r: Widget = apply(w);
+  return r.show();
+}
