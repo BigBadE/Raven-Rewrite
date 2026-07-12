@@ -117,6 +117,13 @@ impl Kernel {
         crate::trunc::install_trunc(&mut self.env)
     }
 
+    /// Install `funext` — function extensionality — **derived** from `Quot`/`Quot.sound`/
+    /// `Quot.lift` (requires [`Kernel::install_quot`] first) plus this kernel's already-
+    /// definitional η-conversion. See [`crate::funext`] for the statement and proof.
+    pub fn install_funext(&mut self) -> Result<(), String> {
+        crate::funext::install_funext(&mut self.env)
+    }
+
     /// Check the QTT usage discipline (`crate::graded`) of the stored definition
     /// `name`: a graded binder (linear `1`/erased `0`) in its type must be used
     /// accordingly in its value. Ungraded (`ω`, the default) binders always pass, so

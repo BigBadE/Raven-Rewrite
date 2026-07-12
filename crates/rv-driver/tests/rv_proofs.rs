@@ -230,3 +230,15 @@ fn graded_binder_linear_violation_rejected() {
     let err = verify_rv(&src, None).unwrap_err();
     assert!(err.contains("usage discipline"), "expected a usage-discipline error, got: {err}");
 }
+
+#[test]
+fn funext_smoke_test() {
+    let src = r#"
+enum Nat { Zero, Succ(Nat) }
+fn test(f: Nat -> Nat, g: Nat -> Nat, h: (x: Nat) -> f(x) == g(x)) -> f == g {
+    funext(Nat, Nat, f, g, h)
+}
+"#;
+    let r = verify_rv(src, None).expect("funext usable from surface .rv");
+    assert!(r.all_verified(), "open: {:?}", r.open);
+}
