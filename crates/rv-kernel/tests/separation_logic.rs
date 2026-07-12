@@ -7,6 +7,7 @@
 //! (co-ownership over-provisions and is invalid — why `&mut` licenses a strong update), and shared
 //! duplicability (`l |->[1]v == l |->[½]v * l |->[½]v` — why `&` is freely shared). Zero axioms.
 use rv_kernel::verify::Session;
+use rv_kernel::KernelExt;
 
 /// The equality-combinator prelude that `.rv` proofs assume (mirrors `crates/rv-driver/prelude.rv`,
 /// which `rvc --verify` loads automatically).

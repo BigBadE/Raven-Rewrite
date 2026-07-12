@@ -35,7 +35,7 @@ pub fn name(s: &str) -> Name {
 /// * `Many` — unrestricted (the default; ordinary runtime values).
 ///
 /// The trusted type-checker treats grades as *annotations* (ignoring them keeps it
-/// identical to the ungraded system, hence sound); the separate [`crate::erase`]
+/// identical to the ungraded system, hence sound); the separate `rv_kernel::erase`
 /// analysis is what *uses* them, to erase ghosts and to check the grade discipline.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Grade {
@@ -93,7 +93,7 @@ pub enum Term {
     /// [`Grade`] on the let-bound variable (mirrors [`Term::Pi`]'s binder grade). The
     /// default constructor [`Term::let_`] grades it `Many` (unrestricted), so every
     /// pre-existing `let` — hand-built or elaborator-produced — is unaffected by the
-    /// QTT usage pass in [`crate::graded`].
+    /// QTT usage pass in `rv_kernel::graded`.
     Let(Grade, Rc<Term>, Rc<Term>, Rc<Term>),
     /// An **elaboration-only** metavariable (a hole to be solved by unification). The
     /// trusted type-checker *rejects* any term still containing one; the elaborator
@@ -317,7 +317,7 @@ impl Term {
     }
 
     /// A readable, surface-like pretty-print for **diagnostics** (type-mismatch and
-    /// unification errors). Unlike [`crate::verify::render`] — which is for *runtime
+    /// unification errors). Unlike `rv_kernel::verify::render` — which is for *runtime
     /// values* and collapses functions to `<function>` — this shows the full term:
     /// de Bruijn variables get generated binder names (`a`, `b`, …), declaration and
     /// constructor names print directly, arrows collapse to `A -> B` when non-dependent,

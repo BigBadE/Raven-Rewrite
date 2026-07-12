@@ -1,9 +1,9 @@
 //! Surface syntax: a concrete, named language that elaborates to core terms.
 //!
-//! The core ([`crate::term`]) uses de Bruijn indices — unwriteable by hand at any
+//! The core ([`rv_kernel_core::term`]) uses de Bruijn indices — unwriteable by hand at any
 //! scale. This module is the front end: a hand-written lexer + recursive-descent
 //! parser producing a *named* AST ([`Expr`], [`Command`]). The [elaborator](crate::elab)
-//! turns that into core terms and feeds the [`Kernel`](crate::kernel).
+//! turns that into core terms and feeds the [`Kernel`](rv_kernel_core::kernel).
 //!
 //! ## Grammar (informal)
 //!

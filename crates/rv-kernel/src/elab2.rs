@@ -29,10 +29,10 @@
 
 use std::collections::HashMap;
 
-use crate::check::{Checker, LocalCtx};
-use crate::level::Level;
+use rv_kernel_core::check::{Checker, LocalCtx};
+use rv_kernel_core::level::Level;
 use crate::surface::{Expr, SLevel};
-use crate::term::{name, Grade, Term};
+use rv_kernel_core::term::{name, Grade, Term};
 use crate::unify::{unify, Metas};
 use crate::Env;
 
@@ -645,7 +645,7 @@ impl<'a> Infer<'a> {
         occs: &[Expr],
         rows: Vec<(Vec<crate::surface::Pattern>, Expr)>,
     ) -> Result<Expr, String> {
-        use crate::env::Decl;
+        use rv_kernel_core::env::Decl;
         use crate::surface::{MatchArm, Pattern};
         let (pats0, body0) = rows.first().ok_or("non-exhaustive match")?;
         // If the first row is all variables, it matches: bind each to its occurrence.
@@ -729,7 +729,7 @@ impl<'a> Infer<'a> {
         arms: &[crate::surface::MatchArm],
         expected: Option<&Term>,
     ) -> Result<(Term, Term), String> {
-        use crate::env::Decl;
+        use rv_kernel_core::env::Decl;
         // 0. Nested patterns / wildcards / catch-alls: desugar the whole `match` into a
         //    tree of *flat* single-level matches (each compiled to a recursor below), then
         //    elaborate that. Only flat constructor patterns reach the recursor compiler.
@@ -940,7 +940,7 @@ impl<'a> Infer<'a> {
     /// former `Π params. Π indices. Sort _`.
     fn index_domains(
         &self,
-        ind: &crate::env::Inductive,
+        ind: &rv_kernel_core::env::Inductive,
         ls: &[Level],
         params: &[Term],
     ) -> Result<Vec<Term>, String> {
@@ -967,7 +967,7 @@ impl<'a> Infer<'a> {
         members: &[BundleMember],
         group: &[String],
     ) -> Result<Vec<(String, Term, Term)>, String> {
-        use crate::env::Decl;
+        use rv_kernel_core::env::Decl;
         struct MInfo {
             ind: String,
             ls: Vec<Level>,
@@ -1234,7 +1234,7 @@ impl<'a> Infer<'a> {
         eq_lvl: &Level,
         goal: &Term,
     ) -> Result<Option<Term>, String> {
-        use crate::env::Decl;
+        use rv_kernel_core::env::Decl;
         let (lh, _) = lhs.unfold_apps();
         let (rh, _) = rhs.unfold_apps();
         let (Term::Const(lc, _), Term::Const(rc, _)) = (&lh, &rh) else { return Ok(None) };
@@ -1471,7 +1471,7 @@ impl<'a> Infer<'a> {
         ftype: &Term,
         flvl: &Level,
     ) -> Result<Option<Term>, String> {
-        use crate::env::Decl;
+        use rv_kernel_core::env::Decl;
         let (a_head, _) = self.force_whnf(a_ty).unfold_apps();
         let Term::Const(a_name, a_levels) = &a_head else { return Ok(None) };
         let a_name = a_name.to_string();
@@ -1605,8 +1605,8 @@ impl<'a> Infer<'a> {
     #[allow(clippy::too_many_arguments)]
     fn compile_match_mutual(
         &mut self,
-        ind: &crate::env::Inductive,
-        rec: &crate::env::Recursor,
+        ind: &rv_kernel_core::env::Inductive,
+        rec: &rv_kernel_core::env::Recursor,
         ind_name: &str,
         ls: &[Level],
         k: usize,
@@ -1616,7 +1616,7 @@ impl<'a> Infer<'a> {
         e_term: Term,
         arms: &[crate::surface::MatchArm],
     ) -> Result<(Term, Term), String> {
-        use crate::env::Decl;
+        use rv_kernel_core::env::Decl;
         if ind.num_indices != 0 {
             return Err(format!(
                 "`match` on the indexed mutual inductive '{ind_name}' is not supported"
@@ -1747,7 +1747,7 @@ impl<'a> Infer<'a> {
             }
         }
         // `t` is the conclusion `motive (c fields)`, which β-reduces to `R → R`.
-        let concl = crate::reduce::Reducer::new(self.env).whnf(&t);
+        let concl = rv_kernel_core::reduce::Reducer::new(self.env).whnf(&t);
         let Term::Pi(_, cdom, _) = &concl else {
             return Err(format!("dummy minor for '{cname}': conclusion is not `R → R`"));
         };
@@ -1853,7 +1853,7 @@ impl<'a> Infer<'a> {
     }
 
     fn force_whnf(&self, t: &Term) -> Term {
-        crate::nbe::Nbe::with_metas(self.env, self.metas.solutions())
+        rv_kernel_core::nbe::Nbe::with_metas(self.env, self.metas.solutions())
             .normalize_open(self.depth(), t)
     }
 
@@ -2379,8 +2379,9 @@ pub fn params_mask(params: &[crate::surface::Binder]) -> Vec<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::Kernel;
+    use crate::kernel_ext::KernelExt;
     use crate::surface::parse_expr;
+    use rv_kernel_core::kernel::Kernel;
 
     fn nat_kernel() -> Kernel {
         let mut k = Kernel::new();

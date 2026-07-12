@@ -448,14 +448,14 @@ pub fn install_trunc(env: &mut Env) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::check::Checker;
-    use crate::generate::{declare_inductive, eq_spec, nat_spec};
+    use crate::inductive::{declare_eq, declare_nat};
     use crate::reduce::Reducer;
 
     /// Build an env with `Nat`, `Eq`, and the truncation schema installed.
     fn trunc_env() -> Env {
         let mut env = Env::new();
-        declare_inductive(&mut env, nat_spec()).unwrap();
-        declare_inductive(&mut env, eq_spec()).unwrap();
+        declare_nat(&mut env).unwrap();
+        declare_eq(&mut env).unwrap();
         install_trunc(&mut env).unwrap();
         env
     }
@@ -486,7 +486,7 @@ mod tests {
     #[test]
     fn requires_eq() {
         let mut env = Env::new();
-        declare_inductive(&mut env, nat_spec()).unwrap();
+        declare_nat(&mut env).unwrap();
         let err = install_trunc(&mut env).unwrap_err();
         assert!(err.contains("Eq"), "got: {err}");
     }

@@ -45,11 +45,11 @@
 //! per-member index telescopes threaded through motives, minors, and ι-rules, and (b)
 //! the index/large-elimination handling matching [`crate::generate::declare_inductive`].
 
-use crate::check::Checker;
-use crate::env::{Constructor, Decl, Env, Inductive, RecRule, Recursor};
+use rv_kernel_core::check::Checker;
+use rv_kernel_core::env::{Constructor, Decl, Env, Inductive, RecRule, Recursor};
 use crate::generate::{ctx_images, fold_pis, mk_var, occurs, peel_all_pis, peel_pis, IndSpec};
-use crate::level::Level;
-use crate::term::{Name, Term};
+use rv_kernel_core::level::Level;
+use rv_kernel_core::term::{Name, Term};
 use std::collections::HashMap;
 use std::rc::Rc;
 

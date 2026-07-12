@@ -1,4 +1,4 @@
-//! Coinductive ("codata") types — greatest fixpoints, the dual of [`crate::generate`].
+//! Coinductive ("codata") types — greatest fixpoints, the dual of `rv_kernel::generate`.
 //!
 //! ## What this delivers
 //!
@@ -113,9 +113,9 @@
 
 use crate::check::Checker;
 use crate::env::{Coinductive, CorecRule, Corecursor, Decl, Destructor, Env};
-use crate::generate::{fold_pis, mk_var, occurs, peel_all_pis, peel_pis};
 use crate::level::Level;
 use crate::term::{Name, Term};
+use crate::util::{fold_pis, mk_var, occurs, peel_all_pis, peel_pis};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -312,7 +312,7 @@ pub fn declare_coinductive(env: &mut Env, spec: CoindSpec) -> Result<(), String>
     //    heads of two streams *certified bisimilar so far* are equal" is provable).
     //    Each step is still index-polymorphic (quantifies its own fresh copy of
     //    `indices`, dualizing how an indexed recursor's minor premise quantifies its
-    //    own copy of the indices — see [`crate::mutual`]) but now also takes the
+    //    own copy of the indices — see `rv_kernel::mutual`) but now also takes the
     //    *carrier at those indices* as its state argument.
     let carrier_u = Level::param(num_levels);
     let corec_levels = num_levels + 1;
@@ -534,7 +534,7 @@ pub fn stream_spec() -> CoindSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::generate::{declare_inductive, nat_spec};
+    use crate::inductive::declare_nat;
     use crate::reduce::Reducer;
 
     fn cn(s: &str) -> Term {
@@ -562,7 +562,7 @@ mod tests {
     #[test]
     fn repeat_stream_observations_compute() {
         let mut env = Env::new();
-        declare_inductive(&mut env, nat_spec()).unwrap();
+        declare_nat(&mut env).unwrap();
         declare_coinductive(&mut env, stream_spec()).unwrap();
         let r = Reducer::new(&env);
 
@@ -593,7 +593,7 @@ mod tests {
     #[test]
     fn nats_stream_counts_up() {
         let mut env = Env::new();
-        declare_inductive(&mut env, nat_spec()).unwrap();
+        declare_nat(&mut env).unwrap();
         declare_coinductive(&mut env, stream_spec()).unwrap();
         let r = Reducer::new(&env);
 
@@ -620,7 +620,7 @@ mod tests {
     #[test]
     fn nbe_agrees_with_reducer_on_nu() {
         let mut env = Env::new();
-        declare_inductive(&mut env, nat_spec()).unwrap();
+        declare_nat(&mut env).unwrap();
         declare_coinductive(&mut env, stream_spec()).unwrap();
         let r = Reducer::new(&env);
         let nbe = crate::nbe::Nbe::new(&env);
@@ -781,7 +781,7 @@ mod tests {
 
     fn setup_bisim_env() -> Env {
         let mut env = Env::new();
-        declare_inductive(&mut env, nat_spec()).unwrap();
+        declare_nat(&mut env).unwrap();
         declare_coinductive(&mut env, stream_spec()).unwrap();
         crate::inductive::declare_eq(&mut env).unwrap();
         declare_coinductive(&mut env, bisim_spec()).unwrap();
@@ -955,7 +955,7 @@ mod tests {
     #[test]
     fn indexed_scrutinee_mismatch_rejected() {
         let mut env = Env::new();
-        declare_inductive(&mut env, nat_spec()).unwrap();
+        declare_nat(&mut env).unwrap();
         declare_coinductive(&mut env, stream_spec()).unwrap();
         let u = Level::param(0);
         let stream_a = |a: Term| Term::app(Term::cnst(name("Stream"), vec![u.clone()]), a);

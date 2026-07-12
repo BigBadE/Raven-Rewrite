@@ -1,9 +1,9 @@
 //! Quantitative (QTT) **usage checking**: the structural linearity/erasure discipline.
 //!
-//! The kernel's [`Grade`](crate::term::Grade)s (`0` erased, `1` linear, `ω`
+//! The kernel's [`Grade`](rv_kernel_core::term::Grade)s (`0` erased, `1` linear, `ω`
 //! unrestricted) form the standard Quantitative Type Theory semiring, and a `Π`
 //! binder already carries the grade at which its argument may be consumed. The
-//! trusted [`Checker`](crate::check) treats grades as *annotations* — ignoring them
+//! trusted [`Checker`](rv_kernel_core::check) treats grades as *annotations* — ignoring them
 //! keeps its judgement identical to the ungraded system, which is what makes graded
 //! code backward-compatible. The [`erase`](crate::erase) pass then uses the `0`
 //! grades to drop ghosts and to reject a ghost used at runtime.
@@ -57,7 +57,7 @@
 //! `infer` recurses into `Lam` wherever it appears in the spine. See
 //! `linear_field_in_constructor_application` and
 //! `linear_recursor_branch_consumes_field_once` below for the Σ-intro/eliminator
-//! adversarial pairs. **What is *not* generated gradedly yet**: [`crate::inductive`]'s
+//! adversarial pairs. **What is *not* generated gradedly yet**: [`rv_kernel_core::inductive`]'s
 //! `declare_inductive` automation always emits `Grade::Many` (`Term::pi`, not
 //! `pi_graded`) for constructor fields and recursor minor premises — so *today* no
 //! automatically-generated inductive has a linear field to check. Hand-built (`RawInductive`)
@@ -89,9 +89,9 @@
 //! an open application head whose type cannot be found) it falls back to `ω`, which
 //! can only *relax* — never tighten — so it stays sound.
 
-use crate::check::{Checker, LocalCtx};
-use crate::reduce::Reducer;
-use crate::term::{Grade, Term};
+use rv_kernel_core::check::{Checker, LocalCtx};
+use rv_kernel_core::reduce::Reducer;
+use rv_kernel_core::term::{Grade, Term};
 use crate::Env;
 
 /// A **usage vector**: for the binders currently in scope (indexed by de Bruijn
@@ -417,8 +417,8 @@ pub fn check_usage_against(env: &Env, t: &Term, ty: &Term) -> Result<(), GradeEr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::Kernel;
-    use crate::term::{name, Grade};
+    use rv_kernel_core::kernel::Kernel;
+    use rv_kernel_core::term::{name, Grade};
 
     fn cn(s: &str) -> Term {
         Term::cnst(name(s), vec![])
