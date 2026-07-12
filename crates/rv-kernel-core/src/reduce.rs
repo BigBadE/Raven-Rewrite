@@ -244,7 +244,15 @@ impl<'e> Reducer<'e> {
                             None => break,
                         }
                     } else {
-                        break;
+                        // Constructor-compatible `hcomp` for a user inductive
+                        // (see `crate::kan`'s "Phase 3.11" doc): matched
+                        // *syntactically* (no `whnf`) on `ty`/`u`/`u0`; only
+                        // fires when `u` is a literal `Sys` whose every branch,
+                        // and `u0`, are the *same* constructor applied.
+                        match crate::kan::hcomp_inductive_rule(self.env, ty, phi, u, u0) {
+                            Some(built) => head = built,
+                            None => break,
+                        }
                     }
                 }
                 // Sort, Var, Pi, I/IZero/IOne, PLam, PathP, Partial, or a stuck Const:

@@ -1246,6 +1246,344 @@ pub(crate) fn transp_inductive_rule(env: &Env, fam: &Term, a: &Term) -> Option<T
     ))
 }
 
+// ============================================================================
+// Phase 3.11: the constructor-compatible `hcomp` filling rule for user
+// inductive types (CCHM `data`/inductive `hcomp`, non-indexed, same-constructor
+// case only — see below for exactly what is/isn't in scope).
+// ============================================================================
+//
+// `hcomp`'s type argument (unlike `transp`'s family) is a single **fixed**
+// type — Phase 3 deliberately kept `hcomp` homogeneous in the strongest sense
+// (see the module doc's opening section). So the CCHM data-type `hcomp` rule
+// specializes here to something *simpler* than [`transp_inductive_rule`]'s own
+// three-way `Param`/`Recursive`/`Const` field classification: since the type
+// never varies, a non-recursive field's own (parameter-instantiated) type is
+// already a fixed, non-interval-dependent type — there is no "varying
+// parameter" line to transport along, only an ordinary `hcomp` *at that fixed
+// type*. The only real case split left is whether a field recurses into `D`
+// itself (needing the recursive sub-`hcomp` to walk one constructor layer
+// deeper) or not (composing directly at the field's own type). Concretely,
+// for a *non-indexed* inductive `D` with constructor `c`, when the base `u0`
+// and **every** branch of the system `u` are (syntactically) the *same*
+// constructor `c` applied to arguments:
+//
+// ```text
+//   hcomp D φ [ ψ_k ↦ c(a_k1 … a_kn) ] (c b_1 … b_n)
+//     ↦ c ( hcomp T_1 φ [ψ_k ↦ a_k1] b_1 ) … ( hcomp T_n φ [ψ_k ↦ a_kn] b_n )
+// ```
+//
+// where `T_j` is field `j`'s declared type, read off `c`'s own checked
+// `Π`-telescope with the (fixed, non-varying) parameters of `D` substituted
+// in, **except** when `T_j` is `D` applied to exactly those same parameters —
+// then the sub-composition recurses in `D` itself (`T_j := D`, i.e. the very
+// `ty` this `hcomp` is already at), rather than trying to build a "type of a
+// `D`-argument" that isn't `D`.
+//
+// # Scope (what this rule fires on, precisely)
+//
+// * `ty` a user inductive (`env.get(D) = Some(Decl::Inductive(ind))`) with
+//   **`ind.num_indices == 0`** (non-indexed — matching [`transp_inductive_rule`]'s
+//   own restriction) applied, *syntactically* (no `whnf`, this file's standing
+//   discipline), to *exactly* `ind.num_params` arguments.
+// * `u` is, syntactically, a literal [`Term::Sys`] — exactly
+//   [`hcomp_pi_rule`]/[`hcomp_pathp_rule`]'s own discipline (only a literal
+//   `Sys`'s branches are concrete enough to project a field out of soundly).
+// * `u0` is, syntactically, a fully-applied constructor of `D`:
+//   `u0.unfold_apps() = (Const(c, ls), args)` with `c` a constructor of `D`
+//   (`env.get(c) = Some(Decl::Constructor(ctor)), ctor.ind == D`) and
+//   `args.len() == ind.num_params + ctor.num_fields`.
+// * **Every** branch body of `u`, unfolded the same way, is headed by that
+//   *same* `c` with the *same* total argument count. If even one branch is
+//   headed by a different constructor (the "heterogeneous" case) — or by
+//   anything that isn't a literal constructor application at all (an opaque
+//   neutral branch, say) — the rule declines (`None`); this is the genuinely
+//   *stuck* case CCHM itself doesn't give a value to without extra machinery
+//   (Glue-style structure identifying the mismatched constructors' images),
+//   which this pass does not attempt. **`u` with zero branches also declines**
+//   (there is no constructor to agree on, and — degenerately — building
+//   `c()` from an empty `Sys` would silently discard the "same constructor as
+//   every branch" premise the rule exists to check).
+// * Each field's declared type (`Constructor::ty`'s telescope, read exactly as
+//   [`transp_inductive_rule`] reads it) must be **non-dependent on earlier
+//   fields** — the identical restriction, checked the identical way
+//   (`mentions_var` on each earlier field index before classification), for
+//   the identical reason (a later field's *type* depending on an earlier
+//   field's *value* needs a strictly harder, dependent-composition rule, out
+//   of scope here). Declines (`None`) rather than mis-firing.
+//
+// # The two field kinds
+//
+// Reading a field's domain type in the pure-parameter telescope context
+// (`Var(num_params-1) = param_0, …, Var(0) = param_{num_params-1}`, exactly
+// [`transp_inductive_rule`]'s own convention), *after* substituting `D`'s
+// actual (fixed, `ty`'s own) parameter arguments in for those telescope
+// variables (via [`Term::subst_ctx`] — sound because a field type that
+// mentions no earlier field, just confirmed, is a closed term over exactly
+// those `num_params` telescope variables, the standard-instantiation case
+// `subst_ctx` is built for):
+//
+// * **Recursive** — the field's *raw* (un-substituted) telescope type is `D`
+//   applied to exactly the parameters, in order (`args.len() == num_params`
+//   and `args[i] == Var(num_params-1-i)`, [`transp_inductive_rule`]'s own
+//   `FieldKind::Recursive` test, reused verbatim) — e.g. `List A`'s tail
+//   field. Composed by recursing at `ty` itself: `hcomp ty φ [ψ_k↦a_kj] b_j`.
+// * **Generic** — anything else. Composed at the field's own substituted type
+//   `T_j` (`dom_reduced.subst_ctx(&images)`, `images` the parameters in
+//   telescope order): `hcomp T_j φ [ψ_k↦a_kj] b_j`. Unlike
+//   [`transp_inductive_rule`], this rule does **not** need `Param`/`Const` as
+//   *separate* cases — since `ty` never varies, `T_j` is already a fixed,
+//   non-interval-dependent type regardless of which telescope shape produced
+//   it, so an ordinary (possibly further-reducible, lazily — one constructor
+//   layer of `hcomp` fires per `whnf` step, matching every other rule's
+//   posture) `hcomp` at `T_j` is always the right sub-composition — no
+//   further case analysis needed, and (unlike `transp_inductive_rule`) no
+//   field shape is declined here as "none of the known kinds".
+//
+// # Construction and index bookkeeping
+//
+// Unlike [`hcomp_pi_rule`]/[`hcomp_pathp_rule`], this rule introduces **no new
+// binder** — the projected field terms `a_kj := args_k[num_params+j]` live in
+// exactly the *same* frame the original branches `t_k` already lived in
+// (`Term::HComp`'s own convention: `u`'s branches are terms under the
+// enclosing `hcomp`'s own implicit interval binder, with no extra `Lam`/`PLam`
+// wrapper the way the `Π`/`PathP` rules had to introduce one for their own
+// fresh `x`/`j`). So no `lift` bookkeeping is needed when projecting a field
+// out of each branch — `ψ_k` and `a_kj` are used completely unchanged.
+//
+// # Soundness
+//
+// No new axiom or primitive — a pure rewriting of one `HComp` node into a
+// constructor application whose arguments are themselves (possibly
+// further-reducible) `HComp`/original-field terms, each independently
+// re-typechecked by the existing, unmodified `Checker::infer`/`check_sys`.
+//
+// 1. **Type preservation.** The source `HComp(ty, φ, u, u0)` node's checked
+//    type is `ty` unchanged (`Checker::infer`'s `Term::HComp` arm always
+//    reports `ty`, regardless of which rule fires). The built term is
+//    `c (hcomp T_1 …) … (hcomp T_n …)` — by `Checker::infer`'s
+//    `Term::Const`/`Term::App` arms (unmodified), this infers to `D
+//    (params…)` — exactly `ty` — **provided** each `hcomp T_j φ new_u_j b_j`
+//    checks at the type `c`'s telescope predicts for field `j` once the
+//    parameters are instantiated to `ty`'s own arguments, i.e.
+//    `T_j[params := ty's args]`. This holds per field kind, by
+//    `Checker::infer`'s own (unmodified) `Term::HComp` arm reporting its
+//    first argument back unchanged:
+//    - `Recursive`: `hcomp ty φ new_u_j b_j` infers to `ty` by construction —
+//      exactly `FieldTy_j[params := ty's args]` for this kind (`FieldTy_j = D`
+//      applied to the parameters, which after the substitution *is* `ty`).
+//    - `Generic`: `hcomp T_j φ new_u_j b_j` infers to `T_j` by construction —
+//      exactly `FieldTy_j[params := ty's args]` for this kind, *by
+//      definition* (`T_j` is built as precisely that substitution).
+//    Each such sub-`hcomp`'s own three obligations (well-formed `φ`; `new_u_j
+//    : Partial φ T_j`; cap agreement) hold because they are *inherited*
+//    unchanged from the source `HComp`'s own already-checked obligations:
+//    - `check_cof_wellformed(φ)`: `φ` is reused completely unchanged (no
+//      reindexing at all, per the "no new binder" note above) — the source
+//      `HComp`'s own already-checked well-formedness applies verbatim.
+//    - **Coverage** (`entails(φ, ψ_1 ∨ … ∨ ψ_n)`): the new system's guards are
+//      *exactly* the original `ψ_k`'s, unchanged — this is *the same
+//      disjunction*, already required to be entailed by `φ` by the source
+//      `HComp`'s own `check(u, Partial(φ,ty))` obligation. **Each branch
+//      typechecks**: `a_kj : T_j` (or `: ty` for `Recursive`) follows from the
+//      *original* branch's own already-checked typing `t_k : ty` (`ty = D
+//      (params…)`, forcing `t_k`'s spine to check against `c`'s telescope with
+//      those parameters — the *same* argument [`transp_inductive_rule`]'s own
+//      point-1 argument makes per field kind, `Field` vs `Recursive`, reused
+//      here verbatim with `i0`/`i1` erased since there is no interval
+//      dependence to begin with). **Compatibility**: a tube/tube overlap
+//      between projected fields `a_kj`/`a_k'j` is a direct congruence of the
+//      *original* system's own already-checked tube/tube compatibility
+//      (`t_k ≡ t_k'` on the overlap forces, by injectivity of the *same*
+//      constructor `c`'s spine — the very premise this rule's "same
+//      constructor" guard establishes — `a_kj ≡ a_k'j` on that overlap too).
+//    - **Cap agreement** `new_u_j[i:=i0] ≡ b_j`: the *original* cap agreement
+//      `u[i:=i0] ≡ u0` (already checked) distributes, by the same congruence
+//      just used for compatibility (both sides whnf to the same `c` spine —
+//      the branches by the same-constructor guard, `u0` by hypothesis — so
+//      `is_def_eq` recurses into their arguments), to
+//      `new_u_j[i:=i0] ≡ b_j` field-by-field, exactly the obligation each
+//      sub-`hcomp` needs.
+// 2. **Every produced subterm independently re-typechecks** — not merely
+//    argued: [`kernel_tests::hcomp_list_rule_reduces_and_reinfers_the_list_type`]
+//    below builds a concrete two-branch system over a `List`-like inductive,
+//    reduces it (confirming the rule genuinely fires, producing a literal
+//    `List.cons`), and re-runs `Checker::infer` on the result from scratch.
+// 3. **Reducer/NbE agreement**:
+//    [`kernel_tests::hcomp_list_rule_agrees_between_reducer_and_nbe`] confirms
+//    both engines land on the same (up-to-conversion) value.
+// 4. **Agreement with the trivial `⊤` rule**: as with `hcomp_pi_rule`/
+//    `hcomp_pathp_rule`, both call sites check `is_true(phi)` first,
+//    unconditionally, so the two rules never both fire on the same term.
+//    [`kernel_tests::hcomp_list_rule_agrees_with_the_trivial_rule_when_phi_is_top`]
+//    confirms the *values* still agree even though only one rule's reduction
+//    step literally fires.
+// 5. **Fires only on same-constructor systems; heterogeneous/non-constructor
+//    systems stay stuck.**
+//    [`kernel_tests::hcomp_list_rule_declines_on_mixed_constructor_branches`]
+//    and [`kernel_tests::hcomp_list_rule_declines_when_a_branch_is_not_a_constructor_application`]
+//    pin this down directly at the function level.
+// 6. **No new equation between unrelated closed terms; anti-`False`.** The
+//    rule only ever rewrites via ordinary projection/re-wrapping in
+//    `HComp`/`Sys`/`Const`-application — it never invents a value or asserts
+//    an equation not already forced by the source system's own (already
+//    checked) obligations, and it never fires on an inductive with no
+//    constructors (`u0`/every branch would have no constructor to be headed
+//    by, so the structural guard above can never match).
+//    [`kernel_tests::hcomp_list_rule_cannot_conjure_an_inhabitant_of_an_unrelated_axiom`]
+//    and [`kernel_tests::hcomp_list_rule_does_not_conflate_distinct_lists`]
+//    re-run this module's standing anti-`False`/non-conflation attacks through
+//    this specific rule.
+//
+// # What this does *not* handle (deferred, honestly)
+//
+// * **Heterogeneous (mixed-constructor) `hcomp`** — when branches disagree on
+//   which constructor of `D` they use. Genuinely needs more machinery (a
+//   Glue-style identification of the different constructors' images) that
+//   this pass does not attempt; the rule declines and the `hcomp` stays stuck.
+// * **Indexed inductives** — needs transporting/composing the indices too, a
+//   strictly harder rule (mirrors [`transp_inductive_rule`]'s own deferral).
+// * **HIT `hcomp`** (composition through a path constructor) — the next pass,
+//   per the task's own "DEFER" list; untouched here.
+// * **`Glue`** — untouched by this phase.
+// * **Dependent fields** (a field's type depending on an earlier field's
+//   value) — declines via the non-dependence check, mirroring
+//   [`transp_inductive_rule`].
+
+/// How a non-indexed inductive constructor's field's declared type relates to
+/// `D` itself, for the [`hcomp_inductive_rule`] filling rule — see the module
+/// doc's "The two field kinds" section for the full soundness argument.
+enum HFieldKind {
+    /// The field's type is `D` applied to exactly the parameters, in order
+    /// (`List A`'s tail) — the sub-composition recurses in `D` itself.
+    Recursive,
+    /// Anything else — composed directly at the field's own (parameter-
+    /// substituted) type `T_j`.
+    Generic(Term),
+}
+
+/// The `hcomp`-for-non-indexed-inductives, same-constructor filling rule (see
+/// the module doc's "Phase 3.11" section). `env` supplies the
+/// inductive/constructor declarations; `ty` is the fixed, non-varying
+/// composition type (ambient context); `phi`/`u`/`u0` are the `hcomp`'s
+/// remaining fields exactly as `Checker::infer`'s `Term::HComp` arm sees them
+/// (`u` under one interval binder, `phi`/`u0` in the ambient context). Returns
+/// `None` — the `hcomp` stays stuck — unless every structural precondition in
+/// the module doc holds; never panics on a malformed/unexpected shape.
+pub(crate) fn hcomp_inductive_rule(
+    env: &Env,
+    ty: &Term,
+    phi: &Cof,
+    u: &Term,
+    u0: &Term,
+) -> Option<Term> {
+    // `ty` must be, syntactically, a non-indexed user inductive applied to
+    // exactly its uniform parameters.
+    let (ty_head, ty_args) = ty.unfold_apps();
+    let Term::Const(d_name, _d_ls) = &ty_head else { return None };
+    let Some(Decl::Inductive(ind)) = env.get(d_name) else { return None };
+    if ind.num_indices != 0 || ty_args.len() != ind.num_params {
+        return None;
+    }
+
+    // `u` must be, syntactically, a literal `Sys` with at least one branch.
+    let Term::Sys(branches) = u else { return None };
+    if branches.is_empty() {
+        return None;
+    }
+
+    // `u0` must be, syntactically, a fully-applied constructor of `D`.
+    let (u0_head, u0_args) = u0.unfold_apps();
+    let Term::Const(ctor_name, ctor_ls) = &u0_head else { return None };
+    let Some(Decl::Constructor(ctor)) = env.get(ctor_name) else { return None };
+    if ctor.ind.as_ref() != d_name.as_ref() || u0_args.len() != ind.num_params + ctor.num_fields {
+        return None;
+    }
+
+    // Every branch must be headed by that *same* constructor, with the same
+    // total argument count — the "same-constructor" guard; a mismatch (a
+    // different constructor, or a non-constructor branch entirely) declines
+    // the whole rule rather than guessing.
+    let mut branch_args: Vec<(Cof, Vec<Term>)> = Vec::with_capacity(branches.len());
+    for (psi_k, t_k) in branches.iter() {
+        let (h_k, args_k) = t_k.unfold_apps();
+        let Term::Const(n_k, _) = &h_k else { return None };
+        if n_k.as_ref() != ctor_name.as_ref() || args_k.len() != u0_args.len() {
+            return None;
+        }
+        branch_args.push(((**psi_k).clone(), args_k));
+    }
+
+    // Peel `ctor`'s own checked `Π`-telescope: `num_params` parameter binders,
+    // then classify each field (see the module doc's "The two field kinds").
+    let mut cur = &ctor.ty;
+    for _ in 0..ind.num_params {
+        match cur {
+            Term::Pi(_, _, cod) => cur = cod,
+            _ => return None,
+        }
+    }
+    // The parameters, in `subst_ctx`'s expected image order (`images[k]` is
+    // substituted for `Var(k)`, and the pure-parameter telescope convention
+    // has `Var(0) = param_{num_params-1}`, …, `Var(num_params-1) = param_0`
+    // — i.e. the *reverse* of `ty_args`'s left-to-right order).
+    let images: Vec<Term> = ty_args.iter().rev().cloned().collect();
+
+    let mut field_kinds = Vec::with_capacity(ctor.num_fields);
+    for j in 0..ctor.num_fields {
+        let Term::Pi(_, dom, cod) = cur else { return None };
+        // Non-dependence: the field's type must not mention any earlier field.
+        if (0..j).any(|k| mentions_var(dom, k)) {
+            return None;
+        }
+        // Safe: `dom` mentions no `Var` in `0..j` (just confirmed), so
+        // shifting those `j` field binders away is exactly `Term::lift`'s
+        // documented negative-amount case.
+        let dom_reduced = dom.lift(-(j as isize), 0);
+        let (dhead, dargs) = dom_reduced.unfold_apps();
+        let kind = if let Term::Const(n, _) = &dhead {
+            if n.as_ref() == d_name.as_ref()
+                && dargs.len() == ind.num_params
+                && dargs
+                    .iter()
+                    .enumerate()
+                    .all(|(i, a)| *a == Term::Var(ind.num_params - 1 - i))
+            {
+                HFieldKind::Recursive
+            } else {
+                HFieldKind::Generic(dom_reduced.subst_ctx(&images))
+            }
+        } else {
+            HFieldKind::Generic(dom_reduced.subst_ctx(&images))
+        };
+        field_kinds.push(kind);
+        cur = cod;
+    }
+
+    // Build the composed fields (see the module doc's "The two field kinds").
+    // No new binder is introduced (see the module doc's "Construction" note),
+    // so branch guards/projected field terms are reused completely unchanged.
+    let fields0 = &u0_args[ind.num_params..];
+    let mut new_fields = Vec::with_capacity(ctor.num_fields);
+    for (j, kind) in field_kinds.into_iter().enumerate() {
+        let new_branches: Vec<(Cof, Term)> = branch_args
+            .iter()
+            .map(|(psi_k, args_k)| (psi_k.clone(), args_k[ind.num_params + j].clone()))
+            .collect();
+        let new_u = Term::sys(new_branches);
+        let cap = fields0[j].clone();
+        let new_field = match kind {
+            HFieldKind::Recursive => Term::hcomp(ty.clone(), phi.clone(), new_u, cap),
+            HFieldKind::Generic(field_ty) => Term::hcomp(field_ty, phi.clone(), new_u, cap),
+        };
+        new_fields.push(new_field);
+    }
+
+    Some(Term::apps(
+        Term::cnst(ctor_name.clone(), ctor_ls.clone()),
+        ty_args.into_iter().chain(new_fields),
+    ))
+}
+
 #[cfg(test)]
 mod kernel_tests {
     use crate::face::Cof;
@@ -2445,6 +2783,180 @@ mod kernel_tests {
         let xs2 = list_cons(cn("A"), cn("a2"), list_nil(cn("A")));
         let t1 = Term::transp(list_family(), Cof::top(), xs1);
         let t2 = Term::transp(list_family(), Cof::top(), xs2);
+        assert!(!k.def_eq(&t1, &t2));
+    }
+
+    // ---- hcomp: the constructor-compatible inductive filling rule (Phase 3.11,
+    // see the module doc's "Phase 3.11" section above) ----
+
+    /// A single-branch, constant `Sys` (mirrors
+    /// `hcomp_pi_rule_transports_a_concrete_partial_function`'s own setup) whose
+    /// one branch is a concrete two-element `List A`, with `φ = ⊥` so the trivial
+    /// `φ=⊤` rule does *not* fire first — isolating the inductive rule
+    /// specifically (see the module doc's "Agreement" point: the rules are
+    /// mutually exclusive by construction, trivial always tried first).
+    fn list_hcomp_term() -> Term {
+        let xs = list_cons(cn("A"), cn("a1"), list_nil(cn("A")));
+        let u = Term::sys(vec![(Cof::top(), xs.clone().lift(1, 0))]);
+        Term::hcomp(list_of(cn("A")), Cof::bot(), u, xs)
+    }
+
+    /// **The rule fires** on a concrete same-constructor system, producing a
+    /// literal `List.cons` application (not a stuck `HComp`), which
+    /// independently re-typechecks (subject reduction, checked from scratch) at
+    /// `List A`. Its head/tail fields are themselves (still-stuck, since φ=⊥ —
+    /// deliberately, to isolate this rule from the trivial `φ=⊤` rule, mirroring
+    /// `hcomp_pi_rule_transports_a_concrete_partial_function`'s own choice) `hcomp`
+    /// terms, each independently well-typed at the field's own target type — the
+    /// head at `A` (the `Generic` field kind), the tail at `List A` (the
+    /// `Recursive` field kind, correctly recursing in `D` itself rather than in
+    /// some unrelated type).
+    #[test]
+    fn hcomp_list_rule_reduces_and_reinfers_the_list_type() {
+        let k = list_env();
+        let t = list_hcomp_term();
+        let ty = k.infer(&t).unwrap();
+        assert!(k.def_eq(&ty, &list_of(cn("A"))));
+
+        let reducer = crate::reduce::Reducer::new(k.env());
+        let whnf = reducer.whnf(&t);
+        let (head, args) = whnf.unfold_apps();
+        assert_eq!(head, cn("List.cons"), "expected the rule to fire, got {}", whnf.pretty());
+        assert_eq!(args.len(), 3);
+        assert!(k.def_eq(&args[0], &cn("A")));
+
+        // Subject reduction: the reduced normal form independently re-typechecks
+        // at `List A`, from scratch.
+        let reinferred = k.infer(&whnf).unwrap();
+        assert!(k.def_eq(&reinferred, &list_of(cn("A"))));
+
+        // The head field (`Generic` kind) is well-typed at `A`, and — since φ=⊥
+        // is never decided true — stays a genuinely stuck `hcomp A ⊥ […] a1`
+        // rather than being eagerly further-reduced.
+        assert!(k.check(&args[1], &cn("A")).is_ok(), "head field must check at A");
+        assert!(matches!(reducer.whnf(&args[1]), Term::HComp(..)));
+
+        // The tail field (`Recursive` kind) is well-typed at `List A` — recursing
+        // in `D` itself, not e.g. `A` or some other unrelated type — and, since
+        // `List.nil` has zero fields, *this* rule immediately bottoms out at a
+        // literal `List.nil A` (no sub-`hcomp` left to build, regardless of φ),
+        // one constructor layer deeper than the outer `hcomp`.
+        assert!(k.check(&args[2], &list_of(cn("A"))).is_ok(), "tail field must check at List A");
+        assert!(k.def_eq(&args[2], &list_nil(cn("A"))), "tail field must reduce to List.nil A");
+    }
+
+    /// Differential check (this crate's standing convention): the trusted
+    /// reducer and NbE agree on the inductive rule's reduction.
+    #[test]
+    fn hcomp_list_rule_agrees_between_reducer_and_nbe() {
+        let k = list_env();
+        let t = list_hcomp_term();
+        let reducer = crate::reduce::Reducer::new(k.env());
+        let nbe = crate::nbe::Nbe::new(k.env());
+        let whnf = reducer.whnf(&t);
+        assert!(nbe.conv(&t, &whnf));
+    }
+
+    /// **Agreement with the trivial `⊤` rule**: when `φ` genuinely is `⊤` (so the
+    /// trivial rule fires first, not the inductive rule — priority order, see the
+    /// module doc), calling [`hcomp_inductive_rule`] directly (bypassing the
+    /// reducer's priority order) still produces a value convertible to the
+    /// trivial rule's own answer.
+    #[test]
+    fn hcomp_list_rule_agrees_with_the_trivial_rule_when_phi_is_top() {
+        let k = list_env();
+        let xs = list_cons(cn("A"), cn("a1"), list_nil(cn("A")));
+        let u = Term::sys(vec![(Cof::top(), xs.clone().lift(1, 0))]);
+        let trivial_answer = u.instantiate(&Term::IOne); // the trivial rule's own value
+        assert!(k.def_eq(&trivial_answer, &xs));
+
+        let ctor_built =
+            super::hcomp_inductive_rule(k.env(), &list_of(cn("A")), &Cof::top(), &u, &xs).unwrap();
+        assert!(k.def_eq(&ctor_built, &trivial_answer));
+    }
+
+    /// Sanity: an `hcomp`-built (inductive-rule-reduced) definition survives the
+    /// independent recheck harness.
+    #[test]
+    fn hcomp_list_rule_definitions_survive_independent_recheck() {
+        let mut k = list_env();
+        let t = list_hcomp_term();
+        k.add_definition("composed_list", 0, list_of(cn("A")), t).unwrap();
+        assert_eq!(crate::kernel::recheck_all_definitions(k.env()).unwrap(), 1);
+    }
+
+    /// **`hcomp_inductive_rule` declines on a mixed-constructor system**: one
+    /// branch is `List.cons …`, the other `List.nil A` — the "heterogeneous"
+    /// case this pass explicitly defers (see the module doc). The rule returns
+    /// `None` (rather than guessing), and the full `hcomp` genuinely stays stuck
+    /// through the reducer too.
+    #[test]
+    fn hcomp_list_rule_declines_on_mixed_constructor_branches() {
+        let k = list_env();
+        let cap = list_nil(cn("A"));
+        let u = Term::sys(vec![
+            (Cof::eq0(Term::Var(0)), list_cons(cn("A"), cn("a1"), list_nil(cn("A")))),
+            (Cof::eq1(Term::Var(0)), list_nil(cn("A")).lift(1, 0)),
+        ]);
+        assert!(super::hcomp_inductive_rule(k.env(), &list_of(cn("A")), &Cof::bot(), &u, &cap)
+            .is_none());
+        let t = Term::hcomp(list_of(cn("A")), Cof::bot(), u, cap);
+        let reducer = crate::reduce::Reducer::new(k.env());
+        assert!(matches!(reducer.whnf(&t), Term::HComp(..)), "expected a stuck HComp");
+    }
+
+    /// **`hcomp_inductive_rule` declines when a branch is not (syntactically) a
+    /// constructor application at all** — an opaque neutral of `List A` type
+    /// (mirrors `hcomp_pi_rule_returns_none_for_a_non_sys_line`'s "stay stuck
+    /// rather than guess" discipline).
+    #[test]
+    fn hcomp_list_rule_declines_when_a_branch_is_not_a_constructor_application() {
+        let mut k = list_env();
+        k.add_axiom("xs_opaque", 0, list_of(cn("A"))).unwrap();
+        let cap = list_cons(cn("A"), cn("a1"), list_nil(cn("A")));
+        let u = Term::sys(vec![(Cof::top(), cn("xs_opaque").lift(1, 0))]);
+        assert!(super::hcomp_inductive_rule(k.env(), &list_of(cn("A")), &Cof::bot(), &u, &cap)
+            .is_none());
+    }
+
+    /// **`hcomp_inductive_rule` declines on an empty system** (`u = Sys([])`) —
+    /// there is no constructor for the branches to agree on, so building anything
+    /// would silently discard the rule's own defining premise (see the module
+    /// doc's scope section).
+    #[test]
+    fn hcomp_list_rule_declines_on_an_empty_system() {
+        let k = list_env();
+        let cap = list_nil(cn("A"));
+        let u = Term::sys(vec![]);
+        assert!(super::hcomp_inductive_rule(k.env(), &list_of(cn("A")), &Cof::bot(), &u, &cap)
+            .is_none());
+    }
+
+    /// **Adversarial (anti-`False`)**: [`hcomp_inductive_rule`] declines outright
+    /// (a purely structural guard failure, not even reaching field composition)
+    /// when the composition type isn't a user inductive at all — it cannot be
+    /// used to conjure an inhabitant of an unrelated axiom type.
+    #[test]
+    fn hcomp_list_rule_cannot_conjure_an_inhabitant_of_an_unrelated_axiom() {
+        let mut k = list_env();
+        k.add_axiom("E", 0, Term::typ(0)).unwrap();
+        let u = Term::sys(vec![(Cof::top(), cn("a1").lift(1, 0))]);
+        assert!(super::hcomp_inductive_rule(k.env(), &cn("E"), &Cof::bot(), &u, &cn("a1")).is_none());
+    }
+
+    /// **Adversarial**: two structurally-distinct `hcomp`-composed lists
+    /// (different source elements) are not conflated — the built `List.cons`
+    /// applications stay distinguishable.
+    #[test]
+    fn hcomp_list_rule_does_not_conflate_distinct_lists() {
+        let k = list_env();
+        assert!(!k.def_eq(&cn("a1"), &cn("a2")));
+        let xs1 = list_cons(cn("A"), cn("a1"), list_nil(cn("A")));
+        let xs2 = list_cons(cn("A"), cn("a2"), list_nil(cn("A")));
+        let u1 = Term::sys(vec![(Cof::top(), xs1.clone().lift(1, 0))]);
+        let u2 = Term::sys(vec![(Cof::top(), xs2.clone().lift(1, 0))]);
+        let t1 = Term::hcomp(list_of(cn("A")), Cof::bot(), u1, xs1);
+        let t2 = Term::hcomp(list_of(cn("A")), Cof::bot(), u2, xs2);
         assert!(!k.def_eq(&t1, &t2));
     }
 }
