@@ -117,7 +117,12 @@ pub fn classify(m: &Module) -> Vec<Fragment> {
         }
     }
 
-    // 3. The call graph over `fn`s (callee names per function).
+    // 3. The call graph over `fn`s (callee names per function). Besides the body, a
+    //    dependent return type / parameter type / refinement / spec can itself name a
+    //    helper `fn` (e.g. `fn q(a: Nat) -> constZero(a) == constZero(a)`), so those are
+    //    scanned too — otherwise a purely-computational helper referenced only from a
+    //    signature would never be propagated into the proof fragment (step 3b below) and
+    //    the kernel would reject the signature as an unknown name.
     let mut all_fns: HashSet<Sym> = HashSet::new();
     let mut callees: Vec<(Sym, HashSet<Sym>)> = Vec::new();
     for it in &m.items {
@@ -125,6 +130,18 @@ pub fn classify(m: &Module) -> Vec<Fragment> {
             all_fns.insert(f.name);
             let mut cs = HashSet::new();
             collect_calls(&f.body, &mut cs);
+            if let Some(ret) = &f.ret {
+                ty_calls(ret, &mut cs);
+            }
+            for p in &f.params {
+                ty_calls(&p.ty, &mut cs);
+                if let Some(r) = &p.refinement {
+                    expr_calls(r, &mut cs);
+                }
+            }
+            for e in f.requires.iter().chain(&f.ensures) {
+                expr_calls(e, &mut cs);
+            }
             callees.push((f.name, cs));
         }
     }
@@ -314,6 +331,16 @@ fn expr_has_proof_form(e: &Expr) -> bool {
         | Expr::Bool(_)
         | Expr::Unit
         | Expr::Var(_) => false,
+    }
+}
+
+/// Collect every `fn`-shaped name mentioned in a type: only `Ty::Term` carries an
+/// expression (dependent return types like `constZero(a) == constZero(b)`, or a
+/// type-level application `Eval(env, e, v)`), so this simply defers to `expr_calls`.
+/// The other `Ty` variants (`Adt`, `Generic`, …) name types, not `fn`s, and are ignored.
+fn ty_calls(t: &Ty, out: &mut HashSet<Sym>) {
+    if let Ty::Term(e) = t {
+        expr_calls(e, out);
     }
 }
 

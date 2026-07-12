@@ -32,7 +32,7 @@ use std::collections::HashMap;
 use crate::check::{Checker, LocalCtx};
 use crate::level::Level;
 use crate::surface::{Expr, SLevel};
-use crate::term::{name, Term};
+use crate::term::{name, Grade, Term};
 use crate::unify::{unify, Metas};
 use crate::Env;
 
@@ -284,12 +284,13 @@ impl<'a> Infer<'a> {
         match names.split_first() {
             None => self.infer(body),
             Some((first, rest)) => {
+                let (grade, ty) = strip_grade(ty);
                 let (dom, _) = self.infer(ty)?;
                 self.locals.push((first.clone(), dom.clone()));
                 let r = self.infer_lam(rest, ty, body);
                 self.locals.pop();
                 let (inner, inner_ty) = r?;
-                Ok((Term::lam(dom.clone(), inner), Term::pi(dom, inner_ty)))
+                Ok((Term::lam(dom.clone(), inner), Term::pi_graded(grade, dom, inner_ty)))
             }
         }
     }
@@ -299,11 +300,12 @@ impl<'a> Infer<'a> {
         match names.split_first() {
             None => Ok(self.infer(body)?.0),
             Some((first, rest)) => {
+                let (grade, ty) = strip_grade(ty);
                 let (dom, _) = self.infer(ty)?;
                 self.locals.push((first.clone(), dom.clone()));
                 let r = self.build_pi(rest, ty, body);
                 self.locals.pop();
-                Ok(Term::pi(dom, r?))
+                Ok(Term::pi_graded(grade, dom, r?))
             }
         }
     }
@@ -604,7 +606,10 @@ impl<'a> Infer<'a> {
         };
         let dom = (**dom).clone();
         let cod = (**cod).clone();
-        // The surface annotation must agree with the expected domain.
+        // The surface annotation must agree with the expected domain. (Any grade marker
+        // on `ty` is discarded here — the expected `Π`'s own grade, already threaded in
+        // from `build_pi`/`infer_lam`, is what's checked/enforced; see `strip_grade`.)
+        let (_, ty) = strip_grade(ty);
         let (ann, _) = self.infer(ty)?;
         let ctx = self.local_ctx();
         unify(self.env, &mut self.metas, &ctx, &ann, &dom)
@@ -1967,6 +1972,25 @@ pub struct BundleMember {
 
 /// How a recursive function recurses: the parameter position it matches on, and its
 /// parameter names (so non-recursive arguments can be checked to be passed unchanged).
+/// If `ty` is the `__rv_grade0` / `__rv_grade1` marker application produced by the
+/// surface parser for a graded binder (`fun (x :1 T) => …`, `forall (x :0 T), …` — see
+/// `rv-syntax`'s `Parser::parse_binder_grade`), strip the marker and return the QTT
+/// [`Grade`] it names plus the underlying type expression. An unannotated binder passes
+/// through unchanged with the default `Grade::Many` (unrestricted) — existing code that
+/// never uses grades is completely unaffected.
+fn strip_grade(ty: &Expr) -> (Grade, &Expr) {
+    if let Expr::App(callee, inner) = ty {
+        if let Expr::Var(n, None) = callee.as_ref() {
+            match n.as_str() {
+                "__rv_grade0" => return (Grade::Zero, inner),
+                "__rv_grade1" => return (Grade::One, inner),
+                _ => {}
+            }
+        }
+    }
+    (Grade::Many, ty)
+}
+
 pub type RecInfo = HashMap<String, (usize, Vec<String>)>;
 
 /// Rewrite **recursive calls by name** into induction hypotheses: a call `f(a₀, …, aₙ)`

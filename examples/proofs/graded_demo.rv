@@ -1,0 +1,51 @@
+// A worked example of the QTT **usage-graded binder** surface syntax: a Π/λ binder can
+// carry a grade right after its `:` —
+//
+//   * `(x :1 T) -> U`   /   `fun (x :1 T) => body`   — LINEAR: `x` must be used
+//     exactly once in `body` (never dropped, never duplicated).
+//   * `(x :0 T) -> U`   /   `fun (x :0 T) => body`   — ERASED: `x` may be used only
+//     in erased (type-level, never-reduced) positions — a runtime-irrelevant ghost.
+//   * `(x : T) -> U`    /   `fun (x: T) => body`     — no annotation: UNRESTRICTED
+//     (`ω`), the existing default — used freely, exactly as before this feature.
+//
+// The grade is checked by `rvc --verify`'s QTT usage pass (`rv-kernel`'s `graded`
+// module) once every proof-fragment declaration has elaborated: a graded binder used
+// off its declared discipline is a hard verification error with a clear message —
+// see the driver test `graded_binder_linear_violation_rejected` (a linear-used-twice
+// definition is REJECTED with `usage discipline: binder … allows grade One but is
+// used at grade Many`).
+//
+// The `forall x : T, body` keyword form is the equivalent for *expression* position
+// (inside a body/proof term); the `(x : T) -> rest` dependent-binder-group form above
+// is the equivalent for *type* position (a `def`/`fn`'s declared type) — both accept
+// the same `:0`/`:1` grade annotation.
+
+enum Nat { Zero, Succ(Nat) }
+
+// A linear identity: `x` is threaded through exactly once.
+def useOnce(A: Type) : (x :1 A) -> A := fun (x :1 A) => x
+
+fn useOnce_on_zero() -> useOnce(Nat)(Nat::Zero) == Nat::Zero {
+    Eq::refl(Nat, Nat::Zero)
+}
+
+// An erased witness: `x`'s *value* is never inspected at runtime — the result
+// doesn't depend on which `Nat` was passed, only on the fact that one exists — a
+// ghost parameter, exactly what QTT's grade-0 forgets. `x` occurs zero times in the
+// body, which fits grade 0 (unlike grade 1, erased tolerates being unused).
+def erasedWitness(A: Type) : (x :0 A) -> Nat := fun (x :0 A) => Nat::Zero
+
+fn erasedWitness_on_zero() -> erasedWitness(Nat)(Nat::Zero) == Nat::Zero {
+    Eq::refl(Nat, Nat::Zero)
+}
+
+// An unrestricted (unannotated) binder used twice — fine, matching the existing,
+// pre-grades behavior exactly (only a `:1`/`:0` annotation is checked).
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+def dup(f: Nat -> Nat -> Nat) : (x: Nat) -> Nat := fun (x: Nat) => f(x, x)
+
+fn dup_plus_on_zero() -> dup(plus)(Nat::Zero) == Nat::Zero {
+    Eq::refl(Nat, Nat::Zero)
+}
