@@ -3,7 +3,10 @@
 //! The contract under test is purely about soundness + the documented fragment:
 //! VALID obligations must `Discharge`; INVALID ones must NOT (they return `Failed`).
 
-use super::default_registry;
+use super::{
+    check_certificate, default_registry, prove_with_certificate, DisjunctCert, FarkasCert,
+};
+use crate::linear::Rat;
 use rv_core::{BinOp, Prop, Sym, Symbols, Term};
 use rv_logic::Obligation;
 
@@ -425,4 +428,160 @@ fn scaled_lower_bound_is_not_overstrengthened() {
     let ctx = cmp(BinOp::Ge, two_x, int(4)); // x >= 2
     let goal = cmp(BinOp::Gt, var(x), int(2)); // x > 2
     assert!(!discharges(ctx, goal), "x>=2 does NOT imply x>2 (x=2 counterexample)");
+}
+
+// ===========================================================================
+// Certificates — the solver's positive results are independently checkable
+// ===========================================================================
+
+/// The set of valid obligations whose certificates we round-trip. Each is a
+/// `(ctx, goal)` builder plus a label. Every one must (a) produce a certificate and
+/// (b) have that certificate pass the independent checker.
+fn certificate_round_trips(ctx: Prop, goal: Prop) {
+    let ob = Obligation::new(ctx, goal, "cert-test");
+    let (cert, disjuncts) =
+        prove_with_certificate(&ob).expect("valid obligation must yield a certificate");
+    assert!(
+        check_certificate(&cert, &disjuncts),
+        "the emitted certificate must re-verify against its disjuncts"
+    );
+}
+
+#[test]
+fn cert_linear_bound_round_trips() {
+    // x > 0 ⟹ x != 0 : refuted by a Farkas combination on the linear part.
+    let mut s = Symbols::new();
+    let x = s.intern("x");
+    certificate_round_trips(cmp(BinOp::Gt, var(x), int(0)), cmp(BinOp::Ne, var(x), int(0)));
+}
+
+#[test]
+fn cert_transitivity_round_trips() {
+    // x <= y ∧ y <= z ⟹ x <= z : Farkas over three constraints.
+    let mut s = Symbols::new();
+    let (x, y, z) = (s.intern("x"), s.intern("y"), s.intern("z"));
+    let ctx = cmp(BinOp::Le, var(x), var(y)).and(cmp(BinOp::Le, var(y), var(z)));
+    certificate_round_trips(ctx, cmp(BinOp::Le, var(x), var(z)));
+}
+
+#[test]
+fn cert_equality_between_round_trips() {
+    // 3 < x < 5 ⟹ x == 4 : the negated goal x != 4 splits into two branches, each
+    // Farkas-refuted — a multi-branch LinearRefutation.
+    let mut s = Symbols::new();
+    let x = s.intern("x");
+    let ctx = cmp(BinOp::Lt, var(x), int(5)).and(cmp(BinOp::Gt, var(x), int(3)));
+    certificate_round_trips(ctx, cmp(BinOp::Eq, var(x), int(4)));
+}
+
+#[test]
+fn cert_congruence_round_trips() {
+    // a == b ⟹ f(a) == f(b) : an EqualityClash certificate over the congruence closure.
+    let mut s = Symbols::new();
+    let (a, b, f) = (s.intern("a"), s.intern("b"), s.intern("f"));
+    let ctx = cmp(BinOp::Eq, var(a), var(b));
+    let goal = cmp(BinOp::Eq, Term::app(f, vec![var(a)]), Term::app(f, vec![var(b)]));
+    certificate_round_trips(ctx, goal);
+}
+
+#[test]
+fn cert_opaque_self_implication_round_trips() {
+    // p ⟹ p (opaque) : refuted by an OpaqueClash (p ∧ ¬p).
+    let mut s = Symbols::new();
+    let p = Prop::Holds(var(s.intern("p")));
+    certificate_round_trips(p.clone(), p);
+}
+
+#[test]
+fn cert_disjunctive_goal_round_trips() {
+    // x >= 1 ⟹ (x > 0 ∨ x == -7) : the negated goal is a conjunction, giving a single
+    // disjunct with two linear branches (from x != -7).
+    let mut s = Symbols::new();
+    let x = s.intern("x");
+    let ctx = cmp(BinOp::Ge, var(x), int(1));
+    let goal = cmp(BinOp::Gt, var(x), int(0)).or(cmp(BinOp::Eq, var(x), int(-7)));
+    certificate_round_trips(ctx, goal);
+}
+
+#[test]
+fn invalid_obligation_yields_no_certificate() {
+    // x >= 0 ⟹ x != 0 is INVALID: the solver must not hand back a certificate.
+    let mut s = Symbols::new();
+    let x = s.intern("x");
+    let ob = Obligation::new(
+        cmp(BinOp::Ge, var(x), int(0)),
+        cmp(BinOp::Ne, var(x), int(0)),
+        "cert-test",
+    );
+    assert!(prove_with_certificate(&ob).is_none());
+}
+
+#[test]
+fn tampered_farkas_multiplier_is_rejected() {
+    // Take a genuine certificate and corrupt a Farkas multiplier: the checker must
+    // reject it (the search is untrusted; only the checker is believed).
+    let mut s = Symbols::new();
+    let x = s.intern("x");
+    let ob = Obligation::new(
+        cmp(BinOp::Gt, var(x), int(0)),
+        cmp(BinOp::Ne, var(x), int(0)),
+        "cert-test",
+    );
+    let (mut cert, disjuncts) = prove_with_certificate(&ob).expect("valid ⇒ certificate");
+    assert!(check_certificate(&cert, &disjuncts), "sanity: original checks");
+
+    // Zero out every Farkas multiplier — the combination is no longer contradictory.
+    for dj in &mut cert.disjuncts {
+        if let DisjunctCert::LinearRefutation { branches } = dj {
+            for b in branches {
+                *b = FarkasCert { multipliers: b.multipliers.iter().map(|_| Rat::from_int(0)).collect() };
+            }
+        }
+    }
+    assert!(!check_certificate(&cert, &disjuncts), "tampered certificate must be rejected");
+}
+
+#[test]
+fn tampered_equality_clash_is_rejected() {
+    // Corrupt an EqualityClash by pointing its disequality at an unrelated term: the
+    // closure no longer forces the sides equal, so the checker rejects it.
+    let mut s = Symbols::new();
+    let (a, b, c, d) = (s.intern("a"), s.intern("b"), s.intern("c"), s.intern("d"));
+    let (oa, ob, oc) = (opaque(a, d), opaque(b, d), opaque(c, d));
+    // a == b ∧ a != b (opaque) ⟹ False : an EqualityClash refutation.
+    let ctx = Prop::Holds(Term::bin(BinOp::Eq, oa.clone(), ob.clone()))
+        .and(Prop::Holds(Term::bin(BinOp::Ne, oa.clone(), ob)));
+    let ob_obl = Obligation::new(ctx, Prop::False, "cert-test");
+    let (mut cert, disjuncts) = prove_with_certificate(&ob_obl).expect("valid ⇒ certificate");
+    assert!(check_certificate(&cert, &disjuncts), "sanity: original checks");
+
+    // Swap the disequality's second side to an unrelated opaque term `oc`.
+    for dj in &mut cert.disjuncts {
+        if let DisjunctCert::EqualityClash { diseq, .. } = dj {
+            diseq.1 = oc.clone();
+        }
+    }
+    assert!(!check_certificate(&cert, &disjuncts), "tampered equality clash must be rejected");
+}
+
+#[test]
+fn certificate_bound_to_its_own_disjuncts() {
+    // A certificate for one obligation must not check against a *different* obligation's
+    // disjuncts (the count / literal mismatch is caught).
+    let mut s = Symbols::new();
+    let x = s.intern("x");
+    let ob1 = Obligation::new(
+        cmp(BinOp::Gt, var(x), int(0)),
+        cmp(BinOp::Ne, var(x), int(0)),
+        "cert-test",
+    );
+    let (cert1, _) = prove_with_certificate(&ob1).expect("valid ⇒ certificate");
+
+    let ob2 = Obligation::new(
+        cmp(BinOp::Le, var(x), var(s.intern("y"))).and(cmp(BinOp::Le, var(s.intern("y")), var(s.intern("z")))),
+        cmp(BinOp::Le, var(x), var(s.intern("z"))),
+        "cert-test",
+    );
+    let (_, disjuncts2) = prove_with_certificate(&ob2).expect("valid ⇒ certificate");
+    assert!(!check_certificate(&cert1, &disjuncts2), "cert must be bound to its own disjuncts");
 }
