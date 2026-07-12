@@ -411,3 +411,102 @@ pub fn verify_rv_unified(src: &str, entry: Option<&str>) -> Result<RavenReport, 
 
 /// The Raven standard proof prelude (`Eq` combinators), written in Raven itself.
 pub const RAVEN_PRELUDE: &str = include_str!("../prelude.rv");
+
+#[cfg(test)]
+mod i128_tests {
+    //! End-to-end coverage for 128-bit integer literal/arithmetic support: a
+    //! literal beyond `i64::MAX` magnitude round-trips through the whole
+    //! pipeline (parse -> lower -> infer/verify -> compile -> run), in-range
+    //! `i128`/`u128` wrapping arithmetic verifies AND runs to the right value,
+    //! a genuine overflow at a sub-128 width still fails its obligation, and
+    //! `u128`'s bit-pattern representation for magnitudes above `i128::MAX` is
+    //! correct.
+    use super::run_pipeline;
+
+    /// A literal whose magnitude exceeds `i64::MAX` (`i128::MAX` itself) both
+    /// verifies and runs to its exact value — this was impossible before the
+    /// `Term::Int`/`Const::Int`/`Value::Int` carrier was widened to `i128`.
+    #[test]
+    fn i128_max_literal_round_trips_and_runs() {
+        let src = "fn main() -> i128 { let big: i128 = 170141183460469231731687303715884105727; return big; }";
+        let report = run_pipeline(src, Some("main")).expect("front end should accept");
+        assert!(report.all_verified(), "expected all obligations to discharge: {report:?}");
+        assert_eq!(
+            report.run.expect("entry should run"),
+            Ok(super::Value::Int(i128::MAX))
+        );
+    }
+
+    /// `wrapping_sub` on `i128`-typed operands near `i128::MAX` verifies (the
+    /// wrapping intrinsic opts out of the checked-overflow obligation) and runs
+    /// to the exact `i128` result on the VM's native `i128` word.
+    #[test]
+    fn i128_wrapping_arithmetic_verifies_and_runs() {
+        let src = "fn main() -> i128 { \
+            let big: i128 = 170141183460469231731687303715884105727; \
+            let one: i128 = 1; \
+            return wrapping_sub(big, one); \
+        }";
+        let report = run_pipeline(src, Some("main")).expect("front end should accept");
+        assert!(report.all_verified(), "expected all obligations to discharge: {report:?}");
+        assert_eq!(
+            report.run.expect("entry should run"),
+            Ok(super::Value::Int(i128::MAX - 1))
+        );
+    }
+
+    /// `u128` literals above `i64::MAX` (but well below `i128::MAX`) verify and
+    /// run correctly, confirming full-magnitude `u128` values compose from the
+    /// widened literal carrier without truncation.
+    #[test]
+    fn u128_wide_literal_verifies_and_runs() {
+        let src = "fn main() -> u128 { \
+            let big: u128 = 300000000000000000000; \
+            let small: u128 = 5; \
+            return wrapping_add(big, small); \
+        }";
+        let report = run_pipeline(src, Some("main")).expect("front end should accept");
+        assert!(report.all_verified(), "expected all obligations to discharge: {report:?}");
+        assert_eq!(
+            report.run.expect("entry should run"),
+            Ok(super::Value::Int(300000000000000000005))
+        );
+    }
+
+    /// A genuine `u64` overflow, using literals whose magnitude exceeds
+    /// `i64::MAX` (only expressible after the widened literal carrier), still
+    /// fails its overflow obligation — the widening does not weaken existing
+    /// overflow checking for sub-128 widths.
+    #[test]
+    fn u64_checked_overflow_with_wide_literals_still_fails() {
+        let src = "fn main() -> u64 { \
+            let a: u64 = 18000000000000000000; \
+            let b: u64 = 1000000000000000000; \
+            return a + b; \
+        }";
+        let report = run_pipeline(src, Some("main")).expect("front end should accept");
+        assert!(!report.all_verified(), "a genuine u64 overflow must not verify: {report:?}");
+    }
+
+    /// `u128`'s upper half (magnitudes above `i128::MAX`, up to `u128::MAX`) is
+    /// the one documented boundary of this widening: the lexer *parses* such a
+    /// literal (as a `u128`, bit-reinterpreted into the `i128` `Term::Int`
+    /// carrier — see `Tok::Int`'s doc comment), but the width's built-in range
+    /// check compares that `Term` with signed `i128` semantics, so a magnitude
+    /// above `i128::MAX` reads back as a *negative* `i128` and correctly (if
+    /// unhelpfully) fails the `>= 0` obligation for a `u128` value — a sound
+    /// rejection, not a crash or silent truncation. The supported `u128` range
+    /// is therefore `0..=i128::MAX`; see `IntTy`'s doc comment in `rv-core`.
+    #[test]
+    fn u128_upper_half_is_soundly_rejected_not_silently_wrong() {
+        let src = "fn main() -> u128 { \
+            let near_max: u128 = 340282366920938463463374607431768211454; \
+            return near_max; \
+        }";
+        let report = run_pipeline(src, Some("main")).expect("front end should accept");
+        assert!(
+            !report.all_verified(),
+            "a u128 literal above i128::MAX must fail its range obligation, not verify: {report:?}"
+        );
+    }
+}

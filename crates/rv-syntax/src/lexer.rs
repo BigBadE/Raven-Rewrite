@@ -8,7 +8,13 @@
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tok {
     // Literals / identifiers.
-    Int(i64),
+    /// Carries a full 128-bit magnitude as an `i128` *bit pattern*: literals up
+    /// to `i128::MAX` parse as their natural value, and literals in
+    /// `(i128::MAX, u128::MAX]` (only reachable as an unsigned-typed literal)
+    /// are stored via `u128 as i128` bit-reinterpretation — i.e. they land as
+    /// the corresponding negative `i128`. Downstream (infer/codegen) reinterprets
+    /// the bits as unsigned when the literal's inferred type is unsigned.
+    Int(i128),
     Float(f64),
     Str(String),
     Ident(String),
@@ -259,10 +265,15 @@ pub fn lex(src: &str) -> Result<Vec<SpannedTok>, String> {
                 continue;
             }
             let text = &src[start..i];
-            let value: i64 = text
+            // Parse as `u128` first to admit the full unsigned 128-bit magnitude
+            // (`0..=u128::MAX`), then reinterpret the bit pattern as `i128`. This
+            // keeps literals in `i128`'s natural range numerically unchanged while
+            // still allowing `u128` literals above `i128::MAX` to round-trip (as a
+            // negative `i128` bit pattern; see `Tok::Int`'s doc comment).
+            let value: u128 = text
                 .parse()
                 .map_err(|_| format!("line {line}: integer literal `{text}` out of range"))?;
-            push!(Tok::Int(value));
+            push!(Tok::Int(value as i128));
             continue;
         }
 

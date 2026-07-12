@@ -17,7 +17,14 @@ use rv_codegen::{BinOpKind as BinOp, Bytecode, CompiledFn, Const, Instr, UnOpKin
 /// relied on copy semantics.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
-    Int(i64),
+    /// The native integer word is `i128` (not `i64`): this lets the VM execute
+    /// full-width `i128`/`u128` arithmetic and literals directly, while
+    /// sub-128-bit `IntN` types are kept in range by the narrowing instructions
+    /// `rv-codegen` inserts after width-affecting arithmetic (see
+    /// `Codegen::narrow_reg`). Default (unsized) `Ty::Int` values still only ever
+    /// carry values the verifier bounds to the `i64` range, so widening this to
+    /// `i128` changes no verified behavior — it only adds headroom.
+    Int(i128),
     Float(f64),
     Str(String),
     Bool(bool),
@@ -203,7 +210,7 @@ fn exec_fn(bc: &Bytecode, fn_idx: usize, args: &[Value]) -> Result<Value, String
             Instr::VecLen(dst, vec_reg) => {
                 // Read the vec's `Adt` and put its element count into `dst`.
                 let n = match &regs[*vec_reg as usize] {
-                    Value::Adt { fields, .. } => fields.len() as i64,
+                    Value::Adt { fields, .. } => fields.len() as i128,
                     other => {
                         return Err(format!("VecLen on non-Adt: {other:?}"));
                     }
@@ -384,7 +391,7 @@ fn eval_un(op: UnOp, v: Value) -> Result<Value, String> {
     }
 }
 
-fn as_int(v: Value) -> Result<i64, String> {
+fn as_int(v: Value) -> Result<i128, String> {
     match v {
         Value::Int(i) => Ok(i),
         other => Err(format!("expected Int, got {other:?}")),

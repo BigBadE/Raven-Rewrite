@@ -17,7 +17,7 @@ fn cmp(op: BinOp, a: Term, b: Term) -> Prop {
 fn var(x: Sym) -> Term {
     Term::Var(x)
 }
-fn int(n: i64) -> Term {
+fn int(n: i128) -> Term {
     Term::Int(n)
 }
 

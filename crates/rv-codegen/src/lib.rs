@@ -303,12 +303,12 @@ impl FnBuilder<'_> {
     /// The fixed-integer width to narrow an assignment's result to, if any.
     ///
     /// Narrowing is needed only when (a) the destination local has a sized `IntN`
-    /// type strictly narrower than the 64-bit machine word, and (b) the value
+    /// type strictly narrower than the 128-bit machine word, and (b) the value
     /// comes from arithmetic that can leave that range — `+`, `-`, `*` (checked or
     /// `wrapping_*`) and unary negation. A copy, call, or comparison already
     /// yields an in-range value (established by the callee's width contract or the
-    /// operands themselves), so it needs no mask. 64-bit widths are the native
-    /// representation and never narrow.
+    /// operands themselves), so it needs no mask. 128-bit widths are the native
+    /// representation (the VM's `Value::Int` is `i128`) and never narrow.
     fn narrowing_width(&self, local: LocalId, rvalue: &RValue) -> Option<IntTy> {
         let affects_width = matches!(
             rvalue,
@@ -320,7 +320,7 @@ impl FnBuilder<'_> {
             return None;
         }
         match self.locals.get(local.0 as usize).map(|d| &d.ty) {
-            Some(Ty::IntN(w)) if w.bits < 64 => Some(*w),
+            Some(Ty::IntN(w)) if w.bits < 128 => Some(*w),
             _ => None,
         }
     }
@@ -332,34 +332,36 @@ impl FnBuilder<'_> {
     /// * Unsigned `uN`: mask to the low `N` bits (`v & (2^N - 1)`), yielding the
     ///   canonical `[0, 2^N - 1]` representative — i.e. modular wraparound.
     /// * Signed `iN`: sign-extend bit `N-1` by shifting left then arithmetic-right
-    ///   by `64 - N` (`(v << (64-N)) >> (64-N)`); the VM's `Shr` on a signed `i64`
-    ///   is arithmetic, so this reproduces two's-complement `iN` semantics.
+    ///   by `128 - N` (`(v << (128-N)) >> (128-N)`); the VM's `Shr` on a signed
+    ///   `i128` is arithmetic, so this reproduces two's-complement `iN` semantics.
     fn narrow_reg(&mut self, reg: u32, width: Option<IntTy>) -> u32 {
         let Some(w) = width else {
             return reg;
         };
         let bits = w.bits as u32;
-        // Only sub-word widths narrow. Widths `>= 64` (including 128-bit types,
-        // which the 64-bit VM models at the machine word) are the native
-        // representation and need no mask; returning `reg` unchanged also keeps the
-        // shift/mask arithmetic below from overflowing on a 128-bit width. In
-        // practice `narrowing_width` never yields these (it guards `bits < 64`);
-        // this is defense-in-depth so the helper is total.
-        if bits >= 64 {
+        // Only sub-word widths narrow. 128-bit widths (the VM's native `Value::Int`
+        // representation) need no mask; returning `reg` unchanged also keeps the
+        // shift/mask arithmetic below from overflowing (`128 - bits` would
+        // underflow at `bits == 128`). In practice `narrowing_width` never yields
+        // these (it guards `bits < 128`); this is defense-in-depth so the helper
+        // is total.
+        if bits >= 128 {
             return reg;
         }
         if w.signed {
-            let shift = 64 - bits;
+            let shift = 128 - bits;
             let shamt = self.fresh();
-            self.code.push(Instr::Const(shamt, Const::Int(shift as i64)));
+            self.code.push(Instr::Const(shamt, Const::Int(shift as i128)));
             let up = self.fresh();
             self.code.push(Instr::Bin(up, BinOp::Shl, reg, shamt));
             let out = self.fresh();
             self.code.push(Instr::Bin(out, BinOp::Shr, up, shamt));
             out
         } else {
-            // Mask = 2^bits - 1. `bits < 64` here, so this never overflows i64.
-            let mask = (1i64 << bits) - 1;
+            // Mask = 2^bits - 1. `bits < 128` here; for `bits == 127` this is
+            // `i128::MAX`, still in range (`1i128 << 127` is `i128::MIN`, and
+            // subtracting 1 from it wraps — so guard the one edge case).
+            let mask = if bits >= 127 { i128::MAX } else { (1i128 << bits) - 1 };
             let mreg = self.fresh();
             self.code.push(Instr::Const(mreg, Const::Int(mask)));
             let out = self.fresh();
@@ -734,7 +736,7 @@ mod tests {
     }
 
     /// An operand for the integer literal `n`.
-    fn imm(n: i64) -> Operand {
+    fn imm(n: i128) -> Operand {
         Operand::Const(Const::Int(n))
     }
 
@@ -759,7 +761,8 @@ mod tests {
     }
 
     /// A `wrapping_add` into an `i8` local emits a sign-extension pair
-    /// (`<< 56` then `>> 56`) so the stored value takes `[-128, 127]` semantics.
+    /// (`<< 120` then `>> 120`) so the stored value takes `[-128, 127]`
+    /// semantics on the VM's 128-bit native word.
     #[test]
     fn wrapping_add_into_i8_sign_extends() {
         let mut syms = Symbols::new();
@@ -768,8 +771,8 @@ mod tests {
         let bc = compile(&one_assign_fn(i8_ty, rv, &mut syms), &syms);
         let code = &bc.funcs[0].code;
         assert!(
-            code.iter().any(|i| matches!(i, Instr::Const(_, Const::Int(56)))),
-            "expected a shift amount 64-8=56: {code:?}"
+            code.iter().any(|i| matches!(i, Instr::Const(_, Const::Int(120)))),
+            "expected a shift amount 128-8=120: {code:?}"
         );
         assert!(
             code.iter().any(|i| matches!(i, Instr::Bin(_, BinOp::Shl, _, _)))

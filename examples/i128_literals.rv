@@ -1,0 +1,28 @@
+// 128-bit integer literals and arithmetic.
+//
+// The kernel's `Term::Int` carries a full `i128`, so literals whose magnitude
+// exceeds `i64::MAX` (previously unrepresentable) now embed exactly, both a
+// plain `i128` value and (via `wrapping_*`) `i128` arithmetic on it both verify
+// AND run to the correct value on the VM (whose native `Value::Int` word is
+// also `i128`).
+//
+// NOTE on *checked* (`+`/`-`/`*`, non-wrapping) arithmetic at width 128: the
+// overflow obligation for an `i128`/`u128` destination checks the result
+// against the type's true bound, which for a 128-bit width IS `i128::MIN`/
+// `i128::MAX` — the same values `Term::Int` itself is carried in. Normalizing
+// that comparison (e.g. `result - i128::MIN`) can itself overflow the trusted
+// solver's own `i128`-exact rational arithmetic, so a checked op at width 128
+// is currently sound-but-incomplete (may fail to verify even when safe). Use
+// `wrapping_*` (as below) for 128-bit arithmetic that must currently verify;
+// see `IntTy`'s doc comment in `rv-core` and `range_assumption` in `rv-infer`
+// for the exact boundary.
+//
+// `rvc examples/i128_literals.rv --run` verifies and runs main() to
+// 170141183460469231731687303715884105726 (== i128::MAX - 1, wrapped losslessly
+// since no wraparound actually occurs for this input).
+
+fn main() -> i128 {
+  let big: i128 = 170141183460469231731687303715884105727; // i128::MAX
+  let one: i128 = 1;
+  return wrapping_sub(big, one);
+}
