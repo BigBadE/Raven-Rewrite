@@ -80,6 +80,7 @@ impl I256 {
     /// Exact negation. Total: sign-magnitude has no asymmetric minimum, so
     /// negating any `I256` (including the most extreme representable
     /// magnitude) never overflows.
+    #[allow(clippy::should_implement_trait)]
     pub fn neg(self) -> I256 {
         if self.is_zero() {
             self
@@ -142,6 +143,7 @@ impl I256 {
     }
 
     /// Comparison.
+    #[allow(clippy::should_implement_trait)]
     pub fn cmp(&self, other: &I256) -> Ordering {
         match (self.is_negative(), other.is_negative()) {
             (false, false) => cmp_limbs(self.mag, other.mag),
@@ -251,14 +253,14 @@ fn mul_limbs(a: Limbs, b: Limbs) -> Option<Limbs> {
     // Schoolbook multiplication into an 8-limb accumulator, then check the
     // top 4 limbs are all zero (else overflow).
     let mut acc: [u128; 8] = [0; 8];
-    for i in 0..4 {
-        if a[i] == 0 {
+    for (i, &ai) in a.iter().enumerate() {
+        if ai == 0 {
             continue;
         }
         let mut carry: u128 = 0;
-        for j in 0..4 {
+        for (j, &bj) in b.iter().enumerate() {
             let idx = i + j;
-            let prod = (a[i] as u128) * (b[j] as u128) + acc[idx] + carry;
+            let prod = (ai as u128) * (bj as u128) + acc[idx] + carry;
             acc[idx] = prod & 0xFFFF_FFFF_FFFF_FFFF;
             carry = prod >> 64;
         }

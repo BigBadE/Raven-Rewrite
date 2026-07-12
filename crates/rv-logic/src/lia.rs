@@ -49,6 +49,7 @@
 //! checker accept an unsound certificate: at worst the search emits a certificate the
 //! checker rejects.
 
+use crate::i256::I256;
 use rv_core::{BinOp, Sym, Term, UnOp};
 use std::collections::BTreeMap;
 
@@ -65,8 +66,18 @@ pub const MAX_DISJUNCTS: usize = 4096;
 
 /// An exact rational `num/den`, kept reduced with `den > 0`.
 ///
-/// Rationals are exact (`i128` numerator / `i128` denominator). Any arithmetic overflow
-/// is caught and reported as `None` rather than wrapping — wrapping could be unsound.
+/// The *public* representation is `i128` numerator / `i128` denominator (unchanged from
+/// before), but every arithmetic step is computed by first widening operands to
+/// [`I256`], combining them there (256 bits is ample headroom: an `i128 * i128` cross
+/// product needs at most 256 bits), reducing to lowest terms with `I256::gcd`, and only
+/// *then* narrowing the reduced result back to `i128`. This means an intermediate
+/// cross-multiplication that would overflow plain `i128` arithmetic (e.g. Farkas-scaling
+/// a constant near `i128::MAX`, or a denominator product near the extreme) can still
+/// succeed here whenever the mathematically exact, fully-reduced answer fits back in
+/// `i128` — closing the spurious-overflow gap that plain-`i128` `checked_mul`/`checked_add`
+/// hit at the boundary. If the exact reduced value genuinely does not fit in `i128`
+/// (not merely an intermediate), narrowing fails and `None` is returned — the same safe
+/// "cannot decide" as before, never a wrong answer.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Rat {
     num: i128,
@@ -82,18 +93,21 @@ impl Rat {
     pub fn is_non_negative(&self) -> bool {
         self.num >= 0
     }
-    /// Exact rational addition (checked).
+    /// Exact rational addition (checked), computed over [`I256`] to avoid spurious
+    /// intermediate overflow (see the struct docs).
     pub fn checked_add(self, other: Rat) -> Option<Rat> {
         // a/b + c/d = (a*d + c*b) / (b*d)
-        let n = self.num.checked_mul(other.den)?.checked_add(other.num.checked_mul(self.den)?)?;
-        let d = self.den.checked_mul(other.den)?;
-        Rat::new(n, d)
+        let (a, b) = (I256::from_i128(self.num), I256::from_i128(self.den));
+        let (c, d) = (I256::from_i128(other.num), I256::from_i128(other.den));
+        let n = a.checked_mul(d)?.checked_add(c.checked_mul(b)?)?;
+        let den = b.checked_mul(d)?;
+        Rat::new_i256(n, den)
     }
-    /// Exact rational multiplication (checked).
+    /// Exact rational multiplication (checked), computed over [`I256`] (see struct docs).
     pub fn checked_mul(self, other: Rat) -> Option<Rat> {
-        let n = self.num.checked_mul(other.num)?;
-        let d = self.den.checked_mul(other.den)?;
-        Rat::new(n, d)
+        let n = I256::from_i128(self.num).checked_mul(I256::from_i128(other.num))?;
+        let d = I256::from_i128(self.den).checked_mul(I256::from_i128(other.den))?;
+        Rat::new_i256(n, d)
     }
     /// Is this value strictly positive?
     pub fn positive(&self) -> bool {
@@ -111,22 +125,33 @@ impl Rat {
     pub fn checked_neg(self) -> Option<Rat> {
         self.neg()
     }
+    /// Build a reduced `Rat` from `i128` numerator/denominator. Kept for the (rare)
+    /// direct-`i128` construction path; internal arithmetic instead goes through
+    /// [`Rat::new_i256`] so cross-products never spuriously overflow before reduction.
+    #[cfg(test)]
     fn new(num: i128, den: i128) -> Option<Rat> {
-        if den == 0 {
+        Rat::new_i256(I256::from_i128(num), I256::from_i128(den))
+    }
+    /// Build a reduced `Rat` from an [`I256`] numerator/denominator pair — reduce to
+    /// lowest terms in the wide type first, *then* narrow to `i128`. Returns `None` if
+    /// the denominator is zero or if the fully-reduced value does not fit in `i128`.
+    fn new_i256(num: I256, den: I256) -> Option<Rat> {
+        if den.is_zero() {
             return None;
         }
         let (mut n, mut d) = (num, den);
-        if d < 0 {
-            // Keep the denominator positive (so sign lives in the numerator).
-            n = n.checked_neg()?;
-            d = d.checked_neg()?;
+        if d.is_negative() {
+            // Keep the denominator positive (so sign lives in the numerator). Total:
+            // I256 negation never overflows (sign-magnitude has no asymmetric minimum).
+            n = n.neg();
+            d = d.neg();
         }
-        let g = gcd(n.unsigned_abs(), d.unsigned_abs()) as i128;
-        if g != 0 {
-            n /= g;
-            d /= g;
+        let g = I256::gcd(n, d);
+        if !g.is_zero() {
+            n = n.checked_div(g)?;
+            d = d.checked_div(g)?;
         }
-        Some(Rat { num: n, den: d })
+        Some(Rat { num: n.to_i128()?, den: d.to_i128()? })
     }
     fn zero() -> Rat {
         Rat { num: 0, den: 1 }
@@ -138,17 +163,10 @@ impl Rat {
         self.num > 0
     }
     fn neg(self) -> Option<Rat> {
-        Some(Rat { num: self.num.checked_neg()?, den: self.den })
+        // I256 negation is total; only the final narrow-to-i128 can fail (exactly when
+        // `self.num == i128::MIN`, whose true negation `2^127` cannot fit in `i128`).
+        Some(Rat { num: I256::from_i128(self.num).neg().to_i128()?, den: self.den })
     }
-}
-
-fn gcd(mut a: u128, mut b: u128) -> u128 {
-    while b != 0 {
-        let t = b;
-        b = a % b;
-        a = t;
-    }
-    a
 }
 
 // ===========================================================================
@@ -943,6 +961,68 @@ mod tests {
     fn rat_reduces_and_signs() {
         let r = Rat::new(4, -8).unwrap();
         assert_eq!(r, Rat { num: -1, den: 2 });
+    }
+
+    /// Boundary (B): a cross-multiplication that would overflow plain `i128`
+    /// arithmetic (`i128::MAX * i128::MAX`-scale products) must still succeed when the
+    /// mathematically exact, fully-reduced result fits back in `i128` — the whole point
+    /// of routing `Rat`'s internals through `I256`.
+    #[test]
+    fn rat_mul_survives_i128_extreme_intermediate_when_reduced_result_fits() {
+        // (MAX/1) * (1/MAX) = 1/1 exactly. The unreduced numerator/denominator products
+        // (MAX*1 and 1*MAX) fit i128 here, so pick a case that genuinely needs I256:
+        // (MAX/2) * (2/MAX) = 1 exactly, but the naive numerator product MAX*2 overflows
+        // i128 (2*i128::MAX > i128::MAX).
+        let a = Rat::new(i128::MAX, 2).unwrap();
+        let b = Rat::new(2, i128::MAX).unwrap();
+        let r = a.checked_mul(b).expect("must not overflow: exact result is 1");
+        assert_eq!(r, Rat::from_int(1));
+    }
+
+    #[test]
+    fn rat_add_survives_large_denominator_cross_product() {
+        // 1/K + (K-1)/K = 1 exactly, for K = i128::MAX/4. The generic cross-multiply
+        // formula computes numerator = 1*K + (K-1)*K = K^2 and denominator = K*K,
+        // *before* reducing — and K*K vastly overflows plain i128 (K ~ 4e37, K^2 ~
+        // 1.8e75) even though the fully-reduced answer is the tiny exact value `1`.
+        // I256 carries the K*K-sized intermediate exactly and only narrows after
+        // dividing out the gcd, so this must succeed where naive i128 arithmetic
+        // would spuriously overflow and report "cannot decide".
+        let k = i128::MAX / 4;
+        let a = Rat::new(1, k).unwrap();
+        let b = Rat::new(k - 1, k).unwrap();
+        let r = a.checked_add(b);
+        assert_eq!(r, Some(Rat::from_int(1)), "must reduce to exactly 1, not spuriously overflow");
+    }
+
+    #[test]
+    fn rat_neg_of_i128_min_numerator_is_sound_none() {
+        // The true negation of i128::MIN (as a bare i128 numerator) is 2^127, which
+        // cannot be represented as an i128. This is a genuine (not spurious) overflow:
+        // Rat's public representation is i128, so this must still be None.
+        let r = Rat::new(i128::MIN, 1).unwrap();
+        assert_eq!(r.checked_neg(), None);
+    }
+
+    #[test]
+    fn rat_new_rejects_zero_denominator() {
+        assert_eq!(Rat::new(1, 0), None);
+    }
+
+    #[test]
+    fn rat_arithmetic_matches_naive_i128_when_in_range() {
+        // Cross-check against the old plain-i128 formulas for values comfortably in
+        // range, to confirm the I256 rewrite didn't change any in-range answer.
+        let cases: &[(i128, i128, i128, i128)] =
+            &[(1, 2, 1, 3), (3, 4, -1, 2), (-5, 7, 2, 3), (0, 1, 5, 9), (7, 1, -7, 1)];
+        for &(an, ad, bn, bd) in cases {
+            let a = Rat::new(an, ad).unwrap();
+            let b = Rat::new(bn, bd).unwrap();
+            let expect_add = Rat::new(an * bd + bn * ad, ad * bd).unwrap();
+            let expect_mul = Rat::new(an * bn, ad * bd).unwrap();
+            assert_eq!(a.checked_add(b), Some(expect_add), "add {an}/{ad} + {bn}/{bd}");
+            assert_eq!(a.checked_mul(b), Some(expect_mul), "mul {an}/{ad} * {bn}/{bd}");
+        }
     }
 
     // --- propositional normalization (NNF / DNF) ---------------------------
