@@ -180,6 +180,24 @@ pub enum Term {
     /// `Sys`, the `Π`-case filling rule additionally fires (pushing the composition
     /// pointwise into the codomain) — see `crate::kan`.
     HComp(Rc<Term>, Rc<Cof>, Rc<Term>, Rc<Term>),
+
+    // ---- Step 1 of univalence: equivalences + the `Glue` former (see `crate::cubical`
+    // module doc / `crate::equiv` / this file's `Glue` doc below) ----
+    /// `Glue A [φ ↦ (T, e)]` (CCHM, *Cubical Type Theory*, §6): a type that is `T`
+    /// where `φ` holds and `A` off it, glued together by the equivalence
+    /// `e : Equiv T A`. Fields, in order: the base type `A`, the cofibration `φ`,
+    /// the "outer" partial type `T`, and the equivalence `e : Equiv T A`.
+    ///
+    /// **Scoped simplification** (documented, not a soundness gap): this increment
+    /// represents a *single*-face system `[φ ↦ (T, e)]` rather than the fully
+    /// general multi-branch `Sys`-of-pairs, and requires `e` to be a **total**
+    /// (not merely `φ`-partial) proof of `Equiv T A` — strictly stronger
+    /// obligations than CCHM's general formation rule, chosen because they are
+    /// sufficient to exhibit the `⊤`/`⊥` strictness laws this pass targets and
+    /// keep the checker/reducer/NbE trio simple enough to land soundly in one
+    /// pass. Generalizing to a genuine multi-branch, partial-`e` system is
+    /// deferred alongside `glue`/`unglue` and the Kan structure for `Glue`.
+    Glue(Rc<Term>, Rc<Cof>, Rc<Term>, Rc<Term>),
 }
 
 impl Term {
@@ -273,6 +291,10 @@ impl Term {
     pub fn transp(family: Term, phi: Cof, a: Term) -> Term {
         Term::Transp(Rc::new(family), Rc::new(phi), Rc::new(a))
     }
+    /// `Glue A φ T e` (see [`Term::Glue`]).
+    pub fn glue_ty(a: Term, phi: Cof, t: Term, e: Term) -> Term {
+        Term::Glue(Rc::new(a), Rc::new(phi), Rc::new(t), Rc::new(e))
+    }
     /// `hcomp A φ u u0` (see [`Term::HComp`]).
     pub fn hcomp(ty: Term, phi: Cof, u: Term, u0: Term) -> Term {
         Term::HComp(Rc::new(ty), Rc::new(phi), Rc::new(u), Rc::new(u0))
@@ -333,6 +355,12 @@ impl Term {
                 phi.lift(amount, cutoff),
                 u.lift(amount, cutoff + 1),
                 u0.lift(amount, cutoff),
+            ),
+            Term::Glue(a, phi, t, e) => Term::glue_ty(
+                a.lift(amount, cutoff),
+                phi.lift(amount, cutoff),
+                t.lift(amount, cutoff),
+                e.lift(amount, cutoff),
             ),
         }
     }
@@ -398,6 +426,12 @@ impl Term {
                 phi.subst(depth, replacement),
                 u.subst(depth + 1, replacement),
                 u0.subst(depth, replacement),
+            ),
+            Term::Glue(a, phi, t, e) => Term::glue_ty(
+                a.subst(depth, replacement),
+                phi.subst(depth, replacement),
+                t.subst(depth, replacement),
+                e.subst(depth, replacement),
             ),
         }
     }
@@ -495,6 +529,12 @@ impl Term {
                 u.replace_free_var(depth + 1, replacement),
                 u0.replace_free_var(depth, replacement),
             ),
+            Term::Glue(a, phi, t, e) => Term::glue_ty(
+                a.replace_free_var(depth, replacement),
+                phi.replace_free_var(depth, replacement),
+                t.replace_free_var(depth, replacement),
+                e.replace_free_var(depth, replacement),
+            ),
         }
     }
 
@@ -581,6 +621,12 @@ impl Term {
                 phi.subst_ctx_go(images, depth),
                 u.subst_ctx_go(images, depth + 1),
                 u0.subst_ctx_go(images, depth),
+            ),
+            Term::Glue(a, phi, t, e) => Term::glue_ty(
+                a.subst_ctx_go(images, depth),
+                phi.subst_ctx_go(images, depth),
+                t.subst_ctx_go(images, depth),
+                e.subst_ctx_go(images, depth),
             ),
         }
     }
@@ -692,6 +738,12 @@ impl Term {
                 u.subst_ctx_keep_frame_go(images, depth + 1),
                 u0.subst_ctx_keep_frame_go(images, depth),
             ),
+            Term::Glue(a, phi, t, e) => Term::glue_ty(
+                a.subst_ctx_keep_frame_go(images, depth),
+                phi.subst_ctx_keep_frame_go(images, depth),
+                t.subst_ctx_keep_frame_go(images, depth),
+                e.subst_ctx_keep_frame_go(images, depth),
+            ),
         }
     }
 
@@ -759,6 +811,12 @@ impl Term {
                 u.instantiate_levels(args),
                 u0.instantiate_levels(args),
             ),
+            Term::Glue(a, phi, t, e) => Term::glue_ty(
+                a.instantiate_levels(args),
+                phi.instantiate_levels(args),
+                t.instantiate_levels(args),
+                e.instantiate_levels(args),
+            ),
         }
     }
 
@@ -785,6 +843,9 @@ impl Term {
             Term::Transp(fam, phi, a) => fam.has_meta() || phi.has_meta() || a.has_meta(),
             Term::HComp(ty, phi, u, u0) => {
                 ty.has_meta() || phi.has_meta() || u.has_meta() || u0.has_meta()
+            }
+            Term::Glue(a, phi, t, e) => {
+                a.has_meta() || phi.has_meta() || t.has_meta() || e.has_meta()
             }
         }
     }
@@ -877,6 +938,13 @@ impl Term {
                 names.pop();
                 let u0s = u0.pp(names, 3);
                 paren_if(prec >= 3, format!("hcomp {tys} {phis} (<{nm}> {us}) {u0s}"))
+            }
+            Term::Glue(a, phi, t, e) => {
+                let as_ = a.pp(names, 3);
+                let phis = phi.pp(names);
+                let ts = t.pp(names, 3);
+                let es = e.pp(names, 3);
+                paren_if(prec >= 3, format!("Glue {as_} [{phis} ↦ ({ts}, {es})]"))
             }
             Term::Var(i) => {
                 let n = names.len();
@@ -984,6 +1052,12 @@ pub(crate) fn mentions_var(t: &Term, k: usize) -> bool {
                 || mentions_var(u, k + 1)
                 || mentions_var(u0, k)
         }
+        Term::Glue(a, phi, t, e) => {
+            mentions_var(a, k)
+                || crate::face::mentions_var(phi, k)
+                || mentions_var(t, k)
+                || mentions_var(e, k)
+        }
     }
 }
 
@@ -1047,6 +1121,10 @@ pub(crate) fn free_var_bound_at(t: &Term, depth: usize) -> usize {
                 .max(crate::face::free_var_bound(phi, depth))
                 .max(go(u, depth + 1))
                 .max(go(u0, depth)),
+            Term::Glue(a, phi, t, e) => go(a, depth)
+                .max(crate::face::free_var_bound(phi, depth))
+                .max(go(t, depth))
+                .max(go(e, depth)),
         }
     }
     go(t, depth)

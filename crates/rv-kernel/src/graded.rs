@@ -428,6 +428,19 @@ impl<'e> Graded<'e> {
                 let u0u = self.infer(u0)?;
                 Ok(ut.add(&uu).add(&u0u))
             }
+
+            // Step 1 of univalence (see `rv_kernel_core::term::Term::Glue`):
+            // `Glue A [φ ↦ (T, e)]` is itself a *type*, so — like `Partial φ A`
+            // above — every constituent (`A`, `T`, the equivalence `e`) is
+            // type-level here (scale-0). `glue`/`unglue` (which would carry
+            // genuine runtime data) are deferred, so there is no data-carrying
+            // case to conservatively sum over yet.
+            Term::Glue(a, _phi, t, e) => {
+                let ua = self.infer(a)?.scale(Grade::Zero);
+                let ut = self.infer(t)?.scale(Grade::Zero);
+                let ue = self.infer(e)?.scale(Grade::Zero);
+                Ok(ua.add(&ut).add(&ue))
+            }
         }
     }
 

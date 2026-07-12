@@ -513,6 +513,12 @@ fn mentions_var(t: &Term, k: usize) -> bool {
                 || mentions_var(u, k + 1)
                 || mentions_var(u0, k)
         }
+        Term::Glue(a, p, t2, e) => {
+            mentions_var(a, k)
+                || crate::face::mentions_var(p, k)
+                || mentions_var(t2, k)
+                || mentions_var(e, k)
+        }
     }
 }
 

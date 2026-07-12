@@ -55,6 +55,7 @@ pub fn occurs(n: &str, t: &Term) -> bool {
         Term::Partial(_, a) => occurs(n, a),
         Term::Transp(fam, _, a) => occurs(n, fam) || occurs(n, a),
         Term::HComp(ty, _, u, u0) => occurs(n, ty) || occurs(n, u) || occurs(n, u0),
+        Term::Glue(a, _, t2, e) => occurs(n, a) || occurs(n, t2) || occurs(n, e),
     }
 }
 

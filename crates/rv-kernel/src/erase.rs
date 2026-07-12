@@ -192,7 +192,12 @@ impl<'a> Eraser<'a> {
             | Term::IMeet(..)
             | Term::IJoin(..)
             | Term::PathP(..)
-            | Term::Partial(..) => Ok(Erased::Opaque),
+            | Term::Partial(..)
+            // Step 1 of univalence (see `rv_kernel_core::term::Term::Glue`): a type
+            // former, same footing as `PathP`/`Partial` above — static, no runtime
+            // content of its own (its `glue`/`unglue` are deferred, so no terms of
+            // that shape exist yet to erase).
+            | Term::Glue(..) => Ok(Erased::Opaque),
             // A system is check-only (see `rv_kernel_core::check::Checker::infer`'s
             // `Term::Sys` arm) — without a known `Partial φ A` expected type there is
             // nothing to erase it against.
