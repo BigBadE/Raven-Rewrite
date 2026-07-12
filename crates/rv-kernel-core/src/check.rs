@@ -474,6 +474,52 @@ impl<'e> Checker<'e> {
             // so it gets `Term::I` pushed as its "domain" exactly like a real binder).
             (Term::I, Term::I) | (Term::IZero, Term::IZero) | (Term::IOne, Term::IOne) => true,
             (Term::PLam(b1), Term::PLam(b2)) => ctx.with(Term::I, |c| self.compare(c, b1, b2)),
+            // Path-η: `⟨i⟩ p @ i ≡ p` for *any* `p : PathP C a0 a1`, literal `PLam`
+            // or not (e.g. an opaque axiom/neutral path). This is exactly the
+            // standard definitional η for the path type — the interval-binder
+            // analogue of the `Lam`-η arms directly above — and, like those arms,
+            // is purely **syntactic**: it fires unconditionally whenever one side
+            // is a `PLam`, with no separate check that the other side's type is
+            // really a `PathP`. That's sound for the same reason ordinary `Lam`-η
+            // is sound without re-deriving "the domain is really a `Π`": `compare`
+            // (via `is_def_eq`) is only ever invoked on two terms already known,
+            // from a prior typing judgement, to inhabit *the same* type. If one
+            // side is syntactically a `PLam` its type was checked to be a `PathP`
+            // (`Checker::infer`'s `Term::PLam` arm — see `crate::cubical`), so the
+            // other side's type is `PathP` too, and η-expanding it to `⟨i⟩ b @ i`
+            // (`b` the other side, `Var(0)` the fresh interval binder, lifted
+            // exactly as the `Lam` case lifts across its own fresh binder) is the
+            // very definition of path-η, not a new equation.
+            //
+            // What this adds and nothing more: it equates `p` with `⟨i⟩ p @ i` —
+            // literally $\eta$ for `PathP`, standard in cubical type theory (CCHM/
+            // cubical Agda) — and closes `compare` under that single fact
+            // congruently (via the recursive call on bodies). It does NOT equate
+            // paths with different endpoints or different interiors: the
+            // recursive `self.compare(c, body, &eta)` call still requires the
+            // *bodies* to be convertible under the interval binder, so e.g. two
+            // opaque paths `p`, `q` with unrelated bodies remain inequal (see
+            // `path_eta_does_not_equate_unrelated_opaque_paths` in `nbe.rs`'s
+            // tests) — this mirrors exactly how ordinary `Lam`-η never equates
+            // `λx.f x` with `λx.g x` unless `f x ≡ g x` already held.
+            //
+            // Termination: strictly structurally decreasing, exactly like `Lam`-η.
+            // The non-`PLam` side `b`/`a` (whichever triggers the arm) is pushed
+            // one `PApp` deeper (`b.lift(1,0) @ Var(0)`) and compared against the
+            // *body* of the `PLam` side, which is one constructor smaller than the
+            // original `PLam` term; the non-`PLam` side can itself only ever
+            // η-expand once more (were it to become a `PLam` after eta-expansion
+            // it wouldn't — `PApp(_, Var(0))` is never itself a `PLam`), so this
+            // cannot loop, exactly as the existing, known-terminating `Lam` case
+            // does not loop.
+            (Term::PLam(body), _) => {
+                let eta = Term::papp(b.lift(1, 0), Term::Var(0));
+                ctx.with(Term::I, |c| self.compare(c, body, &eta))
+            }
+            (_, Term::PLam(body)) => {
+                let eta = Term::papp(a.lift(1, 0), Term::Var(0));
+                ctx.with(Term::I, |c| self.compare(c, &eta, body))
+            }
             (Term::PApp(p1, r1), Term::PApp(p2, r2)) => {
                 self.compare(ctx, p1, p2) && self.compare(ctx, r1, r2)
             }
