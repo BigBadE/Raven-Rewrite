@@ -182,7 +182,9 @@ impl Metas {
             Term::App(f, a) => Ok(Term::app(self.zonk(f)?, self.zonk(a)?)),
             Term::Lam(d, b) => Ok(Term::lam(self.zonk(d)?, self.zonk(b)?)),
             Term::Pi(g, d, b) => Ok(Term::pi_graded(*g, self.zonk(d)?, self.zonk(b)?)),
-            Term::Let(ty, v, b) => Ok(Term::let_(self.zonk(ty)?, self.zonk(v)?, self.zonk(b)?)),
+            Term::Let(g, ty, v, b) => {
+                Ok(Term::let_graded(*g, self.zonk(ty)?, self.zonk(v)?, self.zonk(b)?))
+            }
         }
     }
 }
@@ -440,7 +442,8 @@ fn invert(meta: u32, image: &[usize], t: &Term, depth: usize) -> Result<Term, St
             invert(meta, image, d, depth)?,
             invert(meta, image, b, depth + 1)?,
         )),
-        Term::Let(ty, v, b) => Ok(Term::let_(
+        Term::Let(g, ty, v, b) => Ok(Term::let_graded(
+            *g,
             invert(meta, image, ty, depth)?,
             invert(meta, image, v, depth)?,
             invert(meta, image, b, depth + 1)?,
@@ -474,7 +477,7 @@ fn occurs(m: u32, t: &Term) -> bool {
         Term::Sort(_) | Term::Var(_) | Term::Const(..) => false,
         Term::App(f, a) => occurs(m, f) || occurs(m, a),
         Term::Lam(d, b) | Term::Pi(_, d, b) => occurs(m, d) || occurs(m, b),
-        Term::Let(ty, v, b) => occurs(m, ty) || occurs(m, v) || occurs(m, b),
+        Term::Let(_, ty, v, b) => occurs(m, ty) || occurs(m, v) || occurs(m, b),
     }
 }
 

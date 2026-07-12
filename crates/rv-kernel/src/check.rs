@@ -120,7 +120,7 @@ impl<'e> Checker<'e> {
                 // Impredicative product rule.
                 Ok(Term::Sort(Level::imax(s1, s2)))
             }
-            Term::Let(ty, value, body) => {
+            Term::Let(_, ty, value, body) => {
                 self.infer_sort(ctx, ty)?;
                 self.check(ctx, value, ty)?;
                 let tbody = ctx.with((**ty).clone(), |c| self.infer(c, body))?;

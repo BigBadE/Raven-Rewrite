@@ -36,7 +36,7 @@ impl<'e> Reducer<'e> {
         loop {
             match &head {
                 // ζ: unfold a `let`.
-                Term::Let(_, value, body) => {
+                Term::Let(_, _, value, body) => {
                     head = body.instantiate(value);
                 }
                 Term::Const(n, ls) => match self.env.get(n) {

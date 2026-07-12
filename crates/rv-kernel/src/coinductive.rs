@@ -489,7 +489,7 @@ fn mentions_var(t: &Term, k: usize) -> bool {
         Term::Var(i) => *i == k,
         Term::App(f, a) => mentions_var(f, k) || mentions_var(a, k),
         Term::Lam(d, b) | Term::Pi(_, d, b) => mentions_var(d, k) || mentions_var(b, k + 1),
-        Term::Let(t, v, b) => {
+        Term::Let(_, t, v, b) => {
             mentions_var(t, k) || mentions_var(v, k) || mentions_var(b, k + 1)
         }
         Term::Sort(_) | Term::Const(..) | Term::Meta(_) => false,

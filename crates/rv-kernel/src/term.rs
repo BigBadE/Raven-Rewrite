@@ -89,8 +89,12 @@ pub enum Term {
     /// [`Grade`] on the binder; `codomain` is under one binder. A non-dependent arrow
     /// `A → B` is `Pi(Many, A, lift(B))`.
     Pi(Grade, Rc<Term>, Rc<Term>),
-    /// `let (_ : ty) := value in body` — `body` is under one binder.
-    Let(Rc<Term>, Rc<Term>, Rc<Term>),
+    /// `let (_ :ᵍ ty) := value in body` — `body` is under one binder, with a usage
+    /// [`Grade`] on the let-bound variable (mirrors [`Term::Pi`]'s binder grade). The
+    /// default constructor [`Term::let_`] grades it `Many` (unrestricted), so every
+    /// pre-existing `let` — hand-built or elaborator-produced — is unaffected by the
+    /// QTT usage pass in [`crate::graded`].
+    Let(Grade, Rc<Term>, Rc<Term>, Rc<Term>),
     /// An **elaboration-only** metavariable (a hole to be solved by unification). The
     /// trusted type-checker *rejects* any term still containing one; the elaborator
     /// solves and zonks all metas away before a term reaches the kernel. Atomic (its
@@ -140,8 +144,13 @@ impl Term {
     pub fn arrow(a: Term, b: Term) -> Term {
         Term::pi(a, b.lift(1, 0))
     }
+    /// A `let` binder at the default (unrestricted) grade.
     pub fn let_(ty: Term, value: Term, body: Term) -> Term {
-        Term::Let(Rc::new(ty), Rc::new(value), Rc::new(body))
+        Term::Let(Grade::Many, Rc::new(ty), Rc::new(value), Rc::new(body))
+    }
+    /// A `let` binder at an explicit usage grade.
+    pub fn let_graded(grade: Grade, ty: Term, value: Term, body: Term) -> Term {
+        Term::Let(grade, Rc::new(ty), Rc::new(value), Rc::new(body))
     }
 
     /// Re-index free variables: add `amount` to every `Var(i)` with `i >= cutoff`.
@@ -163,8 +172,8 @@ impl Term {
             Term::Pi(g, d, b) => {
                 Term::pi_graded(*g, d.lift(amount, cutoff), b.lift(amount, cutoff + 1))
             }
-            Term::Let(t, v, b) => {
-                Term::let_(t.lift(amount, cutoff), v.lift(amount, cutoff), b.lift(amount, cutoff + 1))
+            Term::Let(g, t, v, b) => {
+                Term::let_graded(*g, t.lift(amount, cutoff), v.lift(amount, cutoff), b.lift(amount, cutoff + 1))
             }
         }
     }
@@ -188,7 +197,8 @@ impl Term {
             Term::Pi(g, d, b) => {
                 Term::pi_graded(*g, d.subst(depth, replacement), b.subst(depth + 1, replacement))
             }
-            Term::Let(t, v, b) => Term::let_(
+            Term::Let(g, t, v, b) => Term::let_graded(
+                *g,
                 t.subst(depth, replacement),
                 v.subst(depth, replacement),
                 b.subst(depth + 1, replacement),
@@ -239,7 +249,8 @@ impl Term {
             Term::Pi(g, d, b) => {
                 Term::pi_graded(*g, d.subst_ctx_go(images, depth), b.subst_ctx_go(images, depth + 1))
             }
-            Term::Let(t, v, b) => Term::let_(
+            Term::Let(g, t, v, b) => Term::let_graded(
+                *g,
                 t.subst_ctx_go(images, depth),
                 v.subst_ctx_go(images, depth),
                 b.subst_ctx_go(images, depth + 1),
@@ -268,7 +279,8 @@ impl Term {
             Term::Pi(g, d, b) => {
                 Term::pi_graded(*g, d.instantiate_levels(args), b.instantiate_levels(args))
             }
-            Term::Let(t, v, b) => Term::let_(
+            Term::Let(g, t, v, b) => Term::let_graded(
+                *g,
                 t.instantiate_levels(args),
                 v.instantiate_levels(args),
                 b.instantiate_levels(args),
@@ -288,7 +300,7 @@ impl Term {
             Term::App(f, a) => f.has_meta() || a.has_meta(),
             Term::Lam(d, b) => d.has_meta() || b.has_meta(),
             Term::Pi(_, d, b) => d.has_meta() || b.has_meta(),
-            Term::Let(t, v, b) => t.has_meta() || v.has_meta() || b.has_meta(),
+            Term::Let(_, t, v, b) => t.has_meta() || v.has_meta() || b.has_meta(),
         }
     }
 
@@ -360,14 +372,19 @@ impl Term {
                 };
                 paren_if(prec >= 2, s)
             }
-            Term::Let(ty, val, body) => {
+            Term::Let(g, ty, val, body) => {
                 let nm = fresh_binder_name(names.len());
                 let tys = ty.pp(names, 0);
                 let vs = val.pp(names, 0);
                 names.push(nm.clone());
                 let bs = body.pp(names, 0);
                 names.pop();
-                paren_if(prec >= 2, format!("let {nm} : {tys} := {vs} in {bs}"))
+                let gs = match g {
+                    Grade::Many => String::new(),
+                    Grade::Zero => "0".to_string(),
+                    Grade::One => "1".to_string(),
+                };
+                paren_if(prec >= 2, format!("let{gs} {nm} : {tys} := {vs} in {bs}"))
             }
         }
     }
@@ -400,7 +417,7 @@ fn mentions_var(t: &Term, k: usize) -> bool {
         Term::App(f, a) => mentions_var(f, k) || mentions_var(a, k),
         Term::Lam(d, b) => mentions_var(d, k) || mentions_var(b, k + 1),
         Term::Pi(_, d, b) => mentions_var(d, k) || mentions_var(b, k + 1),
-        Term::Let(ty, v, b) => mentions_var(ty, k) || mentions_var(v, k) || mentions_var(b, k + 1),
+        Term::Let(_, ty, v, b) => mentions_var(ty, k) || mentions_var(v, k) || mentions_var(b, k + 1),
         Term::Sort(_) | Term::Const(..) | Term::Meta(_) => false,
     }
 }
