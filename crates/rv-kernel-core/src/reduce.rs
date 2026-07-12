@@ -14,7 +14,7 @@
 //! `is_def_eq` equated distinct types, ill-typed programs would slip through. The
 //! rules are the standard ones; we keep them total and structural.
 
-use crate::env::{CircleRole, Decl, Destructor, Env, HitRole, QuotRole, Recursor, TruncRole};
+use crate::env::{CircleRole, Decl, Destructor, Env, HitRole, I2Role, QuotRole, Recursor, TruncRole};
 use crate::level::{self, Level};
 use crate::term::{Name, Term};
 
@@ -101,6 +101,20 @@ impl<'e> Reducer<'e> {
                     // Circle computation: `S¹.rec P pt lp S¹.base ↦ pt`.
                     Some(Decl::Circle(c)) if c.role == CircleRole::Rec => {
                         match self.try_circle_rec(&args) {
+                            Some(reduced) => {
+                                let (h, a) = reduced.unfold_apps();
+                                head = h;
+                                args = a;
+                            }
+                            None => break,
+                        }
+                    }
+                    // Interval-HIT computation (see `crate::interval_hit`): the
+                    // *computing* `I2.rec`, with THREE ι-rules — two point rules
+                    // (`zero`/`one`) and, the whole point of the module, a PATH rule
+                    // that fires on a literal `I2.seg @ r` scrutinee.
+                    Some(Decl::I2(c)) if c.role == I2Role::Rec => {
+                        match self.try_i2_rec(&args) {
                             Some(reduced) => {
                                 let (h, a) = reduced.unfold_apps();
                                 head = h;
@@ -557,6 +571,81 @@ impl<'e> Reducer<'e> {
             applied = Term::app(applied, extra.clone());
         }
         Some(applied)
+    }
+
+    /// Try the interval-HIT (`I2`) computation rules (see [`crate::interval_hit`]) —
+    /// the **computing** dependent recursor `I2.rec.{v} C c0 c1 s x`. Spine positions:
+    /// `C`@0, `c0`@1, `c1`@2, `s`@3, scrutinee `x`@4. Three ι-rules:
+    ///
+    /// ```text
+    ///   I2.rec C c0 c1 s I2.zero        ↦  c0
+    ///   I2.rec C c0 c1 s I2.one         ↦  c1
+    ///   I2.rec C c0 c1 s (I2.seg @ r)   ↦  s @ r
+    /// ```
+    ///
+    /// The first two mirror [`Self::try_circle_rec`]'s point rule (just doubled for
+    /// two point constructors). The third is new: it fires when the scrutinee's
+    /// weak-head form is *literally* a [`Term::PApp`] whose head weak-head-reduces to
+    /// the nullary `I2.seg` constant — never on a bare neutral, never on an unrelated
+    /// `PathP`-typed application (guarded by checking the `PApp` head is specifically
+    /// `I2.seg`), and never confused with the point rules (a `PApp` node is never a
+    /// `Term::Const` head, so `unfold_apps` can't route it into the point-rule match
+    /// arm by accident). Returns `None` (stuck/neutral) when not yet saturated to the
+    /// scrutinee or the scrutinee matches none of the three shapes.
+    fn try_i2_rec(&self, args: &[Term]) -> Option<Term> {
+        const C0_POS: usize = 1;
+        const C1_POS: usize = 2;
+        const S_POS: usize = 3;
+        const SCRUT_POS: usize = 4;
+        if args.len() <= SCRUT_POS {
+            return None; // not yet applied to the I2 value
+        }
+        let scrut = self.whnf(&args[SCRUT_POS]);
+        // Point rules: scrutinee weak-head-reduces to a literal, nullary `I2.zero` or
+        // `I2.one`.
+        let (pt_head, pt_args) = scrut.unfold_apps();
+        if let Term::Const(pt_name, _) = &pt_head {
+            let role = match self.env.get(pt_name) {
+                Some(Decl::I2(c)) => Some(c.role),
+                _ => None,
+            };
+            match role {
+                Some(I2Role::Zero) if pt_args.is_empty() => {
+                    let mut applied = args[C0_POS].clone();
+                    for extra in &args[SCRUT_POS + 1..] {
+                        applied = Term::app(applied, extra.clone());
+                    }
+                    return Some(applied);
+                }
+                Some(I2Role::One) if pt_args.is_empty() => {
+                    let mut applied = args[C1_POS].clone();
+                    for extra in &args[SCRUT_POS + 1..] {
+                        applied = Term::app(applied, extra.clone());
+                    }
+                    return Some(applied);
+                }
+                _ => {}
+            }
+        }
+        // Path rule: scrutinee is (weak-head) `PApp(p, r)` with `p`'s own weak-head
+        // form the literal, nullary `I2.seg`.
+        if let Term::PApp(p, r) = &scrut {
+            let p_whnf = self.whnf(p);
+            let (seg_head, seg_args) = p_whnf.unfold_apps();
+            if let Term::Const(seg_name, _) = &seg_head {
+                if matches!(self.env.get(seg_name), Some(Decl::I2(c)) if c.role == I2Role::Seg)
+                    && seg_args.is_empty()
+                {
+                    let s = &args[S_POS];
+                    let mut applied = Term::papp(s.clone(), (**r).clone());
+                    for extra in &args[SCRUT_POS + 1..] {
+                        applied = Term::app(applied, extra.clone());
+                    }
+                    return Some(applied);
+                }
+            }
+        }
+        None
     }
 
     /// Try a **user-declared 1-HIT** computation rule (see [`crate::hit`]): for

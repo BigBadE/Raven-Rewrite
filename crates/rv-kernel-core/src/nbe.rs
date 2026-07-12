@@ -14,7 +14,7 @@
 //! be adopted as the performance path with confidence, while the proven reducer
 //! remains the reference.
 
-use crate::env::{CircleRole, Decl, Env, HitRole, QuotRole, TruncRole};
+use crate::env::{CircleRole, Decl, Env, HitRole, I2Role, QuotRole, TruncRole};
 use crate::face::{Atom, Cof};
 use crate::level::{self, Level};
 use crate::term::{Grade, Name, Term};
@@ -441,7 +441,12 @@ impl<'a> Nbe<'a> {
                                 if let Value::Stuck(h6, spine6) = &*stuck {
                                     let stuck = self.try_circle_rec(h6.clone(), spine6.clone());
                                     if let Value::Stuck(h7, spine7) = &*stuck {
-                                        self.try_hit_rec(h7.clone(), spine7.clone())
+                                        let stuck = self.try_i2_rec(h7.clone(), spine7.clone());
+                                        if let Value::Stuck(h8, spine8) = &*stuck {
+                                            self.try_hit_rec(h8.clone(), spine8.clone())
+                                        } else {
+                                            stuck
+                                        }
                                     } else {
                                         stuck
                                     }
@@ -706,6 +711,72 @@ impl<'a> Nbe<'a> {
                         }
                         return v;
                     }
+                }
+            }
+        }
+        Rc::new(Value::Stuck(h, spine))
+    }
+
+    /// The interval-HIT (`I2`) computation rules, NbE counterpart of
+    /// [`crate::reduce::Reducer::try_i2_rec`] (see [`crate::interval_hit`]). Three
+    /// ι-rules for the fixed, **computing** `I2.rec.{v} C c0 c1 s x` (spine: `C`@0,
+    /// `c0`@1, `c1`@2, `s`@3, scrutinee `x`@4):
+    ///
+    /// ```text
+    ///   I2.rec C c0 c1 s I2.zero        ↦  c0
+    ///   I2.rec C c0 c1 s I2.one         ↦  c1
+    ///   I2.rec C c0 c1 s (I2.seg @ r)   ↦  s @ r
+    /// ```
+    ///
+    /// The point rules mirror [`Self::try_circle_rec`] exactly (doubled for two point
+    /// constructors). The path rule fires only when the scrutinee value is a
+    /// [`Value::Stuck`] with head [`Head::PathApp`]`(p, r)` whose own `p` is,
+    /// recursively, `Value::Stuck(Head::Const(seg, _), [])` for the literal `I2.seg`
+    /// constant — i.e. the scrutinee is exactly `I2.seg @ r`, matching
+    /// [`crate::reduce::Reducer::try_i2_rec`]'s structural test on `Term::PApp`.
+    fn try_i2_rec(&self, h: Head, spine: Vec<Rc<Value>>) -> Rc<Value> {
+        const C0_POS: usize = 1;
+        const C1_POS: usize = 2;
+        const S_POS: usize = 3;
+        const SCRUT_POS: usize = 4;
+        if let Head::Const(rname, _) = &h {
+            if matches!(self.env.get(rname), Some(Decl::I2(c)) if c.role == I2Role::Rec)
+                && spine.len() > SCRUT_POS
+            {
+                match &*spine[SCRUT_POS] {
+                    Value::Stuck(Head::Const(ptn, _), pargs) if pargs.is_empty() => {
+                        let role = match self.env.get(ptn) {
+                            Some(Decl::I2(c)) => Some(c.role),
+                            _ => None,
+                        };
+                        let pos = match role {
+                            Some(I2Role::Zero) => Some(C0_POS),
+                            Some(I2Role::One) => Some(C1_POS),
+                            _ => None,
+                        };
+                        if let Some(pos) = pos {
+                            let mut v = spine[pos].clone();
+                            for extra in &spine[SCRUT_POS + 1..] {
+                                v = self.vapp(v, extra.clone());
+                            }
+                            return v;
+                        }
+                    }
+                    Value::Stuck(Head::PathApp(p, r), pargs) if pargs.is_empty() => {
+                        if let Value::Stuck(Head::Const(segn, _), segargs) = &**p {
+                            if matches!(self.env.get(segn), Some(Decl::I2(c)) if c.role == I2Role::Seg)
+                                && segargs.is_empty()
+                            {
+                                let s = spine[S_POS].clone();
+                                let mut v = self.vpapp(s, r.clone());
+                                for extra in &spine[SCRUT_POS + 1..] {
+                                    v = self.vapp(v, extra.clone());
+                                }
+                                return v;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

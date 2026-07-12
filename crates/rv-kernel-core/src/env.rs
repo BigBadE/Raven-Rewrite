@@ -376,6 +376,52 @@ pub enum HitRole {
     Ind { num_points: u32 },
 }
 
+/// Which of the five fixed **interval-HIT** constants an [`I2`] declaration is.
+///
+/// `I2` (see [`crate::interval_hit`]) is the **computing** counterpart of [`Circle`]:
+/// two point constructors `zero`/`one : I2` and a genuine **cubical** path constructor
+/// `seg : Path I2 zero one` (a [`crate::term::Term::PathP`]/`PLam`-classified path, not
+/// an inductive `Eq`), together with a **`Type`-valued, computing** dependent recursor
+/// `I2.rec`. Unlike [`CircleRole`]'s `S¹.rec` (whose `lp : Eq P pt pt` premise is
+/// discarded at ι-time, and which only ever fires on the point constructor `base`),
+/// `I2.rec`'s ι-rules fire on *both* `zero`/`one` **and** on `seg @ r` — the point where
+/// this schema genuinely outruns the propositional (`Eq`-based) HIT machinery: the path
+/// constructor itself computes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum I2Role {
+    /// The type former `I2 : Type 0`.
+    Type,
+    /// The point constructor `I2.zero : I2`.
+    Zero,
+    /// The point constructor `I2.one : I2`.
+    One,
+    /// The cubical path constructor `I2.seg : Path I2 I2.zero I2.one` — a genuine
+    /// `PathP`/`PLam`-classified path (see [`crate::cubical`]), not an inductive `Eq`.
+    /// Holds *definitionally*: `I2.seg @ r` is a bona fide interval application, and
+    /// (via `I2.rec`'s ι-rule) actually computes.
+    Seg,
+    /// The **`Type`-valued, computing** dependent recursor
+    /// `I2.rec.{v} : Π (C : I2 → Sort v) (c0 : C zero) (c1 : C one)
+    ///   (s : PathP (λ i. C (seg @ i)) c0 c1) (x : I2), C x`.
+    /// Drives **two** ι-rules (see [`crate::interval_hit`]):
+    ///   `I2.rec C c0 c1 s zero ↦ c0`, `I2.rec C c0 c1 s one ↦ c1` (point ι-rules,
+    ///   analogous to [`CircleRole::Rec`]'s single point rule), **and**
+    ///   `I2.rec C c0 c1 s (seg @ r) ↦ s @ r` (the **path** ι-rule — the one a
+    ///   propositional/`Eq`-based HIT recursor cannot express, since there `s` would be
+    ///   discarded rather than applied).
+    Rec,
+}
+
+/// A member of the fixed **interval-HIT** schema — one of the five `I2.*` constants.
+/// See [`I2Role`] and [`crate::interval_hit`] for the full schema and its soundness
+/// argument.
+#[derive(Clone, Debug)]
+pub struct I2 {
+    pub role: I2Role,
+    pub num_levels: u32,
+    pub ty: Term,
+}
+
 /// A member of a **user-declared 1-HIT** family, installed by
 /// [`crate::hit::declare_hit`]. See [`HitRole`] for the per-constant breakdown and
 /// [`crate::hit`] for the schema's soundness argument and the supported class of HITs.
@@ -418,6 +464,7 @@ pub enum Decl {
     Trunc(Rc<Trunc>),
     Circle(Rc<Circle>),
     Hit(Rc<Hit>),
+    I2(Rc<I2>),
 }
 
 impl Decl {
@@ -435,6 +482,7 @@ impl Decl {
             Decl::Trunc(t) => &t.ty,
             Decl::Circle(c) => &c.ty,
             Decl::Hit(h) => &h.ty,
+            Decl::I2(c) => &c.ty,
         }
     }
     /// How many universe parameters this entry abstracts over.
@@ -451,6 +499,7 @@ impl Decl {
             Decl::Trunc(t) => t.num_levels,
             Decl::Circle(c) => c.num_levels,
             Decl::Hit(h) => h.num_levels,
+            Decl::I2(c) => c.num_levels,
         }
     }
 }
