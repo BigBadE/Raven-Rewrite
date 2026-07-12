@@ -103,6 +103,13 @@ impl Kernel {
         crate::coinductive::declare_coinductive(&mut self.env, spec)
     }
 
+    /// Install the fixed **quotient** schema (`Quot`, `Quot.mk`, `Quot.sound`,
+    /// `Quot.lift`, `Quot.ind`). Requires the `Eq` inductive to already be present. See
+    /// [`crate::quotient`] for the types and the soundness argument.
+    pub fn install_quot(&mut self) -> Result<(), String> {
+        crate::quotient::install_quot(&mut self.env)
+    }
+
     /// Infer the type of a closed term against the current environment.
     pub fn infer(&self, t: &Term) -> Result<Term, String> {
         reject_meta(t)?;

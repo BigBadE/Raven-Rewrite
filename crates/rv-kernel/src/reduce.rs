@@ -14,7 +14,7 @@
 //! `is_def_eq` equated distinct types, ill-typed programs would slip through. The
 //! rules are the standard ones; we keep them total and structural.
 
-use crate::env::{Decl, Destructor, Env, Recursor};
+use crate::env::{Decl, Destructor, Env, QuotRole, Recursor};
 use crate::level;
 use crate::term::Term;
 
@@ -62,6 +62,17 @@ impl<'e> Reducer<'e> {
                         }
                         None => break,
                     },
+                    // Quotient computation: `Quot.lift … f resp (Quot.mk … a) ↦ f a`.
+                    Some(Decl::Quot(q)) if q.role == QuotRole::Lift => {
+                        match self.try_quot_lift(&args) {
+                            Some(reduced) => {
+                                let (h, a) = reduced.unfold_apps();
+                                head = h;
+                                args = a;
+                            }
+                            None => break,
+                        }
+                    }
                     _ => break,
                 },
                 // β: a lambda meeting an argument.
@@ -196,6 +207,48 @@ impl<'e> Reducer<'e> {
         // Re-attach any over-application beyond the scrutinee.
         let mut applied = result;
         for extra in &args[scrut_pos + 1..] {
+            applied = Term::app(applied, extra.clone());
+        }
+        Some(applied)
+    }
+
+    /// Try the single **quotient** computation rule (the dual of an ι-rule for the
+    /// fixed `Quot.lift` constant):
+    ///
+    /// ```text
+    ///   Quot.lift.{u v} A R B f resp (Quot.mk.{u} A R a)  ↦  f a
+    /// ```
+    ///
+    /// `Quot.lift`'s spine is `[A, R, B, f, resp, q, extra…]`; the scrutinee `q` is at
+    /// index 5 and `f` at index 3. We fire only when `q` weak-head-reduces to a literal
+    /// `Quot.mk` application (spine `[A, R, a]`, so `a` is its last argument), discarding
+    /// `resp` exactly as Lean does — its only role is to have been *type-checked to
+    /// exist*, guaranteeing `f` respects `R`. Returns `None` (stuck/neutral) when not
+    /// saturated to the scrutinee or the scrutinee is not a `Quot.mk`.
+    fn try_quot_lift(&self, args: &[Term]) -> Option<Term> {
+        const F_POS: usize = 3;
+        const SCRUT_POS: usize = 5;
+        if args.len() <= SCRUT_POS {
+            return None; // not yet applied to the quotient value
+        }
+        let scrut = self.whnf(&args[SCRUT_POS]);
+        let (mk_head, mk_args) = scrut.unfold_apps();
+        let Term::Const(mk_name, _) = &mk_head else {
+            return None;
+        };
+        match self.env.get(mk_name) {
+            Some(Decl::Quot(q)) if q.role == QuotRole::Mk => {}
+            _ => return None,
+        }
+        // `Quot.mk A R a` — the representative `a` is the last (3rd) argument.
+        if mk_args.len() != 3 {
+            return None;
+        }
+        let a = &mk_args[2];
+        let f = &args[F_POS];
+        let mut applied = Term::app(f.clone(), a.clone());
+        // Re-attach any over-application beyond the scrutinee.
+        for extra in &args[SCRUT_POS + 1..] {
             applied = Term::app(applied, extra.clone());
         }
         Some(applied)

@@ -206,6 +206,42 @@ pub struct CorecRule {
     pub corecursive: bool,
 }
 
+/// Which of the five fixed **quotient** constants a [`Quotient`] declaration is.
+///
+/// The quotient schema (`Quot`, `Quot.mk`, `Quot.sound`, `Quot.lift`, `Quot.ind`) is a
+/// fixed set of constants installed once (see [`crate::quotient`]), not a per-quotient
+/// datatype. The reducer needs to recognise only `Lift` (its computation rule fires on
+/// a `Mk` scrutinee); the other roles are ordinary typed constants with no reduction of
+/// their own (`Sound` and `Type`/`Mk`/`Ind` are canonical/neutral).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum QuotRole {
+    /// The type former `Quot A R`.
+    Type,
+    /// The constructor `Quot.mk A R a`.
+    Mk,
+    /// The soundness axiom `Quot.sound … : R a b → mk a = mk b`.
+    Sound,
+    /// The eliminator `Quot.lift A R B f resp : Quot A R → B` (drives the ι-rule
+    /// `Quot.lift … f resp (Quot.mk … a) ↦ f a`).
+    Lift,
+    /// The `Prop`-eliminator `Quot.ind` (no computation rule; sound by proof
+    /// irrelevance — see [`crate::quotient`]).
+    Ind,
+}
+
+/// A member of the fixed **quotient** schema — one of the five `Quot*` constants.
+///
+/// Unlike inductives/coinductives there is no per-quotient elaboration: `install_quot`
+/// installs all five constants with fixed, closed types. The [reducer](crate::reduce)
+/// and [`crate::nbe`] special-case the [`QuotRole::Lift`] constant to implement the one
+/// quotient computation rule; every other role is a plain typed constant.
+#[derive(Clone, Debug)]
+pub struct Quotient {
+    pub role: QuotRole,
+    pub num_levels: u32,
+    pub ty: Term,
+}
+
 /// A single environment entry.
 #[derive(Clone, Debug)]
 pub enum Decl {
@@ -217,6 +253,7 @@ pub enum Decl {
     Coinductive(Rc<Coinductive>),
     Destructor(Rc<Destructor>),
     Corecursor(Rc<Corecursor>),
+    Quot(Rc<Quotient>),
 }
 
 impl Decl {
@@ -230,6 +267,7 @@ impl Decl {
             Decl::Coinductive(c) => &c.ty,
             Decl::Destructor(d) => &d.ty,
             Decl::Corecursor(c) => &c.ty,
+            Decl::Quot(q) => &q.ty,
         }
     }
     /// How many universe parameters this entry abstracts over.
@@ -242,6 +280,7 @@ impl Decl {
             Decl::Coinductive(c) => c.num_levels,
             Decl::Destructor(d) => d.num_levels,
             Decl::Corecursor(c) => c.num_levels,
+            Decl::Quot(q) => q.num_levels,
         }
     }
 }
