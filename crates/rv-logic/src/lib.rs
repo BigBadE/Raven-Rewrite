@@ -3,6 +3,7 @@
 //! (resource algebra + usage semiring) that disciplines plug into.
 use rv_core::Prop;
 
+pub mod i256;
 pub mod lia;
 pub use lia::{
     Atom, DisjunctCert, Disequality, EqClosure, FarkasCert, LiaCertificate, LinConstraint, LinExpr,
