@@ -492,7 +492,12 @@ fn mentions_var(t: &Term, k: usize) -> bool {
         Term::Let(_, t, v, b) => {
             mentions_var(t, k) || mentions_var(v, k) || mentions_var(b, k + 1)
         }
-        Term::Sort(_) | Term::Const(..) | Term::Meta(_) => false,
+        Term::PLam(b) => mentions_var(b, k + 1),
+        Term::PApp(p, r) => mentions_var(p, k) || mentions_var(r, k),
+        Term::PathP(fam, a0, a1) => {
+            mentions_var(fam, k + 1) || mentions_var(a0, k) || mentions_var(a1, k)
+        }
+        Term::Sort(_) | Term::Const(..) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => false,
     }
 }
 

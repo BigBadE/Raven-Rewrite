@@ -138,7 +138,23 @@ impl<'e> Reducer<'e> {
                     head = h;
                     args = a;
                 }
-                // Sort, Var, Pi, or a stuck Const: weak-head normal.
+                // Path application: `(PLam body) @ r ↦ body[i := r]` (see
+                // `crate::cubical` — Phase-1's one computation rule for paths). If the
+                // path being applied doesn't whnf to a literal `PLam` (e.g. it's a
+                // free/neutral variable of `PathP` type), this stays *stuck*: Phase 1
+                // has no η/boundary axiom for neutrals, only for actual abstractions
+                // (see the module doc's soundness argument for why that's fine).
+                Term::PApp(p, r) => {
+                    let pw = self.whnf(p);
+                    match &pw {
+                        Term::PLam(body) => head = body.instantiate(r),
+                        _ => {
+                            head = Term::papp(pw, (**r).clone());
+                            break;
+                        }
+                    }
+                }
+                // Sort, Var, Pi, I/IZero/IOne, PLam, PathP, or a stuck Const: weak-head normal.
                 _ => break,
             }
         }
@@ -556,6 +572,15 @@ impl<'e> Reducer<'e> {
                 a1.len() == a2.len()
                     && self.is_def_eq(&h1, &h2)
                     && a1.iter().zip(&a2).all(|(x, y)| self.is_def_eq(x, y))
+            }
+            // Phase-1 cubical (see `crate::cubical`): structural, no Path-specific η.
+            (Term::I, Term::I) | (Term::IZero, Term::IZero) | (Term::IOne, Term::IOne) => true,
+            (Term::PLam(b1), Term::PLam(b2)) => self.is_def_eq(b1, b2),
+            (Term::PApp(p1, r1), Term::PApp(p2, r2)) => {
+                self.is_def_eq(p1, p2) && self.is_def_eq(r1, r2)
+            }
+            (Term::PathP(f1, a01, a11), Term::PathP(f2, a02, a12)) => {
+                self.is_def_eq(f1, f2) && self.is_def_eq(a01, a02) && self.is_def_eq(a11, a12)
             }
             _ => false,
         }

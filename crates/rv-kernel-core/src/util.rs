@@ -45,7 +45,10 @@ pub fn occurs(n: &str, t: &Term) -> bool {
         Term::App(f, a) => occurs(n, f) || occurs(n, a),
         Term::Lam(d, b) | Term::Pi(_, d, b) => occurs(n, d) || occurs(n, b),
         Term::Let(_, x, y, z) => occurs(n, x) || occurs(n, y) || occurs(n, z),
-        Term::Sort(_) | Term::Var(_) | Term::Meta(_) => false,
+        Term::PLam(b) => occurs(n, b),
+        Term::PApp(p, r) => occurs(n, p) || occurs(n, r),
+        Term::PathP(fam, a0, a1) => occurs(n, fam) || occurs(n, a0) || occurs(n, a1),
+        Term::Sort(_) | Term::Var(_) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => false,
     }
 }
 

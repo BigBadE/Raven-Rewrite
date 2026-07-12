@@ -351,6 +351,37 @@ impl<'e> Graded<'e> {
                 }
                 Ok(acc)
             }
+
+            // Phase-1 cubical (see `rv_kernel_core::cubical`). `I`/`i0`/`i1` mention no
+            // local variables (like `Sort`/`Const`). `PLam` reuses the ordinary `Var`
+            // binder machinery (see `Term::PLam`'s doc comment) — it has no explicit
+            // grade annotation of its own (unlike `Lam`'s `Π`-derived grade) because an
+            // interval variable is never a linear *resource*: it only ever legally
+            // occurs in a `PApp`'s interval-typed argument position (enforced by
+            // `crate::check`), never consumed at runtime, so it is graded `Many`
+            // (unrestricted — the always-safe, never-tightening default, same as an
+            // unreadable application head's argument above). `PathP`'s family lives
+            // under that same binder, and its two endpoints are ordinary (erased,
+            // scale-0, since it's a type) subterms.
+            Term::I | Term::IZero | Term::IOne => Ok(Usage::empty()),
+            Term::PLam(body) => {
+                let ub = self.under(&Term::I, |s| s.infer(body))?;
+                let (u0, urest) = ub.pop_binder();
+                self.check_binder(Grade::Many, u0, "path abstraction")?;
+                Ok(urest)
+            }
+            Term::PApp(p, r) => {
+                let up = self.infer(p)?;
+                let ur = self.infer(r)?.scale(Grade::Zero);
+                Ok(up.add(&ur))
+            }
+            Term::PathP(fam, a0, a1) => {
+                let uf = self.under(&Term::I, |s| s.infer(fam))?.scale(Grade::Zero);
+                let (_, uf) = uf.pop_binder();
+                let u0 = self.infer(a0)?.scale(Grade::Zero);
+                let u1 = self.infer(a1)?.scale(Grade::Zero);
+                Ok(uf.add(&u0).add(&u1))
+            }
         }
     }
 

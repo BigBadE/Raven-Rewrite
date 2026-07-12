@@ -252,7 +252,12 @@ fn occurs_const(t: &Term, id: &Name) -> bool {
         Term::Lam(d, b) => occurs_const(d, id) || occurs_const(b, id),
         Term::Pi(_, d, b) => occurs_const(d, id) || occurs_const(b, id),
         Term::Let(_, ty, v, b) => occurs_const(ty, id) || occurs_const(v, id) || occurs_const(b, id),
-        Term::Sort(_) | Term::Var(_) | Term::Meta(_) => false,
+        Term::PLam(b) => occurs_const(b, id),
+        Term::PApp(p, r) => occurs_const(p, id) || occurs_const(r, id),
+        Term::PathP(fam, a0, a1) => {
+            occurs_const(fam, id) || occurs_const(a0, id) || occurs_const(a1, id)
+        }
+        Term::Sort(_) | Term::Var(_) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => false,
     }
 }
 

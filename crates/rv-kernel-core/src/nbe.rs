@@ -33,6 +33,18 @@ pub enum Value {
     /// A rigid head applied to a spine of argument values (a neutral term, or a
     /// canonical constructor application — both are "head + spine").
     Stuck(Head, Vec<Rc<Value>>),
+
+    // ---- Phase-1 cubical (see `crate::cubical`) ----
+    /// The phantom interval-sort marker (never a real value; see [`crate::term::Term::I`]).
+    I,
+    /// The left interval endpoint.
+    IZero,
+    /// The right interval endpoint.
+    IOne,
+    /// A path abstraction `⟨i⟩ body` — the interval-binder analogue of `Value::Lam`.
+    PLam(Closure),
+    /// `PathP (λi. family) a0 a1`, the semantic form of [`crate::term::Term::PathP`].
+    PathP(Rc<Value>, Rc<Value>, Closure),
 }
 
 /// The rigid head of a neutral/canonical value.
@@ -44,6 +56,11 @@ pub enum Head {
     Const(Name, Vec<Level>),
     /// An unsolved metavariable (elaboration only).
     Meta(u32),
+    /// A neutral **path application** `p @ r` where `p` didn't reduce to a `PLam` —
+    /// this is an atomic head exactly like `Var`/`Const`/`Meta` (see [`Value::Stuck`]'s
+    /// doc comment): further ordinary applications simply extend the spine on top of
+    /// it, and quoting rebuilds `Term::PApp(quote p, quote r)`.
+    PathApp(Rc<Value>, Rc<Value>),
 }
 
 /// A delayed term body together with the environment it closes over.
@@ -144,6 +161,33 @@ impl<'a> Nbe<'a> {
                 Some(sol) => self.eval(&Rc::new(VEnv::Nil), &sol), // a solved meta unfolds
                 None => Rc::new(Value::Stuck(Head::Meta(*m), Vec::new())),
             },
+            Term::I => Rc::new(Value::I),
+            Term::IZero => Rc::new(Value::IZero),
+            Term::IOne => Rc::new(Value::IOne),
+            Term::PLam(b) => {
+                Rc::new(Value::PLam(Closure { env: venv.clone(), body: b.clone() }))
+            }
+            Term::PApp(p, r) => {
+                let vp = self.eval(venv, p);
+                let vr = self.eval(venv, r);
+                self.vpapp(vp, vr)
+            }
+            Term::PathP(fam, a0, a1) => Rc::new(Value::PathP(
+                self.eval(venv, a0),
+                self.eval(venv, a1),
+                Closure { env: venv.clone(), body: fam.clone() },
+            )),
+        }
+    }
+
+    /// Apply a path value to an interval-value argument (the interval-binder analogue
+    /// of [`Self::vapp`]): `(PLam body) @ r ↦ body[i := r]`; anything else (a neutral)
+    /// stays stuck as a [`Head::PathApp`] atomic head, exactly mirroring
+    /// [`crate::reduce::Reducer::whnf`]'s `Term::PApp` case.
+    fn vpapp(&self, p: Rc<Value>, r: Rc<Value>) -> Rc<Value> {
+        match &*p {
+            Value::PLam(clo) => self.apply(clo, r),
+            _ => Rc::new(Value::Stuck(Head::PathApp(p, r), Vec::new())),
         }
     }
 
@@ -510,11 +554,23 @@ impl<'a> Nbe<'a> {
                     Head::Var(lvl) => Term::Var(level - 1 - lvl),
                     Head::Const(n, ls) => Term::cnst(n.clone(), ls.clone()),
                     Head::Meta(m) => Term::Meta(*m),
+                    Head::PathApp(p, r) => Term::papp(self.quote(level, p), self.quote(level, r)),
                 };
                 for arg in spine {
                     t = Term::app(t, self.quote(level, arg));
                 }
                 t
+            }
+            Value::I => Term::I,
+            Value::IZero => Term::IZero,
+            Value::IOne => Term::IOne,
+            Value::PLam(clo) => {
+                let body = self.apply(clo, Rc::new(Value::Stuck(Head::Var(level), Vec::new())));
+                Term::plam(self.quote(level + 1, &body))
+            }
+            Value::PathP(a0, a1, clo) => {
+                let body = self.apply(clo, Rc::new(Value::Stuck(Head::Var(level), Vec::new())));
+                Term::pathp(self.quote(level + 1, &body), self.quote(level, a0), self.quote(level, a1))
             }
         }
     }
@@ -555,6 +611,12 @@ fn alpha_eta_eq(a: &Term, b: &Term) -> bool {
         // η: `λ. body ≡ f`  iff  `body ≡ f x`.
         (Term::Lam(_, body), _) => alpha_eta_eq(body, &Term::app(b.lift(1, 0), Term::Var(0))),
         (_, Term::Lam(_, body)) => alpha_eta_eq(&Term::app(a.lift(1, 0), Term::Var(0)), body),
+        (Term::I, Term::I) | (Term::IZero, Term::IZero) | (Term::IOne, Term::IOne) => true,
+        (Term::PLam(b1), Term::PLam(b2)) => alpha_eta_eq(b1, b2),
+        (Term::PApp(p1, r1), Term::PApp(p2, r2)) => alpha_eta_eq(p1, p2) && alpha_eta_eq(r1, r2),
+        (Term::PathP(f1, a01, a11), Term::PathP(f2, a02, a12)) => {
+            alpha_eta_eq(f1, f2) && alpha_eta_eq(a01, a02) && alpha_eta_eq(a11, a12)
+        }
         _ => false,
     }
 }

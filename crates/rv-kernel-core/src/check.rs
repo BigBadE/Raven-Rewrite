@@ -128,6 +128,64 @@ impl<'e> Checker<'e> {
                 // value to eliminate the now-departing binder.
                 Ok(tbody.instantiate(value))
             }
+
+            // ---- Phase-1 cubical (see `crate::cubical`) ----
+
+            // `I` is a phantom classifier, not itself a checkable value/type: this is
+            // exactly what makes it "not fibrant" — nothing can quantify a real Type
+            // over it (a `Π (i : I). _` domain would have to `infer` to a `Sort`, and
+            // this errors instead), and no closed term of "type `I`" other than the
+            // two literal endpoints or a bound interval variable can be built.
+            Term::I => Err("`I` (the interval) is not itself a type or a value".to_string()),
+            Term::IZero | Term::IOne => Ok(Term::I),
+
+            // Path abstraction: `⟨i⟩ body` has type `PathP (λi. type-of body) body[i:=i0] body[i:=i1]`.
+            // Reuses the ordinary `Var` binder machinery (see `Term::PLam`'s doc
+            // comment) — push `I` as the new binder's "type" so `is_interval_var`
+            // recognizes it, then `instantiate` (the same substitution `Lam`/`Pi` use)
+            // computes the two endpoints.
+            Term::PLam(body) => {
+                let tbody = ctx.with(Term::I, |c| self.infer(c, body))?;
+                let a0 = body.instantiate(&Term::IZero);
+                let a1 = body.instantiate(&Term::IOne);
+                Ok(Term::pathp(tbody, a0, a1))
+            }
+
+            // Path application `p @ r`: `r` must itself check against `I` (so, in a
+            // well-typed term, `r` is `IZero`, `IOne`, or a bound interval variable —
+            // nothing else can have inferred type `I`, since `I` is rejected as a `Π`
+            // domain/codomain and thus no function can return it either). The result
+            // type is the family instantiated at `r` — definitionally equal to the
+            // declared endpoint when `r` is `IZero`/`IOne` (the boundary equations,
+            // enforced by `PathP`'s well-formedness check below, not by this rule).
+            Term::PApp(p, r) => {
+                let tr = self.infer(ctx, r)?;
+                if !self.is_def_eq(ctx, &tr, &Term::I) {
+                    return Err(format!(
+                        "path application argument must be an interval term (: I), got type {}",
+                        tr.pretty()
+                    ));
+                }
+                let tp = self.infer(ctx, p)?;
+                let tp = self.reducer().whnf(&tp);
+                let Term::PathP(fam, _, _) = &tp else {
+                    return Err(format!(
+                        "path application: head is not a Path/PathP, has type {}",
+                        tp.pretty()
+                    ));
+                };
+                Ok(fam.instantiate(r))
+            }
+
+            // `PathP (λi. family) a0 a1` is itself a type: check the family is a type
+            // under an interval binder, and its two endpoints match the family
+            // instantiated at `i0`/`i1` (up to conversion — the boundary condition).
+            Term::PathP(fam, a0, a1) => {
+                let sort = ctx.with(Term::I, |c| self.infer_sort(c, fam))?;
+                self.check(ctx, a0, &fam.instantiate(&Term::IZero))?;
+                self.check(ctx, a1, &fam.instantiate(&Term::IOne))?;
+                Ok(Term::Sort(sort))
+            }
         }
     }
 
@@ -215,9 +273,60 @@ impl<'e> Checker<'e> {
                     && self.compare(ctx, &h1, &h2)
                     && a1.iter().zip(&a2).all(|(x, y)| self.compare(ctx, x, y))
             }
+            // Phase-1 cubical (see `crate::cubical`): structural comparison, same
+            // shape as the `Pi`/`Lam` cases above (the interval binder reuses `Var`,
+            // so it gets `Term::I` pushed as its "domain" exactly like a real binder).
+            (Term::I, Term::I) | (Term::IZero, Term::IZero) | (Term::IOne, Term::IOne) => true,
+            (Term::PLam(b1), Term::PLam(b2)) => ctx.with(Term::I, |c| self.compare(c, b1, b2)),
+            (Term::PApp(p1, r1), Term::PApp(p2, r2)) => {
+                self.compare(ctx, p1, p2) && self.compare(ctx, r1, r2)
+            }
+            (Term::PathP(f1, a01, a11), Term::PathP(f2, a02, a12)) => {
+                ctx.with(Term::I, |c| self.compare(c, f1, f2))
+                    && self.compare(ctx, a01, a02)
+                    && self.compare(ctx, a11, a12)
+            }
             _ => false,
         };
-        structural || self.proof_irrelevant(ctx, a, b)
+        structural || self.proof_irrelevant(ctx, a, b) || self.path_boundary(ctx, a, b)
+    }
+
+    /// The **boundary equation** for `Path`/`PathP` (see `crate::cubical`): for *any*
+    /// `p : PathP (λi. A) a0 a1` — not just a literal `Term::PLam` (that case is
+    /// already handled by ordinary β-reduction in [`crate::reduce::Reducer::whnf`]) —
+    /// `p @ i0 ≡ a0` and `p @ i1 ≡ a1` hold **definitionally**, by the well-formedness
+    /// of the `PathP` type itself (`Checker::infer`'s `Term::PathP` arm already checked
+    /// exactly this equation when `p`'s type was established). This is the
+    /// type-directed counterpart to η for `Path` — mirrors how [`Self::proof_irrelevant`]
+    /// is also a type-directed equation that plain structural `compare` can't express —
+    /// and is what lets `funext`/`ap` (see `crate::cubical`) synthesize their *stated*
+    /// general endpoint types even when the underlying path (`h x`, say) is a neutral
+    /// application rather than a literal path abstraction.
+    ///
+    /// Soundness: this adds no equation between terms that weren't already forced
+    /// equal by a *previously checked* typing judgement — `a0`/`a1` are read out of
+    /// `p`'s own (already-verified) `PathP` type, not asserted here. If that type came
+    /// from an inconsistent axiom, the inconsistency was already introduced by
+    /// accepting the axiom, exactly as for any other axiom in the kernel (see
+    /// `crate::cubical`'s module-level soundness argument, point 3).
+    fn path_boundary(&self, ctx: &mut LocalCtx, a: &Term, b: &Term) -> bool {
+        self.path_boundary_one(ctx, a, b) || self.path_boundary_one(ctx, b, a)
+    }
+
+    /// One direction of [`Self::path_boundary`]: if `probe` is `p @ i0` or `p @ i1`,
+    /// infer `p`'s type and — if it's a `PathP` — compare the declared endpoint
+    /// against `other`.
+    fn path_boundary_one(&self, ctx: &mut LocalCtx, probe: &Term, other: &Term) -> bool {
+        let Term::PApp(p, r) = probe else { return false };
+        let at_zero = matches!(&**r, Term::IZero);
+        let at_one = matches!(&**r, Term::IOne);
+        if !at_zero && !at_one {
+            return false;
+        }
+        let Ok(tp) = self.infer(ctx, p) else { return false };
+        let Term::PathP(_, a0, a1) = self.reducer().whnf(&tp) else { return false };
+        let endpoint = if at_zero { a0 } else { a1 };
+        self.compare(ctx, &endpoint, other)
     }
 
     /// Convenience: definitional equality of two **closed** terms.
