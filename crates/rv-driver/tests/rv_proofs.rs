@@ -72,6 +72,18 @@ fn heap_laws() {
     check("heap.rv");
 }
 
+/// Fractional-permission SEPARATION LOGIC, proved by the kernel: a `Perm` half-unit algebra
+/// (`half + half = full`, commutative/associative composition, over-one invalidity), a
+/// permission-annotated heap with a `l |->[pi] v` points-to, heap composition with pointwise
+/// separating-conjunction commutativity/associativity and the frame property, and the
+/// ownership x dependency bridge as theorems — a full-permission owner cannot admit a companion
+/// (over-provisioning is invalid: the `&mut` exclusivity), and a shared points-to splits into two
+/// readers (`l |->[1]v == l |->[½]v * l |->[½]v`: the `&` duplicability). Zero axioms.
+#[test]
+fn separation_logic() {
+    check("separation.rv");
+}
+
 /// A bounded machine word: the 1-bit wrapping adder proved to be a commutative group
 /// (identity, self-inverse, commutativity, associativity) — overflow arithmetic's algebra.
 #[test]
