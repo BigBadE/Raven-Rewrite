@@ -173,7 +173,7 @@ impl Metas {
                 Some(sol) => self.zonk(sol),
                 None => Err(format!("could not infer metavariable ?{m}")),
             },
-            Term::Var(_) => Ok(t.clone()),
+            Term::Var(_) | Term::I | Term::IZero | Term::IOne => Ok(t.clone()),
             Term::Sort(l) => Ok(Term::Sort(self.zonk_level(l)?)),
             Term::Const(n, ls) => {
                 let ls = ls.iter().map(|l| self.zonk_level(l)).collect::<Result<_, _>>()?;
@@ -182,6 +182,11 @@ impl Metas {
             Term::App(f, a) => Ok(Term::app(self.zonk(f)?, self.zonk(a)?)),
             Term::Lam(d, b) => Ok(Term::lam(self.zonk(d)?, self.zonk(b)?)),
             Term::Pi(g, d, b) => Ok(Term::pi_graded(*g, self.zonk(d)?, self.zonk(b)?)),
+            Term::PLam(b) => Ok(Term::plam(self.zonk(b)?)),
+            Term::PApp(p, r) => Ok(Term::papp(self.zonk(p)?, self.zonk(r)?)),
+            Term::PathP(fam, a0, a1) => {
+                Ok(Term::pathp(self.zonk(fam)?, self.zonk(a0)?, self.zonk(a1)?))
+            }
             Term::Let(g, ty, v, b) => {
                 Ok(Term::let_graded(*g, self.zonk(ty)?, self.zonk(v)?, self.zonk(b)?))
             }
@@ -432,7 +437,7 @@ fn invert(meta: u32, image: &[usize], t: &Term, depth: usize) -> Result<Term, St
                 }
             }
         }
-        Term::Sort(_) | Term::Const(..) => Ok(t.clone()),
+        Term::Sort(_) | Term::Const(..) | Term::I | Term::IZero | Term::IOne => Ok(t.clone()),
         Term::App(f, a) => Ok(Term::app(invert(meta, image, f, depth)?, invert(meta, image, a, depth)?)),
         Term::Lam(d, b) => {
             Ok(Term::lam(invert(meta, image, d, depth)?, invert(meta, image, b, depth + 1)?))
@@ -447,6 +452,15 @@ fn invert(meta: u32, image: &[usize], t: &Term, depth: usize) -> Result<Term, St
             invert(meta, image, ty, depth)?,
             invert(meta, image, v, depth)?,
             invert(meta, image, b, depth + 1)?,
+        )),
+        Term::PLam(b) => Ok(Term::plam(invert(meta, image, b, depth + 1)?)),
+        Term::PApp(p, r) => {
+            Ok(Term::papp(invert(meta, image, p, depth)?, invert(meta, image, r, depth)?))
+        }
+        Term::PathP(fam, a0, a1) => Ok(Term::pathp(
+            invert(meta, image, fam, depth + 1)?,
+            invert(meta, image, a0, depth)?,
+            invert(meta, image, a1, depth)?,
         )),
     }
 }
@@ -474,10 +488,13 @@ fn solve(env: &Env, metas: &mut Metas, ctx: &LocalCtx, m: u32, t: &Term) -> Resu
 fn occurs(m: u32, t: &Term) -> bool {
     match t {
         Term::Meta(k) => *k == m,
-        Term::Sort(_) | Term::Var(_) | Term::Const(..) => false,
+        Term::Sort(_) | Term::Var(_) | Term::Const(..) | Term::I | Term::IZero | Term::IOne => false,
         Term::App(f, a) => occurs(m, f) || occurs(m, a),
         Term::Lam(d, b) | Term::Pi(_, d, b) => occurs(m, d) || occurs(m, b),
         Term::Let(_, ty, v, b) => occurs(m, ty) || occurs(m, v) || occurs(m, b),
+        Term::PLam(b) => occurs(m, b),
+        Term::PApp(p, r) => occurs(m, p) || occurs(m, r),
+        Term::PathP(fam, a0, a1) => occurs(m, fam) || occurs(m, a0) || occurs(m, a1),
     }
 }
 

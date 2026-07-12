@@ -2091,7 +2091,9 @@ fn abstract_occurrences(e: &Term, target: &Term, k: usize) -> Term {
                 Term::Var(*i)
             }
         }
-        Term::Sort(_) | Term::Const(..) | Term::Meta(_) => e.clone(),
+        Term::Sort(_) | Term::Const(..) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => {
+            e.clone()
+        }
         Term::App(f, a) => {
             Term::app(abstract_occurrences(f, target, k), abstract_occurrences(a, target, k))
         }
@@ -2109,6 +2111,18 @@ fn abstract_occurrences(e: &Term, target: &Term, k: usize) -> Term {
             abstract_occurrences(t, target, k),
             abstract_occurrences(v, target, k),
             abstract_occurrences(b, target, k + 1),
+        ),
+        // Phase-1 cubical (see `rv_kernel_core::cubical`): the elaborator doesn't yet
+        // produce these (no surface syntax), but keep them structurally sound —
+        // `PLam`/`PathP`'s family reuse the ordinary `Var` binder (one extra `k + 1`).
+        Term::PLam(b) => Term::plam(abstract_occurrences(b, target, k + 1)),
+        Term::PApp(p, r) => {
+            Term::papp(abstract_occurrences(p, target, k), abstract_occurrences(r, target, k))
+        }
+        Term::PathP(fam, a0, a1) => Term::pathp(
+            abstract_occurrences(fam, target, k + 1),
+            abstract_occurrences(a0, target, k),
+            abstract_occurrences(a1, target, k),
         ),
     }
 }
@@ -2211,7 +2225,9 @@ pub(crate) fn replace_with_var(t: &Term, target: &Term, k: usize) -> Term {
             return Term::Var(k + depth);
         }
         match t {
-            Term::Sort(_) | Term::Var(_) | Term::Const(..) | Term::Meta(_) => t.clone(),
+            Term::Sort(_) | Term::Var(_) | Term::Const(..) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => {
+                t.clone()
+            }
             Term::App(f, a) => Term::app(go(f, target, k, depth), go(a, target, k, depth)),
             Term::Lam(d, b) => Term::lam(go(d, target, k, depth), go(b, target, k, depth + 1)),
             Term::Pi(g, d, b) => {
@@ -2222,6 +2238,13 @@ pub(crate) fn replace_with_var(t: &Term, target: &Term, k: usize) -> Term {
                 go(ty, target, k, depth),
                 go(v, target, k, depth),
                 go(b, target, k, depth + 1),
+            ),
+            Term::PLam(b) => Term::plam(go(b, target, k, depth + 1)),
+            Term::PApp(p, r) => Term::papp(go(p, target, k, depth), go(r, target, k, depth)),
+            Term::PathP(fam, a0, a1) => Term::pathp(
+                go(fam, target, k, depth + 1),
+                go(a0, target, k, depth),
+                go(a1, target, k, depth),
             ),
         }
     }
@@ -2236,7 +2259,9 @@ fn subst_db_var(t: &Term, d: usize, u: &Term) -> Term {
     fn go(t: &Term, d: usize, u: &Term, depth: usize) -> Term {
         match t {
             Term::Var(i) if *i == d + depth => u.lift(depth as isize, 0),
-            Term::Sort(_) | Term::Var(_) | Term::Const(..) | Term::Meta(_) => t.clone(),
+            Term::Sort(_) | Term::Var(_) | Term::Const(..) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => {
+                t.clone()
+            }
             Term::App(f, a) => Term::app(go(f, d, u, depth), go(a, d, u, depth)),
             Term::Lam(g, b) => Term::lam(go(g, d, u, depth), go(b, d, u, depth + 1)),
             Term::Pi(gr, g, b) => {
@@ -2247,6 +2272,13 @@ fn subst_db_var(t: &Term, d: usize, u: &Term) -> Term {
                 go(ty, d, u, depth),
                 go(v, d, u, depth),
                 go(b, d, u, depth + 1),
+            ),
+            Term::PLam(b) => Term::plam(go(b, d, u, depth + 1)),
+            Term::PApp(p, r) => Term::papp(go(p, d, u, depth), go(r, d, u, depth)),
+            Term::PathP(fam, a0, a1) => Term::pathp(
+                go(fam, d, u, depth + 1),
+                go(a0, d, u, depth),
+                go(a1, d, u, depth),
             ),
         }
     }
@@ -2261,13 +2293,20 @@ fn occurs_term(t: &Term, target: &Term) -> bool {
             return true;
         }
         match t {
-            Term::Sort(_) | Term::Var(_) | Term::Const(..) | Term::Meta(_) => false,
+            Term::Sort(_) | Term::Var(_) | Term::Const(..) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => {
+                false
+            }
             Term::App(f, a) => go(f, target, depth) || go(a, target, depth),
             Term::Lam(d, b) | Term::Pi(_, d, b) => {
                 go(d, target, depth) || go(b, target, depth + 1)
             }
             Term::Let(_, x, y, z) => {
                 go(x, target, depth) || go(y, target, depth) || go(z, target, depth + 1)
+            }
+            Term::PLam(b) => go(b, target, depth + 1),
+            Term::PApp(p, r) => go(p, target, depth) || go(r, target, depth),
+            Term::PathP(fam, a0, a1) => {
+                go(fam, target, depth + 1) || go(a0, target, depth) || go(a1, target, depth)
             }
         }
     }
@@ -2279,11 +2318,16 @@ fn occurs_var(t: &Term, d: usize) -> bool {
     fn go(t: &Term, d: usize, depth: usize) -> bool {
         match t {
             Term::Var(i) => *i == d + depth,
-            Term::Sort(_) | Term::Const(..) | Term::Meta(_) => false,
+            Term::Sort(_) | Term::Const(..) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => false,
             Term::App(f, a) => go(f, d, depth) || go(a, d, depth),
             Term::Lam(g, b) | Term::Pi(_, g, b) => go(g, d, depth) || go(b, d, depth + 1),
             Term::Let(_, x, y, z) => {
                 go(x, d, depth) || go(y, d, depth) || go(z, d, depth + 1)
+            }
+            Term::PLam(b) => go(b, d, depth + 1),
+            Term::PApp(p, r) => go(p, d, depth) || go(r, d, depth),
+            Term::PathP(fam, a0, a1) => {
+                go(fam, d, depth + 1) || go(a0, d, depth) || go(a1, d, depth)
             }
         }
     }
@@ -2297,7 +2341,12 @@ fn occurs_const(n: &str, t: &Term) -> bool {
         Term::App(f, a) => occurs_const(n, f) || occurs_const(n, a),
         Term::Lam(d, b) | Term::Pi(_, d, b) => occurs_const(n, d) || occurs_const(n, b),
         Term::Let(_, x, y, z) => occurs_const(n, x) || occurs_const(n, y) || occurs_const(n, z),
-        Term::Sort(_) | Term::Var(_) | Term::Meta(_) => false,
+        Term::PLam(b) => occurs_const(n, b),
+        Term::PApp(p, r) => occurs_const(n, p) || occurs_const(n, r),
+        Term::PathP(fam, a0, a1) => {
+            occurs_const(n, fam) || occurs_const(n, a0) || occurs_const(n, a1)
+        }
+        Term::Sort(_) | Term::Var(_) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => false,
     }
 }
 
@@ -2334,11 +2383,16 @@ fn expr_uses_dot_rec(e: &crate::surface::Expr) -> bool {
 fn is_closed_at(t: &Term, depth: usize) -> bool {
     match t {
         Term::Var(i) => *i < depth,
-        Term::Sort(_) | Term::Const(..) | Term::Meta(_) => true,
+        Term::Sort(_) | Term::Const(..) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => true,
         Term::App(f, a) => is_closed_at(f, depth) && is_closed_at(a, depth),
         Term::Lam(d, b) | Term::Pi(_, d, b) => is_closed_at(d, depth) && is_closed_at(b, depth + 1),
         Term::Let(_, x, y, z) => {
             is_closed_at(x, depth) && is_closed_at(y, depth) && is_closed_at(z, depth + 1)
+        }
+        Term::PLam(b) => is_closed_at(b, depth + 1),
+        Term::PApp(p, r) => is_closed_at(p, depth) && is_closed_at(r, depth),
+        Term::PathP(fam, a0, a1) => {
+            is_closed_at(fam, depth + 1) && is_closed_at(a0, depth) && is_closed_at(a1, depth)
         }
     }
 }

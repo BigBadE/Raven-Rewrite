@@ -175,10 +175,20 @@ impl<'a> Eraser<'a> {
                 }
                 Ok(Erased::Var(self.erased_index(*i)))
             }
-            // Sorts and Π are static — no runtime content.
-            Term::Sort(_) | Term::Pi(..) => Ok(Erased::Opaque),
+            // Sorts and Π are static — no runtime content. Phase-1 cubical (see
+            // `rv_kernel_core::cubical`) is likewise all proof-layer: `I`/`i0`/`i1` are
+            // interval-sort terms (never runtime data) and `PathP` is a type former.
+            Term::Sort(_) | Term::Pi(..) | Term::I | Term::IZero | Term::IOne | Term::PathP(..) => {
+                Ok(Erased::Opaque)
+            }
             // A λ encountered as an atom: erase against its inferred type.
             Term::Lam(..) => {
+                let ty = Checker::new(self.env).infer(&mut self.ctx(), head)?;
+                self.erase(head, &ty)
+            }
+            // A path abstraction/application encountered as an atom (no expected type
+            // supplied): infer its type the same way `Lam` does above.
+            Term::PLam(..) | Term::PApp(..) => {
                 let ty = Checker::new(self.env).infer(&mut self.ctx(), head)?;
                 self.erase(head, &ty)
             }

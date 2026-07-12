@@ -100,6 +100,38 @@ pub enum Term {
     /// solves and zonks all metas away before a term reaches the kernel. Atomic (its
     /// solution lives in the metacontext, not as subterms here).
     Meta(u32),
+
+    // ---- Phase-1 cubical: the interval and Path types (see `crate::cubical`) ----
+    /// The **interval sort**, `I` — a phantom classifier, never itself a `Sort n` and
+    /// never a valid `Π`/`λ` domain. It only ever appears as the type [`LocalCtx`]
+    /// (`crate::check`) hands back for a variable bound by [`Term::PLam`]; `infer`
+    /// rejects `I` everywhere else, which is exactly what makes `I` "not fibrant" —
+    /// nothing can quantify a real type over it (`Π (i : I). A` fails to type-check
+    /// because `infer(I)` is an error, not a sort).
+    I,
+    /// The left interval endpoint, `i0 : I`.
+    IZero,
+    /// The right interval endpoint, `i1 : I`.
+    IOne,
+    /// Path abstraction `⟨i⟩ t` (aka `λ i. t`, `i : I`). Deliberately reuses the
+    /// *ordinary* de Bruijn `Var`/binder machinery — `body` is under one extra `Var`
+    /// binder exactly like [`Term::Lam`], just with no domain subterm (the domain is
+    /// always `I`, so there is nothing to store or re-check). This is what lets every
+    /// existing `lift`/`subst`/NbE `Var` case keep working unmodified for interval
+    /// binders; only [`crate::check`]'s context has to remember a binder is
+    /// interval-typed (by recording [`Term::I`] as its type) rather than a real sort.
+    PLam(Rc<Term>),
+    /// Path application `p @ r` — eliminates a `Path`/`PathP`. `r` must check against
+    /// `I` (so, in a well-typed term, only ever `IZero`, `IOne`, or a bound interval
+    /// variable — Phase 1 is a **Cartesian** interval: no `∧`/`∨`/`~` connections, see
+    /// `crate::cubical`). Definitional computation: `(PLam t) @ r ↦ t[i := r]`.
+    PApp(Rc<Term>, Rc<Term>),
+    /// `PathP (λ i. A) a0 a1` — the type of interval-abstractions whose family of
+    /// types is `A` (a term under one interval binder, exactly like `PLam`'s body) and
+    /// whose endpoints are (definitionally, not just propositionally) `a0` at `i0` and
+    /// `a1` at `i1`. The non-dependent `Path A a b` is the special case where the
+    /// family doesn't mention the bound interval variable: `PathP (A lifted) a b`.
+    PathP(Rc<Term>, Rc<Term>, Rc<Term>),
 }
 
 impl Term {
@@ -152,6 +184,23 @@ impl Term {
     pub fn let_graded(grade: Grade, ty: Term, value: Term, body: Term) -> Term {
         Term::Let(grade, Rc::new(ty), Rc::new(value), Rc::new(body))
     }
+    /// Path abstraction `⟨i⟩ body` (`body` under one interval binder).
+    pub fn plam(body: Term) -> Term {
+        Term::PLam(Rc::new(body))
+    }
+    /// Path application `p @ r`.
+    pub fn papp(p: Term, r: Term) -> Term {
+        Term::PApp(Rc::new(p), Rc::new(r))
+    }
+    /// The dependent path type `PathP (λ i. family) a0 a1`.
+    pub fn pathp(family: Term, a0: Term, a1: Term) -> Term {
+        Term::PathP(Rc::new(family), Rc::new(a0), Rc::new(a1))
+    }
+    /// The non-dependent path type `Path ty a b` — sugar for `PathP` with a constant
+    /// family (`ty` lifted past the implicit interval binder, since it doesn't mention it).
+    pub fn path(ty: Term, a: Term, b: Term) -> Term {
+        Term::pathp(ty.lift(1, 0), a, b)
+    }
 
     /// Re-index free variables: add `amount` to every `Var(i)` with `i >= cutoff`.
     /// Used to move a term under `amount` new binders (`cutoff` counts the binders
@@ -159,7 +208,9 @@ impl Term {
     /// when no free variable in range `[cutoff, cutoff)` would underflow.
     pub fn lift(&self, amount: isize, cutoff: usize) -> Term {
         match self {
-            Term::Sort(_) | Term::Const(..) | Term::Meta(_) => self.clone(),
+            Term::Sort(_) | Term::Const(..) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => {
+                self.clone()
+            }
             Term::Var(i) => {
                 if *i >= cutoff {
                     Term::Var((*i as isize + amount) as usize)
@@ -175,6 +226,15 @@ impl Term {
             Term::Let(g, t, v, b) => {
                 Term::let_graded(*g, t.lift(amount, cutoff), v.lift(amount, cutoff), b.lift(amount, cutoff + 1))
             }
+            // `PLam`/`PathP`'s family live under one extra (interval) `Var` binder,
+            // exactly like `Lam`'s body — same cutoff bump.
+            Term::PLam(b) => Term::plam(b.lift(amount, cutoff + 1)),
+            Term::PApp(p, r) => Term::papp(p.lift(amount, cutoff), r.lift(amount, cutoff)),
+            Term::PathP(fam, a0, a1) => Term::pathp(
+                fam.lift(amount, cutoff + 1),
+                a0.lift(amount, cutoff),
+                a1.lift(amount, cutoff),
+            ),
         }
     }
 
@@ -184,7 +244,9 @@ impl Term {
     /// the binders it now sits beneath.
     fn subst(&self, depth: usize, replacement: &Term) -> Term {
         match self {
-            Term::Sort(_) | Term::Const(..) | Term::Meta(_) => self.clone(),
+            Term::Sort(_) | Term::Const(..) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => {
+                self.clone()
+            }
             Term::Var(i) => match (*i).cmp(&depth) {
                 std::cmp::Ordering::Equal => replacement.lift(depth as isize, 0),
                 std::cmp::Ordering::Greater => Term::Var(i - 1),
@@ -202,6 +264,13 @@ impl Term {
                 t.subst(depth, replacement),
                 v.subst(depth, replacement),
                 b.subst(depth + 1, replacement),
+            ),
+            Term::PLam(b) => Term::plam(b.subst(depth + 1, replacement)),
+            Term::PApp(p, r) => Term::papp(p.subst(depth, replacement), r.subst(depth, replacement)),
+            Term::PathP(fam, a0, a1) => Term::pathp(
+                fam.subst(depth + 1, replacement),
+                a0.subst(depth, replacement),
+                a1.subst(depth, replacement),
             ),
         }
     }
@@ -230,7 +299,9 @@ impl Term {
     }
     fn subst_ctx_go(&self, images: &[Term], depth: usize) -> Term {
         match self {
-            Term::Sort(_) | Term::Const(..) | Term::Meta(_) => self.clone(),
+            Term::Sort(_) | Term::Const(..) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => {
+                self.clone()
+            }
             Term::Var(i) => {
                 if *i < depth {
                     Term::Var(*i) // bound by one of self's own binders
@@ -255,6 +326,15 @@ impl Term {
                 v.subst_ctx_go(images, depth),
                 b.subst_ctx_go(images, depth + 1),
             ),
+            Term::PLam(b) => Term::plam(b.subst_ctx_go(images, depth + 1)),
+            Term::PApp(p, r) => {
+                Term::papp(p.subst_ctx_go(images, depth), r.subst_ctx_go(images, depth))
+            }
+            Term::PathP(fam, a0, a1) => Term::pathp(
+                fam.subst_ctx_go(images, depth + 1),
+                a0.subst_ctx_go(images, depth),
+                a1.subst_ctx_go(images, depth),
+            ),
         }
     }
 
@@ -270,7 +350,7 @@ impl Term {
         }
         match self {
             Term::Sort(l) => Term::Sort(l.instantiate(args)),
-            Term::Var(_) | Term::Meta(_) => self.clone(),
+            Term::Var(_) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => self.clone(),
             Term::Const(n, ls) => {
                 Term::Const(n.clone(), ls.iter().map(|l| l.instantiate(args)).collect())
             }
@@ -285,6 +365,13 @@ impl Term {
                 v.instantiate_levels(args),
                 b.instantiate_levels(args),
             ),
+            Term::PLam(b) => Term::plam(b.instantiate_levels(args)),
+            Term::PApp(p, r) => Term::papp(p.instantiate_levels(args), r.instantiate_levels(args)),
+            Term::PathP(fam, a0, a1) => Term::pathp(
+                fam.instantiate_levels(args),
+                a0.instantiate_levels(args),
+                a1.instantiate_levels(args),
+            ),
         }
     }
 
@@ -294,13 +381,16 @@ impl Term {
     pub fn has_meta(&self) -> bool {
         match self {
             Term::Meta(_) => true,
-            Term::Var(_) => false,
+            Term::Var(_) | Term::I | Term::IZero | Term::IOne => false,
             Term::Sort(l) => l.has_meta(),
             Term::Const(_, ls) => ls.iter().any(|l| l.has_meta()),
             Term::App(f, a) => f.has_meta() || a.has_meta(),
             Term::Lam(d, b) => d.has_meta() || b.has_meta(),
             Term::Pi(_, d, b) => d.has_meta() || b.has_meta(),
             Term::Let(_, t, v, b) => t.has_meta() || v.has_meta() || b.has_meta(),
+            Term::PLam(b) => b.has_meta(),
+            Term::PApp(p, r) => p.has_meta() || r.has_meta(),
+            Term::PathP(fam, a0, a1) => fam.has_meta() || a0.has_meta() || a1.has_meta(),
         }
     }
 
@@ -331,6 +421,30 @@ impl Term {
         match self {
             Term::Sort(l) => format!("Sort {l:?}"),
             Term::Meta(m) => format!("?{m}"),
+            Term::I => "I".to_string(),
+            Term::IZero => "i0".to_string(),
+            Term::IOne => "i1".to_string(),
+            Term::PLam(b) => {
+                let nm = fresh_binder_name(names.len());
+                names.push(nm.clone());
+                let bs = b.pp(names, 0);
+                names.pop();
+                paren_if(prec >= 2, format!("<{nm}> {bs}"))
+            }
+            Term::PApp(p, r) => {
+                let ps = p.pp(names, 3);
+                let rs = r.pp(names, 3);
+                paren_if(prec >= 3, format!("{ps} @ {rs}"))
+            }
+            Term::PathP(fam, a0, a1) => {
+                let nm = fresh_binder_name(names.len());
+                names.push(nm.clone());
+                let fams = fam.pp(names, 0);
+                names.pop();
+                let a0s = a0.pp(names, 3);
+                let a1s = a1.pp(names, 3);
+                paren_if(prec >= 3, format!("PathP (<{nm}> {fams}) {a0s} {a1s}"))
+            }
             Term::Var(i) => {
                 let n = names.len();
                 if *i < n {
@@ -418,7 +532,10 @@ fn mentions_var(t: &Term, k: usize) -> bool {
         Term::Lam(d, b) => mentions_var(d, k) || mentions_var(b, k + 1),
         Term::Pi(_, d, b) => mentions_var(d, k) || mentions_var(b, k + 1),
         Term::Let(_, ty, v, b) => mentions_var(ty, k) || mentions_var(v, k) || mentions_var(b, k + 1),
-        Term::Sort(_) | Term::Const(..) | Term::Meta(_) => false,
+        Term::Sort(_) | Term::Const(..) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => false,
+        Term::PLam(b) => mentions_var(b, k + 1),
+        Term::PApp(p, r) => mentions_var(p, k) || mentions_var(r, k),
+        Term::PathP(fam, a0, a1) => mentions_var(fam, k + 1) || mentions_var(a0, k) || mentions_var(a1, k),
     }
 }
 
