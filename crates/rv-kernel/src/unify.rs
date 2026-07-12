@@ -190,6 +190,29 @@ impl Metas {
             Term::Let(g, ty, v, b) => {
                 Ok(Term::let_graded(*g, self.zonk(ty)?, self.zonk(v)?, self.zonk(b)?))
             }
+            Term::Sys(branches) => {
+                let branches = branches
+                    .iter()
+                    .map(|(p, t)| Ok((std::rc::Rc::new(self.zonk_cof(p)?), std::rc::Rc::new(self.zonk(t)?))))
+                    .collect::<Result<_, String>>()?;
+                Ok(Term::Sys(branches))
+            }
+            Term::Partial(p, a) => {
+                Ok(Term::Partial(std::rc::Rc::new(self.zonk_cof(p)?), std::rc::Rc::new(self.zonk(a)?)))
+            }
+        }
+    }
+
+    /// [`Self::zonk`]'s analogue for a cofibration's atom subjects.
+    fn zonk_cof(&self, phi: &rv_kernel_core::face::Cof) -> Result<rv_kernel_core::face::Cof, String> {
+        use rv_kernel_core::face::{Atom, Cof};
+        match phi {
+            Cof::Bot => Ok(Cof::Bot),
+            Cof::Top => Ok(Cof::Top),
+            Cof::Atom(Atom::Eq0(t)) => Ok(Cof::eq0(self.zonk(t)?)),
+            Cof::Atom(Atom::Eq1(t)) => Ok(Cof::eq1(self.zonk(t)?)),
+            Cof::And(a, b) => Ok(Cof::and(self.zonk_cof(a)?, self.zonk_cof(b)?)),
+            Cof::Or(a, b) => Ok(Cof::or(self.zonk_cof(a)?, self.zonk_cof(b)?)),
         }
     }
 }
@@ -462,6 +485,20 @@ fn invert(meta: u32, image: &[usize], t: &Term, depth: usize) -> Result<Term, St
             invert(meta, image, a0, depth)?,
             invert(meta, image, a1, depth)?,
         )),
+        // No surface syntax produces `Sys`/`Partial` yet (see
+        // `rv_kernel_core::face`'s module doc); a cofibration atom's subject is
+        // always `IZero`/`IOne`/a bound interval var in practice, so leaving `φ`
+        // unchanged (rather than inverting its subjects too) is a conservative
+        // placeholder pending that surface syntax.
+        Term::Sys(branches) => Ok(Term::Sys(
+            branches
+                .iter()
+                .map(|(p, t)| Ok((p.clone(), std::rc::Rc::new(invert(meta, image, t, depth)?))))
+                .collect::<Result<_, String>>()?,
+        )),
+        Term::Partial(p, a) => {
+            Ok(Term::Partial(p.clone(), std::rc::Rc::new(invert(meta, image, a, depth)?)))
+        }
     }
 }
 
@@ -495,6 +532,8 @@ fn occurs(m: u32, t: &Term) -> bool {
         Term::PLam(b) => occurs(m, b),
         Term::PApp(p, r) => occurs(m, p) || occurs(m, r),
         Term::PathP(fam, a0, a1) => occurs(m, fam) || occurs(m, a0) || occurs(m, a1),
+        Term::Sys(branches) => branches.iter().any(|(_, t)| occurs(m, t)),
+        Term::Partial(_, a) => occurs(m, a),
     }
 }
 

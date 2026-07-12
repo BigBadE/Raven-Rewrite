@@ -2124,6 +2124,44 @@ fn abstract_occurrences(e: &Term, target: &Term, k: usize) -> Term {
             abstract_occurrences(a0, target, k),
             abstract_occurrences(a1, target, k),
         ),
+        // Phase-2 cubical (see `rv_kernel_core::face`): likewise no surface syntax
+        // yet, but kept structurally sound — recurse into each atom's subject too.
+        Term::Sys(branches) => Term::Sys(
+            branches
+                .iter()
+                .map(|(p, t)| {
+                    (
+                        std::rc::Rc::new(abstract_occurrences_cof(p, target, k)),
+                        std::rc::Rc::new(abstract_occurrences(t, target, k)),
+                    )
+                })
+                .collect(),
+        ),
+        Term::Partial(p, a) => Term::Partial(
+            std::rc::Rc::new(abstract_occurrences_cof(p, target, k)),
+            std::rc::Rc::new(abstract_occurrences(a, target, k)),
+        ),
+    }
+}
+
+/// [`abstract_occurrences`]'s analogue for a cofibration's atom subjects.
+fn abstract_occurrences_cof(
+    phi: &rv_kernel_core::face::Cof,
+    target: &Term,
+    k: usize,
+) -> rv_kernel_core::face::Cof {
+    use rv_kernel_core::face::{Atom, Cof};
+    match phi {
+        Cof::Bot => Cof::Bot,
+        Cof::Top => Cof::Top,
+        Cof::Atom(Atom::Eq0(t)) => Cof::eq0(abstract_occurrences(t, target, k)),
+        Cof::Atom(Atom::Eq1(t)) => Cof::eq1(abstract_occurrences(t, target, k)),
+        Cof::And(a, b) => {
+            Cof::and(abstract_occurrences_cof(a, target, k), abstract_occurrences_cof(b, target, k))
+        }
+        Cof::Or(a, b) => {
+            Cof::or(abstract_occurrences_cof(a, target, k), abstract_occurrences_cof(b, target, k))
+        }
     }
 }
 
@@ -2246,6 +2284,17 @@ pub(crate) fn replace_with_var(t: &Term, target: &Term, k: usize) -> Term {
                 go(a0, target, k, depth),
                 go(a1, target, k, depth),
             ),
+            Term::Sys(branches) => Term::Sys(
+                branches
+                    .iter()
+                    .map(|(p, t)| {
+                        (std::rc::Rc::new((**p).clone()), std::rc::Rc::new(go(t, target, k, depth)))
+                    })
+                    .collect(),
+            ),
+            Term::Partial(p, a) => {
+                Term::Partial(std::rc::Rc::new((**p).clone()), std::rc::Rc::new(go(a, target, k, depth)))
+            }
         }
     }
     go(t, target, k, 0)
@@ -2280,6 +2329,15 @@ fn subst_db_var(t: &Term, d: usize, u: &Term) -> Term {
                 go(a0, d, u, depth),
                 go(a1, d, u, depth),
             ),
+            // No surface syntax produces `Sys`/`Partial` yet (see
+            // `rv_kernel_core::face`'s module doc); left structurally unchanged.
+            Term::Sys(branches) => Term::Sys(
+                branches
+                    .iter()
+                    .map(|(p, t)| (p.clone(), std::rc::Rc::new(go(t, d, u, depth))))
+                    .collect(),
+            ),
+            Term::Partial(p, a) => Term::Partial(p.clone(), std::rc::Rc::new(go(a, d, u, depth))),
         }
     }
     go(t, d, u, 0)
@@ -2308,6 +2366,8 @@ fn occurs_term(t: &Term, target: &Term) -> bool {
             Term::PathP(fam, a0, a1) => {
                 go(fam, target, depth + 1) || go(a0, target, depth) || go(a1, target, depth)
             }
+            Term::Sys(branches) => branches.iter().any(|(_, t)| go(t, target, depth)),
+            Term::Partial(_, a) => go(a, target, depth),
         }
     }
     go(t, target, 0)
@@ -2329,6 +2389,8 @@ fn occurs_var(t: &Term, d: usize) -> bool {
             Term::PathP(fam, a0, a1) => {
                 go(fam, d, depth + 1) || go(a0, d, depth) || go(a1, d, depth)
             }
+            Term::Sys(branches) => branches.iter().any(|(_, t)| go(t, d, depth)),
+            Term::Partial(_, a) => go(a, d, depth),
         }
     }
     go(t, d, 0)
@@ -2347,6 +2409,8 @@ fn occurs_const(n: &str, t: &Term) -> bool {
             occurs_const(n, fam) || occurs_const(n, a0) || occurs_const(n, a1)
         }
         Term::Sort(_) | Term::Var(_) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => false,
+        Term::Sys(branches) => branches.iter().any(|(_, t)| occurs_const(n, t)),
+        Term::Partial(_, a) => occurs_const(n, a),
     }
 }
 
@@ -2394,6 +2458,8 @@ fn is_closed_at(t: &Term, depth: usize) -> bool {
         Term::PathP(fam, a0, a1) => {
             is_closed_at(fam, depth + 1) && is_closed_at(a0, depth) && is_closed_at(a1, depth)
         }
+        Term::Sys(branches) => branches.iter().all(|(_, t)| is_closed_at(t, depth)),
+        Term::Partial(_, a) => is_closed_at(a, depth),
     }
 }
 

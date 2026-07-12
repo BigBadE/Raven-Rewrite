@@ -49,6 +49,8 @@ pub fn occurs(n: &str, t: &Term) -> bool {
         Term::PApp(p, r) => occurs(n, p) || occurs(n, r),
         Term::PathP(fam, a0, a1) => occurs(n, fam) || occurs(n, a0) || occurs(n, a1),
         Term::Sort(_) | Term::Var(_) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => false,
+        Term::Sys(branches) => branches.iter().any(|(_, t)| occurs(n, t)),
+        Term::Partial(_, a) => occurs(n, a),
     }
 }
 

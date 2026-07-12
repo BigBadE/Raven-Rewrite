@@ -18,9 +18,11 @@
 //! in, so its type is read from the top of the stack and lifted to the current depth.
 
 use crate::env::Env;
+use crate::face::{self, Atom, Cof};
 use crate::level::Level;
 use crate::reduce::Reducer;
 use crate::term::Term;
+use std::rc::Rc;
 
 /// A local typing context: a stack of binder types (innermost last).
 #[derive(Clone, Debug, Default)]
@@ -186,11 +188,115 @@ impl<'e> Checker<'e> {
                 self.check(ctx, a1, &fam.instantiate(&Term::IOne))?;
                 Ok(Term::Sort(sort))
             }
+
+            // ---- Phase-2 cubical: cofibrations and partial elements (see `crate::face`) ----
+
+            // `Partial φ A`: well-formed when `A` is a type and every atom subject in
+            // `φ` is genuinely interval-classified (`: I`) — this keeps a cofibration
+            // from smuggling arbitrary ill-typed data through an atom's subject
+            // position (mirrors `Term::PApp`'s check that its interval argument has
+            // type `I`). Lives in the same sort as `A`.
+            Term::Partial(phi, a) => {
+                self.check_cof_wellformed(ctx, phi)?;
+                let s = self.infer_sort(ctx, a)?;
+                Ok(Term::Sort(s))
+            }
+
+            // A system has no type of its own to *infer* — it only makes sense
+            // relative to an expected `Partial ψ A` (which supplies both `A` and the
+            // coverage obligation). See `Checker::check`'s `Term::Sys` special case.
+            Term::Sys(_) => Err(
+                "cannot infer the type of a system [φ ↦ t, …]; check it against `Partial φ A`"
+                    .to_string(),
+            ),
         }
+    }
+
+    /// Check that a cofibration's every atom subject is genuinely interval-classified.
+    fn check_cof_wellformed(&self, ctx: &mut LocalCtx, phi: &Cof) -> Result<(), String> {
+        match phi {
+            Cof::Bot | Cof::Top => Ok(()),
+            Cof::Atom(Atom::Eq0(t)) | Cof::Atom(Atom::Eq1(t)) => {
+                let tt = self.infer(ctx, t)?;
+                if self.is_def_eq(ctx, &tt, &Term::I) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "cofibration atom's subject must be an interval term (: I), got {}",
+                        tt.pretty()
+                    ))
+                }
+            }
+            Cof::And(a, b) | Cof::Or(a, b) => {
+                self.check_cof_wellformed(ctx, a)?;
+                self.check_cof_wellformed(ctx, b)
+            }
+        }
+    }
+
+    /// Check a system `[φ_1 ↦ t_1, …, φ_n ↦ t_n]` against an expected `Partial ψ A`:
+    /// coverage (`ψ ⊢ φ_1 ∨ … ∨ φ_n`), each branch at `A`, and the **compatibility
+    /// condition** (see `crate::face`'s module doc) — on any overlap `φ_i ∧ φ_j` that
+    /// isn't `⊥`, `t_i` and `t_j` must be definitionally equal.
+    fn check_sys(
+        &self,
+        ctx: &mut LocalCtx,
+        branches: &[(Rc<Cof>, Rc<Term>)],
+        expected: &Term,
+    ) -> Result<(), String> {
+        let expected_w = self.reducer().whnf(expected);
+        let Term::Partial(psi, a) = &expected_w else {
+            return Err(format!(
+                "a system [φ ↦ t, …] must be checked against a `Partial φ A` type, got {}",
+                expected_w.pretty()
+            ));
+        };
+        self.check_cof_wellformed(ctx, psi)?;
+        if branches.is_empty() {
+            return if face::is_false(psi) {
+                Ok(())
+            } else {
+                Err("empty system [] does not cover a satisfiable cofibration".to_string())
+            };
+        }
+        let mut cover = (*branches[0].0).clone();
+        for (phi, _) in &branches[1..] {
+            cover = Cof::or(cover, (**phi).clone());
+        }
+        if !face::entails(psi, &cover) {
+            return Err(
+                "system does not cover the required cofibration: ψ ⊬ φ_1 ∨ … ∨ φ_n".to_string(),
+            );
+        }
+        for (phi, t) in branches {
+            self.check_cof_wellformed(ctx, phi)?;
+            self.check(ctx, t, a)?;
+        }
+        for i in 0..branches.len() {
+            for j in (i + 1)..branches.len() {
+                let overlap = Cof::and((*branches[i].0).clone(), (*branches[j].0).clone());
+                if !face::is_false(&overlap)
+                    && !self.is_def_eq(ctx, &branches[i].1, &branches[j].1)
+                {
+                    return Err(format!(
+                        "incompatible system: branches {i} and {j} disagree on their overlap \
+                         (φ_{i} ∧ φ_{j} is satisfiable, but the branch terms are not \
+                         definitionally equal)"
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Check that `t` has type `expected` (up to definitional equality).
     pub fn check(&self, ctx: &mut LocalCtx, t: &Term, expected: &Term) -> Result<(), String> {
+        // A system is check-only (see `Term::Sys`'s doc and the `Term::Sys` arm of
+        // `infer`): its type can't be inferred, only checked against an expected
+        // `Partial ψ A`.
+        if let Term::Sys(branches) = t {
+            return self.check_sys(ctx, branches, expected);
+        }
         let inferred = self.infer(ctx, t)?;
         if self.is_def_eq(ctx, &inferred, expected) {
             Ok(())
@@ -285,6 +391,18 @@ impl<'e> Checker<'e> {
                 ctx.with(Term::I, |c| self.compare(c, f1, f2))
                     && self.compare(ctx, a01, a02)
                     && self.compare(ctx, a11, a12)
+            }
+            // Phase-2 cubical (see `crate::face`): guards compare up to semantic
+            // cofibration equivalence (the same sub-cube, not necessarily the same
+            // `∧`/`∨` tree — see `face::cof_equiv`), branches/codomains structurally.
+            (Term::Partial(p1, a1), Term::Partial(p2, a2)) => {
+                face::cof_equiv(p1, p2) && self.compare(ctx, a1, a2)
+            }
+            (Term::Sys(b1), Term::Sys(b2)) => {
+                b1.len() == b2.len()
+                    && b1.iter().zip(b2).all(|((p1, t1), (p2, t2))| {
+                        face::cof_equiv(p1, p2) && self.compare(ctx, t1, t2)
+                    })
             }
             _ => false,
         };

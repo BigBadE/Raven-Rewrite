@@ -15,6 +15,7 @@
 //! remains the reference.
 
 use crate::env::{CircleRole, Decl, Env, HitRole, QuotRole, TruncRole};
+use crate::face::{Atom, Cof};
 use crate::level::{self, Level};
 use crate::term::{Grade, Name, Term};
 use std::rc::Rc;
@@ -45,6 +46,37 @@ pub enum Value {
     PLam(Closure),
     /// `PathP (λi. family) a0 a1`, the semantic form of [`crate::term::Term::PathP`].
     PathP(Rc<Value>, Rc<Value>, Closure),
+
+    // ---- Phase-2 cubical (see `crate::face`) ----
+    /// A **stuck** system: no branch's guard is currently decided `⊤` (see
+    /// [`Nbe::eval_face`]), so it stays as data — captured environment plus the raw
+    /// (unevaluated) branches, exactly like [`Closure`] defers a binder's body. Read
+    /// back on demand by [`Nbe::quote`].
+    Sys(SysClosure),
+    /// `Partial φ A` — `A` evaluated eagerly (it's in the very same context as `φ`,
+    /// no extra binder), `φ` kept raw alongside the environment it closes over (same
+    /// reason as [`Value::Sys`]).
+    Partial(Rc<Value>, FaceClosure),
+}
+
+/// Deferred face-formula data: a raw (unevaluated) [`Cof`]-guarded system's branches
+/// together with the environment they close over — the [`Closure`] analogue for
+/// [`Value::Sys`], which (unlike `Lam`/`PLam`) introduces no extra binder, so there's
+/// no `apply`, only [`Nbe::quote_cof`]/[`Nbe::eval_face`] reading it back or
+/// evaluating on demand.
+#[derive(Clone)]
+pub struct SysClosure {
+    env: Rc<VEnv>,
+    branches: Rc<Vec<(Rc<Cof>, Rc<Term>)>>,
+}
+
+/// Deferred face-formula data for [`Value::Partial`]: a single raw guard `φ`
+/// together with the environment it closes over (the one-guard analogue of
+/// [`SysClosure`]).
+#[derive(Clone)]
+pub struct FaceClosure {
+    env: Rc<VEnv>,
+    phi: Rc<Cof>,
 }
 
 /// The rigid head of a neutral/canonical value.
@@ -74,7 +106,7 @@ pub struct Closure {
 /// Extending under a binder is a single `Cons` allocation that *shares* the tail, and
 /// cloning is an `Rc` bump — so going under a binder no longer copies the environment.
 /// `Var(i)` reads the `i`-th cell from the head.
-enum VEnv {
+pub(crate) enum VEnv {
     Nil,
     Cons(Rc<Value>, Rc<VEnv>),
 }
@@ -177,6 +209,76 @@ impl<'a> Nbe<'a> {
                 self.eval(venv, a1),
                 Closure { env: venv.clone(), body: fam.clone() },
             )),
+            // System reduction (see `crate::face`, and `crate::reduce::Reducer::whnf`'s
+            // matching `Term::Sys` case — differentially tested): fire the first
+            // branch whose guard is *currently* decided true; otherwise stay stuck.
+            Term::Sys(branches) => {
+                match branches.iter().find(|(phi, _)| self.eval_face(venv, phi) == Some(true)) {
+                    Some((_, t)) => self.eval(venv, t),
+                    None => Rc::new(Value::Sys(SysClosure {
+                        env: venv.clone(),
+                        branches: Rc::new(branches.clone()),
+                    })),
+                }
+            }
+            Term::Partial(phi, a) => Rc::new(Value::Partial(
+                self.eval(venv, a),
+                FaceClosure { env: venv.clone(), phi: phi.clone() },
+            )),
+        }
+    }
+
+    /// Evaluate a single face atom's subject against `venv` and classify it: `Some`
+    /// when the subject has evaluated all the way to a literal `IZero`/`IOne` (so the
+    /// atom is *decided*), `None` when it's still an open interval variable.
+    fn eval_face_atom(&self, venv: &Rc<VEnv>, atom: &Atom) -> Option<bool> {
+        let (subject, want_one) = match atom {
+            Atom::Eq0(t) => (t, false),
+            Atom::Eq1(t) => (t, true),
+        };
+        match &*self.eval(venv, subject) {
+            Value::IZero => Some(!want_one),
+            Value::IOne => Some(want_one),
+            _ => None,
+        }
+    }
+
+    /// Three-valued evaluation of a cofibration against `venv` (`Some(true)` =
+    /// decided `⊤`, `Some(false)` = decided `⊥`, `None` = still open) — the NbE
+    /// analogue of `crate::face::is_true`, kept as a genuinely separate
+    /// implementation (operating on evaluated [`Value`]s, not substituted [`Term`]s)
+    /// so the two engines' system-reduction behaviour can be differentially tested
+    /// against each other, matching this crate's standing convention.
+    fn eval_face(&self, venv: &Rc<VEnv>, phi: &Cof) -> Option<bool> {
+        match phi {
+            Cof::Bot => Some(false),
+            Cof::Top => Some(true),
+            Cof::Atom(a) => self.eval_face_atom(venv, a),
+            Cof::And(a, b) => match (self.eval_face(venv, a), self.eval_face(venv, b)) {
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                (Some(true), Some(true)) => Some(true),
+                _ => None,
+            },
+            Cof::Or(a, b) => match (self.eval_face(venv, a), self.eval_face(venv, b)) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            },
+        }
+    }
+
+    /// Read a raw (unevaluated) cofibration back to a normal-form `Cof` by
+    /// evaluating and quoting each atom's subject against `venv`/`level` (mirrors
+    /// [`Self::quote`] for ordinary subterms — used by [`Self::quote`]'s
+    /// `Value::Sys`/`Value::Partial` cases).
+    fn quote_cof(&self, level: usize, venv: &Rc<VEnv>, phi: &Cof) -> Cof {
+        match phi {
+            Cof::Bot => Cof::Bot,
+            Cof::Top => Cof::Top,
+            Cof::Atom(Atom::Eq0(t)) => Cof::eq0(self.quote(level, &self.eval(venv, t))),
+            Cof::Atom(Atom::Eq1(t)) => Cof::eq1(self.quote(level, &self.eval(venv, t))),
+            Cof::And(a, b) => Cof::and(self.quote_cof(level, venv, a), self.quote_cof(level, venv, b)),
+            Cof::Or(a, b) => Cof::or(self.quote_cof(level, venv, a), self.quote_cof(level, venv, b)),
         }
     }
 
@@ -572,6 +674,22 @@ impl<'a> Nbe<'a> {
                 let body = self.apply(clo, Rc::new(Value::Stuck(Head::Var(level), Vec::new())));
                 Term::pathp(self.quote(level + 1, &body), self.quote(level, a0), self.quote(level, a1))
             }
+            Value::Sys(sc) => {
+                let qbranches = sc
+                    .branches
+                    .iter()
+                    .map(|(phi, t)| {
+                        let qphi = self.quote_cof(level, &sc.env, phi);
+                        let qt = self.quote(level, &self.eval(&sc.env, t));
+                        (Rc::new(qphi), Rc::new(qt))
+                    })
+                    .collect();
+                Term::Sys(qbranches)
+            }
+            Value::Partial(a, fc) => {
+                let qphi = self.quote_cof(level, &fc.env, &fc.phi);
+                Term::Partial(Rc::new(qphi), Rc::new(self.quote(level, a)))
+            }
         }
     }
 
@@ -616,6 +734,15 @@ fn alpha_eta_eq(a: &Term, b: &Term) -> bool {
         (Term::PApp(p1, r1), Term::PApp(p2, r2)) => alpha_eta_eq(p1, p2) && alpha_eta_eq(r1, r2),
         (Term::PathP(f1, a01, a11), Term::PathP(f2, a02, a12)) => {
             alpha_eta_eq(f1, f2) && alpha_eta_eq(a01, a02) && alpha_eta_eq(a11, a12)
+        }
+        (Term::Partial(p1, a1), Term::Partial(p2, a2)) => {
+            crate::face::cof_equiv(p1, p2) && alpha_eta_eq(a1, a2)
+        }
+        (Term::Sys(b1), Term::Sys(b2)) => {
+            b1.len() == b2.len()
+                && b1.iter().zip(b2).all(|((p1, t1), (p2, t2))| {
+                    crate::face::cof_equiv(p1, p2) && alpha_eta_eq(t1, t2)
+                })
         }
         _ => false,
     }

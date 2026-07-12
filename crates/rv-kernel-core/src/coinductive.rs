@@ -498,6 +498,10 @@ fn mentions_var(t: &Term, k: usize) -> bool {
             mentions_var(fam, k + 1) || mentions_var(a0, k) || mentions_var(a1, k)
         }
         Term::Sort(_) | Term::Const(..) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => false,
+        Term::Sys(branches) => {
+            branches.iter().any(|(p, t)| crate::face::mentions_var(p, k) || mentions_var(t, k))
+        }
+        Term::Partial(p, a) => crate::face::mentions_var(p, k) || mentions_var(a, k),
     }
 }
 
