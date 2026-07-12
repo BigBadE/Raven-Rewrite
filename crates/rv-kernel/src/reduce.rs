@@ -86,6 +86,18 @@ impl<'e> Reducer<'e> {
                             None => break,
                         }
                     }
+                    // Truncation computation (dependent):
+                    // `Trunc.rec … isProp f (Trunc.tr … a) ↦ f a`.
+                    Some(Decl::Trunc(t)) if t.role == TruncRole::Rec => {
+                        match self.try_trunc_rec(&args) {
+                            Some(reduced) => {
+                                let (h, a) = reduced.unfold_apps();
+                                head = h;
+                                args = a;
+                            }
+                            None => break,
+                        }
+                    }
                     // Circle computation: `S¹.rec P pt lp S¹.base ↦ pt`.
                     Some(Decl::Circle(c)) if c.role == CircleRole::Rec => {
                         match self.try_circle_rec(&args) {
@@ -326,6 +338,51 @@ impl<'e> Reducer<'e> {
     /// scrutinee or the scrutinee is not a `Trunc.tr`.
     fn try_trunc_lift(&self, args: &[Term]) -> Option<Term> {
         const F_POS: usize = 2;
+        const SCRUT_POS: usize = 4;
+        if args.len() <= SCRUT_POS {
+            return None; // not yet applied to the truncation value
+        }
+        let scrut = self.whnf(&args[SCRUT_POS]);
+        let (tr_head, tr_args) = scrut.unfold_apps();
+        let Term::Const(tr_name, _) = &tr_head else {
+            return None;
+        };
+        match self.env.get(tr_name) {
+            Some(Decl::Trunc(t)) if t.role == TruncRole::Tr => {}
+            _ => return None,
+        }
+        // `Trunc.tr A a` — the representative `a` is the last (2nd) argument.
+        if tr_args.len() != 2 {
+            return None;
+        }
+        let a = &tr_args[1];
+        let f = &args[F_POS];
+        let mut applied = Term::app(f.clone(), a.clone());
+        // Re-attach any over-application beyond the scrutinee.
+        for extra in &args[SCRUT_POS + 1..] {
+            applied = Term::app(applied, extra.clone());
+        }
+        Some(applied)
+    }
+
+    /// Try the single **dependent truncation** computation rule (the point-constructor
+    /// ι-rule for the fixed `Trunc.rec` constant):
+    ///
+    /// ```text
+    ///   Trunc.rec.{u v} A C isProp f (Trunc.tr.{u} A a)  ↦  f a
+    /// ```
+    ///
+    /// `Trunc.rec`'s spine is `[A, C, isProp, f, t, extra…]`; the scrutinee `t` is at
+    /// index 4 and `f` at index 3 (one slot later than `Trunc.lift`'s `f`, since `C`
+    /// and `isProp` together occupy the slots `P` and `resp` occupied for `Trunc.lift`).
+    /// We fire only when `t` weak-head-reduces to a literal `Trunc.tr` application,
+    /// discarding `isProp` — its only role is to have been *type-checked to exist*,
+    /// guaranteeing `C` is a mere proposition pointwise (see `crate::trunc`'s doc
+    /// comment for why that alone suffices, with no per-witness transport premise).
+    /// It NEVER fires on the path constructor `Trunc.eq`. Returns `None` (stuck/neutral)
+    /// when not saturated to the scrutinee or the scrutinee is not a `Trunc.tr`.
+    fn try_trunc_rec(&self, args: &[Term]) -> Option<Term> {
+        const F_POS: usize = 3;
         const SCRUT_POS: usize = 4;
         if args.len() <= SCRUT_POS {
             return None; // not yet applied to the truncation value

@@ -164,7 +164,12 @@ impl<'a> Nbe<'a> {
                         if let Value::Stuck(h4, spine4) = &*stuck {
                             let stuck = self.try_trunc_lift(h4.clone(), spine4.clone());
                             if let Value::Stuck(h5, spine5) = &*stuck {
-                                self.try_circle_rec(h5.clone(), spine5.clone())
+                                let stuck = self.try_trunc_rec(h5.clone(), spine5.clone());
+                                if let Value::Stuck(h6, spine6) = &*stuck {
+                                    self.try_circle_rec(h6.clone(), spine6.clone())
+                                } else {
+                                    stuck
+                                }
                             } else {
                                 stuck
                             }
@@ -348,6 +353,38 @@ impl<'a> Nbe<'a> {
         const SCRUT_POS: usize = 4;
         if let Head::Const(lname, _) = &h {
             if matches!(self.env.get(lname), Some(Decl::Trunc(t)) if t.role == TruncRole::Lift)
+                && spine.len() > SCRUT_POS
+            {
+                if let Value::Stuck(Head::Const(trn, _), targs) = &*spine[SCRUT_POS] {
+                    if matches!(self.env.get(trn), Some(Decl::Trunc(t)) if t.role == TruncRole::Tr)
+                        && targs.len() == 2
+                    {
+                        let a = targs[1].clone();
+                        let f = spine[F_POS].clone();
+                        let mut v = self.vapp(f, a);
+                        for extra in &spine[SCRUT_POS + 1..] {
+                            v = self.vapp(v, extra.clone());
+                        }
+                        return v;
+                    }
+                }
+            }
+        }
+        Rc::new(Value::Stuck(h, spine))
+    }
+
+    /// If `h spine` is `Trunc.rec` saturated on a `Trunc.tr` scrutinee, fire the single
+    /// dependent truncation computation rule
+    /// `Trunc.rec … isProp f (Trunc.tr … a) ↦ f a`; otherwise leave it stuck. Mirrors
+    /// [`Self::try_trunc_lift`]: `f` is at spine index 3 (one slot later than
+    /// `Trunc.lift`'s `f`, since `C`/`isProp` occupy the slots `P`/`resp` did), the
+    /// scrutinee `t` at index 4, and the representative `a` is the last argument of the
+    /// `Trunc.tr` spine `[A, a]`. It never fires on the path constructor `Trunc.eq`.
+    fn try_trunc_rec(&self, h: Head, spine: Vec<Rc<Value>>) -> Rc<Value> {
+        const F_POS: usize = 3;
+        const SCRUT_POS: usize = 4;
+        if let Head::Const(lname, _) = &h {
+            if matches!(self.env.get(lname), Some(Decl::Trunc(t)) if t.role == TruncRole::Rec)
                 && spine.len() > SCRUT_POS
             {
                 if let Value::Stuck(Head::Const(trn, _), targs) = &*spine[SCRUT_POS] {

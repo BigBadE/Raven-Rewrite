@@ -286,6 +286,12 @@ pub enum TruncRole {
     /// The `Prop`-eliminator `Trunc.ind` (no computation rule; sound by proof
     /// irrelevance — see [`crate::trunc`]).
     Ind,
+    /// The **isProp-guarded dependent** recursor `Trunc.rec A C isProp f : Π t, C t`,
+    /// eliminating into an arbitrary `Sort v` (not just `Prop`) given a proof that `C`
+    /// is a mere proposition *pointwise* (`isProp : Π t (x y : C t), Eq (C t) x y`).
+    /// Drives the ι-rule `Trunc.rec … isProp f (Trunc.tr … a) ↦ f a` (spine positions:
+    /// `f` at index 3, the scrutinee at index 4) — see [`crate::trunc`].
+    Rec,
 }
 
 /// A member of the fixed **propositional-truncation** schema — one of the five `Trunc*`
