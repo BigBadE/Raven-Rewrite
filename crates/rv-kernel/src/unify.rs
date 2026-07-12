@@ -200,6 +200,12 @@ impl Metas {
             Term::Partial(p, a) => {
                 Ok(Term::Partial(std::rc::Rc::new(self.zonk_cof(p)?), std::rc::Rc::new(self.zonk(a)?)))
             }
+            Term::Transp(fam, p, a) => {
+                Ok(Term::transp(self.zonk(fam)?, self.zonk_cof(p)?, self.zonk(a)?))
+            }
+            Term::HComp(ty, p, u, u0) => {
+                Ok(Term::hcomp(self.zonk(ty)?, self.zonk_cof(p)?, self.zonk(u)?, self.zonk(u0)?))
+            }
         }
     }
 
@@ -499,6 +505,17 @@ fn invert(meta: u32, image: &[usize], t: &Term, depth: usize) -> Result<Term, St
         Term::Partial(p, a) => {
             Ok(Term::Partial(p.clone(), std::rc::Rc::new(invert(meta, image, a, depth)?)))
         }
+        Term::Transp(fam, p, a) => Ok(Term::transp(
+            invert(meta, image, fam, depth + 1)?,
+            (**p).clone(),
+            invert(meta, image, a, depth)?,
+        )),
+        Term::HComp(ty, p, u, u0) => Ok(Term::hcomp(
+            invert(meta, image, ty, depth)?,
+            (**p).clone(),
+            invert(meta, image, u, depth + 1)?,
+            invert(meta, image, u0, depth)?,
+        )),
     }
 }
 
@@ -534,6 +551,8 @@ fn occurs(m: u32, t: &Term) -> bool {
         Term::PathP(fam, a0, a1) => occurs(m, fam) || occurs(m, a0) || occurs(m, a1),
         Term::Sys(branches) => branches.iter().any(|(_, t)| occurs(m, t)),
         Term::Partial(_, a) => occurs(m, a),
+        Term::Transp(fam, _, a) => occurs(m, fam) || occurs(m, a),
+        Term::HComp(ty, _, u, u0) => occurs(m, ty) || occurs(m, u) || occurs(m, u0),
     }
 }
 

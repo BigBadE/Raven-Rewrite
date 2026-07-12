@@ -2141,6 +2141,19 @@ fn abstract_occurrences(e: &Term, target: &Term, k: usize) -> Term {
             std::rc::Rc::new(abstract_occurrences_cof(p, target, k)),
             std::rc::Rc::new(abstract_occurrences(a, target, k)),
         ),
+        // Phase-3 cubical (see `rv_kernel_core::kan`): likewise no surface syntax
+        // yet, kept structurally sound.
+        Term::Transp(fam, p, a) => Term::transp(
+            abstract_occurrences(fam, target, k + 1),
+            abstract_occurrences_cof(p, target, k),
+            abstract_occurrences(a, target, k),
+        ),
+        Term::HComp(ty, p, u, u0) => Term::hcomp(
+            abstract_occurrences(ty, target, k),
+            abstract_occurrences_cof(p, target, k),
+            abstract_occurrences(u, target, k + 1),
+            abstract_occurrences(u0, target, k),
+        ),
     }
 }
 
@@ -2295,6 +2308,17 @@ pub(crate) fn replace_with_var(t: &Term, target: &Term, k: usize) -> Term {
             Term::Partial(p, a) => {
                 Term::Partial(std::rc::Rc::new((**p).clone()), std::rc::Rc::new(go(a, target, k, depth)))
             }
+            Term::Transp(fam, p, a) => Term::transp(
+                go(fam, target, k, depth + 1),
+                (**p).clone(),
+                go(a, target, k, depth),
+            ),
+            Term::HComp(ty, p, u, u0) => Term::hcomp(
+                go(ty, target, k, depth),
+                (**p).clone(),
+                go(u, target, k, depth + 1),
+                go(u0, target, k, depth),
+            ),
         }
     }
     go(t, target, k, 0)
@@ -2338,6 +2362,15 @@ fn subst_db_var(t: &Term, d: usize, u: &Term) -> Term {
                     .collect(),
             ),
             Term::Partial(p, a) => Term::Partial(p.clone(), std::rc::Rc::new(go(a, d, u, depth))),
+            Term::Transp(fam, p, a) => {
+                Term::transp(go(fam, d, u, depth + 1), (**p).clone(), go(a, d, u, depth))
+            }
+            Term::HComp(ty, p, uu, u0) => Term::hcomp(
+                go(ty, d, u, depth),
+                (**p).clone(),
+                go(uu, d, u, depth + 1),
+                go(u0, d, u, depth),
+            ),
         }
     }
     go(t, d, u, 0)
@@ -2368,6 +2401,10 @@ fn occurs_term(t: &Term, target: &Term) -> bool {
             }
             Term::Sys(branches) => branches.iter().any(|(_, t)| go(t, target, depth)),
             Term::Partial(_, a) => go(a, target, depth),
+            Term::Transp(fam, _, a) => go(fam, target, depth + 1) || go(a, target, depth),
+            Term::HComp(ty, _, u, u0) => {
+                go(ty, target, depth) || go(u, target, depth + 1) || go(u0, target, depth)
+            }
         }
     }
     go(t, target, 0)
@@ -2391,6 +2428,10 @@ fn occurs_var(t: &Term, d: usize) -> bool {
             }
             Term::Sys(branches) => branches.iter().any(|(_, t)| go(t, d, depth)),
             Term::Partial(_, a) => go(a, d, depth),
+            Term::Transp(fam, _, a) => go(fam, d, depth + 1) || go(a, d, depth),
+            Term::HComp(ty, _, u, u0) => {
+                go(ty, d, depth) || go(u, d, depth + 1) || go(u0, d, depth)
+            }
         }
     }
     go(t, d, 0)
@@ -2411,6 +2452,10 @@ fn occurs_const(n: &str, t: &Term) -> bool {
         Term::Sort(_) | Term::Var(_) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => false,
         Term::Sys(branches) => branches.iter().any(|(_, t)| occurs_const(n, t)),
         Term::Partial(_, a) => occurs_const(n, a),
+        Term::Transp(fam, _, a) => occurs_const(n, fam) || occurs_const(n, a),
+        Term::HComp(ty, _, u, u0) => {
+            occurs_const(n, ty) || occurs_const(n, u) || occurs_const(n, u0)
+        }
     }
 }
 
@@ -2460,6 +2505,10 @@ fn is_closed_at(t: &Term, depth: usize) -> bool {
         }
         Term::Sys(branches) => branches.iter().all(|(_, t)| is_closed_at(t, depth)),
         Term::Partial(_, a) => is_closed_at(a, depth),
+        Term::Transp(fam, _, a) => is_closed_at(fam, depth + 1) && is_closed_at(a, depth),
+        Term::HComp(ty, _, u, u0) => {
+            is_closed_at(ty, depth) && is_closed_at(u, depth + 1) && is_closed_at(u0, depth)
+        }
     }
 }
 

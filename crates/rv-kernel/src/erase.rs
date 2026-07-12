@@ -194,6 +194,13 @@ impl<'a> Eraser<'a> {
                 "cannot erase a system [φ ↦ t, …] without a known `Partial φ A` expected type"
                     .to_string(),
             ),
+            // Phase-3 cubical (see `rv_kernel_core::kan`): no surface syntax produces
+            // these yet (mirrors `Term::Sys` above); treat as unsupported rather than
+            // silently opaque, since — unlike `PathP`/`Partial` — they compute actual
+            // runtime data, not a type former.
+            Term::Transp(..) | Term::HComp(..) => {
+                Err("erasure of `transp`/`hcomp` is not yet supported".to_string())
+            }
             // A λ encountered as an atom: erase against its inferred type.
             Term::Lam(..) => {
                 let ty = Checker::new(self.env).infer(&mut self.ctx(), head)?;

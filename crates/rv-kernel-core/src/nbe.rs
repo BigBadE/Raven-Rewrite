@@ -57,6 +57,14 @@ pub enum Value {
     /// no extra binder), `φ` kept raw alongside the environment it closes over (same
     /// reason as [`Value::Sys`]).
     Partial(Rc<Value>, FaceClosure),
+
+    // ---- Phase-3 cubical: the minimal sound Kan core (see `crate::kan`) ----
+    /// A **stuck** `transp` — the regularity rule (`crate::kan`) didn't fire (the
+    /// family genuinely mentions the interval variable, and `φ` isn't decided `⊤`),
+    /// so it stays as deferred data, the `Value::Sys`/`Value::Partial` pattern.
+    Transp(TranspClosure, Rc<Value>),
+    /// A **stuck** `hcomp` — `φ` isn't decided `⊤`, so no reduction rule applies yet.
+    HComp(HCompClosure, Rc<Value>),
 }
 
 /// Deferred face-formula data: a raw (unevaluated) [`Cof`]-guarded system's branches
@@ -77,6 +85,27 @@ pub struct SysClosure {
 pub struct FaceClosure {
     env: Rc<VEnv>,
     phi: Rc<Cof>,
+}
+
+/// Deferred data for a stuck [`Value::Transp`]: the raw (unevaluated) family
+/// (under one interval binder, like [`Closure`]) plus the raw guard `φ`, sharing
+/// one captured environment.
+#[derive(Clone)]
+pub struct TranspClosure {
+    env: Rc<VEnv>,
+    fam: Rc<Term>,
+    phi: Rc<Cof>,
+}
+
+/// Deferred data for a stuck [`Value::HComp`]: the eagerly-evaluated type `A`, the
+/// raw guard `φ`, and the raw (unevaluated) system-line `u` (under one interval
+/// binder), sharing one captured environment.
+#[derive(Clone)]
+pub struct HCompClosure {
+    env: Rc<VEnv>,
+    ty: Rc<Value>,
+    phi: Rc<Cof>,
+    u: Rc<Term>,
 }
 
 /// The rigid head of a neutral/canonical value.
@@ -225,6 +254,38 @@ impl<'a> Nbe<'a> {
                 self.eval(venv, a),
                 FaceClosure { env: venv.clone(), phi: phi.clone() },
             )),
+            // `transp` (see `crate::kan`, and `crate::reduce::Reducer::whnf`'s
+            // matching `Term::Transp` case — differentially tested): the
+            // regularity rule — structural constancy, and *only* structural
+            // constancy (never `φ`, see `crate::kan`'s soundness argument) —
+            // fires as evaluation of `a`; otherwise stays stuck.
+            Term::Transp(fam, phi, a) => {
+                if !crate::term::mentions_var(fam, 0) {
+                    self.eval(venv, a)
+                } else {
+                    Rc::new(Value::Transp(
+                        TranspClosure { env: venv.clone(), fam: fam.clone(), phi: phi.clone() },
+                        self.eval(venv, a),
+                    ))
+                }
+            }
+            // `hcomp` (see `crate::kan`): the trivial-system rule, `φ` decided `⊤`,
+            // evaluates the line `u` at `i1`; otherwise stays stuck.
+            Term::HComp(ty, phi, u, u0) => {
+                if self.eval_face(venv, phi) == Some(true) {
+                    self.eval(&venv.cons(Rc::new(Value::IOne)), u)
+                } else {
+                    Rc::new(Value::HComp(
+                        HCompClosure {
+                            env: venv.clone(),
+                            ty: self.eval(venv, ty),
+                            phi: phi.clone(),
+                            u: u.clone(),
+                        },
+                        self.eval(venv, u0),
+                    ))
+                }
+            }
         }
     }
 
@@ -690,6 +751,19 @@ impl<'a> Nbe<'a> {
                 let qphi = self.quote_cof(level, &fc.env, &fc.phi);
                 Term::Partial(Rc::new(qphi), Rc::new(self.quote(level, a)))
             }
+            Value::Transp(tc, a) => {
+                let qphi = self.quote_cof(level, &tc.env, &tc.phi);
+                let famv = self.eval(&tc.env.cons(Rc::new(Value::Stuck(Head::Var(level), Vec::new()))), &tc.fam);
+                let qfam = self.quote(level + 1, &famv);
+                Term::transp(qfam, qphi, self.quote(level, a))
+            }
+            Value::HComp(hc, u0) => {
+                let qty = self.quote(level, &hc.ty);
+                let qphi = self.quote_cof(level, &hc.env, &hc.phi);
+                let uv = self.eval(&hc.env.cons(Rc::new(Value::Stuck(Head::Var(level), Vec::new()))), &hc.u);
+                let qu = self.quote(level + 1, &uv);
+                Term::hcomp(qty, qphi, qu, self.quote(level, u0))
+            }
         }
     }
 
@@ -743,6 +817,15 @@ fn alpha_eta_eq(a: &Term, b: &Term) -> bool {
                 && b1.iter().zip(b2).all(|((p1, t1), (p2, t2))| {
                     crate::face::cof_equiv(p1, p2) && alpha_eta_eq(t1, t2)
                 })
+        }
+        (Term::Transp(f1, p1, a1), Term::Transp(f2, p2, a2)) => {
+            alpha_eta_eq(f1, f2) && crate::face::cof_equiv(p1, p2) && alpha_eta_eq(a1, a2)
+        }
+        (Term::HComp(t1, p1, u1, u01), Term::HComp(t2, p2, u2, u02)) => {
+            alpha_eta_eq(t1, t2)
+                && crate::face::cof_equiv(p1, p2)
+                && alpha_eta_eq(u1, u2)
+                && alpha_eta_eq(u01, u02)
         }
         _ => false,
     }

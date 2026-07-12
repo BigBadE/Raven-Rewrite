@@ -399,6 +399,25 @@ impl<'e> Graded<'e> {
                 }
                 Ok(acc)
             }
+
+            // Phase-3 cubical (see `rv_kernel_core::kan`): the family/type argument
+            // is type-level (scale-0, like `PathP`'s family above); the transported
+            // value / cap and the system line are genuine runtime data, so their
+            // usage counts for real (not scaled away) — conservative, since it can
+            // only over- not under-count a linear variable's consumption.
+            Term::Transp(fam, _phi, a) => {
+                let uf = self.under(&Term::I, |s| s.infer(fam))?.scale(Grade::Zero);
+                let (_, uf) = uf.pop_binder();
+                let ua = self.infer(a)?;
+                Ok(uf.add(&ua))
+            }
+            Term::HComp(ty, _phi, u, u0) => {
+                let ut = self.infer(ty)?.scale(Grade::Zero);
+                let uu = self.under(&Term::I, |s| s.infer(u))?;
+                let (_, uu) = uu.pop_binder();
+                let u0u = self.infer(u0)?;
+                Ok(ut.add(&uu).add(&u0u))
+            }
         }
     }
 

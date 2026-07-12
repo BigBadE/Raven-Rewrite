@@ -209,6 +209,39 @@ impl<'e> Checker<'e> {
                 "cannot infer the type of a system [φ ↦ t, …]; check it against `Partial φ A`"
                     .to_string(),
             ),
+
+            // ---- Phase-3 cubical: the minimal sound Kan core (see `crate::kan`) ----
+
+            // `transp (λi. family) φ a : family[i:=i1]`, given `a : family[i:=i0]`.
+            // `φ`'s well-formedness is checked (so it stays a genuine cofibration
+            // over in-scope interval variables), but — per `crate::kan` — it is
+            // never trusted for the *reduction* rule; only structural constancy is.
+            Term::Transp(fam, phi, a) => {
+                ctx.with(Term::I, |c| self.infer_sort(c, fam))?;
+                self.check_cof_wellformed(ctx, phi)?;
+                self.check(ctx, a, &fam.instantiate(&Term::IZero))?;
+                Ok(fam.instantiate(&Term::IOne))
+            }
+
+            // `hcomp A φ u u0 : A`, given `u : (i:I) -> Partial φ A` and `u0 : A`
+            // with `u`'s cap at `i0` required to agree with `u0` (see `crate::kan`
+            // for why this is checked unconditionally, not only when `φ` holds).
+            Term::HComp(ty, phi, u, u0) => {
+                self.infer_sort(ctx, ty)?;
+                self.check_cof_wellformed(ctx, phi)?;
+                let partial_ty = Term::partial((**phi).clone(), (**ty).clone());
+                ctx.with(Term::I, |c| {
+                    self.check(c, u, &partial_ty.lift(1, 0))
+                })?;
+                self.check(ctx, u0, ty)?;
+                let cap = u.instantiate(&Term::IZero);
+                if !self.is_def_eq(ctx, &cap, u0) {
+                    return Err(
+                        "hcomp: the system's cap at i0 does not match u0".to_string(),
+                    );
+                }
+                Ok((**ty).clone())
+            }
         }
     }
 
@@ -403,6 +436,19 @@ impl<'e> Checker<'e> {
                     && b1.iter().zip(b2).all(|((p1, t1), (p2, t2))| {
                         face::cof_equiv(p1, p2) && self.compare(ctx, t1, t2)
                     })
+            }
+            // Phase-3 cubical (see `crate::kan`): structural, same shape as `PathP`
+            // above — `φ` compares up to semantic cofibration equivalence.
+            (Term::Transp(f1, p1, a1), Term::Transp(f2, p2, a2)) => {
+                ctx.with(Term::I, |c| self.compare(c, f1, f2))
+                    && face::cof_equiv(p1, p2)
+                    && self.compare(ctx, a1, a2)
+            }
+            (Term::HComp(t1, p1, u1, u01), Term::HComp(t2, p2, u2, u02)) => {
+                self.compare(ctx, t1, t2)
+                    && face::cof_equiv(p1, p2)
+                    && ctx.with(Term::I, |c| self.compare(c, u1, u2))
+                    && self.compare(ctx, u01, u02)
             }
             _ => false,
         };
