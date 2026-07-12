@@ -987,6 +987,71 @@ pub(crate) fn mentions_var(t: &Term, k: usize) -> bool {
     }
 }
 
+/// The number of free (unbound) de Bruijn variables `t` references: one more than the
+/// greatest free index it mentions, or `0` if `t` is closed. Used only to size a
+/// fresh-neutral evaluation context when *probing* whether a `Transp` family is
+/// genuinely constant in its bound interval variable via full computation (see
+/// `crate::kan`'s normalization-aware regularity extension) — i.e. this is the `depth`
+/// to pass to [`crate::nbe::Nbe::normalize_open`] so every free variable `t` actually
+/// contains gets a binding (an out-of-range index would otherwise panic inside
+/// `VEnv::get`). Purely a sizing helper: it does not affect what gets *proven* — that
+/// still comes from `mentions_var` on the (fully computed) result — so an
+/// over-generous bound is harmless and an exact one is not required for soundness,
+/// only for `normalize_open` not to panic.
+pub(crate) fn free_var_bound(t: &Term) -> usize {
+    free_var_bound_at(t, 0)
+}
+
+/// [`free_var_bound`], relative to a nesting `depth` (the number of binders already
+/// crossed) — the frame [`crate::face::free_var_bound`] needs to compute the same
+/// quantity for a `Cof` atom's subject term without first re-deriving it at depth `0`
+/// and subtracting (subtracting after computing at depth 0 would double-floor and lose
+/// precision for terms whose own free variables sit at different depths under `Sys`/
+/// `Partial`/`Transp`/`HComp`'s own binders — this variant threads `depth` through
+/// directly instead, exactly like [`mentions_var`] threads `k`).
+pub(crate) fn free_var_bound_at(t: &Term, depth: usize) -> usize {
+    fn bump(depth: usize, k: usize) -> usize {
+        // A raw index `k` seen at nesting `depth` refers to the free variable
+        // `k - depth` in the *outer* frame; contributes `k - depth + 1` to the bound.
+        k.saturating_sub(depth).saturating_add(1)
+    }
+    fn go(t: &Term, depth: usize) -> usize {
+        match t {
+            Term::Var(i) => {
+                if *i >= depth {
+                    bump(depth, *i)
+                } else {
+                    0
+                }
+            }
+            Term::App(f, a) => go(f, depth).max(go(a, depth)),
+            Term::Lam(d, b) => go(d, depth).max(go(b, depth + 1)),
+            Term::Pi(_, d, b) => go(d, depth).max(go(b, depth + 1)),
+            Term::Let(_, ty, v, b) => go(ty, depth).max(go(v, depth)).max(go(b, depth + 1)),
+            Term::Sort(_) | Term::Const(..) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => 0,
+            Term::INeg(r) => go(r, depth),
+            Term::IMeet(r, s) | Term::IJoin(r, s) => go(r, depth).max(go(s, depth)),
+            Term::PLam(b) => go(b, depth + 1),
+            Term::PApp(p, r) => go(p, depth).max(go(r, depth)),
+            Term::PathP(fam, a0, a1) => go(fam, depth + 1).max(go(a0, depth)).max(go(a1, depth)),
+            Term::Sys(branches) => branches
+                .iter()
+                .map(|(p, t)| crate::face::free_var_bound(p, depth).max(go(t, depth)))
+                .max()
+                .unwrap_or(0),
+            Term::Partial(p, a) => crate::face::free_var_bound(p, depth).max(go(a, depth)),
+            Term::Transp(fam, phi, a) => go(fam, depth + 1)
+                .max(crate::face::free_var_bound(phi, depth))
+                .max(go(a, depth)),
+            Term::HComp(ty, phi, u, u0) => go(ty, depth)
+                .max(crate::face::free_var_bound(phi, depth))
+                .max(go(u, depth + 1))
+                .max(go(u0, depth)),
+        }
+    }
+    go(t, depth)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

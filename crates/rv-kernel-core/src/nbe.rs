@@ -268,11 +268,13 @@ impl<'a> Nbe<'a> {
             )),
             // `transp` (see `crate::kan`, and `crate::reduce::Reducer::whnf`'s
             // matching `Term::Transp` case — differentially tested): the
-            // regularity rule — structural constancy, and *only* structural
-            // constancy (never `φ`, see `crate::kan`'s soundness argument) —
-            // fires as evaluation of `a`; otherwise stays stuck.
+            // regularity rule — structural constancy, extended to
+            // computed/normalization-aware constancy via
+            // `crate::kan::family_is_constant` (never `φ`, see `crate::kan`'s
+            // soundness argument) — fires as evaluation of `a`; otherwise stays
+            // stuck.
             Term::Transp(fam, phi, a) => {
-                if !crate::term::mentions_var(fam, 0) {
+                if crate::kan::family_is_constant(self.env, fam) {
                     self.eval(venv, a)
                 } else if let Term::Pi(_g, dom, cod) = fam.as_ref() {
                     // `Π`-case filling (see `crate::kan`'s "Phase 3.6" doc, and

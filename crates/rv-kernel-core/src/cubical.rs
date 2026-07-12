@@ -449,14 +449,14 @@ pub fn ap(f: &Term, p: &Term) -> Term {
 // `!mentions_var` syntactic check never performs — it inspects the family's own
 // un-reduced head, not its head-normal form). So `transport (refl A) a` type-checks
 // at exactly `A` (`family[i:=i0] ≡ family[i:=i1] ≡ A` by conversion — the boundary
-// still holds *definitionally*, just not via the `Transp` regularity β-rule) but
-// stays *stuck* as a `Transp` normal form rather than *reducing* to `a`. This is
-// documented and adversarially pinned by
-// [`tests::transport_along_refl_typechecks_but_does_not_syntactically_collapse`]
-// below, and is exactly the same gap `crate::kan`'s own
-// `transp_pi_rule_typechecks_on_a_refl_connected_pi_family` test documents for the
-// `Π` case — a known, honestly-reported *incompleteness*, not unsoundness (a stuck
-// `Transp` is valid inert data, like any other neutral).
+// still holds *definitionally*, just not via the *original, purely syntactic* half
+// of the `Transp` regularity β-rule alone). **This gap is now closed**:
+// `crate::kan::family_is_constant`'s normalization-aware extension (see its doc)
+// computes the family under a fresh neutral for the interval variable and finds it
+// genuinely constant here, so `transport (refl A) a` now reduces, definitionally, to
+// `a` — see [`tests::transport_along_refl_now_computes_to_its_input`] below, and the
+// same gap closing for the Π-family analogue,
+// `crate::kan`'s `transp_pi_rule_typechecks_on_a_refl_connected_pi_family` test.
 //
 // # The `Path ↔ Eq` bridge
 //
@@ -633,16 +633,17 @@ pub fn eq_to_path(level: Level, a_ty: &Term, a: &Term, b: &Term, h: &Term) -> Te
 //
 // # Computation on `refl`
 //
-// `J A a C d a (refl a)` does **not** syntactically collapse to `d` — the same
-// documented completeness gap as `transport (refl A) a` above (see "Phase 3.7"):
-// the family here is `λi. C ((refl a) @ i) (⟨j⟩ (refl a) @ (i ∧ j))`, which
-// syntactically mentions `Var(0)` (as `PApp` arguments), so `Transp`'s regularity
-// rule (`crate::kan`, fires only when the family is *syntactically* independent of
-// the interval variable) does not apply; `J A a C d a (refl a)` stays a stuck
-// `Transp` normal form. It is *propositionally* equal to `d` (their type, `C a
-// (refl a)`, is what both inhabit) but not *definitionally* so in this kernel. See
-// `j_on_refl_typechecks_but_does_not_syntactically_collapse_to_d` below — this
-// mirrors, rather than adds to, the existing gap.
+// `J A a C d a (refl a)` **does** now reduce to `d`, definitionally. The family here
+// is `λi. C ((refl a) @ i) (⟨j⟩ (refl a) @ (i ∧ j))`, which syntactically mentions
+// `Var(0)` (as `PApp` arguments), so the *original*, purely syntactic half of
+// `Transp`'s regularity rule (`crate::kan`, fires only when the family is
+// syntactically independent of the interval variable) does not apply on its own —
+// but `crate::kan::family_is_constant`'s normalization-aware extension *computes*
+// the family under a fresh neutral for `Var(0)` and finds it collapses to the
+// constant `C a (refl a)` (both `(refl a) @ i` and `⟨j⟩ (refl a) @ (i∧j)` β/η-reduce
+// away every occurrence of the interval variable), so the rule fires and
+// `J A a C d a (refl a)` reduces straight to `d`. See `j_on_refl_now_computes_to_d`
+// below.
 //
 // # Soundness
 //
@@ -1239,19 +1240,26 @@ mod bridge_tests {
         assert!(k.def_eq(&ty, &cn("A")));
     }
 
-    /// **Completeness gap, documented, not a soundness bug** (see the module doc):
-    /// `transport (refl A) a` does *not* syntactically collapse to `a` via the
-    /// `Transp` regularity rule, because `(refl A) @ i` is `PApp(PLam(..), Var(0))`
+    /// **Completeness gap, now closed** (see `crate::kan::family_is_constant`'s doc):
+    /// `transport (refl A) a` does *not* collapse to `a` via the *purely syntactic*
+    /// `!mentions_var` check alone, because `(refl A) @ i` is `PApp(PLam(..), Var(0))`
     /// — a term that *does* mention `Var(0)` structurally — even though its value
-    /// never varies. It stays a stuck `Transp` normal form; still valid, inert data.
+    /// never varies. But `crate::kan::family_is_constant`'s normalization-aware
+    /// extension *computes* the family under a fresh neutral standing in for `Var(0)`
+    /// and finds the result genuinely constant, so the `Transp` now reduces, via both
+    /// `Reducer::whnf` and `Nbe::eval`, to exactly `a` — no longer a stuck normal
+    /// form. Also checked via `Nbe::normalize` for the reducer/NbE agreement this
+    /// module's other tests hold to.
     #[test]
-    fn transport_along_refl_typechecks_but_does_not_syntactically_collapse() {
+    fn transport_along_refl_now_computes_to_its_input() {
         let k = base_env();
         let p = refl(&cn("A"));
         let t = transport(&p, &cn("a"));
         let reducer = crate::reduce::Reducer::new(k.env());
         let whnf = reducer.whnf(&t);
-        assert!(matches!(whnf, Term::Transp(..)), "expected a stuck Transp, got {}", whnf.pretty());
+        assert_eq!(whnf, cn("a"), "expected transport(refl A, a) to reduce to a, got {}", whnf.pretty());
+        let nbe = crate::nbe::Nbe::new(k.env());
+        assert_eq!(nbe.normalize(&t), cn("a"));
     }
 
     /// **The real payoff**: transport along a genuine (axiomatized) path between two
@@ -1410,16 +1418,13 @@ mod bridge_tests {
     }
 
     /// **Round-trip**: `path_to_eq (refl a)` then `eq_to_path` of that lands back at
-    /// `Path A a a`. Note (same completeness gap as
-    /// [`tests::transport_along_refl_typechecks_but_does_not_syntactically_collapse`]):
-    /// `path_to_eq (refl a)` type-checks at `Eq A a a` but does *not* itself reduce
-    /// to the literal `Eq.refl A a` constructor (`subst`'s underlying `Transp` stays
-    /// stuck — the family syntactically mentions the interval variable via `PApp`),
-    /// so `Eq.rec`'s ι-rule (which only fires on a literal `Eq.refl` head) does not
-    /// fire either, and the round-trip's *result* is not further asserted
-    /// definitionally equal to the literal `refl a` — only its *type* is checked
-    /// here. This is honestly incomplete, not unsound: every intermediate term
-    /// still independently type-checks at its stated type.
+    /// `Path A a a`. Note: with `crate::kan::family_is_constant`'s
+    /// normalization-aware regularity extension, `path_to_eq (refl a)`'s underlying
+    /// `subst`/`Transp` family (`Eq A a ((refl a) @ i)`) now computes to the constant
+    /// `Eq A a a`, so it reduces straight to the literal `Eq.refl A a` constructor —
+    /// only the type is asserted here (not the further definitional-equality
+    /// consequence), to keep this test focused on the round-trip's typing, but the
+    /// underlying computation is no longer stuck.
     #[test]
     fn path_eq_path_round_trip_on_refl_typechecks() {
         let k = base_env();
@@ -1586,14 +1591,13 @@ mod j_tests {
 
     // ---- (2) Computation on `refl`: propositional, not definitional ----
 
-    /// `J A a C d a (refl a)` type-checks at `C a (refl a)` (same type as `d`), but
-    /// — same documented completeness gap as `transport`/`subst` on `refl` (Phase
-    /// 3.7 above) — does **not** itself syntactically reduce to `d`: it stays a
-    /// stuck `Transp` normal form, because the family syntactically mentions the
-    /// interval variable (`Transp`'s regularity rule needs syntactic, not just
-    /// semantic, independence — see `crate::kan`).
+    /// `J A a C d a (refl a)` type-checks at `C a (refl a)` (same type as `d`), and
+    /// — now that `crate::kan::family_is_constant`'s normalization-aware regularity
+    /// closes the completeness gap documented above ("Computation on `refl`") — it
+    /// also *definitionally* reduces to `d` itself, via both `Reducer::whnf` and
+    /// `Nbe::normalize`.
     #[test]
-    fn j_on_refl_typechecks_but_does_not_syntactically_collapse_to_d() {
+    fn j_on_refl_now_computes_to_d() {
         let k = base_env();
         let a = cn("a");
         let c = identity_motive(&a);
@@ -1603,10 +1607,12 @@ mod j_tests {
         // inhabit `C a (refl a)`).
         let ty = k.infer(&term).unwrap();
         assert!(k.def_eq(&ty, &k.infer(&d).unwrap()));
-        // But it is NOT syntactically `d` after whnf: it's a stuck `Transp`.
+        // And it is now syntactically `d` after whnf — no longer a stuck `Transp`.
         let reducer = crate::reduce::Reducer::new(k.env());
         let whnf = reducer.whnf(&term);
-        assert!(matches!(whnf, Term::Transp(..)), "expected a stuck Transp, got {}", whnf.pretty());
+        assert_eq!(whnf, d, "expected J(refl) to reduce to d, got {}", whnf.pretty());
+        let nbe = crate::nbe::Nbe::new(k.env());
+        assert_eq!(nbe.normalize(&term), nbe.normalize(&d));
     }
 
     // ---- (3) Worked lemma: transitivity of `Path`, derived via `J` ----
@@ -1660,9 +1666,8 @@ mod j_tests {
     }
 
     /// `trans (refl a) q : Path A a c` — the base-case shape, checked at the level
-    /// of types (per the same completeness gap as
-    /// [`j_on_refl_typechecks_but_does_not_syntactically_collapse_to_d`], propositional
-    /// not definitional).
+    /// of types (see [`j_on_refl_now_computes_to_d`] for the definitional-computation
+    /// side of this same `J`-on-`refl` case).
     #[test]
     fn trans_of_refl_typechecks() {
         let mut k = base_env();
