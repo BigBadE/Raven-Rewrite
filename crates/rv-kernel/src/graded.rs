@@ -43,6 +43,44 @@
 //! was already well-typed, and one it accepts is a *subset* of the well-typed terms.
 //! It therefore cannot introduce a proof of `False`.
 //!
+//! ## Coverage: Σ / eliminators are ordinary applications
+//!
+//! The kernel has **no dedicated `Sigma`/pair `Term` constructor**: pairs, inductive
+//! constructors, and eliminators (`Nat.rec`, `Quot.lift`, `Trunc.rec`, coinductive
+//! destructors, …) are all [`Term::Const`]s with a declared `Π` type in the [`Env`],
+//! applied via ordinary [`Term::App`]. The `App` arm of [`Graded::infer`] already
+//! reads each argument position's declared grade off that `Π` (via [`Graded::head_type`])
+//! and scales the argument's usage accordingly — so a linearly-graded constructor
+//! field or a linearly-graded recursor "case"/minor-premise argument is checked by
+//! the *same* mechanism as any other application, with no special-casing needed. This
+//! also reaches *inside* a `λ` passed as an argument (e.g. a recursor's case), since
+//! `infer` recurses into `Lam` wherever it appears in the spine. See
+//! `linear_field_in_constructor_application` and
+//! `linear_recursor_branch_consumes_field_once` below for the Σ-intro/eliminator
+//! adversarial pairs. **What is *not* generated gradedly yet**: [`crate::inductive`]'s
+//! `declare_inductive` automation always emits `Grade::Many` (`Term::pi`, not
+//! `pi_graded`) for constructor fields and recursor minor premises — so *today* no
+//! automatically-generated inductive has a linear field to check. Hand-built (`RawInductive`)
+//! or hand-annotated declarations can already carry real grades and are fully checked;
+//! threading a per-field grade *annotation* through `declare_inductive`'s `IndSpec` is
+//! future work, tracked as a restriction rather than attempted here.
+//!
+//! ## Restriction: `let` remains ungraded (`ω`) in this pass
+//!
+//! `Term::Let(ty, value, body)` carries no grade slot in the core representation (unlike
+//! `Term::Pi`), so there is nothing for this pass to check the let-binder's usage
+//! *against* — it is treated as unrestricted, exactly as before. Adding a grade to
+//! `Let` is a core-representation change that ripples through every module matching
+//! on `Term::Let` (`term.rs`, `check.rs`, `reduce.rs`, `nbe.rs`, `unify.rs`,
+//! `erase.rs`, `coinductive.rs`, `generate.rs`) **and** the surface-syntax elaborator
+//! (`elab2.rs`, owned by a concurrent agent in this workspace) which constructs and
+//! destructures `Term::Let` in over a dozen places. Making that change here risks
+//! destabilizing concurrent work on `elab2.rs` for a representation change that
+//! deserves its own careful pass (in particular: deciding how a *desugared* surface
+//! `let` — used for intermediate elaboration bookkeeping, not just user-written lets —
+//! should default). Left as an explicit, documented restriction rather than attempted
+//! partially.
+//!
 //! The analysis is deliberately a **usage skeleton**, independent of full type
 //! inference: it walks the term's structure and consults declared `Π` grades (on
 //! `λ` via an inferred expected type, and on application heads via the checker),
@@ -271,20 +309,32 @@ impl<'e> Graded<'e> {
 
             // An application spine `head a0 a1 …`: start from the head's usage, then for
             // each argument add its usage *scaled by the corresponding Π grade*.
+            //
+            // Each argument is checked with [`Graded::infer_checked`] against the
+            // parameter's *known* domain type (from the head's `Π`), not the blind
+            // structural [`Graded::infer`]. This matters precisely when an argument is
+            // itself a `λ` (the shape every eliminator "case"/minor-premise argument
+            // takes, e.g. `Nat.rec motive case_zero case_succ n`): a bare `λ`'s own
+            // grade cannot be recovered by unification-free bidirectional inference
+            // ([`Checker::infer`] on a `Lam` always synthesizes an unrestricted `Π`,
+            // since ordinary type inference doesn't consult an expected type), so
+            // without threading the parameter's declared domain down, a linearly-graded
+            // case function's *internal* usage discipline would silently default to `ω`
+            // and never be checked. Threading it through closes that gap.
             Term::App(..) => {
                 let (head, args) = t.unfold_apps();
                 let mut acc = self.infer(&head)?;
                 let mut ty = self.reducer().whnf(&self.head_type(&head)?);
                 for arg in &args {
-                    let Term::Pi(p, _dom, cod) = &ty else {
+                    let Term::Pi(p, dom, cod) = &ty else {
                         // Head type isn't a readable function type: treat the argument as
                         // unrestricted (the sound, never-tightening default).
                         let ua = self.infer(arg)?.scale(Grade::Many);
                         acc = acc.add(&ua);
                         continue;
                     };
-                    let (p, cod) = (*p, (**cod).clone());
-                    let ua = self.infer(arg)?.scale(p);
+                    let (p, dom, cod) = (*p, (**dom).clone(), (**cod).clone());
+                    let ua = self.infer_checked(arg, &dom)?.scale(p);
                     acc = acc.add(&ua);
                     ty = self.reducer().whnf(&cod.instantiate(arg));
                 }
@@ -533,6 +583,109 @@ mod tests {
             check_usage_against(k.env(), &dropped, &ty),
             Err(GradeError::LinearUnused { .. })
         ));
+    }
+
+    // --- Constructors / eliminators (Σ-introduction, recursor branches). -------------
+    //
+    // The kernel has no dedicated `Sigma`/pair primitive: pairs, inductive
+    // constructors, and eliminators (`Nat.rec`, `Quot.lift`, `Trunc.rec`, …) are all
+    // ordinary [`Term::Const`]s applied via [`Term::App`], each with a declared `Π`
+    // type in the [`Env`]. The `App` case of [`Graded::infer`] already reads that
+    // declared `Π`'s grade and scales the argument's usage by it — so a linearly
+    // graded constructor field, or a linearly graded recursor "case"/minor-premise
+    // argument, is *already* covered by the existing generic rule, with **no code
+    // change required**: usage-checking constructors and eliminators is the same
+    // mechanism as usage-checking any other application. These tests pin that down.
+
+    /// A "pair" constructor with a **linear** first field: `mk : Π (x :¹ Res). Pair`
+    /// (the Σ-introduction analogue). Consuming `x` once to build a pair is accepted;
+    /// building two pairs from the same linear `x` (using it twice) is rejected.
+    #[test]
+    fn linear_field_in_constructor_application() {
+        let mut k = Kernel::new();
+        k.add_axiom("Res", 0, Term::typ(0)).unwrap();
+        k.add_axiom("Pair", 0, Term::typ(0)).unwrap();
+        k.add_axiom("mk", 0, Term::pi_graded(Grade::One, cn("Res"), cn("Pair"))).unwrap();
+        // dup2 : Res -> Pair -> Pair -> Pair, used to combine two separately-built pairs
+        // so that the *same* x can be threaded into both without literally repeating a
+        // variable at the top level of a single mk-application (which would already be
+        // caught by the ordinary Var(i) accounting).
+        k.add_axiom(
+            "combine",
+            0,
+            Term::arrow(cn("Pair"), Term::arrow(cn("Pair"), cn("Pair"))),
+        )
+        .unwrap();
+
+        let ty = Term::pi_graded(Grade::One, cn("Res"), cn("Pair"));
+
+        // OK: x flows into exactly one `mk`.
+        let once = Term::lam(cn("Res"), Term::app(cn("mk"), Term::Var(0)));
+        k.add_definition("mk_once", 0, ty.clone(), once.clone()).unwrap();
+        assert!(check_usage_against(k.env(), &once, &ty).is_ok());
+
+        // Rejected: x flows into `mk` twice (two Σ-introductions of the same linear
+        // resource), combined downstream — the usage discipline must see through the
+        // application spine and reject the double consumption.
+        let twice = Term::lam(
+            cn("Res"),
+            Term::apps(
+                cn("combine"),
+                [
+                    Term::app(cn("mk"), Term::Var(0)),
+                    Term::app(cn("mk"), Term::Var(0)),
+                ],
+            ),
+        );
+        let err = check_usage_against(k.env(), &twice, &ty).unwrap_err();
+        assert!(matches!(err, GradeError::UsageMismatch { .. }), "got {err}");
+    }
+
+    /// A hand-built unary inductive `Box A` with a linear payload constructor and a
+    /// recursor whose *case* (minor premise) is itself graded linear in its own
+    /// argument — modelling a recursor branch that must consume its bound field
+    /// exactly once. Exercises that `Graded::infer` correctly checks the usage
+    /// discipline *inside* a lambda passed as an argument to another application (the
+    /// shape every recursor invocation `Box.rec C case b` takes), not just at the
+    /// top level of a definition.
+    #[test]
+    fn linear_recursor_branch_consumes_field_once() {
+        let mut k = Kernel::new();
+        k.add_axiom("Res", 0, Term::typ(0)).unwrap();
+        k.add_axiom("Box", 0, Term::typ(0)).unwrap();
+        k.add_axiom("mk", 0, Term::pi_graded(Grade::One, cn("Res"), cn("Box"))).unwrap();
+        // rec : Π (case :¹ Π (x :¹ Res). Res) (b : Box). Res  — non-dependent motive,
+        // the case itself demanded exactly once (it's the sole way to consume `b`),
+        // and its own bound field demanded exactly once.
+        let case_ty = Term::pi_graded(Grade::One, cn("Res"), cn("Res"));
+        let rec_ty = Term::pi_graded(
+            Grade::One,
+            case_ty.clone(),
+            Term::pi_graded(Grade::One, cn("Box"), cn("Res")),
+        );
+        k.add_axiom("rec", 0, rec_ty).unwrap();
+
+        // caller : Π (b :¹ Box). Res := rec (λ x. x) b — the branch consumes its field
+        // exactly once. Accepted.
+        let good_branch = Term::lam(cn("Res"), Term::Var(0));
+        let caller_ty = Term::pi_graded(Grade::One, cn("Box"), cn("Res"));
+        let good_caller = Term::lam(
+            cn("Box"),
+            Term::apps(cn("rec"), [good_branch, Term::Var(0)]),
+        );
+        k.add_definition("caller_ok", 0, caller_ty.clone(), good_caller.clone()).unwrap();
+        assert!(check_usage_against(k.env(), &good_caller, &caller_ty).is_ok());
+
+        // Rejected: the branch drops its linear field (`λ x. res_const`) — a leaked
+        // resource inside a recursor case.
+        k.add_axiom("res_const", 0, cn("Res")).unwrap();
+        let dropping_branch = Term::lam(cn("Res"), cn("res_const"));
+        let bad_caller = Term::lam(
+            cn("Box"),
+            Term::apps(cn("rec"), [dropping_branch, Term::Var(0)]),
+        );
+        let err = check_usage_against(k.env(), &bad_caller, &caller_ty).unwrap_err();
+        assert!(matches!(err, GradeError::LinearUnused { .. }), "got {err}");
     }
 
     /// Regression guard in miniature: ungraded (ω-default) terms of the shape the proof
