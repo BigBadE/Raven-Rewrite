@@ -25,6 +25,27 @@ pub struct Rat {
 }
 
 impl Rat {
+    /// Construct a rational from an integer. Public so the certificate checker can
+    /// build Farkas coefficients and evaluate combinations independently.
+    pub fn from_int(n: i128) -> Rat {
+        Rat::int(n)
+    }
+    /// A non-negative rational is a valid Farkas multiplier. Used by the checker.
+    pub fn is_non_negative(&self) -> bool {
+        self.num >= 0
+    }
+    /// Exact rational addition (checked); public for the certificate checker.
+    pub fn checked_add(self, other: Rat) -> Option<Rat> {
+        self.add(other)
+    }
+    /// Exact rational multiplication (checked); public for the certificate checker.
+    pub fn checked_mul(self, other: Rat) -> Option<Rat> {
+        self.mul(other)
+    }
+    /// Is this value strictly positive? (Public mirror of the private predicate.)
+    pub fn positive(&self) -> bool {
+        self.is_positive()
+    }
     fn new(num: i128, den: i128) -> Option<Rat> {
         if den == 0 {
             return None;
@@ -146,6 +167,26 @@ impl LinExpr {
             None
         }
     }
+
+    /// Public checked scale — the certificate checker multiplies a constraint's
+    /// `≤ 0` expression by a non-negative Farkas coefficient.
+    pub fn checked_scale(&self, k: Rat) -> Option<LinExpr> {
+        self.scale(k)
+    }
+    /// Public checked add — the checker sums scaled constraints into one row.
+    pub fn checked_add(&self, other: &LinExpr) -> Option<LinExpr> {
+        self.add(other)
+    }
+    /// The all-zero expression (the additive identity), the seed for a Farkas sum.
+    pub fn zero_expr() -> LinExpr {
+        LinExpr::constant(Rat::zero())
+    }
+    /// Is this expression a *variable-free* constant that is **strictly positive**?
+    /// A `≤ 0` constraint whose expression is such a constant is the manifestly false
+    /// inequality (`c ≤ 0` with `c > 0`) — the target of every Farkas certificate.
+    pub fn is_positive_constant(&self) -> bool {
+        matches!(self.as_constant(), Some(c) if c.is_positive())
+    }
 }
 
 /// Lower a `Term` to a linear expression, or `None` if it is not linear (e.g.
@@ -200,6 +241,11 @@ impl LinConstraint {
     /// `expr ≤ 0`.
     fn le_zero(expr: LinExpr) -> LinConstraint {
         LinConstraint { expr }
+    }
+    /// The `≤ 0` left-hand expression. The certificate checker reads this to form the
+    /// Farkas combination `Σ λᵢ · exprᵢ`.
+    pub fn expr(&self) -> &LinExpr {
+        &self.expr
     }
 }
 
@@ -335,92 +381,107 @@ fn negate_cmp(op: BinOp) -> Option<BinOp> {
 // Fourier–Motzkin elimination
 // ===========================================================================
 
-/// Decide whether a conjunction of `≤ 0` constraints is **unsatisfiable over the
-/// rationals**. Returns `true` only when proven UNSAT. Any overflow or other
-/// inability to decide returns `false` (sound: we then don't claim UNSAT).
-///
-/// Algorithm: repeatedly pick a variable and eliminate it. For each pair of a
-/// constraint with a positive coefficient and one with a negative coefficient on
-/// that variable, form their positive combination (which cancels the variable). When
-/// no variables remain, every constraint is a constant `c ≤ 0`; if any has `c > 0`
-/// the system is contradictory ⇒ UNSAT.
-pub fn fourier_motzkin_unsat(constraints: &[LinConstraint]) -> bool {
-    // Work on owned expressions; each represents `expr ≤ 0`.
-    let mut rows: Vec<LinExpr> = constraints.iter().map(|c| c.expr.clone()).collect();
+// ===========================================================================
+// Farkas certificate extraction (the core Fourier–Motzkin elimination)
+// ===========================================================================
 
-    // Check any constraints that are already variable-free for an immediate
-    // contradiction, and drop trivially-true ones (`c ≤ 0` with c ≤ 0).
-    if let Some(contra) = scan_constants(&mut rows) {
-        return contra; // true ⇒ found `c > 0 ≤ 0`, i.e. UNSAT.
+/// A row in the Farkas-tracking elimination: an expression `e ≤ 0` together with the
+/// non-negative combination of the *original* constraints that produced it. `coeffs[i]`
+/// is the multiplier applied to original constraint `i`. Invariant maintained
+/// throughout elimination: `e == Σ coeffs[i] · original[i].expr` and every
+/// `coeffs[i] ≥ 0`, so `e ≤ 0` is a sound consequence of the originals.
+#[derive(Clone)]
+struct FarkasRow {
+    expr: LinExpr,
+    coeffs: Vec<Rat>,
+}
+
+/// Decide whether a conjunction of `≤ 0` constraints is UNSAT over the rationals **and,
+/// when it is, return a Farkas certificate**: a vector of non-negative rational
+/// multipliers `λ`, one per input constraint, such that `Σ λᵢ · exprᵢ` is a
+/// variable-free **strictly positive** constant. That combination is `Σ λᵢ·exprᵢ ≤ 0`
+/// (a non-negative combination of `≤ 0` facts) yet evaluates to `c > 0` — a manifest
+/// contradiction `c ≤ 0 ∧ c > 0`. Returns `None` when it cannot prove UNSAT (satisfiable,
+/// overflow, or otherwise undecided) — sound, we then claim nothing.
+///
+/// This is the Fourier–Motzkin elimination, but each
+/// derived row additionally carries the multiplier vector that produced it, so the
+/// contradicting constant row hands us its Farkas coefficients directly — no search is
+/// re-run to *check* the result (see the certificate checker).
+pub fn fourier_motzkin_farkas(constraints: &[LinConstraint]) -> Option<Vec<Rat>> {
+    let n = constraints.len();
+    // Seed: each original constraint is itself, with a unit multiplier on its own index.
+    let mut rows: Vec<FarkasRow> = constraints
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let mut coeffs = vec![Rat::zero(); n];
+            coeffs[i] = Rat::int(1);
+            FarkasRow { expr: c.expr.clone(), coeffs }
+        })
+        .collect();
+
+    if let Some(cert) = scan_farkas_constants(&mut rows) {
+        return Some(cert);
     }
 
-    // Eliminate variables one at a time.
-    while let Some(var) = pick_var(&rows) {
-        let mut pos: Vec<&LinExpr> = Vec::new(); // coeff(var) > 0
-        let mut neg: Vec<&LinExpr> = Vec::new(); // coeff(var) < 0
-        let mut rest: Vec<LinExpr> = Vec::new(); // coeff(var) == 0
-
+    while let Some(var) = pick_var_rows(&rows) {
+        let mut pos: Vec<&FarkasRow> = Vec::new();
+        let mut neg: Vec<&FarkasRow> = Vec::new();
+        let mut rest: Vec<FarkasRow> = Vec::new();
         for row in &rows {
-            match row.coeffs.get(&var).copied() {
+            match row.expr.coeffs.get(&var).copied() {
                 Some(c) if c.is_positive() => pos.push(row),
                 Some(c) if c.is_negative() => neg.push(row),
                 _ => rest.push(row.clone()),
             }
         }
-
-        // Combine each positive/negative pair to cancel `var`.
         let mut next = rest;
         for p in &pos {
-            for n in &neg {
-                match eliminate(p, n, var) {
+            for nn in &neg {
+                match eliminate_farkas(p, nn, var) {
                     Some(combined) => next.push(combined),
-                    // Overflow or arithmetic failure ⇒ we cannot soundly continue.
-                    None => return false,
+                    None => return None,
                 }
             }
         }
         rows = next;
-
-        // A fresh batch of constant rows may have appeared; check them.
-        if let Some(contra) = scan_constants(&mut rows) {
-            return contra;
+        if let Some(cert) = scan_farkas_constants(&mut rows) {
+            return Some(cert);
         }
     }
-
-    // No variables left. Re-scan; any leftover `c ≤ 0` with c > 0 is a contradiction.
-    scan_constants(&mut rows).unwrap_or(false)
+    // No variables left; a final scan finds any positive-constant contradiction.
+    scan_farkas_constants(&mut rows)
 }
 
-/// Eliminate `var` from the pair `p` (positive coeff) and `n` (negative coeff) by
-/// forming a non-negative combination `αp + βn` whose `var` coefficient is zero.
-/// Both `α, β > 0`, so `(αp ≤ 0) + (βn ≤ 0)` is a sound consequence.
-fn eliminate(p: &LinExpr, n: &LinExpr, var: Sym) -> Option<LinExpr> {
-    let cp = *p.coeffs.get(&var)?; // > 0
-    let cn = *n.coeffs.get(&var)?; // < 0
-                                   // We want α·cp + β·cn = 0 with α,β > 0. Take α = -cn (>0), β = cp (>0).
+/// Farkas analogue of [`eliminate`]: combine `α·p + β·n` (with `α = -cn > 0`,
+/// `β = cp > 0`) on both the expression and its multiplier vector, preserving the
+/// invariant `expr == Σ coeffs[i]·original[i]`.
+fn eliminate_farkas(p: &FarkasRow, n: &FarkasRow, var: Sym) -> Option<FarkasRow> {
+    let cp = *p.expr.coeffs.get(&var)?; // > 0
+    let cn = *n.expr.coeffs.get(&var)?; // < 0
     let alpha = cn.neg()?; // > 0
     let beta = cp; // > 0
-    let combined = p.scale(alpha)?.add(&n.scale(beta)?)?;
-    Some(combined)
+    let expr = p.expr.scale(alpha)?.add(&n.expr.scale(beta)?)?;
+    let mut coeffs = Vec::with_capacity(p.coeffs.len());
+    for (pc, nc) in p.coeffs.iter().zip(n.coeffs.iter()) {
+        coeffs.push(pc.mul(alpha)?.add(nc.mul(beta)?)?);
+    }
+    Some(FarkasRow { expr, coeffs })
 }
 
-/// Inspect variable-free rows. Returns:
-/// * `Some(true)`  — found a contradiction `c ≤ 0` with `c > 0` ⇒ system UNSAT;
-/// * `None`        — no contradiction; (trivially-true constant rows are removed).
-///
-/// Rows that still have variables are left untouched.
-fn scan_constants(rows: &mut Vec<LinExpr>) -> Option<bool> {
-    let drained: Vec<LinExpr> = std::mem::take(rows);
+/// Scan rows for a variable-free strictly-positive constant (`c ≤ 0` with `c > 0`).
+/// On finding one, return its multiplier vector — the Farkas certificate. Otherwise
+/// drop trivially-true constant rows and return `None`.
+fn scan_farkas_constants(rows: &mut Vec<FarkasRow>) -> Option<Vec<Rat>> {
+    let drained = std::mem::take(rows);
     let mut kept = Vec::with_capacity(drained.len());
     for row in drained {
-        if let Some(c) = row.as_constant() {
+        if let Some(c) = row.expr.as_constant() {
             if c.is_positive() {
-                // `c ≤ 0` with c > 0 is false ⇒ contradiction. Restore the kept rows
-                // for caller cleanliness, then signal UNSAT.
                 *rows = kept;
-                return Some(true);
+                return Some(row.coeffs);
             }
-            // c ≤ 0 holds — a trivially satisfied constraint; drop it.
         } else {
             kept.push(row);
         }
@@ -429,10 +490,9 @@ fn scan_constants(rows: &mut Vec<LinExpr>) -> Option<bool> {
     None
 }
 
-/// Pick some variable still present in the rows (deterministically: the smallest
-/// `Sym`, since rows use a `BTreeMap`).
-fn pick_var(rows: &[LinExpr]) -> Option<Sym> {
-    rows.iter().flat_map(|r| r.coeffs.keys().copied()).min()
+/// Pick a variable still present in the Farkas rows (smallest `Sym`, deterministic).
+fn pick_var_rows(rows: &[FarkasRow]) -> Option<Sym> {
+    rows.iter().flat_map(|r| r.expr.coeffs.keys().copied()).min()
 }
 
 // ===========================================================================
@@ -566,7 +626,7 @@ mod tests {
         let c2 = cmp_to_constraints(BinOp::Ge, &x, &Term::Int(1), false).unwrap();
         let mut all = c1;
         all.extend(c2);
-        assert!(fourier_motzkin_unsat(&all));
+        assert!(fourier_motzkin_farkas(&all).is_some());
     }
 
     #[test]
@@ -575,7 +635,7 @@ mod tests {
         let mut s = Symbols::new();
         let x = v(&mut s, "x");
         let c = cmp_to_constraints(BinOp::Ge, &x, &Term::Int(0), false).unwrap();
-        assert!(!fourier_motzkin_unsat(&c));
+        assert!(fourier_motzkin_farkas(&c).is_none());
     }
 
     #[test]
@@ -587,7 +647,7 @@ mod tests {
         let x = v(&mut s, "x");
         let mut all = cmp_to_constraints(BinOp::Gt, &x, &Term::Int(3), false).unwrap();
         all.extend(cmp_to_constraints(BinOp::Le, &x, &Term::Int(3), false).unwrap());
-        assert!(fourier_motzkin_unsat(&all));
+        assert!(fourier_motzkin_farkas(&all).is_some());
     }
 
     #[test]

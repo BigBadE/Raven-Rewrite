@@ -76,13 +76,17 @@
 use rv_core::Prop;
 use rv_logic::{Certificate, Obligation, Outcome, ReplayCertificate, Solver, SolverRegistry};
 
+mod certificate;
 mod equality;
 mod linear;
 mod normalize;
 
+pub use certificate::{Certificate as UnsatCertificate, DisjunctCert, FarkasCert};
+pub use normalize::{Atom, Literal, OpaqueAtom};
+
+use certificate::Certificate as UnsatCert;
 use equality::EqClosure;
 use linear::{Disequality, LinConstraint};
-use normalize::{Atom, Literal};
 
 /// Build a registry preloaded with the built-in solvers, ready to `.discharge(&ob)`.
 ///
@@ -169,39 +173,97 @@ impl Solver for LiaSolver {
     }
 
     fn try_solve(&self, ob: &Obligation) -> Outcome {
-        // We prove `ctx ⟹ goal` by refuting `ctx ∧ ¬goal`.
-        let formula =
-            Prop::And(Box::new(ob.ctx.clone()), Box::new(Prop::Not(Box::new(ob.goal.clone()))));
-
-        // Push negations to the leaves (NNF), then enumerate the DNF as a list of
-        // conjunctions-of-literals. `dnf` returns None if it overflows the cap.
-        let nnf = normalize::to_nnf(&formula, false);
-        let disjuncts = match normalize::dnf(&nnf, MAX_DISJUNCTS) {
-            Some(d) => d,
-            None => {
-                return Outcome::Failed(Some("formula too large for DNF enumeration".into()))
-            }
-        };
-
-        // The formula is UNSAT iff every disjunct is UNSAT. If any disjunct is
-        // satisfiable (or we can't prove it unsat), the obligation is not proved —
-        // and we try to extract a concrete counterexample from that disjunct.
-        for conj in &disjuncts {
-            match analyze_disjunct(conj) {
-                DisjunctVerdict::Unsat => {}
-                DisjunctVerdict::Sat { constraints, disequalities } => {
-                    // Best-effort: search a small integer box for a model of the
-                    // linear part of this satisfiable disjunct.
-                    let msg = match linear::find_integer_model(&constraints, &disequalities) {
-                        Some(model) => format!("counterexample: {}", render_model(&model)),
-                        None => "could not refute a case (possible counterexample)".into(),
-                    };
-                    return Outcome::Failed(Some(msg));
+        match prove(ob) {
+            // We produced a checkable certificate. Self-check it before trusting our own
+            // verdict: this is the whole point — the (untrusted) search's answer is only
+            // accepted once the (trusted) checker re-verifies the emitted certificate
+            // against the original disjuncts. A failed self-check is a solver bug; we
+            // conservatively report `Failed` rather than an unchecked `Discharged`.
+            ProveResult::Unsat { certificate, disjuncts } => {
+                if certificate.check(&disjuncts) {
+                    Outcome::Discharged(Certificate::trusted("lia"))
+                } else {
+                    Outcome::Failed(Some(
+                        "internal: emitted certificate failed self-check".into(),
+                    ))
                 }
             }
+            ProveResult::Unknown(msg) => Outcome::Failed(msg),
         }
-        Outcome::Discharged(Certificate::trusted("lia"))
     }
+}
+
+/// The result of the (untrusted) refutation search over `ctx ∧ ¬goal`.
+enum ProveResult {
+    /// Every disjunct was refuted. Carries the checkable [`UnsatCert`] and the exact
+    /// `disjuncts` it was built against (so the checker has both halves).
+    Unsat { certificate: UnsatCert, disjuncts: Vec<Vec<Literal>> },
+    /// We could not refute some disjunct (satisfiable, too large, or undecidable);
+    /// carries an optional diagnostic/counterexample message.
+    Unknown(Option<String>),
+}
+
+/// Run the refutation search for `ctx ⟹ goal` and, on success, produce a checkable
+/// certificate. This is the untrusted engine behind both [`LiaSolver`] and the public
+/// [`prove_with_certificate`].
+fn prove(ob: &Obligation) -> ProveResult {
+    // We prove `ctx ⟹ goal` by refuting `ctx ∧ ¬goal`.
+    let formula =
+        Prop::And(Box::new(ob.ctx.clone()), Box::new(Prop::Not(Box::new(ob.goal.clone()))));
+
+    // Push negations to the leaves (NNF), then enumerate the DNF as a list of
+    // conjunctions-of-literals. `dnf` returns None if it overflows the cap.
+    let nnf = normalize::to_nnf(&formula, false);
+    let disjuncts = match normalize::dnf(&nnf, MAX_DISJUNCTS) {
+        Some(d) => d,
+        None => return ProveResult::Unknown(Some("formula too large for DNF enumeration".into())),
+    };
+
+    // The formula is UNSAT iff every disjunct is UNSAT. Collect one certificate per
+    // disjunct; if any disjunct is satisfiable (or unrefutable) the obligation is not
+    // proved — and we try to extract a concrete counterexample from that disjunct.
+    let mut disjunct_certs = Vec::with_capacity(disjuncts.len());
+    for conj in &disjuncts {
+        match analyze_disjunct(conj) {
+            DisjunctVerdict::Unsat(cert) => disjunct_certs.push(cert),
+            DisjunctVerdict::Sat { constraints, disequalities } => {
+                // Best-effort: search a small integer box for a model of the linear part
+                // of this satisfiable disjunct.
+                let msg = match linear::find_integer_model(&constraints, &disequalities) {
+                    Some(model) => format!("counterexample: {}", render_model(&model)),
+                    None => "could not refute a case (possible counterexample)".into(),
+                };
+                return ProveResult::Unknown(Some(msg));
+            }
+        }
+    }
+    ProveResult::Unsat {
+        certificate: UnsatCert { disjuncts: disjunct_certs },
+        disjuncts,
+    }
+}
+
+/// Public API: attempt to prove `ctx ⟹ goal` and, on success, return a checkable unsat
+/// [`UnsatCertificate`](certificate::Certificate) **together with the DNF disjuncts it
+/// is proven against** — the pair [`UnsatCertificate::check`](certificate::Certificate::check)
+/// expects. Returns `None` when the obligation could not be refuted.
+///
+/// The certificate is independently re-verifiable: `cert.check(&disjuncts)` re-derives
+/// every constraint from the literals and re-checks by pure arithmetic, calling nothing
+/// in the search. See [`check_certificate`] for the convenience wrapper.
+pub fn prove_with_certificate(
+    ob: &Obligation,
+) -> Option<(certificate::Certificate, Vec<Vec<Literal>>)> {
+    match prove(ob) {
+        ProveResult::Unsat { certificate, disjuncts } => Some((certificate, disjuncts)),
+        ProveResult::Unknown(_) => None,
+    }
+}
+
+/// Public API: re-verify a certificate against the disjuncts it claims to refute. This
+/// is the tiny trusted checker; it performs only arithmetic and substitution.
+pub fn check_certificate(cert: &certificate::Certificate, disjuncts: &[Vec<Literal>]) -> bool {
+    cert.check(disjuncts)
 }
 
 /// Render a `(Sym, value)` model as a human-readable assignment string. Symbols are
@@ -221,7 +283,7 @@ fn render_model(model: &[(rv_core::Sym, i64)]) -> String {
 /// The result of analyzing one disjunct: either proven UNSAT, or possibly-SAT with the
 /// linear part exposed so the caller can hunt for a counterexample model.
 enum DisjunctVerdict {
-    Unsat,
+    Unsat(DisjunctCert),
     Sat { constraints: Vec<LinConstraint>, disequalities: Vec<Disequality> },
 }
 
@@ -258,6 +320,9 @@ fn analyze_disjunct(conj: &[Literal]) -> DisjunctVerdict {
     // checked against the closure after every union has been processed.
     let mut eq = EqClosure::new();
     let mut opaque_disequalities: Vec<(&rv_core::Term, &rv_core::Term)> = Vec::new();
+    // Every `(l, r)` we assert as an equality into the closure. Recorded so an equality
+    // clash certificate can carry the exact chain the checker must replay.
+    let mut asserted_eqs: Vec<(rv_core::Term, rv_core::Term)> = Vec::new();
 
     for lit in conj {
         match &lit.atom {
@@ -269,6 +334,7 @@ fn analyze_disjunct(conj: &[Literal]) -> DisjunctVerdict {
                 // that genuinely holds in this disjunct.
                 if matches!(linear::effective_cmp(*op, lit.negated), Some(rv_core::BinOp::Eq)) {
                     eq.assert_eq(lhs, rhs);
+                    asserted_eqs.push((lhs.clone(), rhs.clone()));
                 }
                 // First, is this (possibly negated) comparison a *linear* disequality?
                 // Those must be split rather than turned into `≤ 0` constraints.
@@ -308,7 +374,7 @@ fn analyze_disjunct(conj: &[Literal]) -> DisjunctVerdict {
     // Opaque contradiction `p ∧ ¬p`?  (Syntactic identity is sufficient and sound.)
     for p in &opaque_pos {
         if opaque_neg.contains(p) {
-            return DisjunctVerdict::Unsat;
+            return DisjunctVerdict::Unsat(DisjunctCert::OpaqueClash { atom: (*p).clone() });
         }
     }
 
@@ -322,38 +388,61 @@ fn analyze_disjunct(conj: &[Literal]) -> DisjunctVerdict {
     // lookup; if a side was never seen it cannot be forced equal, so no false UNSAT.)
     for (l, r) in &opaque_disequalities {
         if eq.equal(l, r) {
-            return DisjunctVerdict::Unsat;
+            return DisjunctVerdict::Unsat(DisjunctCert::EqualityClash {
+                asserted_eqs,
+                diseq: ((*l).clone(), (*r).clone()),
+            });
         }
     }
 
     // Branch over the disequalities' two sides each (a small local DNF), requiring
     // every combination to be linearly UNSAT. With no disequalities this is just the
-    // single Fourier–Motzkin call on `constraints`.
+    // single Fourier–Motzkin call on `constraints`. We collect a Farkas certificate per
+    // branch (in the fixed enumeration order the checker replays).
     //
     // Note: opaque atoms with consistent polarities are freely satisfiable, so once
     // the checks above have passed they can never *help* prove UNSAT — the linear
     // verdict decides the rest.
-    if all_branches_unsat(&constraints, &disequalities) {
-        DisjunctVerdict::Unsat
+    let mut branches = Vec::new();
+    if collect_branch_farkas(&constraints, &disequalities, &mut branches) {
+        DisjunctVerdict::Unsat(DisjunctCert::LinearRefutation { branches })
     } else {
         DisjunctVerdict::Sat { constraints, disequalities }
     }
 }
 
 /// Recursively branch over disequalities (`a ≠ b` ⇒ try `a < b`, then `a > b`),
-/// requiring the linear part to be UNSAT under **every** branch.
-fn all_branches_unsat(constraints: &[LinConstraint], disequalities: &[linear::Disequality]) -> bool {
+/// requiring the linear part to be UNSAT under **every** branch, and pushing a Farkas
+/// certificate for each refuted branch onto `out` in traversal order. Returns `true`
+/// iff every branch was refuted (so `out` then holds one certificate per branch, in the
+/// same order [`certificate`]'s checker re-enumerates them). On any non-refuted branch
+/// it returns `false` and the caller discards `out`.
+fn collect_branch_farkas(
+    constraints: &[LinConstraint],
+    disequalities: &[linear::Disequality],
+    out: &mut Vec<FarkasCert>,
+) -> bool {
     match disequalities.split_first() {
-        // Base case: no disequalities left — decide the pure conjunction.
-        None => linear::fourier_motzkin_unsat(constraints),
+        // Base case: no disequalities left — refute the pure conjunction with Farkas.
+        None => match linear::fourier_motzkin_farkas(constraints) {
+            Some(multipliers) => {
+                out.push(FarkasCert { multipliers });
+                true
+            }
+            None => false,
+        },
         // Inductive case: the disequality must hold via its `<` side OR its `>` side.
-        // The conjunction is UNSAT iff it is UNSAT under *both* (so neither side can
-        // rescue satisfiability).
+        // The conjunction is UNSAT iff it is UNSAT under *both*. We recurse into each
+        // side in order; the checker enumerates the identical order.
         Some((d, rest)) => {
-            for side in d.sides() {
+            let sides = d.sides();
+            if sides.len() != 2 {
+                return false; // an overflow dropped a side; cannot certify soundly.
+            }
+            for side in sides {
                 let mut with_side = constraints.to_vec();
                 with_side.push(side);
-                if !all_branches_unsat(&with_side, rest) {
+                if !collect_branch_farkas(&with_side, rest, out) {
                     return false;
                 }
             }
