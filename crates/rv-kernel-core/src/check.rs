@@ -141,6 +141,31 @@ impl<'e> Checker<'e> {
             Term::I => Err("`I` (the interval) is not itself a type or a value".to_string()),
             Term::IZero | Term::IOne => Ok(Term::I),
 
+            // **Phase 3.5** (De Morgan interval, see `crate::cubical`): reversal and
+            // the two connections. Each operand must itself check against `I`
+            // (exactly like `Term::PApp`'s argument); the result is again `I` — these
+            // are interval-*expressions*, not fibrant data, so they can no more
+            // escape into a `Π` domain/codomain than `IZero`/`IOne` can (see
+            // `interval_still_cannot_be_a_pi_domain_with_connections_in_scope` below).
+            Term::INeg(r) => {
+                let tr = self.infer(ctx, r)?;
+                if !self.is_def_eq(ctx, &tr, &Term::I) {
+                    return Err(format!("`~r` requires `r : I`, got {tr:?}"));
+                }
+                Ok(Term::I)
+            }
+            Term::IMeet(r, s) | Term::IJoin(r, s) => {
+                let tr = self.infer(ctx, r)?;
+                if !self.is_def_eq(ctx, &tr, &Term::I) {
+                    return Err(format!("interval connection requires `r : I`, got {tr:?}"));
+                }
+                let ts = self.infer(ctx, s)?;
+                if !self.is_def_eq(ctx, &ts, &Term::I) {
+                    return Err(format!("interval connection requires `s : I`, got {ts:?}"));
+                }
+                Ok(Term::I)
+            }
+
             // Path abstraction: `⟨i⟩ body` has type `PathP (λi. type-of body) body[i:=i0] body[i:=i1]`.
             // Reuses the ordinary `Var` binder machinery (see `Term::PLam`'s doc
             // comment) — push `I` as the new binder's "type" so `is_interval_var`
@@ -379,6 +404,21 @@ impl<'e> Checker<'e> {
             return true;
         }
         let structural = match (a, b) {
+            // Phase 3.5 (De Morgan interval, see `crate::cubical`): whenever *at
+            // least one* side actually has a connective head (`~`/`∧`/`∨`) and both
+            // sides are pure interval expressions, route through the De Morgan-algebra
+            // normal form instead of plain structural comparison — this is what makes
+            // `~i0 ≡ i1`, `i∧i ≡ i`, etc. hold *definitionally*. Deliberately **not**
+            // a blanket check on `Var`/`Var` alone (that would bypass the
+            // `proof_irrelevant`/`path_boundary` fallback below for ordinary,
+            // non-interval variable comparisons — those still go through the
+            // pre-existing `(Term::Var, Term::Var)` arm further down).
+            (Term::INeg(..) | Term::IMeet(..) | Term::IJoin(..), _)
+            | (_, Term::INeg(..) | Term::IMeet(..) | Term::IJoin(..))
+                if crate::cubical::is_interval_expr(a) && crate::cubical::is_interval_expr(b) =>
+            {
+                crate::cubical::interval_eq(a, b)
+            }
             (Term::Sort(l1), Term::Sort(l2)) => crate::level::equiv(l1, l2),
             (Term::Var(i), Term::Var(j)) => i == j,
             (Term::Const(n1, l1), Term::Const(n2, l2)) => {
@@ -482,8 +522,13 @@ impl<'e> Checker<'e> {
     /// against `other`.
     fn path_boundary_one(&self, ctx: &mut LocalCtx, probe: &Term, other: &Term) -> bool {
         let Term::PApp(p, r) = probe else { return false };
-        let at_zero = matches!(&**r, Term::IZero);
-        let at_one = matches!(&**r, Term::IOne);
+        // Phase 3.5 (De Morgan interval, see `crate::cubical`): decide "is this
+        // argument the `i0`/`i1` boundary" up to the De Morgan normal form, not just
+        // literal syntactic `IZero`/`IOne` — so e.g. `p @ (~i0)` (which normalizes to
+        // `i1`) still hits the `a1` boundary, exactly as `p @ i1` would.
+        let rn = crate::cubical::normalize_interval(r);
+        let at_zero = rn == Term::IZero;
+        let at_one = rn == Term::IOne;
         if !at_zero && !at_one {
             return false;
         }

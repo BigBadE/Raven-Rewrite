@@ -582,6 +582,19 @@ impl<'e> Reducer<'e> {
             return true;
         }
         match (&a, &b) {
+            // Phase 3.5 (De Morgan interval, see `crate::cubical`): see the matching
+            // arm in `check::Checker::compare` for the rationale (kept in lockstep
+            // between the two independent conversion checkers) — only fires when a
+            // genuine connective head is present, so plain `Var`/`Var` comparisons are
+            // untouched (this checker has no proof-irrelevance/η-for-Path fallback to
+            // preserve, but keeping the two implementations structurally identical is
+            // what the differential tests below check).
+            (Term::INeg(..) | Term::IMeet(..) | Term::IJoin(..), _)
+            | (_, Term::INeg(..) | Term::IMeet(..) | Term::IJoin(..))
+                if crate::cubical::is_interval_expr(&a) && crate::cubical::is_interval_expr(&b) =>
+            {
+                crate::cubical::interval_eq(&a, &b)
+            }
             (Term::Sort(l1), Term::Sort(l2)) => level::equiv(l1, l2),
             (Term::Var(i), Term::Var(j)) => i == j,
             (Term::Const(n1, l1), Term::Const(n2, l2)) => {

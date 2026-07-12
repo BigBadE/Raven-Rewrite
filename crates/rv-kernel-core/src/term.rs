@@ -114,6 +114,19 @@ pub enum Term {
     IZero,
     /// The right interval endpoint, `i1 : I`.
     IOne,
+    /// **Phase 3.5** (De Morgan interval, see `crate::cubical`): reversal `~ r`.
+    /// `r` must itself be interval-classified. Definitional laws (decided by
+    /// [`crate::cubical::normalize_interval`], not by ad-hoc reduction rules):
+    /// `~i0 = i1`, `~i1 = i0`, `~~r = r`, `~(r∧s) = ~r ∨ ~s`, `~(r∨s) = ~r ∧ ~s`.
+    INeg(Rc<Term>),
+    /// **Phase 3.5**: the interval meet (connection) `r ∧ s`. Idempotent, commutative,
+    /// associative, absorbing (`r∧(r∨s)=r`), with `r∧i0=i0`, `r∧i1=r` — the meet of
+    /// the (bounded, distributive, **De Morgan — not Boolean**) interval lattice. See
+    /// `crate::cubical` for why `r∧~r=i0` is deliberately *not* a law here.
+    IMeet(Rc<Term>, Rc<Term>),
+    /// **Phase 3.5**: the interval join (connection) `r ∨ s`, dual to [`Term::IMeet`]:
+    /// `r∨i1=i1`, `r∨i0=r`, plus idempotence/commutativity/associativity/absorption.
+    IJoin(Rc<Term>, Rc<Term>),
     /// Path abstraction `⟨i⟩ t` (aka `λ i. t`, `i : I`). Deliberately reuses the
     /// *ordinary* de Bruijn `Var`/binder machinery — `body` is under one extra `Var`
     /// binder exactly like [`Term::Lam`], just with no domain subterm (the domain is
@@ -217,6 +230,18 @@ impl Term {
     pub fn let_graded(grade: Grade, ty: Term, value: Term, body: Term) -> Term {
         Term::Let(grade, Rc::new(ty), Rc::new(value), Rc::new(body))
     }
+    /// Interval reversal `~ r` (see [`Term::INeg`]).
+    pub fn ineg(r: Term) -> Term {
+        Term::INeg(Rc::new(r))
+    }
+    /// Interval meet `r ∧ s` (see [`Term::IMeet`]).
+    pub fn imeet(r: Term, s: Term) -> Term {
+        Term::IMeet(Rc::new(r), Rc::new(s))
+    }
+    /// Interval join `r ∨ s` (see [`Term::IJoin`]).
+    pub fn ijoin(r: Term, s: Term) -> Term {
+        Term::IJoin(Rc::new(r), Rc::new(s))
+    }
     /// Path abstraction `⟨i⟩ body` (`body` under one interval binder).
     pub fn plam(body: Term) -> Term {
         Term::PLam(Rc::new(body))
@@ -275,6 +300,9 @@ impl Term {
             Term::Let(g, t, v, b) => {
                 Term::let_graded(*g, t.lift(amount, cutoff), v.lift(amount, cutoff), b.lift(amount, cutoff + 1))
             }
+            Term::INeg(r) => Term::ineg(r.lift(amount, cutoff)),
+            Term::IMeet(r, s) => Term::imeet(r.lift(amount, cutoff), s.lift(amount, cutoff)),
+            Term::IJoin(r, s) => Term::ijoin(r.lift(amount, cutoff), s.lift(amount, cutoff)),
             // `PLam`/`PathP`'s family live under one extra (interval) `Var` binder,
             // exactly like `Lam`'s body — same cutoff bump.
             Term::PLam(b) => Term::plam(b.lift(amount, cutoff + 1)),
@@ -334,6 +362,13 @@ impl Term {
                 v.subst(depth, replacement),
                 b.subst(depth + 1, replacement),
             ),
+            Term::INeg(r) => Term::ineg(r.subst(depth, replacement)),
+            Term::IMeet(r, s) => {
+                Term::imeet(r.subst(depth, replacement), s.subst(depth, replacement))
+            }
+            Term::IJoin(r, s) => {
+                Term::ijoin(r.subst(depth, replacement), s.subst(depth, replacement))
+            }
             Term::PLam(b) => Term::plam(b.subst(depth + 1, replacement)),
             Term::PApp(p, r) => Term::papp(p.subst(depth, replacement), r.subst(depth, replacement)),
             Term::PathP(fam, a0, a1) => Term::pathp(
@@ -416,6 +451,13 @@ impl Term {
                 v.subst_ctx_go(images, depth),
                 b.subst_ctx_go(images, depth + 1),
             ),
+            Term::INeg(r) => Term::ineg(r.subst_ctx_go(images, depth)),
+            Term::IMeet(r, s) => {
+                Term::imeet(r.subst_ctx_go(images, depth), s.subst_ctx_go(images, depth))
+            }
+            Term::IJoin(r, s) => {
+                Term::ijoin(r.subst_ctx_go(images, depth), s.subst_ctx_go(images, depth))
+            }
             Term::PLam(b) => Term::plam(b.subst_ctx_go(images, depth + 1)),
             Term::PApp(p, r) => {
                 Term::papp(p.subst_ctx_go(images, depth), r.subst_ctx_go(images, depth))
@@ -478,6 +520,13 @@ impl Term {
                 v.instantiate_levels(args),
                 b.instantiate_levels(args),
             ),
+            Term::INeg(r) => Term::ineg(r.instantiate_levels(args)),
+            Term::IMeet(r, s) => {
+                Term::imeet(r.instantiate_levels(args), s.instantiate_levels(args))
+            }
+            Term::IJoin(r, s) => {
+                Term::ijoin(r.instantiate_levels(args), s.instantiate_levels(args))
+            }
             Term::PLam(b) => Term::plam(b.instantiate_levels(args)),
             Term::PApp(p, r) => Term::papp(p.instantiate_levels(args), r.instantiate_levels(args)),
             Term::PathP(fam, a0, a1) => Term::pathp(
@@ -524,6 +573,8 @@ impl Term {
             Term::Lam(d, b) => d.has_meta() || b.has_meta(),
             Term::Pi(_, d, b) => d.has_meta() || b.has_meta(),
             Term::Let(_, t, v, b) => t.has_meta() || v.has_meta() || b.has_meta(),
+            Term::INeg(r) => r.has_meta(),
+            Term::IMeet(r, s) | Term::IJoin(r, s) => r.has_meta() || s.has_meta(),
             Term::PLam(b) => b.has_meta(),
             Term::PApp(p, r) => p.has_meta() || r.has_meta(),
             Term::PathP(fam, a0, a1) => fam.has_meta() || a0.has_meta() || a1.has_meta(),
@@ -566,6 +617,13 @@ impl Term {
             Term::I => "I".to_string(),
             Term::IZero => "i0".to_string(),
             Term::IOne => "i1".to_string(),
+            Term::INeg(r) => paren_if(prec >= 3, format!("~{}", r.pp(names, 3))),
+            Term::IMeet(r, s) => {
+                paren_if(prec >= 3, format!("{} ∧ {}", r.pp(names, 3), s.pp(names, 3)))
+            }
+            Term::IJoin(r, s) => {
+                paren_if(prec >= 3, format!("{} ∨ {}", r.pp(names, 3), s.pp(names, 3)))
+            }
             Term::PLam(b) => {
                 let nm = fresh_binder_name(names.len());
                 names.push(nm.clone());
@@ -706,6 +764,8 @@ pub(crate) fn mentions_var(t: &Term, k: usize) -> bool {
         Term::Pi(_, d, b) => mentions_var(d, k) || mentions_var(b, k + 1),
         Term::Let(_, ty, v, b) => mentions_var(ty, k) || mentions_var(v, k) || mentions_var(b, k + 1),
         Term::Sort(_) | Term::Const(..) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => false,
+        Term::INeg(r) => mentions_var(r, k),
+        Term::IMeet(r, s) | Term::IJoin(r, s) => mentions_var(r, k) || mentions_var(s, k),
         Term::PLam(b) => mentions_var(b, k + 1),
         Term::PApp(p, r) => mentions_var(p, k) || mentions_var(r, k),
         Term::PathP(fam, a0, a1) => mentions_var(fam, k + 1) || mentions_var(a0, k) || mentions_var(a1, k),

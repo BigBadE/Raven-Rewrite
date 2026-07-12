@@ -182,6 +182,9 @@ impl Metas {
             Term::App(f, a) => Ok(Term::app(self.zonk(f)?, self.zonk(a)?)),
             Term::Lam(d, b) => Ok(Term::lam(self.zonk(d)?, self.zonk(b)?)),
             Term::Pi(g, d, b) => Ok(Term::pi_graded(*g, self.zonk(d)?, self.zonk(b)?)),
+            Term::INeg(r) => Ok(Term::ineg(self.zonk(r)?)),
+            Term::IMeet(r, s) => Ok(Term::imeet(self.zonk(r)?, self.zonk(s)?)),
+            Term::IJoin(r, s) => Ok(Term::ijoin(self.zonk(r)?, self.zonk(s)?)),
             Term::PLam(b) => Ok(Term::plam(self.zonk(b)?)),
             Term::PApp(p, r) => Ok(Term::papp(self.zonk(p)?, self.zonk(r)?)),
             Term::PathP(fam, a0, a1) => {
@@ -482,6 +485,13 @@ fn invert(meta: u32, image: &[usize], t: &Term, depth: usize) -> Result<Term, St
             invert(meta, image, v, depth)?,
             invert(meta, image, b, depth + 1)?,
         )),
+        Term::INeg(r) => Ok(Term::ineg(invert(meta, image, r, depth)?)),
+        Term::IMeet(r, s) => {
+            Ok(Term::imeet(invert(meta, image, r, depth)?, invert(meta, image, s, depth)?))
+        }
+        Term::IJoin(r, s) => {
+            Ok(Term::ijoin(invert(meta, image, r, depth)?, invert(meta, image, s, depth)?))
+        }
         Term::PLam(b) => Ok(Term::plam(invert(meta, image, b, depth + 1)?)),
         Term::PApp(p, r) => {
             Ok(Term::papp(invert(meta, image, p, depth)?, invert(meta, image, r, depth)?))
@@ -546,6 +556,8 @@ fn occurs(m: u32, t: &Term) -> bool {
         Term::App(f, a) => occurs(m, f) || occurs(m, a),
         Term::Lam(d, b) | Term::Pi(_, d, b) => occurs(m, d) || occurs(m, b),
         Term::Let(_, ty, v, b) => occurs(m, ty) || occurs(m, v) || occurs(m, b),
+        Term::INeg(r) => occurs(m, r),
+        Term::IMeet(r, s) | Term::IJoin(r, s) => occurs(m, r) || occurs(m, s),
         Term::PLam(b) => occurs(m, b),
         Term::PApp(p, r) => occurs(m, p) || occurs(m, r),
         Term::PathP(fam, a0, a1) => occurs(m, fam) || occurs(m, a0) || occurs(m, a1),

@@ -180,11 +180,17 @@ impl<'a> Eraser<'a> {
             // interval-sort terms (never runtime data) and `PathP` is a type former.
             // Phase-2 cubical (see `rv_kernel_core::face`): `Partial φ A` is a type
             // former (static, no runtime content), same footing as `PathP`.
+            // Phase 3.5 (De Morgan interval, see `rv_kernel_core::cubical`): reversal
+            // and the two connections are themselves `I`-typed interval expressions,
+            // same footing as `IZero`/`IOne` above — proof-layer only.
             Term::Sort(_)
             | Term::Pi(..)
             | Term::I
             | Term::IZero
             | Term::IOne
+            | Term::INeg(..)
+            | Term::IMeet(..)
+            | Term::IJoin(..)
             | Term::PathP(..)
             | Term::Partial(..) => Ok(Erased::Opaque),
             // A system is check-only (see `rv_kernel_core::check::Checker::infer`'s
