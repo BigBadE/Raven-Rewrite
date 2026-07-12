@@ -1,0 +1,29 @@
+// Fixed-width integers (`i8`/`u8`/`i16`/.../`u64`/`isize`/`usize`) carry their
+// width through verification AND execution.
+//
+// Verification: a checked `+`/`-`/`*` must prove its result stays within the
+// width's signed/unsigned range (`u8` in [0, 255], `i8` in [-128, 127], ...).
+// An overflowing checked op fails that obligation; an unsigned subtraction that
+// would go negative fails the *lower* bound. See the tests in rv-infer/rv-codegen
+// and the sibling `wrapping_*` cases.
+//
+// Execution: a `wrapping_add`/`wrapping_sub`/`wrapping_mul` opts out of the
+// overflow obligation and instead WRAPS at runtime — codegen narrows the result
+// to the destination width (mask for unsigned, sign-extend for signed), so e.g.
+// `wrapping_add` of `200u8 + 100u8` runs as `44`, not `300`.
+//
+// `rvc examples/fixed_width_ints.rv --run` verifies and runs main() = Int(44):
+//   in-range checked adds verify, and the final wrapping add wraps 300 -> 44.
+
+fn main() -> u8 {
+  // Checked arithmetic that stays in range verifies with width-specific bounds.
+  let small: u8 = 20;
+  let more: u8 = 5;
+  let sum: u8 = small + more; // 25, within [0, 255]
+
+  // Wrapping arithmetic that overflows the width wraps at runtime instead of
+  // failing an obligation: 200 + 100 = 300, which wraps to 300 - 256 = 44.
+  let a: u8 = 200;
+  let b: u8 = 100;
+  return wrapping_add(a, b);
+}

@@ -1214,9 +1214,23 @@ impl VcGen<'_> {
                     // Whole-local assignment: bind the local to the rvalue term.
                     // A sized-integer local carries its range fact only after the
                     // assigned value has been proved representable at that width.
+                    //
+                    // A `wrapping_*` result is the exception: codegen narrows it to
+                    // the destination width at runtime (two's-complement wraparound),
+                    // so it is representable *by construction* but its exact value is
+                    // the un-narrowed arithmetic wrapped modulo the width — which the
+                    // first-order term does not model. Bind the local to a FRESH
+                    // opaque value constrained only by the width range, rather than to
+                    // the un-narrowed sum (assuming `200 + 100 <= 255` would poison the
+                    // path). This is sound: the wrapped result is *some* in-range value.
+                    let mut value = value;
                     if let Ty::IntN(w) = self.low.locals[place.local.0 as usize].ty {
-                        let range = range_assumption(Prop::True, &value, w);
-                        self.emit(state.path.clone(), range, "integer range");
+                        if matches!(rv, RValue::WrappingBin(..)) {
+                            value = Term::Var(self.fresh_var("$wrap"));
+                        } else {
+                            let range = range_assumption(Prop::True, &value, w);
+                            self.emit(state.path.clone(), range, "integer range");
+                        }
                         state.path = range_assumption(std::mem::replace(&mut state.path, Prop::True), &value, w);
                     }
                     state.env.insert(place.local, value);
