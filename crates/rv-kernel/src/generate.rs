@@ -26,12 +26,49 @@
 use rv_kernel_core::check::{Checker, LocalCtx};
 use rv_kernel_core::env::{Constructor, Decl, Env, Inductive, RecRule, Recursor};
 use rv_kernel_core::level::Level;
-use rv_kernel_core::term::{Name, Term};
+use rv_kernel_core::term::{Grade, Name, Term};
 pub(crate) use rv_kernel_core::util::{fold_pis, mk_var, occurs, peel_all_pis, peel_pis};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+/// Like [`peel_all_pis`], but also records each Π's binder [`Grade`] alongside its
+/// domain — needed so a per-field usage grade written on a constructor's `Π` (via
+/// [`Term::pi_graded`]) survives being peeled into a field list and can be re-emitted
+/// on the corresponding recursor minor-premise binder. Purely additive: fields built
+/// with the ordinary ungraded [`Term::pi`] carry `Grade::Many`, so this changes
+/// nothing for existing specs.
+fn peel_all_pis_graded(mut t: Term) -> (Vec<(Grade, Term)>, Term) {
+    let mut doms = Vec::new();
+    while let Term::Pi(g, d, b) = t {
+        doms.push((g, (*d).clone()));
+        t = (*b).clone();
+    }
+    (doms, t)
+}
+
+/// Like [`fold_pis`], but folds each domain back up with its own recorded [`Grade`]
+/// (via [`Term::pi_graded`]) instead of always defaulting to `Grade::Many`.
+fn fold_pis_graded(doms: &[(Grade, Term)], body: Term) -> Term {
+    let mut t = body;
+    for (g, d) in doms.iter().rev() {
+        t = Term::pi_graded(*g, d.clone(), t);
+    }
+    t
+}
+
 /// A constructor in a high-level inductive specification.
+///
+/// Per-field usage **grades** are not a separate field of this struct: they are read
+/// straight off `ty`'s own `Π`s. A field built with the ordinary [`Term::pi`] carries
+/// the default `Grade::Many` (unrestricted, today's behaviour); one built with
+/// [`Term::pi_graded`] (e.g. `Grade::One` linear or `Grade::Zero` erased) has that
+/// grade **threaded into the synthesized recursor**: the corresponding minor-premise
+/// binder for that field is emitted with the same grade, so [`crate::graded`]'s usage
+/// pass enforces that a case handler consumes it accordingly (dropped/duplicated
+/// linear fields are rejected; a relevantly-used erased field is rejected). This adds
+/// no new surface — it just stops [`declare_inductive`] from discarding a grade that
+/// was already expressible on `ty` — and is purely additive: ungraded specs (every
+/// existing `IndSpec`) synthesize byte-for-byte the same recursor as before.
 pub struct CtorSpec {
     pub name: Name,
     /// The constructor's type: `Π params. Π fields. I params indices`.
@@ -154,7 +191,9 @@ pub fn declare_inductive(env: &mut Env, spec: IndSpec) -> Result<(), String> {
         }
         let (_cparams, rest) = peel_pis(c.ty.clone(), k)
             .ok_or_else(|| format!("constructor '{}' has fewer than {k} parameters", c.name))?;
-        let (fields, concl) = peel_all_pis(rest);
+        let (fields_graded, concl) = peel_all_pis_graded(rest);
+        let fields: Vec<Term> = fields_graded.iter().map(|(_, t)| t.clone()).collect();
+        let field_grades: Vec<Grade> = fields_graded.iter().map(|(g, _)| *g).collect();
         let (head, cargs) = concl.unfold_apps();
         match head {
             Term::Const(h, _) if h == name => {}
@@ -176,6 +215,7 @@ pub fn declare_inductive(env: &mut Env, spec: IndSpec) -> Result<(), String> {
         infos.push(CtorInfoLike {
             name: c.name.clone(),
             fields,
+            field_grades,
             kinds,
             concl_index_args,
             index: i,
@@ -306,14 +346,19 @@ fn build_minor(
     d0: usize,
     info: &CtorInfoLike,
 ) -> Term {
-    let mut doms: Vec<Term> = Vec::new();
+    let mut doms: Vec<(Grade, Term)> = Vec::new();
     let mut field_levels: Vec<usize> = Vec::new();
     let mut d = d0;
     for (l, (field_ty, kind)) in info.fields.iter().zip(&info.kinds).enumerate() {
         // The field's own type, re-expressed in the minor context.
         let images = ctx_images(d, &field_levels, k);
         let field_dom = field_ty.subst_ctx(&images);
-        doms.push(field_dom);
+        // The field's binder carries the grade declared on the constructor's own `Π`
+        // for this field (Grade::Many if ungraded) — this is precisely what lets a
+        // graded `IndSpec` reject a case handler that drops/duplicates a linear field
+        // or relevantly uses an erased one, while leaving every ungraded spec's
+        // recursor byte-for-byte unchanged.
+        doms.push((info.field_grades[l], field_dom));
         let this_field_level = d;
         field_levels.push(this_field_level);
         d += 1;
@@ -328,7 +373,9 @@ fn build_minor(
                 ih = Term::app(ih, s.clone());
             }
             ih = Term::app(ih, mk_var(d, this_field_level));
-            doms.push(ih);
+            // The induction hypothesis binder is always unrestricted: only the field
+            // itself carries a user-declared grade.
+            doms.push((Grade::Many, ih));
             d += 1;
         }
         let _ = l;
@@ -351,7 +398,7 @@ fn build_minor(
     }
     body = Term::app(body, ctor_app);
     let _ = ind;
-    fold_pis(&doms, body)
+    fold_pis_graded(&doms, body)
 }
 
 /// Build the ι-rule right-hand side for one constructor: a term to be applied to
@@ -439,6 +486,10 @@ fn is_subsingleton(env: &Env, param_doms: &[Term], infos: &[CtorInfoLike]) -> bo
 struct CtorInfoLike {
     name: Name,
     fields: Vec<Term>,
+    /// Per-field usage grade, read off the constructor's own `Π`s (`Grade::Many` if
+    /// the field was built with the ordinary ungraded [`Term::pi`]). Threaded onto
+    /// the corresponding recursor minor-premise binder in [`build_minor`].
+    field_grades: Vec<Grade>,
     kinds: Vec<FieldKind>,
     concl_index_args: Vec<Term>,
     index: usize,

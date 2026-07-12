@@ -57,13 +57,17 @@
 //! `infer` recurses into `Lam` wherever it appears in the spine. See
 //! `linear_field_in_constructor_application` and
 //! `linear_recursor_branch_consumes_field_once` below for the Σ-intro/eliminator
-//! adversarial pairs. **What is *not* generated gradedly yet**: [`rv_kernel_core::inductive`]'s
-//! `declare_inductive` automation always emits `Grade::Many` (`Term::pi`, not
-//! `pi_graded`) for constructor fields and recursor minor premises — so *today* no
-//! automatically-generated inductive has a linear field to check. Hand-built (`RawInductive`)
-//! or hand-annotated declarations can already carry real grades and are fully checked;
-//! threading a per-field grade *annotation* through `declare_inductive`'s `IndSpec` is
-//! future work, tracked as a restriction rather than attempted here.
+//! adversarial pairs. **Automatically-generated inductives are graded too**:
+//! [`crate::generate::declare_inductive`] reads each constructor field's grade
+//! straight off its own `Π` (`Grade::Many` for the ordinary [`rv_kernel_core::term::Term::pi`],
+//! or whatever [`rv_kernel_core::term::Term::pi_graded`] declared) and re-emits that
+//! grade on the corresponding synthesized recursor minor-premise binder — so a
+//! *generated* inductive's linear/erased field is checked by this same mechanism, with
+//! no special-casing: see `generated_recursor_linear_field_discipline`,
+//! `generated_recursor_erased_field_relevant_use_rejected`, and the regression guard
+//! `ungraded_generated_recursor_unaffected` below. Hand-built (`RawInductive`) or
+//! hand-annotated declarations were already fully checked; this closes the residual
+//! for the automatic elaborator.
 //!
 //! ## `let` is graded
 //!
@@ -902,5 +906,190 @@ mod tests {
         );
         let err = check_usage_against(k.env(), &bad, &ty).unwrap_err();
         assert!(matches!(err, GradeError::UsageMismatch { .. }), "got {err}");
+    }
+
+    // --- Per-field grades on *automatically generated* inductives (`declare_inductive`). --
+    //
+    // Everything above hand-builds its `Π`s. These tests close the residual documented
+    // at the top of this module: `IndSpec`/`CtorSpec` field grades (read straight off a
+    // constructor's own `Π`, via `Term::pi_graded`) are now threaded by
+    // `crate::generate::declare_inductive` into the *synthesized* recursor's minor
+    // premises, so a case handler for a generated inductive is subject to the same
+    // linear/erased discipline as a hand-built one.
+
+    use crate::generate::{declare_inductive, CtorSpec, IndSpec};
+    use rv_kernel_core::level::Level;
+
+    /// `GBox : Type0` with a single constructor `GBox.mk : Π (x :¹ Res). GBox` — a
+    /// *generated* inductive whose sole field is declared **linear**. Returns the
+    /// environment plus the recursor's `Π` type (needed to build well-typed case
+    /// handlers against it).
+    fn linear_gbox_env() -> Kernel {
+        let mut k = Kernel::new();
+        k.add_axiom("Res", 0, Term::typ(0)).unwrap();
+        let spec = IndSpec {
+            name: name("GBox"),
+            num_levels: 0,
+            ty: Term::typ(0),
+            num_params: 0,
+            ctors: vec![CtorSpec {
+                name: name("GBox.mk"),
+                // The field's own `Π` is graded linear — this is the only surface
+                // needed to declare a linear field; no new `IndSpec` field required.
+                ty: Term::pi_graded(Grade::One, cn("Res"), cn("GBox")),
+            }],
+            rec_name: name("GBox.rec"),
+        };
+        declare_inductive(k.env_mut(), spec).unwrap();
+        k
+    }
+
+    /// `GBox.rec.{1} : Π (motive : GBox → Type1) (mk_case : Π (x :¹ Res). motive (GBox.mk x))
+    ///                   (b : GBox), motive b`
+    /// Build one application of `GBox.rec` to a non-dependent motive `λ_.Res` and the
+    /// given `mk_case` handler, scrutinizing `Var(0)` (a bound `GBox`).
+    fn gbox_rec_app(mk_case: Term) -> Term {
+        Term::apps(
+            Term::cnst(name("GBox.rec"), vec![Level::of_nat(1)]),
+            [
+                Term::lam(cn("GBox"), cn("Res")), // motive : GBox -> Res  (non-dependent target Res)
+                mk_case,
+                Term::Var(0),
+            ],
+        )
+    }
+
+    /// Worked/adversarial suite: a generated inductive's linear field is enforced by
+    /// the usage pass through its synthesized recursor.
+    #[test]
+    fn generated_recursor_linear_field_discipline() {
+        let k = linear_gbox_env();
+        // The scrutinee `GBox` itself is passed to the recursor's (ungraded) major
+        // premise, so the outer binder is unrestricted; it is the *field* inside the
+        // case handler — threaded onto the minor premise — that is declared linear.
+        let ty = Term::pi_graded(Grade::Many, cn("GBox"), cn("Res"));
+
+        // ACCEPTED: the case handler uses the linear field exactly once (returns it).
+        let used_once = Term::lam(cn("GBox"), gbox_rec_app(Term::lam(cn("Res"), Term::Var(0))));
+        assert!(
+            check_usage_against(k.env(), &used_once, &ty).is_ok(),
+            "case handler consuming the linear field exactly once should be accepted"
+        );
+
+        // REJECTED: the case handler drops the linear field (ignores `x`, returns a
+        // constant instead).
+        let mut k2 = linear_gbox_env();
+        k2.add_axiom("r0", 0, cn("Res")).unwrap();
+        let dropped = Term::lam(cn("GBox"), gbox_rec_app(Term::lam(cn("Res"), cn("r0"))));
+        let err = check_usage_against(k2.env(), &dropped, &ty).unwrap_err();
+        assert!(
+            matches!(err, GradeError::LinearUnused { .. }),
+            "dropping the linear field should be rejected, got {err}"
+        );
+
+        // REJECTED: the case handler duplicates the linear field (`dup x x`).
+        let mut k3 = linear_gbox_env();
+        k3.add_axiom("dup", 0, Term::arrow(cn("Res"), Term::arrow(cn("Res"), cn("Res")))).unwrap();
+        let duplicated = Term::lam(
+            cn("GBox"),
+            gbox_rec_app(Term::lam(cn("Res"), Term::apps(cn("dup"), [Term::Var(0), Term::Var(0)]))),
+        );
+        let err = check_usage_against(k3.env(), &duplicated, &ty).unwrap_err();
+        assert!(
+            matches!(err, GradeError::UsageMismatch { .. }),
+            "duplicating the linear field should be rejected, got {err}"
+        );
+    }
+
+    /// An **erased** generated field used in a computationally-relevant position is
+    /// rejected: `GEBox.mk : Π (x :⁰ Res). GEBox` whose case handler returns `x`.
+    #[test]
+    fn generated_recursor_erased_field_relevant_use_rejected() {
+        let mut k = Kernel::new();
+        k.add_axiom("Res", 0, Term::typ(0)).unwrap();
+        let spec = IndSpec {
+            name: name("GEBox"),
+            num_levels: 0,
+            ty: Term::typ(0),
+            num_params: 0,
+            ctors: vec![CtorSpec {
+                name: name("GEBox.mk"),
+                ty: Term::pi_graded(Grade::Zero, cn("Res"), cn("GEBox")),
+            }],
+            rec_name: name("GEBox.rec"),
+        };
+        declare_inductive(k.env_mut(), spec).unwrap();
+
+        let ty = Term::pi_graded(Grade::Many, cn("GEBox"), cn("Res"));
+        let rec_app = |case: Term| {
+            Term::apps(
+                Term::cnst(name("GEBox.rec"), vec![Level::of_nat(1)]),
+                [Term::lam(cn("GEBox"), cn("Res")), case, Term::Var(0)],
+            )
+        };
+        // Relevantly returning the erased field: rejected.
+        let relevant = Term::lam(cn("GEBox"), rec_app(Term::lam(cn("Res"), Term::Var(0))));
+        let err = check_usage_against(k.env(), &relevant, &ty).unwrap_err();
+        assert!(matches!(err, GradeError::UsageMismatch { .. }), "got {err}");
+
+        // Never touching it (erased field simply dropped): accepted.
+        k.add_axiom("r0", 0, cn("Res")).unwrap();
+        let dropped = Term::lam(cn("GEBox"), rec_app(Term::lam(cn("Res"), cn("r0"))));
+        assert!(check_usage_against(k.env(), &dropped, &ty).is_ok());
+    }
+
+    /// Regression guard: an inductive declared **without** any field grade (the entire
+    /// pre-existing `IndSpec` corpus, e.g. `nat_spec`/`list_spec`) synthesizes exactly
+    /// the same recursor shape as before — every field/minor-premise binder is still
+    /// `Grade::Many`, so no case handler is newly restricted.
+    #[test]
+    fn ungraded_generated_recursor_unaffected() {
+        let mut env = Env::new();
+        declare_inductive(&mut env, crate::generate::nat_spec()).unwrap();
+        declare_inductive(&mut env, crate::generate::list_spec()).unwrap();
+
+        // Nat.rec's minor premises stay Grade::Many: check `Nat.succ`'s field/IH.
+        let rec_ty = env.get("Nat.rec").unwrap().ty().clone();
+        // Π motive. Π z. Π (n:Nat) (ih: motive n -> motive (succ n)). Π t. motive t
+        // Walk down to the succ-case Π and confirm its binder grades are Many.
+        fn all_pi_grades_many(t: &Term) -> bool {
+            match t {
+                Term::Pi(g, d, b) => *g == Grade::Many && all_pi_grades_many(d) && all_pi_grades_many(b),
+                Term::Lam(d, b) => all_pi_grades_many(d) && all_pi_grades_many(b),
+                Term::App(f, a) => all_pi_grades_many(f) && all_pi_grades_many(a),
+                Term::Let(_, t, v, b) => all_pi_grades_many(t) && all_pi_grades_many(v) && all_pi_grades_many(b),
+                _ => true,
+            }
+        }
+        assert!(all_pi_grades_many(&rec_ty), "ungraded Nat.rec must have every Π at Grade::Many");
+
+        let list_rec_ty = env.get("List.rec").unwrap().ty().clone();
+        assert!(all_pi_grades_many(&list_rec_ty), "ungraded List.rec must have every Π at Grade::Many");
+
+        // And the usage pass accepts an ordinary (non-linear) case handler unchanged,
+        // exactly as `generated_list_recursion_computes` in `generate.rs` exercises
+        // computationally.
+        let nat = || cn("Nat");
+        let length_ty = Term::pi(Term::app(cn("List"), nat()), nat());
+        let length = Term::lam(
+            Term::app(cn("List"), nat()),
+            Term::apps(
+                Term::cnst(name("List.rec"), vec![Level::of_nat(1)]),
+                [
+                    nat(),
+                    Term::lam(Term::app(cn("List"), nat()), nat()),
+                    cn("Nat.zero"),
+                    Term::lam(
+                        nat(),
+                        Term::lam(
+                            Term::app(cn("List"), nat()),
+                            Term::lam(nat(), Term::app(cn("Nat.succ"), Term::Var(0))),
+                        ),
+                    ),
+                    Term::Var(0),
+                ],
+            ),
+        );
+        assert!(check_usage_against(&env, &length, &length_ty).is_ok());
     }
 }
