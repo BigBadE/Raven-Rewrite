@@ -146,6 +146,25 @@ pub enum Term {
     /// holds. A genuine type (its `infer` result is `A`'s own sort), but never
     /// itself inhabited by anything except a compatibility-checked [`Term::Sys`].
     Partial(Rc<Cof>, Rc<Term>),
+
+    // ---- Phase-3 cubical: the minimal SOUND Kan core (see `crate::kan`) ----
+    /// `transp (λ i. family) φ a` — transport `a : family[i:=i0]` to `family[i:=i1]`
+    /// along the line of types `family` (a term under one interval binder, exactly
+    /// like [`Term::PLam`]'s body). `φ` is carried as well-formedness-checked
+    /// metadata (the conventional cubical "extra face" argument) but is **never**
+    /// consulted by the reduction rule — see `crate::kan`'s module doc for why a
+    /// `φ`-driven shortcut would be unsound here (`φ` says nothing about whether
+    /// `family` actually depends on the interval variable). The only reduction
+    /// rule is the structurally-checked regularity rule
+    /// (`!mentions_var(family, 0)`). This is the **minimal sound core**: no
+    /// per-type-former Π/Σ/PathP filling — see `crate::kan` for why those are
+    /// deferred rather than shipped half-sound.
+    Transp(Rc<Term>, Rc<Cof>, Rc<Term>),
+    /// `hcomp A φ u u0` — homogeneous composition: given a cap `u0 : A` and a system
+    /// `u` (a term under one interval binder, of type `Partial φ A` at every point of
+    /// the line), produces the composite at `i1`. Only the trivial (`φ = ⊤`) rule is
+    /// implemented — see `crate::kan`.
+    HComp(Rc<Term>, Rc<Cof>, Rc<Term>, Rc<Term>),
 }
 
 impl Term {
@@ -223,6 +242,14 @@ impl Term {
     pub fn partial(phi: Cof, ty: Term) -> Term {
         Term::Partial(Rc::new(phi), Rc::new(ty))
     }
+    /// `transp (λ i. family) φ a` (see [`Term::Transp`]).
+    pub fn transp(family: Term, phi: Cof, a: Term) -> Term {
+        Term::Transp(Rc::new(family), Rc::new(phi), Rc::new(a))
+    }
+    /// `hcomp A φ u u0` (see [`Term::HComp`]).
+    pub fn hcomp(ty: Term, phi: Cof, u: Term, u0: Term) -> Term {
+        Term::HComp(Rc::new(ty), Rc::new(phi), Rc::new(u), Rc::new(u0))
+    }
 
     /// Re-index free variables: add `amount` to every `Var(i)` with `i >= cutoff`.
     /// Used to move a term under `amount` new binders (`cutoff` counts the binders
@@ -266,6 +293,17 @@ impl Term {
             Term::Partial(p, a) => {
                 Term::Partial(Rc::new(p.lift(amount, cutoff)), Rc::new(a.lift(amount, cutoff)))
             }
+            Term::Transp(fam, phi, a) => Term::transp(
+                fam.lift(amount, cutoff + 1),
+                phi.lift(amount, cutoff),
+                a.lift(amount, cutoff),
+            ),
+            Term::HComp(ty, phi, u, u0) => Term::hcomp(
+                ty.lift(amount, cutoff),
+                phi.lift(amount, cutoff),
+                u.lift(amount, cutoff + 1),
+                u0.lift(amount, cutoff),
+            ),
         }
     }
 
@@ -312,6 +350,17 @@ impl Term {
             Term::Partial(p, a) => Term::Partial(
                 Rc::new(p.subst(depth, replacement)),
                 Rc::new(a.subst(depth, replacement)),
+            ),
+            Term::Transp(fam, phi, a) => Term::transp(
+                fam.subst(depth + 1, replacement),
+                phi.subst(depth, replacement),
+                a.subst(depth, replacement),
+            ),
+            Term::HComp(ty, phi, u, u0) => Term::hcomp(
+                ty.subst(depth, replacement),
+                phi.subst(depth, replacement),
+                u.subst(depth + 1, replacement),
+                u0.subst(depth, replacement),
             ),
         }
     }
@@ -388,6 +437,17 @@ impl Term {
                 Rc::new(p.subst_ctx_go(images, depth)),
                 Rc::new(a.subst_ctx_go(images, depth)),
             ),
+            Term::Transp(fam, phi, a) => Term::transp(
+                fam.subst_ctx_go(images, depth + 1),
+                phi.subst_ctx_go(images, depth),
+                a.subst_ctx_go(images, depth),
+            ),
+            Term::HComp(ty, phi, u, u0) => Term::hcomp(
+                ty.subst_ctx_go(images, depth),
+                phi.subst_ctx_go(images, depth),
+                u.subst_ctx_go(images, depth + 1),
+                u0.subst_ctx_go(images, depth),
+            ),
         }
     }
 
@@ -437,6 +497,17 @@ impl Term {
                 Rc::new(p.instantiate_levels(args)),
                 Rc::new(a.instantiate_levels(args)),
             ),
+            Term::Transp(fam, phi, a) => Term::transp(
+                fam.instantiate_levels(args),
+                phi.instantiate_levels(args),
+                a.instantiate_levels(args),
+            ),
+            Term::HComp(ty, phi, u, u0) => Term::hcomp(
+                ty.instantiate_levels(args),
+                phi.instantiate_levels(args),
+                u.instantiate_levels(args),
+                u0.instantiate_levels(args),
+            ),
         }
     }
 
@@ -458,6 +529,10 @@ impl Term {
             Term::PathP(fam, a0, a1) => fam.has_meta() || a0.has_meta() || a1.has_meta(),
             Term::Sys(branches) => branches.iter().any(|(p, t)| p.has_meta() || t.has_meta()),
             Term::Partial(p, a) => p.has_meta() || a.has_meta(),
+            Term::Transp(fam, phi, a) => fam.has_meta() || phi.has_meta() || a.has_meta(),
+            Term::HComp(ty, phi, u, u0) => {
+                ty.has_meta() || phi.has_meta() || u.has_meta() || u0.has_meta()
+            }
         }
     }
 
@@ -523,6 +598,25 @@ impl Term {
                 let ps = p.pp(names);
                 let as_ = a.pp(names, 3);
                 paren_if(prec >= 3, format!("Partial {ps} {as_}"))
+            }
+            Term::Transp(fam, phi, a) => {
+                let nm = fresh_binder_name(names.len());
+                names.push(nm.clone());
+                let fams = fam.pp(names, 0);
+                names.pop();
+                let phis = phi.pp(names);
+                let as_ = a.pp(names, 3);
+                paren_if(prec >= 3, format!("transp (<{nm}> {fams}) {phis} {as_}"))
+            }
+            Term::HComp(ty, phi, u, u0) => {
+                let nm = fresh_binder_name(names.len());
+                let tys = ty.pp(names, 3);
+                let phis = phi.pp(names);
+                names.push(nm.clone());
+                let us = u.pp(names, 0);
+                names.pop();
+                let u0s = u0.pp(names, 3);
+                paren_if(prec >= 3, format!("hcomp {tys} {phis} (<{nm}> {us}) {u0s}"))
             }
             Term::Var(i) => {
                 let n = names.len();
@@ -619,6 +713,15 @@ pub(crate) fn mentions_var(t: &Term, k: usize) -> bool {
             branches.iter().any(|(p, t)| crate::face::mentions_var(p, k) || mentions_var(t, k))
         }
         Term::Partial(p, a) => crate::face::mentions_var(p, k) || mentions_var(a, k),
+        Term::Transp(fam, phi, a) => {
+            mentions_var(fam, k + 1) || crate::face::mentions_var(phi, k) || mentions_var(a, k)
+        }
+        Term::HComp(ty, phi, u, u0) => {
+            mentions_var(ty, k)
+                || crate::face::mentions_var(phi, k)
+                || mentions_var(u, k + 1)
+                || mentions_var(u0, k)
+        }
     }
 }
 

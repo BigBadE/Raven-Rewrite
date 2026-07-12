@@ -502,6 +502,15 @@ fn mentions_var(t: &Term, k: usize) -> bool {
             branches.iter().any(|(p, t)| crate::face::mentions_var(p, k) || mentions_var(t, k))
         }
         Term::Partial(p, a) => crate::face::mentions_var(p, k) || mentions_var(a, k),
+        Term::Transp(fam, p, a) => {
+            mentions_var(fam, k + 1) || crate::face::mentions_var(p, k) || mentions_var(a, k)
+        }
+        Term::HComp(ty, p, u, u0) => {
+            mentions_var(ty, k)
+                || crate::face::mentions_var(p, k)
+                || mentions_var(u, k + 1)
+                || mentions_var(u0, k)
+        }
     }
 }
 

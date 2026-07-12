@@ -166,6 +166,32 @@ impl<'e> Reducer<'e> {
                         None => break,
                     }
                 }
+                // `transp` (see `crate::kan`): the **regularity rule** — transport
+                // along a family that doesn't actually vary is the identity. This
+                // is checked *structurally* (`!mentions_var(fam, 0)`), never via
+                // `φ` (see `crate::kan`'s soundness argument for why a `φ = ⊤`
+                // shortcut here would be UNSOUND: `φ` is unrelated to whether the
+                // family genuinely depends on the interval variable). This is the
+                // only Kan rule this phase implements; anything else stays stuck.
+                Term::Transp(fam, _phi, a) => {
+                    if !crate::term::mentions_var(fam, 0) {
+                        head = (**a).clone();
+                    } else {
+                        break;
+                    }
+                }
+                // `hcomp` (see `crate::kan`): the **trivial-system rule** — when `φ`
+                // is decided `⊤`, the composite is just the system's value at `i1`
+                // (the cap coherence, `u(i0) ≡ u0`, was already enforced at
+                // check-time — see `Checker::infer`'s `Term::HComp` arm). Otherwise
+                // stuck.
+                Term::HComp(_ty, phi, u, _u0) => {
+                    if crate::face::is_true(phi) {
+                        head = u.instantiate(&Term::IOne);
+                    } else {
+                        break;
+                    }
+                }
                 // Sort, Var, Pi, I/IZero/IOne, PLam, PathP, Partial, or a stuck Const:
                 // weak-head normal.
                 _ => break,
@@ -607,6 +633,16 @@ impl<'e> Reducer<'e> {
                     && b1.iter().zip(b2).all(|((p1, t1), (p2, t2))| {
                         crate::face::cof_equiv(p1, p2) && self.is_def_eq(t1, t2)
                     })
+            }
+            // Phase-3 cubical (see `crate::kan`): structural, mirrors `PathP`/`Sys`.
+            (Term::Transp(f1, p1, a1), Term::Transp(f2, p2, a2)) => {
+                self.is_def_eq(f1, f2) && crate::face::cof_equiv(p1, p2) && self.is_def_eq(a1, a2)
+            }
+            (Term::HComp(t1, p1, u1, u01), Term::HComp(t2, p2, u2, u02)) => {
+                self.is_def_eq(t1, t2)
+                    && crate::face::cof_equiv(p1, p2)
+                    && self.is_def_eq(u1, u2)
+                    && self.is_def_eq(u01, u02)
             }
             _ => false,
         }
