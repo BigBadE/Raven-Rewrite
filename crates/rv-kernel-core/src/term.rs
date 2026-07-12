@@ -13,6 +13,7 @@
 //! variables when moving a term under binders) and [`Term::instantiate`] (replace the
 //! outermost bound variable — the engine of β/ζ/ι reduction).
 
+use crate::face::Cof;
 use crate::level::Level;
 use std::rc::Rc;
 
@@ -132,6 +133,19 @@ pub enum Term {
     /// `a1` at `i1`. The non-dependent `Path A a b` is the special case where the
     /// family doesn't mention the bound interval variable: `PathP (A lifted) a b`.
     PathP(Rc<Term>, Rc<Term>, Rc<Term>),
+
+    // ---- Phase-2 cubical: cofibrations and partial elements (see `crate::face`) ----
+    /// A **system** `[φ_1 ↦ t_1, …, φ_n ↦ t_n]` — a partial element defined on
+    /// `φ_1 ∨ … ∨ φ_n`. Check-only (see [`crate::check::Checker::infer`]'s
+    /// `Term::Sys` arm): it has no inferred type on its own, only a type it can be
+    /// *checked* against (`Partial ψ A`, with the compatibility condition enforced
+    /// at that point — see `crate::face`). No binder: each `φ_i`/`t_i` lives in the
+    /// very same context as the `Sys` node itself.
+    Sys(Vec<(Rc<Cof>, Rc<Term>)>),
+    /// `Partial φ A` — the type of partial elements of `A`, available only when `φ`
+    /// holds. A genuine type (its `infer` result is `A`'s own sort), but never
+    /// itself inhabited by anything except a compatibility-checked [`Term::Sys`].
+    Partial(Rc<Cof>, Rc<Term>),
 }
 
 impl Term {
@@ -201,6 +215,14 @@ impl Term {
     pub fn path(ty: Term, a: Term, b: Term) -> Term {
         Term::pathp(ty.lift(1, 0), a, b)
     }
+    /// A system `[φ_1 ↦ t_1, …]` (see [`Term::Sys`]).
+    pub fn sys(branches: Vec<(Cof, Term)>) -> Term {
+        Term::Sys(branches.into_iter().map(|(p, t)| (Rc::new(p), Rc::new(t))).collect())
+    }
+    /// `Partial φ A` (see [`Term::Partial`]).
+    pub fn partial(phi: Cof, ty: Term) -> Term {
+        Term::Partial(Rc::new(phi), Rc::new(ty))
+    }
 
     /// Re-index free variables: add `amount` to every `Var(i)` with `i >= cutoff`.
     /// Used to move a term under `amount` new binders (`cutoff` counts the binders
@@ -235,6 +257,15 @@ impl Term {
                 a0.lift(amount, cutoff),
                 a1.lift(amount, cutoff),
             ),
+            Term::Sys(branches) => Term::Sys(
+                branches
+                    .iter()
+                    .map(|(p, t)| (Rc::new(p.lift(amount, cutoff)), Rc::new(t.lift(amount, cutoff))))
+                    .collect(),
+            ),
+            Term::Partial(p, a) => {
+                Term::Partial(Rc::new(p.lift(amount, cutoff)), Rc::new(a.lift(amount, cutoff)))
+            }
         }
     }
 
@@ -272,6 +303,16 @@ impl Term {
                 a0.subst(depth, replacement),
                 a1.subst(depth, replacement),
             ),
+            Term::Sys(branches) => Term::Sys(
+                branches
+                    .iter()
+                    .map(|(p, t)| (Rc::new(p.subst(depth, replacement)), Rc::new(t.subst(depth, replacement))))
+                    .collect(),
+            ),
+            Term::Partial(p, a) => Term::Partial(
+                Rc::new(p.subst(depth, replacement)),
+                Rc::new(a.subst(depth, replacement)),
+            ),
         }
     }
 
@@ -297,7 +338,7 @@ impl Term {
     pub fn subst_ctx(&self, images: &[Term]) -> Term {
         self.subst_ctx_go(images, 0)
     }
-    fn subst_ctx_go(&self, images: &[Term], depth: usize) -> Term {
+    pub(crate) fn subst_ctx_go(&self, images: &[Term], depth: usize) -> Term {
         match self {
             Term::Sort(_) | Term::Const(..) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => {
                 self.clone()
@@ -334,6 +375,18 @@ impl Term {
                 fam.subst_ctx_go(images, depth + 1),
                 a0.subst_ctx_go(images, depth),
                 a1.subst_ctx_go(images, depth),
+            ),
+            Term::Sys(branches) => Term::Sys(
+                branches
+                    .iter()
+                    .map(|(p, t)| {
+                        (Rc::new(p.subst_ctx_go(images, depth)), Rc::new(t.subst_ctx_go(images, depth)))
+                    })
+                    .collect(),
+            ),
+            Term::Partial(p, a) => Term::Partial(
+                Rc::new(p.subst_ctx_go(images, depth)),
+                Rc::new(a.subst_ctx_go(images, depth)),
             ),
         }
     }
@@ -372,6 +425,18 @@ impl Term {
                 a0.instantiate_levels(args),
                 a1.instantiate_levels(args),
             ),
+            Term::Sys(branches) => Term::Sys(
+                branches
+                    .iter()
+                    .map(|(p, t)| {
+                        (Rc::new(p.instantiate_levels(args)), Rc::new(t.instantiate_levels(args)))
+                    })
+                    .collect(),
+            ),
+            Term::Partial(p, a) => Term::Partial(
+                Rc::new(p.instantiate_levels(args)),
+                Rc::new(a.instantiate_levels(args)),
+            ),
         }
     }
 
@@ -391,6 +456,8 @@ impl Term {
             Term::PLam(b) => b.has_meta(),
             Term::PApp(p, r) => p.has_meta() || r.has_meta(),
             Term::PathP(fam, a0, a1) => fam.has_meta() || a0.has_meta() || a1.has_meta(),
+            Term::Sys(branches) => branches.iter().any(|(p, t)| p.has_meta() || t.has_meta()),
+            Term::Partial(p, a) => p.has_meta() || a.has_meta(),
         }
     }
 
@@ -416,7 +483,7 @@ impl Term {
         self.pp(&mut Vec::new(), 0)
     }
 
-    fn pp(&self, names: &mut Vec<String>, prec: u8) -> String {
+    pub(crate) fn pp(&self, names: &mut Vec<String>, prec: u8) -> String {
         // prec: 0 = top-level, 2 = needs parens if a binder/arrow, 3 = atom (app argument).
         match self {
             Term::Sort(l) => format!("Sort {l:?}"),
@@ -444,6 +511,18 @@ impl Term {
                 let a0s = a0.pp(names, 3);
                 let a1s = a1.pp(names, 3);
                 paren_if(prec >= 3, format!("PathP (<{nm}> {fams}) {a0s} {a1s}"))
+            }
+            Term::Sys(branches) => {
+                let parts: Vec<String> = branches
+                    .iter()
+                    .map(|(p, t)| format!("{} ↦ {}", p.pp(names), t.pp(names, 0)))
+                    .collect();
+                format!("[{}]", parts.join(", "))
+            }
+            Term::Partial(p, a) => {
+                let ps = p.pp(names);
+                let as_ = a.pp(names, 3);
+                paren_if(prec >= 3, format!("Partial {ps} {as_}"))
             }
             Term::Var(i) => {
                 let n = names.len();
@@ -525,7 +604,7 @@ fn paren_if(cond: bool, s: String) -> String {
 
 /// Does `t` mention the bound variable at de Bruijn index `k` (used to decide whether a
 /// `Pi` is a dependent function type or a plain arrow)?
-fn mentions_var(t: &Term, k: usize) -> bool {
+pub(crate) fn mentions_var(t: &Term, k: usize) -> bool {
     match t {
         Term::Var(i) => *i == k,
         Term::App(f, a) => mentions_var(f, k) || mentions_var(a, k),
@@ -536,6 +615,10 @@ fn mentions_var(t: &Term, k: usize) -> bool {
         Term::PLam(b) => mentions_var(b, k + 1),
         Term::PApp(p, r) => mentions_var(p, k) || mentions_var(r, k),
         Term::PathP(fam, a0, a1) => mentions_var(fam, k + 1) || mentions_var(a0, k) || mentions_var(a1, k),
+        Term::Sys(branches) => {
+            branches.iter().any(|(p, t)| crate::face::mentions_var(p, k) || mentions_var(t, k))
+        }
+        Term::Partial(p, a) => crate::face::mentions_var(p, k) || mentions_var(a, k),
     }
 }
 

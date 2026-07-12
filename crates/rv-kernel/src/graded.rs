@@ -382,6 +382,23 @@ impl<'e> Graded<'e> {
                 let u1 = self.infer(a1)?.scale(Grade::Zero);
                 Ok(uf.add(&u0).add(&u1))
             }
+
+            // Phase-2 cubical (see `rv_kernel_core::face`). `Partial φ A` is a type
+            // (like `PathP`'s endpoints): erased, scale-0. A system's branches are
+            // each *possibly* the one that runs (which branch fires isn't known
+            // statically at usage-checking time, before whatever substitution would
+            // decide `φ_i`) — conservatively sum every branch's usage rather than
+            // picking one, so this never *under*-counts a variable's consumption
+            // (it may over-restrict a genuinely-linear variable used identically in
+            // every branch, but never accepts something that isn't safe).
+            Term::Partial(_, a) => Ok(self.infer(a)?.scale(Grade::Zero)),
+            Term::Sys(branches) => {
+                let mut acc = Usage::empty();
+                for (_, t) in branches {
+                    acc = acc.add(&self.infer(t)?);
+                }
+                Ok(acc)
+            }
         }
     }
 

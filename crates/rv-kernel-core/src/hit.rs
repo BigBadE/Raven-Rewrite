@@ -258,6 +258,8 @@ fn occurs_const(t: &Term, id: &Name) -> bool {
             occurs_const(fam, id) || occurs_const(a0, id) || occurs_const(a1, id)
         }
         Term::Sort(_) | Term::Var(_) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => false,
+        Term::Sys(branches) => branches.iter().any(|(_, t)| occurs_const(t, id)),
+        Term::Partial(_, a) => occurs_const(a, id),
     }
 }
 

@@ -154,7 +154,20 @@ impl<'e> Reducer<'e> {
                         }
                     }
                 }
-                // Sort, Var, Pi, I/IZero/IOne, PLam, PathP, or a stuck Const: weak-head normal.
+                // System reduction (see `crate::face`): a branch fires as soon as its
+                // guard is *decided* true (not merely satisfiable) — e.g.
+                // `[(i=0)↦t,(i=1)↦u]` reduces to `t` once `i` has been substituted to
+                // `i0` elsewhere and this whnf call reaches the (by-then-literal)
+                // guard. If no branch currently holds, the system is stuck: a valid
+                // normal form, exactly like a neutral variable.
+                Term::Sys(branches) => {
+                    match branches.iter().find(|(phi, _)| crate::face::is_true(phi)) {
+                        Some((_, t)) => head = (**t).clone(),
+                        None => break,
+                    }
+                }
+                // Sort, Var, Pi, I/IZero/IOne, PLam, PathP, Partial, or a stuck Const:
+                // weak-head normal.
                 _ => break,
             }
         }
@@ -581,6 +594,19 @@ impl<'e> Reducer<'e> {
             }
             (Term::PathP(f1, a01, a11), Term::PathP(f2, a02, a12)) => {
                 self.is_def_eq(f1, f2) && self.is_def_eq(a01, a02) && self.is_def_eq(a11, a12)
+            }
+            // Phase-2 cubical (see `crate::face`): mirrors `check::Checker::compare`'s
+            // `Partial`/`Sys` cases (this lower-level reducer stays structural, no
+            // proof irrelevance/context — cofibration comparison is via semantic
+            // equivalence, which is already context-free).
+            (Term::Partial(p1, a1), Term::Partial(p2, a2)) => {
+                crate::face::cof_equiv(p1, p2) && self.is_def_eq(a1, a2)
+            }
+            (Term::Sys(b1), Term::Sys(b2)) => {
+                b1.len() == b2.len()
+                    && b1.iter().zip(b2).all(|((p1, t1), (p2, t2))| {
+                        crate::face::cof_equiv(p1, p2) && self.is_def_eq(t1, t2)
+                    })
             }
             _ => false,
         }

@@ -178,9 +178,22 @@ impl<'a> Eraser<'a> {
             // Sorts and Π are static — no runtime content. Phase-1 cubical (see
             // `rv_kernel_core::cubical`) is likewise all proof-layer: `I`/`i0`/`i1` are
             // interval-sort terms (never runtime data) and `PathP` is a type former.
-            Term::Sort(_) | Term::Pi(..) | Term::I | Term::IZero | Term::IOne | Term::PathP(..) => {
-                Ok(Erased::Opaque)
-            }
+            // Phase-2 cubical (see `rv_kernel_core::face`): `Partial φ A` is a type
+            // former (static, no runtime content), same footing as `PathP`.
+            Term::Sort(_)
+            | Term::Pi(..)
+            | Term::I
+            | Term::IZero
+            | Term::IOne
+            | Term::PathP(..)
+            | Term::Partial(..) => Ok(Erased::Opaque),
+            // A system is check-only (see `rv_kernel_core::check::Checker::infer`'s
+            // `Term::Sys` arm) — without a known `Partial φ A` expected type there is
+            // nothing to erase it against.
+            Term::Sys(..) => Err(
+                "cannot erase a system [φ ↦ t, …] without a known `Partial φ A` expected type"
+                    .to_string(),
+            ),
             // A λ encountered as an atom: erase against its inferred type.
             Term::Lam(..) => {
                 let ty = Checker::new(self.env).infer(&mut self.ctx(), head)?;

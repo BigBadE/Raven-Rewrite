@@ -24,6 +24,7 @@ pub mod circle;
 pub mod coinductive;
 pub mod cubical;
 pub mod env;
+pub mod face;
 pub mod hit;
 pub mod inductive;
 pub mod kernel;
