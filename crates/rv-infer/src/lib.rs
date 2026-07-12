@@ -94,7 +94,7 @@ pub fn elaborate(prog: Program<Parsed>, syms: &Symbols) -> Result<Elaborated, St
         .collect();
     let mut provisional: Vec<Function<Lowerable>> = Vec::with_capacity(prog.funcs.len());
     for f in &prog.funcs {
-        provisional.push(infer_function(f, &type_table, &declared_returns, None)?);
+        provisional.push(infer_function(f, &type_table, &declared_returns, None, &syms)?);
     }
 
     // A small second pass replaces annotation fallbacks with the actual inferred
@@ -107,7 +107,7 @@ pub fn elaborate(prog: Program<Parsed>, syms: &Symbols) -> Result<Elaborated, St
     let call_types = callable_types(&provisional, &prog.trait_impls);
     let mut funcs_low: Vec<Function<Lowerable>> = Vec::with_capacity(prog.funcs.len());
     for f in &prog.funcs {
-        let inferred = infer_function(f, &type_table, &inferred_returns, Some(&call_types))?;
+        let inferred = infer_function(f, &type_table, &inferred_returns, Some(&call_types), &syms)?;
         sigs.insert(
             f.name,
             Signature {
@@ -204,6 +204,7 @@ fn infer_function(
     types: &HashMap<Sym, TypeDef>,
     returns: &HashMap<Sym, Ty>,
     calls: Option<&HashMap<Sym, CallableType>>,
+    syms: &Symbols,
 ) -> Result<Function<Lowerable>, String> {
     // Seed from any front-end *declared* types (e.g. a parameter's `: u8`), then
     // refine by the forward sweep over assignments. A declared type matters most
@@ -226,7 +227,7 @@ fn infer_function(
                 if !place.proj.is_empty() {
                     continue;
                 }
-                let ty = type_of_rvalue(rv, &tys, f, types, returns, calls)?;
+                let ty = type_of_rvalue(rv, &tys, f, types, returns, calls, syms)?;
                 set_ty(&mut tys, place.local, ty)?;
             }
         }
@@ -318,6 +319,7 @@ fn type_of_rvalue(
     types: &HashMap<Sym, TypeDef>,
     returns: &HashMap<Sym, Ty>,
     calls: Option<&HashMap<Sym, CallableType>>,
+    syms: &Symbols,
 ) -> Result<Ty, String> {
     match rv {
         RValue::Use(op) => type_of_operand(op, tys, types),
@@ -390,7 +392,7 @@ fn type_of_rvalue(
                     check(&arg_ty, param, &format!("argument {} of call", index + 1))?;
                 }
                 let substitutions = infer_type_arguments(&sig.params, args, tys, types)?;
-                check_generic_bounds(sig, &substitutions)?;
+                check_generic_bounds(sig, &substitutions, syms)?;
                 return Ok(instantiate_ty(&sig.ret, &substitutions));
             }
             Ok(returns.get(callee).cloned().unwrap_or(Ty::Int))
@@ -562,20 +564,65 @@ fn instantiate_ty(ty: &Ty, substitutions: &HashMap<Sym, Ty>) -> Ty {
     }
 }
 
-fn check_generic_bounds(sig: &CallableType, substitutions: &HashMap<Sym, Ty>) -> Result<(), String> {
+/// Render a type for a user-facing diagnostic. Only the shapes reachable as a
+/// generic instantiation need friendly names; anything else falls back to the
+/// structural `Debug` form (still readable, just less pretty).
+fn describe_ty(ty: &Ty, syms: &Symbols) -> String {
+    match ty {
+        Ty::Adt(name) => syms.resolve(*name).to_string(),
+        Ty::Int => "i64".to_string(),
+        Ty::IntN(w) => format!("{}{}", if w.signed { "i" } else { "u" }, w.bits),
+        Ty::Bool => "bool".to_string(),
+        Ty::Float => "f64".to_string(),
+        Ty::Param(name) => syms.resolve(*name).to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// Enforce each generic parameter's declared trait bounds against the concrete
+/// type it was instantiated at. A bound `T: Trait` is satisfied only when the
+/// module carries a matching `impl Trait for Ty`; the trait-impl registry is the
+/// authoritative source (built in lowering from `impl Trait for Ty` blocks).
+///
+/// Only ADT instantiations can carry an impl, so a primitive (e.g. `i64`) chosen
+/// for a bounded parameter is a hard error — there is no way to add an `impl` for
+/// a built-in in this surface. Diagnostics resolve every `Sym` through `syms` so
+/// the message names the offending type and trait rather than opaque ids.
+fn check_generic_bounds(
+    sig: &CallableType,
+    substitutions: &HashMap<Sym, Ty>,
+    syms: &Symbols,
+) -> Result<(), String> {
     for (param, bounds) in &sig.generic_bounds {
         if bounds.is_empty() {
             continue;
         }
         let actual = substitutions.get(param).ok_or_else(|| {
-            format!("cannot infer bounded generic parameter {param:?} at this call")
+            format!(
+                "cannot infer the bounded generic parameter `{}` at this call",
+                syms.resolve(*param)
+            )
         })?;
         let Ty::Adt(type_name) = actual else {
-            return Err(format!("type {actual:?} cannot satisfy trait bounds for {param:?}"));
+            return Err(format!(
+                "type `{}` cannot satisfy the trait bounds on `{}` (only user-defined \
+                 types can implement a trait)",
+                describe_ty(actual, syms),
+                syms.resolve(*param),
+            ));
         };
         for trait_name in bounds {
-            if !sig.trait_impls.iter().any(|imp| imp.trait_name == *trait_name && imp.type_name == *type_name) {
-                return Err(format!("type {actual:?} does not implement required trait {trait_name:?}"));
+            let satisfied = sig
+                .trait_impls
+                .iter()
+                .any(|imp| imp.trait_name == *trait_name && imp.type_name == *type_name);
+            if !satisfied {
+                return Err(format!(
+                    "type `{}` does not implement trait `{}` required by generic parameter `{}`",
+                    syms.resolve(*type_name),
+                    syms.resolve(*trait_name),
+                    syms.resolve(*param),
+                ));
             }
         }
     }
@@ -1167,9 +1214,23 @@ impl VcGen<'_> {
                     // Whole-local assignment: bind the local to the rvalue term.
                     // A sized-integer local carries its range fact only after the
                     // assigned value has been proved representable at that width.
+                    //
+                    // A `wrapping_*` result is the exception: codegen narrows it to
+                    // the destination width at runtime (two's-complement wraparound),
+                    // so it is representable *by construction* but its exact value is
+                    // the un-narrowed arithmetic wrapped modulo the width — which the
+                    // first-order term does not model. Bind the local to a FRESH
+                    // opaque value constrained only by the width range, rather than to
+                    // the un-narrowed sum (assuming `200 + 100 <= 255` would poison the
+                    // path). This is sound: the wrapped result is *some* in-range value.
+                    let mut value = value;
                     if let Ty::IntN(w) = self.low.locals[place.local.0 as usize].ty {
-                        let range = range_assumption(Prop::True, &value, w);
-                        self.emit(state.path.clone(), range, "integer range");
+                        if matches!(rv, RValue::WrappingBin(..)) {
+                            value = Term::Var(self.fresh_var("$wrap"));
+                        } else {
+                            let range = range_assumption(Prop::True, &value, w);
+                            self.emit(state.path.clone(), range, "integer range");
+                        }
                         state.path = range_assumption(std::mem::replace(&mut state.path, Prop::True), &value, w);
                     }
                     state.env.insert(place.local, value);
@@ -2478,5 +2539,85 @@ mod tests {
         // panicking path diverges and emits nothing.
         let posts = elab.obligations.iter().filter(|o| o.origin == "postcondition").count();
         assert_eq!(posts, 1, "only the non-panic path should emit a postcondition");
+    }
+
+    // -- generic trait bound enforcement ------------------------------------
+
+    /// Build a one-parameter callable `f<T: <bounds>>(x: T) -> T` plus a set of
+    /// registered `impl trait for type` pairs, for exercising bound checking in
+    /// isolation from the surface pipeline.
+    fn bounded_callable(
+        param: Sym,
+        bounds: Vec<Sym>,
+        impls: Vec<(Sym, Sym)>,
+    ) -> CallableType {
+        CallableType {
+            params: vec![Ty::Param(param)],
+            ret: Ty::Param(param),
+            generic_bounds: vec![(param, bounds)],
+            trait_impls: impls
+                .into_iter()
+                .map(|(trait_name, type_name)| rv_ir::TraitImpl { trait_name, type_name })
+                .collect(),
+        }
+    }
+
+    /// A bound is satisfied when a matching `impl Trait for Ty` is registered:
+    /// instantiating `T = Widget` under `T: Show` with `impl Show for Widget`
+    /// present must succeed.
+    #[test]
+    fn generic_bound_satisfied_by_matching_impl() {
+        let mut syms = Symbols::new();
+        let t = syms.intern("T");
+        let show = syms.intern("Show");
+        let widget = syms.intern("Widget");
+        let sig = bounded_callable(t, vec![show], vec![(show, widget)]);
+        let subst = HashMap::from([(t, Ty::Adt(widget))]);
+        assert!(check_generic_bounds(&sig, &subst, &syms).is_ok());
+    }
+
+    /// Instantiating a bounded parameter at an ADT that lacks the required impl
+    /// is rejected, and the message names the type, trait, and parameter.
+    #[test]
+    fn generic_bound_violation_is_rejected() {
+        let mut syms = Symbols::new();
+        let t = syms.intern("T");
+        let show = syms.intern("Show");
+        let widget = syms.intern("Widget");
+        let gadget = syms.intern("Gadget");
+        // Only `Widget` implements `Show`; instantiate at `Gadget`.
+        let sig = bounded_callable(t, vec![show], vec![(show, widget)]);
+        let subst = HashMap::from([(t, Ty::Adt(gadget))]);
+        let err = check_generic_bounds(&sig, &subst, &syms).expect_err("must reject");
+        assert!(
+            err.contains("Gadget") && err.contains("Show") && err.contains('T'),
+            "message should name type, trait, and parameter: {err}"
+        );
+    }
+
+    /// A primitive chosen for a bounded parameter cannot satisfy any trait bound
+    /// (there is no surface to add an `impl` for a built-in), and the diagnostic
+    /// names the primitive rather than an opaque id.
+    #[test]
+    fn generic_bound_on_primitive_is_rejected() {
+        let mut syms = Symbols::new();
+        let t = syms.intern("T");
+        let show = syms.intern("Show");
+        let sig = bounded_callable(t, vec![show], vec![]);
+        let subst = HashMap::from([(t, Ty::Int)]);
+        let err = check_generic_bounds(&sig, &subst, &syms).expect_err("must reject");
+        assert!(err.contains("i64"), "message should name the primitive: {err}");
+    }
+
+    /// An unbounded generic parameter imposes no obligation: any instantiation is
+    /// accepted, including at a type with no registered impls at all.
+    #[test]
+    fn unbounded_generic_accepts_any_type() {
+        let mut syms = Symbols::new();
+        let t = syms.intern("T");
+        let anything = syms.intern("Anything");
+        let sig = bounded_callable(t, vec![], vec![]);
+        let subst = HashMap::from([(t, Ty::Adt(anything))]);
+        assert!(check_generic_bounds(&sig, &subst, &syms).is_ok());
     }
 }

@@ -9,10 +9,10 @@
 //! code. `Terminator::Drop` lowers to a plain jump (no runtime memory management
 //! in this slice).
 
-use rv_core::{BinOp, Symbols, UnOp};
+use rv_core::{BinOp, IntTy, Symbols, Ty, UnOp};
 use rv_ir::{
-    AggKind, BlockId, BorrowKind, Function, LocalId, Lowerable, Operand, Place, Proj, Program,
-    RValue, Stmt, Terminator,
+    AggKind, BlockId, BorrowKind, Function, LocalDecl, LocalId, Lowerable, Operand, Place, Proj,
+    Program, RValue, Stmt, Terminator,
 };
 use std::collections::HashSet;
 
@@ -170,6 +170,10 @@ struct FnBuilder<'a> {
     fixups: Vec<Fixup>,
     syms: &'a Symbols,
     name_to_index: &'a std::collections::HashMap<&'a str, usize>,
+    /// The function's local declarations, retained so a sized-integer local's
+    /// width can be recovered to narrow (mask / sign-extend) an arithmetic
+    /// result at its assignment. See [`FnBuilder::narrow_reg`].
+    locals: &'a [LocalDecl<Lowerable>],
     /// Locals that are address-taken (ever borrowed as a whole local). Their
     /// register holds a `Value::Ref(addr)` to a store cell; reads/writes go through
     /// the cell. See [`boxed_locals`].
@@ -225,6 +229,7 @@ fn compile_fn(
         fixups: Vec::new(),
         syms,
         name_to_index,
+        locals: &f.locals,
         boxed,
     };
 
@@ -293,6 +298,65 @@ impl FnBuilder<'_> {
         let r = self.next_reg;
         self.next_reg += 1;
         r
+    }
+
+    /// The fixed-integer width to narrow an assignment's result to, if any.
+    ///
+    /// Narrowing is needed only when (a) the destination local has a sized `IntN`
+    /// type strictly narrower than the 64-bit machine word, and (b) the value
+    /// comes from arithmetic that can leave that range — `+`, `-`, `*` (checked or
+    /// `wrapping_*`) and unary negation. A copy, call, or comparison already
+    /// yields an in-range value (established by the callee's width contract or the
+    /// operands themselves), so it needs no mask. 64-bit widths are the native
+    /// representation and never narrow.
+    fn narrowing_width(&self, local: LocalId, rvalue: &RValue) -> Option<IntTy> {
+        let affects_width = matches!(
+            rvalue,
+            RValue::Bin(BinOp::Add | BinOp::Sub | BinOp::Mul, _, _)
+                | RValue::WrappingBin(BinOp::Add | BinOp::Sub | BinOp::Mul, _, _)
+                | RValue::Un(UnOp::Neg, _)
+        );
+        if !affects_width {
+            return None;
+        }
+        match self.locals.get(local.0 as usize).map(|d| &d.ty) {
+            Some(Ty::IntN(w)) if w.bits < 64 => Some(*w),
+            _ => None,
+        }
+    }
+
+    /// Emit two's-complement narrowing of the value in `reg` to `width`, returning
+    /// the register holding the narrowed value (`reg` itself when no narrowing is
+    /// required). Built entirely from instructions the VM already executes:
+    ///
+    /// * Unsigned `uN`: mask to the low `N` bits (`v & (2^N - 1)`), yielding the
+    ///   canonical `[0, 2^N - 1]` representative — i.e. modular wraparound.
+    /// * Signed `iN`: sign-extend bit `N-1` by shifting left then arithmetic-right
+    ///   by `64 - N` (`(v << (64-N)) >> (64-N)`); the VM's `Shr` on a signed `i64`
+    ///   is arithmetic, so this reproduces two's-complement `iN` semantics.
+    fn narrow_reg(&mut self, reg: u32, width: Option<IntTy>) -> u32 {
+        let Some(w) = width else {
+            return reg;
+        };
+        let bits = w.bits as u32;
+        if w.signed {
+            let shift = 64 - bits;
+            let shamt = self.fresh();
+            self.code.push(Instr::Const(shamt, Const::Int(shift as i64)));
+            let up = self.fresh();
+            self.code.push(Instr::Bin(up, BinOp::Shl, reg, shamt));
+            let out = self.fresh();
+            self.code.push(Instr::Bin(out, BinOp::Shr, up, shamt));
+            out
+        } else {
+            // Mask = 2^bits - 1. `bits < 64` here, so this never overflows i64.
+            let mask = (1i64 << bits) - 1;
+            let mreg = self.fresh();
+            self.code.push(Instr::Const(mreg, Const::Int(mask)));
+            let out = self.fresh();
+            self.code.push(Instr::Bin(out, BinOp::BitAnd, reg, mreg));
+            out
+        }
     }
 
     /// Resolve an operand to a register holding its value, emitting a `Const`
@@ -374,13 +438,24 @@ impl FnBuilder<'_> {
     fn lower_assign(&mut self, place: &Place, rvalue: &RValue) {
         // Whole-local assignment (no projection).
         if place.proj.is_empty() {
+            // A sized-integer local narrows an overflowing arithmetic result to
+            // its width at runtime (two's-complement wraparound), so the value
+            // actually stored respects the type's range — matching the verifier's
+            // width contract on a `wrapping_*` op and giving fixed-width `iN`/`uN`
+            // real execution semantics instead of running as bare `i64`.
+            let width = self.narrowing_width(place.local, rvalue);
             if self.boxed.contains(&place.local.0) {
                 // Boxed local: compute the value, then write it into the store cell.
                 let val = self.rvalue_reg(rvalue);
+                let val = self.narrow_reg(val, width);
                 self.code.push(Instr::Store(place.local.0, val));
             } else {
                 // Plain register local: the original fast path.
                 self.lower_rvalue(place.local.0, rvalue);
+                let narrowed = self.narrow_reg(place.local.0, width);
+                if narrowed != place.local.0 {
+                    self.code.push(Instr::Move(place.local.0, narrowed));
+                }
             }
             return;
         }
@@ -616,5 +691,113 @@ impl FnBuilder<'_> {
                 _ => unreachable!("fixup slot/instr mismatch"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rv_core::Prop;
+    use rv_ir::{Block, Function, LocalDecl, Terminator};
+
+    /// Build a single-block function `f() -> ret_ty` that assigns
+    /// `local0 = <rv>` and returns it. `local0` is declared with `dst_ty` so the
+    /// narrowing pass can see its width.
+    fn one_assign_fn(dst_ty: Ty, rv: RValue, syms: &mut Symbols) -> Program<Lowerable> {
+        let l0 = LocalId(0);
+        let func = Function {
+            name: syms.intern("f"),
+            type_params: vec![],
+            generic_bounds: vec![],
+            params: vec![],
+            ret: dst_ty.clone(),
+            pre: Prop::True,
+            post: Prop::True,
+            locals: vec![LocalDecl { name: None, ty: dst_ty }],
+            blocks: vec![Block {
+                id: BlockId(0),
+                stmts: vec![Stmt::Assign(Place::local(l0), rv)],
+                term: Terminator::Return(Operand::Copy(Place::local(l0))),
+            }],
+            entry: BlockId(0),
+        };
+        Program { types: vec![], trait_impls: vec![], funcs: vec![func] }
+    }
+
+    /// An operand for the integer literal `n`.
+    fn imm(n: i64) -> Operand {
+        Operand::Const(Const::Int(n))
+    }
+
+    /// A `wrapping_add` into a `u8` local emits a low-8-bits mask (`& 255`) so the
+    /// stored value wraps into `[0, 255]` at runtime.
+    #[test]
+    fn wrapping_add_into_u8_masks_low_bits() {
+        let mut syms = Symbols::new();
+        let u8_ty = Ty::IntN(IntTy { signed: false, bits: 8 });
+        let rv = RValue::WrappingBin(BinOp::Add, imm(200), imm(100));
+        let bc = compile(&one_assign_fn(u8_ty, rv, &mut syms), &syms);
+        let code = &bc.funcs[0].code;
+        // The mask constant 255 is materialized and BitAnd'd.
+        assert!(
+            code.iter().any(|i| matches!(i, Instr::Const(_, Const::Int(255)))),
+            "expected a 0xFF mask constant: {code:?}"
+        );
+        assert!(
+            code.iter().any(|i| matches!(i, Instr::Bin(_, BinOp::BitAnd, _, _))),
+            "expected a BitAnd narrowing: {code:?}"
+        );
+    }
+
+    /// A `wrapping_add` into an `i8` local emits a sign-extension pair
+    /// (`<< 56` then `>> 56`) so the stored value takes `[-128, 127]` semantics.
+    #[test]
+    fn wrapping_add_into_i8_sign_extends() {
+        let mut syms = Symbols::new();
+        let i8_ty = Ty::IntN(IntTy { signed: true, bits: 8 });
+        let rv = RValue::WrappingBin(BinOp::Add, imm(100), imm(100));
+        let bc = compile(&one_assign_fn(i8_ty, rv, &mut syms), &syms);
+        let code = &bc.funcs[0].code;
+        assert!(
+            code.iter().any(|i| matches!(i, Instr::Const(_, Const::Int(56)))),
+            "expected a shift amount 64-8=56: {code:?}"
+        );
+        assert!(
+            code.iter().any(|i| matches!(i, Instr::Bin(_, BinOp::Shl, _, _)))
+                && code.iter().any(|i| matches!(i, Instr::Bin(_, BinOp::Shr, _, _))),
+            "expected a Shl/Shr sign-extension pair: {code:?}"
+        );
+    }
+
+    /// A checked `+` into an `i64` local (the native width) is NOT narrowed — no
+    /// mask or shift is inserted for full-width integers.
+    #[test]
+    fn native_width_is_not_narrowed() {
+        let mut syms = Symbols::new();
+        let rv = RValue::Bin(BinOp::Add, imm(2), imm(3));
+        let bc = compile(&one_assign_fn(Ty::Int, rv, &mut syms), &syms);
+        let code = &bc.funcs[0].code;
+        assert!(
+            !code.iter().any(|i| matches!(
+                i,
+                Instr::Bin(_, BinOp::BitAnd | BinOp::Shl | BinOp::Shr, _, _)
+            )),
+            "a plain i64 add must not be narrowed: {code:?}"
+        );
+    }
+
+    /// A non-arithmetic assignment (a copy) into a `u8` local is not narrowed:
+    /// the source is already in range, so no mask is emitted.
+    #[test]
+    fn copy_into_u8_is_not_narrowed() {
+        let mut syms = Symbols::new();
+        let u8_ty = Ty::IntN(IntTy { signed: false, bits: 8 });
+        let rv = RValue::Use(imm(42));
+        let bc = compile(&one_assign_fn(u8_ty, rv, &mut syms), &syms);
+        let code = &bc.funcs[0].code;
+        assert!(
+            !code.iter().any(|i| matches!(i, Instr::Bin(_, BinOp::BitAnd, _, _))),
+            "a copy must not emit a mask: {code:?}"
+        );
     }
 }
