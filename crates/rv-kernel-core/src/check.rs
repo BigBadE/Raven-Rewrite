@@ -294,8 +294,20 @@ impl<'e> Checker<'e> {
 
     /// Check a system `[φ_1 ↦ t_1, …, φ_n ↦ t_n]` against an expected `Partial ψ A`:
     /// coverage (`ψ ⊢ φ_1 ∨ … ∨ φ_n`), each branch at `A`, and the **compatibility
-    /// condition** (see `crate::face`'s module doc) — on any overlap `φ_i ∧ φ_j` that
-    /// isn't `⊥`, `t_i` and `t_j` must be definitionally equal.
+    /// condition** (see `crate::face`'s module doc, and [`face::restrict_clause_term`]'s
+    /// doc for the full soundness argument) — on any overlap `φ_i ∧ φ_j` that isn't
+    /// `⊥`, `t_i` and `t_j` must agree **under restriction to the overlap**: for
+    /// every clause `C` of `to_dnf(φ_i ∧ φ_j)` (each clause pins a finite set of
+    /// already-in-scope interval variables to literal endpoints), `t_i` and `t_j`
+    /// must be definitionally equal *after* substituting those forced endpoints —
+    /// this is exactly cubical type theory's "compatible system" condition (Cohen–
+    /// Coquand–Huber–Mörtberg, *Cubical Type Theory*, §4.2), strictly more general
+    /// than (and a conservative relaxation of) requiring unconditional equality: an
+    /// overlap of `⊤` restricts along the single vacuous clause `[]`, so
+    /// `restrict_clause_term` is the identity and this reduces to plain
+    /// `is_def_eq(t_i, t_j)` exactly as before. Every clause must agree (`all`, not
+    /// `any`) — see `restrict_clause_term`'s doc for why that's the only sound
+    /// choice.
     fn check_sys(
         &self,
         ctx: &mut LocalCtx,
@@ -333,14 +345,19 @@ impl<'e> Checker<'e> {
         for i in 0..branches.len() {
             for j in (i + 1)..branches.len() {
                 let overlap = Cof::and((*branches[i].0).clone(), (*branches[j].0).clone());
-                if !face::is_false(&overlap)
-                    && !self.is_def_eq(ctx, &branches[i].1, &branches[j].1)
-                {
-                    return Err(format!(
-                        "incompatible system: branches {i} and {j} disagree on their overlap \
-                         (φ_{i} ∧ φ_{j} is satisfiable, but the branch terms are not \
-                         definitionally equal)"
-                    ));
+                if face::is_false(&overlap) {
+                    continue; // unsatisfiable overlap imposes no obligation
+                }
+                for clause in face::overlap_clauses(&branches[i].0, &branches[j].0) {
+                    let ti = face::restrict_clause_term(&clause, &branches[i].1);
+                    let tj = face::restrict_clause_term(&clause, &branches[j].1);
+                    if !self.is_def_eq(ctx, &ti, &tj) {
+                        return Err(format!(
+                            "incompatible system: branches {i} and {j} disagree on their overlap \
+                             (φ_{i} ∧ φ_{j} is satisfiable, but the branch terms are not \
+                             definitionally equal after restricting to the overlapping face)"
+                        ));
+                    }
                 }
             }
         }

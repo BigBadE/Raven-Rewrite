@@ -408,6 +408,96 @@ impl Term {
         self.subst(0, arg)
     }
 
+    /// **Restriction**, not elimination: replace free occurrences of `Var(depth)`
+    /// with `replacement`, but — unlike [`Term::subst`]/[`Term::subst_at`] — leave
+    /// every *other* free variable's index exactly as it is (no decrementing the
+    /// indices above `depth`). The binder at `depth` is *not* removed from the
+    /// ambient context; this just pins one already-bound interval variable to a
+    /// literal endpoint for the purposes of a definitional-equality comparison run
+    /// in the same context (see `crate::face`'s restriction-aware `check_sys`,
+    /// which uses this to compare two system branches "under" a cofibration clause
+    /// without disturbing the de Bruijn depth the caller's `LocalCtx` is tracking).
+    /// Mirrors `subst`'s structural recursion (each binder still bumps `depth` by
+    /// one as it's crossed) but drops the "decrement above `depth`" arm.
+    pub(crate) fn replace_free_var(&self, depth: usize, replacement: &Term) -> Term {
+        match self {
+            Term::Sort(_) | Term::Const(..) | Term::Meta(_) | Term::I | Term::IZero | Term::IOne => {
+                self.clone()
+            }
+            Term::Var(i) => {
+                if *i == depth {
+                    replacement.lift(depth as isize, 0)
+                } else {
+                    Term::Var(*i)
+                }
+            }
+            Term::App(f, a) => Term::app(
+                f.replace_free_var(depth, replacement),
+                a.replace_free_var(depth, replacement),
+            ),
+            Term::Lam(d, b) => Term::lam(
+                d.replace_free_var(depth, replacement),
+                b.replace_free_var(depth + 1, replacement),
+            ),
+            Term::Pi(g, d, b) => Term::pi_graded(
+                *g,
+                d.replace_free_var(depth, replacement),
+                b.replace_free_var(depth + 1, replacement),
+            ),
+            Term::Let(g, t, v, b) => Term::let_graded(
+                *g,
+                t.replace_free_var(depth, replacement),
+                v.replace_free_var(depth, replacement),
+                b.replace_free_var(depth + 1, replacement),
+            ),
+            Term::INeg(r) => Term::ineg(r.replace_free_var(depth, replacement)),
+            Term::IMeet(r, s) => Term::imeet(
+                r.replace_free_var(depth, replacement),
+                s.replace_free_var(depth, replacement),
+            ),
+            Term::IJoin(r, s) => Term::ijoin(
+                r.replace_free_var(depth, replacement),
+                s.replace_free_var(depth, replacement),
+            ),
+            Term::PLam(b) => Term::plam(b.replace_free_var(depth + 1, replacement)),
+            Term::PApp(p, r) => Term::papp(
+                p.replace_free_var(depth, replacement),
+                r.replace_free_var(depth, replacement),
+            ),
+            Term::PathP(fam, a0, a1) => Term::pathp(
+                fam.replace_free_var(depth + 1, replacement),
+                a0.replace_free_var(depth, replacement),
+                a1.replace_free_var(depth, replacement),
+            ),
+            Term::Sys(branches) => Term::Sys(
+                branches
+                    .iter()
+                    .map(|(p, t)| {
+                        (
+                            Rc::new(p.replace_free_var(depth, replacement)),
+                            Rc::new(t.replace_free_var(depth, replacement)),
+                        )
+                    })
+                    .collect(),
+            ),
+            Term::Partial(p, a) => Term::Partial(
+                Rc::new(p.replace_free_var(depth, replacement)),
+                Rc::new(a.replace_free_var(depth, replacement)),
+            ),
+            Term::Transp(fam, phi, a) => Term::transp(
+                fam.replace_free_var(depth + 1, replacement),
+                phi.replace_free_var(depth, replacement),
+                a.replace_free_var(depth, replacement),
+            ),
+            Term::HComp(ty, phi, u, u0) => Term::hcomp(
+                ty.replace_free_var(depth, replacement),
+                phi.replace_free_var(depth, replacement),
+                u.replace_free_var(depth + 1, replacement),
+                u0.replace_free_var(depth, replacement),
+            ),
+        }
+    }
+
     /// Substitute `replacement` for the variable at de Bruijn `depth` (general form of
     /// [`Term::instantiate`]). Used by the effect-handler interpreter to plug an
     /// operation's result into a continuation nested under several binders.
