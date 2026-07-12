@@ -341,15 +341,25 @@ impl<'a> Nbe<'a> {
                         )),
                     }
                 } else {
-                    Rc::new(Value::HComp(
-                        HCompClosure {
-                            env: venv.clone(),
-                            ty: self.eval(venv, ty),
-                            phi: phi.clone(),
-                            u: u.clone(),
-                        },
-                        self.eval(venv, u0),
-                    ))
+                    // Constructor-compatible `hcomp` for a user inductive (see
+                    // `crate::kan`'s "Phase 3.11" doc, and
+                    // `crate::reduce::Reducer::whnf`'s matching arm —
+                    // differentially tested): matched *syntactically* (no
+                    // evaluation) on `ty`/`u`/`u0`; the built term introduces
+                    // no new *free* variable, so it's evaluated against the
+                    // very same `venv`.
+                    match crate::kan::hcomp_inductive_rule(self.env, ty, phi, u, u0) {
+                        Some(built) => self.eval(venv, &built),
+                        None => Rc::new(Value::HComp(
+                            HCompClosure {
+                                env: venv.clone(),
+                                ty: self.eval(venv, ty),
+                                phi: phi.clone(),
+                                u: u.clone(),
+                            },
+                            self.eval(venv, u0),
+                        )),
+                    }
                 }
             }
         }
