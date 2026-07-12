@@ -124,7 +124,7 @@
 //! constructors — on the standard non-truncation worked example, closed soundly:
 //!   * point constructors: exactly one, `base`, nullary (no user-declared point-family is
 //!     supported; a general schema would need to reuse the ordinary inductive-declaration
-//!     machinery in [`crate::inductive`]/[`crate::mutual`] for the point layer, then
+//!     machinery in [`crate::inductive`]/`rv_kernel::mutual` for the point layer, then
 //!     separately layer path constructors and a joint recursor over it — a materially
 //!     larger change);
 //!   * path constructors: exactly one, `loop : base = base`, between closed point terms,
@@ -265,14 +265,14 @@ pub fn install_circle(env: &mut Env) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::check::{Checker, LocalCtx};
-    use crate::generate::{declare_inductive, eq_spec, nat_spec};
+    use crate::inductive::{declare_eq, declare_nat};
     use crate::reduce::Reducer;
 
     /// Build an env with `Nat`, `Eq`, and the circle schema installed.
     fn circle_env() -> Env {
         let mut env = Env::new();
-        declare_inductive(&mut env, nat_spec()).unwrap();
-        declare_inductive(&mut env, eq_spec()).unwrap();
+        declare_nat(&mut env).unwrap();
+        declare_eq(&mut env).unwrap();
         install_circle(&mut env).unwrap();
         env
     }
@@ -306,7 +306,7 @@ mod tests {
     #[test]
     fn requires_eq() {
         let mut env = Env::new();
-        declare_inductive(&mut env, nat_spec()).unwrap();
+        declare_nat(&mut env).unwrap();
         let err = install_circle(&mut env).unwrap_err();
         assert!(err.contains("Eq"), "got: {err}");
     }

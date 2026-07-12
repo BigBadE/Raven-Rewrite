@@ -547,14 +547,14 @@ fn alpha_eta_eq(a: &Term, b: &Term) -> bool {
 mod tests {
     use super::*;
     use crate::check::Checker;
-    use crate::generate::{eq_spec, nat_spec};
+    use crate::inductive::{declare_eq, declare_nat};
     use crate::kernel::Kernel;
     use crate::term::name;
 
     fn nat_kernel() -> Kernel {
         let mut k = Kernel::new();
-        k.declare_inductive(nat_spec()).unwrap();
-        k.declare_inductive(eq_spec()).unwrap();
+        declare_nat(k.env_mut()).unwrap();
+        declare_eq(k.env_mut()).unwrap();
         k.add_definition(
             "add",
             0,

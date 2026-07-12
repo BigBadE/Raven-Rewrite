@@ -23,10 +23,11 @@
 //! local binder — i.e. no infinitely-branching / `W`-style arguments (`(B → I) → …`).
 //! Such a field is rejected with a clear error rather than mis-elaborated.
 
-use crate::check::{Checker, LocalCtx};
-use crate::env::{Constructor, Decl, Env, Inductive, RecRule, Recursor};
-use crate::level::Level;
-use crate::term::{Name, Term};
+use rv_kernel_core::check::{Checker, LocalCtx};
+use rv_kernel_core::env::{Constructor, Decl, Env, Inductive, RecRule, Recursor};
+use rv_kernel_core::level::Level;
+use rv_kernel_core::term::{Name, Term};
+pub(crate) use rv_kernel_core::util::{fold_pis, mk_var, occurs, peel_all_pis, peel_pis};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -49,49 +50,6 @@ pub struct IndSpec {
     pub ctors: Vec<CtorSpec>,
     /// Name to give the generated recursor (e.g. `"Nat.rec"`).
     pub rec_name: Name,
-}
-
-/// The de Bruijn index, at context depth `depth`, of the binder introduced at
-/// absolute level `level` (0 = outermost).
-pub(crate) fn mk_var(depth: usize, level: usize) -> Term {
-    Term::Var(depth - 1 - level)
-}
-
-/// Peel exactly `n` leading `Π`s, returning their domains (each in the context of the
-/// previous ones) and the remaining body. `None` if there are fewer than `n`.
-pub(crate) fn peel_pis(mut t: Term, n: usize) -> Option<(Vec<Term>, Term)> {
-    let mut doms = Vec::with_capacity(n);
-    for _ in 0..n {
-        match t {
-            Term::Pi(_, d, b) => {
-                doms.push((*d).clone());
-                t = (*b).clone();
-            }
-            _ => return None,
-        }
-    }
-    Some((doms, t))
-}
-
-/// Peel all leading `Π`s.
-pub(crate) fn peel_all_pis(mut t: Term) -> (Vec<Term>, Term) {
-    let mut doms = Vec::new();
-    while let Term::Pi(_, d, b) = t {
-        doms.push((*d).clone());
-        t = (*b).clone();
-    }
-    (doms, t)
-}
-
-/// Does the constant `n` occur anywhere in `t`?
-pub(crate) fn occurs(n: &str, t: &Term) -> bool {
-    match t {
-        Term::Const(m, _) => &**m == n,
-        Term::App(f, a) => occurs(n, f) || occurs(n, a),
-        Term::Lam(d, b) | Term::Pi(_, d, b) => occurs(n, d) || occurs(n, b),
-        Term::Let(_, x, y, z) => occurs(n, x) || occurs(n, y) || occurs(n, z),
-        Term::Sort(_) | Term::Var(_) | Term::Meta(_) => false,
-    }
 }
 
 /// Classification of a constructor field with respect to the inductive `ind`.
@@ -339,16 +297,6 @@ pub fn declare_inductive(env: &mut Env, spec: IndSpec) -> Result<(), String> {
     Ok(())
 }
 
-/// Fold a telescope of domains (each in the context of the previous ones) and a body
-/// (in the full context) into nested `Π`s.
-pub(crate) fn fold_pis(doms: &[Term], body: Term) -> Term {
-    let mut t = body;
-    for d in doms.iter().rev() {
-        t = Term::pi(d.clone(), t);
-    }
-    t
-}
-
 /// Build the minor premise for one constructor, at base depth `d0` (the depth just
 /// before its first field binder).
 fn build_minor(
@@ -500,7 +448,7 @@ struct CtorInfoLike {
 // Convenience spec builders for the standard inductives (also used by tests).
 // ---------------------------------------------------------------------------
 
-use crate::term::name;
+use rv_kernel_core::term::name;
 
 fn cn(s: &str) -> Term {
     Term::cnst(name(s), vec![])
@@ -593,7 +541,7 @@ pub fn list_spec() -> IndSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reduce::Reducer;
+    use rv_kernel_core::reduce::Reducer;
 
     fn lit(n: u32) -> Term {
         let mut t = cn("Nat.zero");
@@ -628,7 +576,7 @@ mod tests {
         assert!(r.is_def_eq(&add(lit(2), lit(3)), &lit(5)));
 
         // The induction proof type-checks against the *generated* declarations.
-        let (proof, goal) = crate::inductive::add_n_zero_proof();
+        let (proof, goal) = rv_kernel_core::inductive::add_n_zero_proof();
         let chk = Checker::new(&env);
         let ty = chk.infer_closed(&proof).expect("induction proof should check");
         assert!(r.is_def_eq(&ty, &goal), "got {ty:?}");

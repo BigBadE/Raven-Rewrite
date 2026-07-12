@@ -21,7 +21,7 @@
 //! handler/capability checking. A full dependent operational semantics for handlers
 //! is future work; what's here is the type-level skeleton the surface compiles to.
 
-use crate::term::Term;
+use rv_kernel_core::term::Term;
 use std::collections::BTreeSet;
 
 /// An effect label.
@@ -244,7 +244,7 @@ pub fn run_state(p: &Prog, state: Term) -> Result<(Term, Term), String> {
 }
 
 fn unit_value() -> Term {
-    Term::cnst(crate::term::name("unit"), vec![])
+    Term::cnst(rv_kernel_core::term::name("unit"), vec![])
 }
 
 /// A handler that supplies a fixed value for every `ask` (the reader effect).
@@ -285,7 +285,7 @@ impl Handler for Exception {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::term::name;
+    use rv_kernel_core::term::name;
 
     fn unit() -> Term {
         Term::cnst(name("unit"), vec![])

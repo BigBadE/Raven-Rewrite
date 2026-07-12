@@ -28,15 +28,15 @@
 //! combination: the obligation lives in the full dependent logic, but the user writes
 //! only the spec.
 
-use crate::check::{Checker, LocalCtx};
+use rv_kernel_core::check::{Checker, LocalCtx};
 use crate::elab::run_command;
 use crate::elab2::{params_mask, rewrite_rec_calls, BundleMember, Implicits, Infer, RecInfo};
 use crate::generate::peel_all_pis;
-use crate::kernel::Kernel;
-use crate::level::Level;
-use crate::reduce::Reducer;
+use rv_kernel_core::kernel::Kernel;
+use rv_kernel_core::level::Level;
+use rv_kernel_core::reduce::Reducer;
 use crate::surface::{self, Binder, Command, Expr, MatchArm};
-use crate::term::{name, Term};
+use rv_kernel_core::term::{name, Term};
 use std::collections::HashMap;
 
 /// A verification session: a kernel plus the open obligations of declared `fn`s.
@@ -152,9 +152,9 @@ impl Session {
                     let (raw, _) = inf.infer(&b.ty)?;
                     let ty = inf.finish(&raw)?;
                     let (head, _) =
-                        crate::reduce::Reducer::new(self.k.env()).whnf(&ty).unfold_apps();
+                        rv_kernel_core::reduce::Reducer::new(self.k.env()).whnf(&ty).unfold_apps();
                     if let Term::Const(ind, _) = head {
-                        if let Some(crate::env::Decl::Inductive(i)) = self.k.env().get(&ind) {
+                        if let Some(rv_kernel_core::env::Decl::Inductive(i)) = self.k.env().get(&ind) {
                             if i.group.len() > 1 {
                                 return Ok(Some(i.group.iter().map(|x| x.to_string()).collect()));
                             }
@@ -250,7 +250,7 @@ impl Session {
         let mut inf = Infer::with_implicits(self.k.env(), &self.implicits).with_src(&self.cur_src);
         let (raw, _) = inf.infer(scrut_ty)?;
         let ty = inf.finish(&raw)?;
-        let (head, _) = crate::nbe::Nbe::new(self.k.env()).normalize(&ty).unfold_apps();
+        let (head, _) = rv_kernel_core::nbe::Nbe::new(self.k.env()).normalize(&ty).unfold_apps();
         if let Term::Const(ind, _) = head {
             if let Some(i) = group.iter().position(|g| *g == *ind) {
                 return Ok(i);
@@ -540,11 +540,11 @@ impl Session {
     /// it to a numeral / constructor tree. Errors if the name isn't an evaluable `Def`.
     pub fn eval(&self, name: &str) -> Result<Term, String> {
         let value = match self.k.env().get(name) {
-            Some(crate::env::Decl::Def { value, .. }) => value.clone(),
+            Some(rv_kernel_core::env::Decl::Def { value, .. }) => value.clone(),
             Some(_) => return Err(format!("'{name}' is not an evaluable definition")),
             None => return Err(format!("no definition named '{name}'")),
         };
-        Ok(crate::nbe::Nbe::new(self.k.env()).normalize(&value))
+        Ok(rv_kernel_core::nbe::Nbe::new(self.k.env()).normalize(&value))
     }
 
     /// Evaluate `name` and render the result as a readable string (`Nat` literals as
@@ -598,7 +598,7 @@ fn try_rfl(k: &Kernel, obligation: &Term) -> Option<Term> {
 /// cases / structural induction (e.g. `∀ b : Bool, b = true ∨ b = false`) automatically.
 /// The assembled term is kernel-checked, so an unsound assembly is simply rejected.
 fn try_induction(k: &Kernel, obligation: &Term) -> Option<Term> {
-    use crate::env::Decl;
+    use rv_kernel_core::env::Decl;
     let Term::Pi(_, dom, body) = obligation else { return None };
     let r = Reducer::new(k.env());
     let (head, params) = r.whnf(dom).unfold_apps();
@@ -658,7 +658,7 @@ fn prove_minor(k: &Kernel, minor_ty: &Term) -> Option<Term> {
     // **Fully** normalize the goal (not just whnf): this contracts `(λx.G) (C fields)`
     // *and* reduces inside it (e.g. `add (succ k) 0 ↦ succ (add k 0)`), so the induction
     // hypothesis's left-hand side appears syntactically and the rewrite tactic can fire.
-    let goal = crate::nbe::Nbe::new(k.env()).normalize_open(doms.len(), &goal);
+    let goal = rv_kernel_core::nbe::Nbe::new(k.env()).normalize_open(doms.len(), &goal);
     let leaf = prove_leaf(k, &doms, &goal)?;
     let mut p = leaf;
     for d in doms.into_iter().rev() {
@@ -758,7 +758,7 @@ fn try_rewrite(k: &Kernel, doms: &[Term], goal: &Term, fuel: u32) -> Option<Term
     for d in doms {
         ctx.push(d.clone());
     }
-    let nbe = crate::nbe::Nbe::new(k.env());
+    let nbe = rv_kernel_core::nbe::Nbe::new(k.env());
     let depth = doms.len();
     for i in 0..doms.len() {
         let Some(hty) = ctx.var_type(i) else { continue };
@@ -895,7 +895,8 @@ fn as_nat(t: &Term) -> Option<u64> {
 mod tests {
     use super::*;
     use crate::generate::{eq_spec, nat_spec};
-    use crate::level::Level;
+    use crate::kernel_ext::KernelExt;
+    use rv_kernel_core::level::Level;
 
     /// Declare `Nat`, `Eq`, `And`, and `add` (matching the kernel's proof builder).
     fn base() -> Session {

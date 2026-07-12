@@ -14,11 +14,11 @@
 //! Non-pattern higher-order problems are undecidable in general and are reported rather
 //! than guessed.
 
-use crate::check::{Checker, LocalCtx};
-use crate::env::Env;
-use crate::level::{self, Level};
-use crate::nbe::Nbe;
-use crate::term::Term;
+use rv_kernel_core::check::{Checker, LocalCtx};
+use rv_kernel_core::env::Env;
+use rv_kernel_core::level::{self, Level};
+use rv_kernel_core::nbe::Nbe;
+use rv_kernel_core::term::Term;
 
 /// A metavariable context: solutions for term metas *and* universe-level metas, each
 /// indexed by id. Term metas and level metas live in separate id spaces (they are
@@ -484,7 +484,7 @@ fn occurs(m: u32, t: &Term) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::term::name;
+    use rv_kernel_core::term::name;
 
     fn c(s: &str) -> Term {
         Term::cnst(name(s), vec![])

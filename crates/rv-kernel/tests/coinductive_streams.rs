@@ -30,6 +30,7 @@
 use rv_kernel::coinductive::{stream_spec, CoindSpec};
 use rv_kernel::generate::{nat_spec, IndSpec};
 use rv_kernel::level::Level;
+use rv_kernel::KernelExt;
 use rv_kernel::{name, Kernel, Term};
 
 fn cn(s: &str) -> Term {

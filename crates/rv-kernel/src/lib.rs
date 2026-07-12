@@ -32,73 +32,119 @@
 //!
 //! ## Trust map: TRUSTED core vs UNTRUSTED elaboration
 //!
-//! The whole point of a kernel architecture is that soundness rests on a small, auditable
-//! slice of this crate — everything else can be as large, buggy, or over-engineered as it
-//! needs to be, because its output is *re-checked* by the small slice before it is
-//! trusted. Concretely, as of this writing (~16.7k LOC across the crate):
+//! **As of the `rv-kernel-core` split, this boundary is compiler-enforced, not just
+//! documented.** The TRUSTED slice described below is no longer merely a subset of
+//! this crate's modules — it is *physically a separate crate*, [`rv_kernel_core`],
+//! which this crate (`rv-kernel`) depends on. The dependency is strictly one-way:
+//! `rv-kernel-core` has zero dependency on `rv-kernel`, so nothing in the untrusted
+//! elaborator/tactic/synthesis code below can be reached from, or influence, the
+//! trusted core short of going through its checked public API. `rv-kernel`
+//! re-exports `rv_kernel_core`'s public items (`Kernel`, `Env`, `Term`, `Checker`,
+//! `check`/`env`/`term`/`level`/`reduce`/`nbe`/`inductive`/`quotient`/`trunc`/
+//! `circle`/`hit`/`coinductive`/`kernel`) so existing `rv_kernel::Foo` import paths
+//! are unchanged; see `rv-kernel-core/src/lib.rs` for the core crate's own doc.
 //!
-//! **TRUSTED core (~2,900 LOC — term representation, checker, reduction, and the *typing
-//! rules* of each axiomatic schema):**
-//! * [`term`] (442 LOC) — the de Bruijn term grammar itself. Defines what a term *is*.
-//! * [`level`] (243 LOC) — universe levels/cumulativity, load-bearing for `Sort` typing.
-//! * [`env`] (437 LOC) — the declaration store. [`env::Env::insert`] is a dumb, unchecked
+//! The whole point of a kernel architecture is that soundness rests on a small, auditable
+//! slice — everything else can be as large, buggy, or over-engineered as it
+//! needs to be, because its output is *re-checked* by the small slice before it is
+//! trusted. Concretely, as of this writing (~16.7k LOC across the two crates):
+//!
+//! **TRUSTED core, in `rv-kernel-core` (~2,900 LOC — term representation, checker,
+//! reduction, and the *typing rules* of each axiomatic schema):**
+//! * `term` (442 LOC) — the de Bruijn term grammar itself. Defines what a term *is*.
+//! * `level` (243 LOC) — universe levels/cumulativity, load-bearing for `Sort` typing.
+//! * `env` (437 LOC) — the declaration store. `env::Env::insert` is a dumb, unchecked
 //!   map write (rejects only redeclaration) — trusted *as a data structure*, not as a
 //!   guarantor of well-typedness; that guarantee comes from who is allowed to call it (see
 //!   below).
-//! * [`check`] (293 LOC) — the trusted bidirectional type-checker (`infer`/`check`). This
+//! * `check` (293 LOC) — the trusted bidirectional type-checker (`infer`/`check`). This
 //!   is *the* soundness-critical function: if it accepts a term, the term is well-typed by
 //!   definition.
-//! * [`reduce`] (498 LOC) and [`nbe`] (615 LOC) — β/δ/ζ/ι/ν reduction and definitional
+//! * `reduce` (498 LOC) and `nbe` (615 LOC) — β/δ/ζ/ι/ν reduction and definitional
 //!   equality (two implementations: a direct reducer and a normalize-by-evaluation
-//!   engine used for performance; both must agree, and [`check`] only trusts whichever
+//!   engine used for performance; both must agree, and `check` only trusts whichever
 //!   one it actually calls).
-//! * [`kernel`] (213 LOC + this file, ~130 LOC) — [`Kernel`], the front door. Its
-//!   `add_axiom`/`add_definition` are the *only* sanctioned way an axiom's stated type or
-//!   a definition's value get into the trusted [`Env`] via the checker; [`reject_meta`]
-//!   (private to `kernel.rs`) additionally guarantees no elaboration hole ever reaches
-//!   [`check`]. [`recheck_all_definitions`] is the independent re-verification harness
-//!   (see below).
-//! * [`inductive`] (402 LOC, *typing rules only*) — the shape of a well-formed inductive
+//! * `kernel` — [`Kernel`], the front door. Its `add_axiom`/`add_definition` are the
+//!   *only* sanctioned way an axiom's stated type or a definition's value get into the
+//!   trusted [`Env`] via the checker; `reject_meta` (private to `kernel.rs`)
+//!   additionally guarantees no elaboration hole ever reaches `check`.
+//!   [`recheck_all_definitions`] is the independent re-verification harness (see
+//!   below). Note that `Kernel`'s *inherent* methods are now only `add_axiom`/
+//!   `add_definition`/`check`/`infer`/`def_eq`/`env`/`env_mut`/`checker` — the
+//!   inductive/coinductive-declaration and axiomatic-schema-install convenience
+//!   methods (`declare_inductive`, `declare_mutual`, `declare_coinductive`,
+//!   `install_quot`, `install_trunc`, `install_funext`, `check_usage`) moved to
+//!   [`kernel_ext::KernelExt`] below, in the untrusted half, since their synthesis/
+//!   derivation logic lives in this crate (see "Bypasses" and the coupling note
+//!   below).
+//! * `inductive` (402 LOC, *typing rules only*) — the shape of a well-formed inductive
 //!   family/recursor and its ι-reduction rule is trusted; but see UNTRUSTED below for the
 //!   *synthesis* of that shape from a surface spec, which is a separate, larger, re-checked
 //!   concern.
+//! * `util` — five pure, generic Π-telescope/occurs-check helpers (`peel_pis`,
+//!   `peel_all_pis`, `fold_pis`, `mk_var`, `occurs`) used by both the TRUSTED
+//!   `coinductive` module and the UNTRUSTED `generate` module. These moved out of
+//!   `generate` (their original, untrusted home) into `rv-kernel-core::util` — not
+//!   because they are soundness-critical themselves, but because that was the only
+//!   way to give `coinductive` a home in the trusted crate without a `rv-kernel-core →
+//!   rv-kernel` back-dependency. They are structural utilities over [`Term`], not
+//!   synthesis/search logic.
 //! * The **typing and reduction rules** (not the installer code around them) of the
 //!   axiomatically-declared primitive schemas: `Quot`/`Quot.mk`/`Quot.sound`/`Quot.lift`/
-//!   `Quot.ind` ([`quotient`]), `Trunc` ([`trunc`]), `S1`/the circle HIT ([`circle`]), and
-//!   coinductive destructors/corecursors ([`coinductive`]). These are declared
+//!   `Quot.ind` (`quotient`), `Trunc` (`trunc`), `S1`/the circle HIT (`circle`), and
+//!   coinductive destructors/corecursors (`coinductive`). These are declared
 //!   axiomatically — like `Nat`'s recursor, their soundness rests on a paper argument (see
 //!   each module's doc comment for its specific soundness case), not on being re-derived
-//!   by [`check`]. This is unavoidable: they are exactly the primitives from which
+//!   by `check`. This is unavoidable: they are exactly the primitives from which
 //!   everything else is derived, so nothing more basic exists to check them against.
 //!
-//! **UNTRUSTED (everything else, ~13,800 LOC — elaboration, synthesis, tactics; all of it
-//! terminates in a call through [`Kernel::add_axiom`]/[`add_definition`]/
-//! [`declare_inductive`], which re-verifies the result against [`check`]):**
+//! **UNTRUSTED, staying in `rv-kernel` (everything else, ~13,800 LOC — elaboration,
+//! synthesis, tactics; all of it terminates in a call through [`Kernel::add_axiom`]/
+//! `Kernel::add_definition`/[`KernelExt::declare_inductive`], which re-verifies the result
+//! against `check`):**
 //! * [`elab2`] (2,453 LOC, by far the largest module) — holes, unification, surface sugar.
 //! * [`surface`] (1,479 LOC) and [`elab`] (438 LOC) — the older/simpler surface layers.
 //! * [`verify`] (1,387 LOC) — the tactic engine / proof-fragment `Session` driving `.rv`
 //!   proof scripts; every tactic result is fed to `Kernel::add_definition`/`Kernel::check`
 //!   (see `verify.rs` around the `add_definition`/`.check(` call sites).
-//! * [`generate`] (783 LOC) — *synthesizes* recursors/positivity checks from an `IndSpec`;
-//!   the synthesized recursor's `ty`/reduction rule it emits still has to satisfy the
-//!   TRUSTED shape enforced by [`inductive::declare_raw`], but the search/derivation logic
-//!   that builds the candidate is untrusted engineering.
+//! * [`generate`] (783 LOC minus the five helpers moved to `rv-kernel-core::util`) —
+//!   *synthesizes* recursors/positivity checks from an `IndSpec`; the synthesized
+//!   recursor's `ty`/reduction rule it emits still has to satisfy the TRUSTED shape
+//!   enforced by `inductive::declare_raw`, but the search/derivation logic that
+//!   builds the candidate is untrusted engineering. **This is the module with the
+//!   genuine two-way-feeling coupling to the core**: `Kernel::declare_inductive`
+//!   (pre-split, an inherent method) calls straight into `generate::declare_inductive`
+//!   to do positivity-checking and recursor synthesis before the shape-checked
+//!   `inductive::declare_raw` insert. Rather than force `generate` (an inherently
+//!   untrusted ~800-LOC synthesizer) into the trusted crate to keep that one method
+//!   inherent, the split resolves it the other way: [`kernel_ext::KernelExt`] is an
+//!   extension trait, implemented for `rv_kernel_core::Kernel` *from this crate*,
+//!   built only out of `Kernel`'s public API (chiefly `Kernel::env_mut`, the same
+//!   sanctioned mutation point the trusted core's own inherent methods use). Callers
+//!   bring `rv_kernel::KernelExt` into scope to keep writing
+//!   `k.declare_inductive(spec)` exactly as before.
 //! * [`unify`] (630 LOC), [`infer`] (183 LOC), [`mutual`] (467 LOC), [`graded`] (706 LOC,
 //!   QTT usage-checking — a *linter*, not part of well-typedness), [`erase`] (289 LOC),
 //!   [`effect`] (389 LOC), [`logic`] (310 LOC), [`funext`] (442 LOC — derives a proof term
-//!   that [`check`] then verifies; see `install_funext`).
+//!   that `check` then verifies; see `install_funext`).
 //!
-//! **Bypasses of the checked front door.** [`quotient`], [`trunc`], [`circle`],
-//! [`coinductive`], [`generate`], [`mutual`], and [`inductive::declare_raw`] call
-//! [`env::Env::insert`] directly rather than going through `Kernel::add_definition` —
+//! **Bypasses of the checked front door.** `quotient`, `trunc`, `circle`,
+//! `coinductive`, [`generate`], [`mutual`], and `inductive::declare_raw` call
+//! `env::Env::insert` directly rather than going through `Kernel::add_definition` —
 //! by design, since they are installing new *axiomatic* schema constants (no antecedent
 //! type to check the schema's own typing rule against) or a recursor whose *shape* is
-//! enforced by `declare_raw`'s own checks rather than by delegating to [`check`]. The one
+//! enforced by `declare_raw`'s own checks rather than by delegating to `check`. The one
 //! module that looks like a bypass but is not is [`funext`]: `install_funext` calls
-//! [`check::Checker::check`] on its derived proof term *before* the raw `env.insert` — so
+//! `check::Checker::check` on its derived proof term *before* the raw `env.insert` — so
 //! the insert is just where the already-checked result lands, not an unchecked write. No
 //! module inserts a `Decl::Def` (a value claimed to inhabit a type) without either going
 //! through `Kernel::add_definition` or checking it manually first, as `funext` does.
+//! `quotient`/`trunc`/`circle`/`coinductive`/`inductive::declare_raw` live in the
+//! TRUSTED `rv-kernel-core` crate despite bypassing the front door — their bypass is
+//! the *sanctioned* one (installing the axiomatic schema itself, or a shape the
+//! caller doesn't re-derive through `check`), not an escape hatch for untrusted code;
+//! [`generate`] and [`mutual`], whose bypass *is* untrusted synthesis feeding
+//! `declare_raw`, correctly stay in `rv-kernel`.
 //!
 //! ## The independent re-check harness
 //!
@@ -112,38 +158,46 @@
 //! `add_definition`'s call sites or a bypass that shouldn't exist — fails loudly instead of
 //! silently riding on elaboration's say-so.
 
-pub mod check;
-pub mod circle;
-pub mod coinductive;
 pub mod effect;
 pub mod elab;
 pub mod elab2;
-pub mod env;
 pub mod erase;
 pub mod funext;
 pub mod generate;
 pub mod graded;
-pub mod hit;
-pub mod inductive;
 pub mod infer;
-pub mod kernel;
-pub mod level;
+pub mod kernel_ext;
 pub mod logic;
 pub mod mutual;
-pub mod nbe;
-pub mod quotient;
-pub mod reduce;
 pub mod surface;
-pub mod term;
-pub mod trunc;
 pub mod unify;
 pub mod verify;
 
-pub use check::{Checker, LocalCtx};
-pub use env::{Decl, Env};
-pub use kernel::{recheck_all_definitions, Kernel};
-pub use level::Level;
-pub use term::{name, Name, Term};
+// The trusted core lives in `rv-kernel-core`; re-export its public surface so
+// existing `rv_kernel::Foo` import paths (`Kernel`, `Env`, `Term`, `Checker`, ...)
+// keep working unchanged for downstream crates. See the crate-level "Trust map" doc
+// comment above and `rv_kernel_core`'s own crate doc for the split's rationale and
+// the enforced one-way dependency (`rv-kernel-core` does not depend on `rv-kernel`).
+pub use rv_kernel_core::check;
+pub use rv_kernel_core::circle;
+pub use rv_kernel_core::coinductive;
+pub use rv_kernel_core::env;
+pub use rv_kernel_core::hit;
+pub use rv_kernel_core::inductive;
+pub use rv_kernel_core::kernel;
+pub use rv_kernel_core::level;
+pub use rv_kernel_core::nbe;
+pub use rv_kernel_core::quotient;
+pub use rv_kernel_core::reduce;
+pub use rv_kernel_core::term;
+pub use rv_kernel_core::trunc;
+
+pub use kernel_ext::KernelExt;
+pub use rv_kernel_core::check::{Checker, LocalCtx};
+pub use rv_kernel_core::env::{Decl, Env};
+pub use rv_kernel_core::kernel::{recheck_all_definitions, Kernel};
+pub use rv_kernel_core::level::Level;
+pub use rv_kernel_core::term::{name, Name, Term};
 
 #[cfg(test)]
 mod tests {

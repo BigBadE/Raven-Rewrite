@@ -44,7 +44,7 @@
 //! This is *exactly* the shape [`crate::circle`] and [`crate::trunc`] each hand-wrote
 //! once (point ctor(s) + path ctor(s) + a recursor with one respectfulness premise per
 //! path constructor, ι firing only on point constructors) — `declare_hit` synthesizes
-//! it for an arbitrary user-chosen `n` and `m`, the way [`crate::generate`] synthesizes
+//! it for an arbitrary user-chosen `n` and `m`, the way `rv_kernel::generate` synthesizes
 //! an ordinary inductive's recursor from its declared constructors.
 //!
 //! ## Why this is SOUND
@@ -93,7 +93,7 @@
 //!
 //!   * **non-indexed, non-parametric** HITs: `H : Type 0` only — no `H : Π params,
 //!     Type` (a general schema would need to reuse the ordinary inductive-declaration
-//!     machinery in [`crate::inductive`]/[`crate::mutual`] for a parametric point
+//!     machinery in [`crate::inductive`]/`rv_kernel::mutual` for a parametric point
 //!     layer; layering path constructors and a joint recursor on top of *that* is a
 //!     materially larger change, left as future work exactly as [`crate::circle`]
 //!     recommends);
@@ -135,7 +135,7 @@
 //! the interval `I` (two points, one path) and a three-point cycle `Z₃` (three points,
 //! three paths, forming a triangle) — see the tests below.
 //!
-//! [`Eq`]: crate::generate::eq_spec
+//! [`Eq`]: crate::inductive::declare_eq
 
 use crate::env::{Decl, Env, Hit, HitRole};
 use crate::level::Level;
@@ -334,13 +334,13 @@ pub fn declare_hit(env: &mut Env, spec: &HitSpec) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::check::{Checker, LocalCtx};
-    use crate::generate::{declare_inductive, eq_spec, nat_spec};
+    use crate::inductive::{declare_eq, declare_nat};
     use crate::reduce::Reducer;
 
     fn base_env() -> Env {
         let mut env = Env::new();
-        declare_inductive(&mut env, nat_spec()).unwrap();
-        declare_inductive(&mut env, eq_spec()).unwrap();
+        declare_nat(&mut env).unwrap();
+        declare_eq(&mut env).unwrap();
         env
     }
 
@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn requires_eq() {
         let mut env = Env::new();
-        declare_inductive(&mut env, nat_spec()).unwrap();
+        declare_nat(&mut env).unwrap();
         let err = declare_hit(&mut env, &interval_spec()).unwrap_err();
         assert!(err.contains("Eq"), "got: {err}");
     }

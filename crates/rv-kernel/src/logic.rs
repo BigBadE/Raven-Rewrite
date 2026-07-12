@@ -10,9 +10,10 @@
 //! δ-unfolding, proof irrelevance, and axioms end-to-end.
 
 use crate::generate::{eq_spec, CtorSpec, IndSpec};
-use crate::kernel::Kernel;
-use crate::level::Level;
-use crate::term::{name, Term};
+use crate::kernel_ext::KernelExt;
+use rv_kernel_core::kernel::Kernel;
+use rv_kernel_core::level::Level;
+use rv_kernel_core::term::{name, Term};
 
 fn c(s: &str) -> Term {
     Term::cnst(name(s), vec![])

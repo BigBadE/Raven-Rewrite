@@ -14,6 +14,7 @@ rust-version = "1.74"
 [workspace.dependencies]
 rv-arena   = { path = "crates/rv-arena" }
 rv-core    = { path = "crates/rv-core" }
+rv-kernel-core = { path = "crates/rv-kernel-core" }
 rv-kernel  = { path = "crates/rv-kernel" }
 rv-ir      = { path = "crates/rv-ir" }
 rv-logic   = { path = "crates/rv-logic" }

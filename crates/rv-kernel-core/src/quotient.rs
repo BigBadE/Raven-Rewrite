@@ -9,7 +9,7 @@
 //! `Nat × Nat`, `Int` mod `n`).
 //!
 //! This is the **fixed six-constant schema** of Lean's `Quot` plus its dependent
-//! recursor (not a per-quotient datatype declaration like [`crate::generate`] or
+//! recursor (not a per-quotient datatype declaration like `rv_kernel::generate` or
 //! [`crate::coinductive`]). It is installed **once** into the environment by
 //! [`install_quot`]; every quotient the user forms is `Quot A R` for their own `A`, `R`.
 //! The six constants are:
@@ -477,14 +477,14 @@ pub fn install_quot(env: &mut Env) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::check::Checker;
-    use crate::generate::{declare_inductive, eq_spec, nat_spec};
+    use crate::inductive::{declare_eq, declare_nat};
     use crate::reduce::Reducer;
 
     /// Build an env with `Nat`, `Eq`, and the quotient schema installed.
     fn quot_env() -> Env {
         let mut env = Env::new();
-        declare_inductive(&mut env, nat_spec()).unwrap();
-        declare_inductive(&mut env, eq_spec()).unwrap();
+        declare_nat(&mut env).unwrap();
+        declare_eq(&mut env).unwrap();
         install_quot(&mut env).unwrap();
         env
     }
@@ -526,7 +526,7 @@ mod tests {
     #[test]
     fn requires_eq() {
         let mut env = Env::new();
-        declare_inductive(&mut env, nat_spec()).unwrap();
+        declare_nat(&mut env).unwrap();
         let err = install_quot(&mut env).unwrap_err();
         assert!(err.contains("Eq"), "got: {err}");
     }

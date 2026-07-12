@@ -426,7 +426,12 @@ name = "rv-kernel"
 version = "0.1.0"
 dependencies = [
  "logos",
+ "rv-kernel-core",
 ]
+
+[[package]]
+name = "rv-kernel-core"
+version = "0.1.0"
 
 [[package]]
 name = "rv-logic"

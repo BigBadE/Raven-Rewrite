@@ -1,7 +1,7 @@
 //! Erasure: turn a well-typed kernel term into the runtime program it compiles to,
 //! by deleting everything at grade `0` (ghosts: proofs, specs, type arguments).
 //!
-//! This is the analysis that *uses* the [`Grade`](crate::term::Grade)s the
+//! This is the analysis that *uses* the [`Grade`](rv_kernel_core::term::Grade)s the
 //! type-checker only carries. It is **type-directed**: the grade of an argument lives
 //! on the function's `Π` type, so we follow declared types to decide what to drop. It
 //! does two jobs at once:
@@ -16,10 +16,10 @@
 //! The spec/proof/exec distinction is exactly this: "proof"/"spec" = grade `0` (gone
 //! after `erase`), "exec" = grade `1`/`ω` (kept). No keywords — the grades decide.
 
-use crate::check::{Checker, LocalCtx};
-use crate::env::Decl;
-use crate::reduce::Reducer;
-use crate::term::{Grade, Name, Term};
+use rv_kernel_core::check::{Checker, LocalCtx};
+use rv_kernel_core::env::Decl;
+use rv_kernel_core::reduce::Reducer;
+use rv_kernel_core::term::{Grade, Name, Term};
 use crate::Env;
 
 /// An untyped runtime term — what's left after ghosts are erased.
@@ -204,7 +204,7 @@ pub fn erase_def(env: &Env, name: &str) -> Result<Erased, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::term::name;
+    use rv_kernel_core::term::name;
 
     fn cn(s: &str) -> Term {
         Term::cnst(name(s), vec![])
@@ -229,7 +229,7 @@ mod tests {
     /// A ghost (grade-0) argument at an application site is dropped.
     #[test]
     fn drops_ghost_argument_at_call() {
-        let mut k = crate::kernel::Kernel::new();
+        let mut k = rv_kernel_core::kernel::Kernel::new();
         k.add_axiom("T", 0, Term::typ(0)).unwrap();
         k.add_axiom("a", 0, cn("T")).unwrap();
         // id :  Π (A :⁰ Type). Π (x :ω A). A   :=  λ A x. x

@@ -19,6 +19,12 @@
 
 pub use rv_vm::Value;
 
+// Untrusted schema-installer methods (`install_quot`/`install_trunc`/`install_funext`/
+// `check_usage`/`declare_inductive`/...) on `rv_kernel::Kernel` come from this
+// extension trait now that the trusted core lives in `rv-kernel-core`; see
+// `rv_kernel::kernel_ext` for why.
+use rv_kernel::KernelExt as _;
+
 pub mod unify;
 mod erased_vm;
 

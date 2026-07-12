@@ -9,7 +9,7 @@
 //! ```
 //!
 //! This is the **non-dependent** instance (`B` a fixed type, not a family `A → Sort v`) —
-//! exactly the shape [`crate::quotient`]'s `Quot.lift` supports directly (`Quot.lift`'s
+//! exactly the shape [`rv_kernel_core::quotient`]'s `Quot.lift` supports directly (`Quot.lift`'s
 //! target `B` is a plain `Sort v`, not indexed by the quotient point), and exactly the
 //! shape `examples/proofs/separation.rv` needs (its heaps are `Nat → Option<Pair<Nat,Nat>>`,
 //! a non-dependent function type). A fully dependent funext would need `Quot.rec`'s richer
@@ -34,27 +34,27 @@
 //! Congruence of `ext` on `Quot.sound f g h : Quot.mk f = Quot.mk g` (via `Eq.rec`) gives
 //! `ext (Quot.mk f) = ext (Quot.mk g)`. By the `Quot.lift` **ι-rule**, `ext (Quot.mk p)`
 //! reduces (under the `x` binder) to `λ x. p x`; by **η** (already definitional in this
-//! kernel's conversion, see `crate::check::Checker::compare` / `crate::reduce::Reducer::
+//! kernel's conversion, see `rv_kernel_core::check::Checker::compare` / `rv_kernel_core::reduce::Reducer::
 //! is_def_eq`), `λ x. p x ≡ p`. So `ext (Quot.mk f) ≡ f` and `ext (Quot.mk g) ≡ g`
 //! definitionally, and the congruence term above is accepted by the checker, up to
 //! conversion, at the stated type `Eq (A→B) f g` directly — no extra transport step needed.
 //!
 //! ## Why this is DERIVED, not an axiom
 //!
-//! `funext` is installed via [`crate::kernel::Kernel::add_definition`], which **checks the
-//! constructed proof term against the stated type** using the ordinary [`crate::check::
+//! `funext` is installed via [`rv_kernel_core::kernel::Kernel::add_definition`], which **checks the
+//! constructed proof term against the stated type** using the ordinary [`rv_kernel_core::check::
 //! Checker`] — exactly like any other proof in this codebase. Nothing is asserted without
 //! evidence; the "evidence" is the closed term built below, and its soundness rests
 //! entirely on the already-proved soundness of `Quot`/`Quot.sound`/`Quot.lift`
-//! ([`crate::quotient`]) plus η, which was already part of this kernel's conversion rule
+//! ([`rv_kernel_core::quotient`]) plus η, which was already part of this kernel's conversion rule
 //! before this file existed. No new trusted primitive, no new reduction rule, no new
 //! typing rule is added by this module.
 
-use crate::check::{Checker, LocalCtx};
-use crate::env::{Decl, Env};
-use crate::level::Level;
-use crate::quotient::{QUOT, QUOT_LIFT, QUOT_MK, QUOT_SOUND};
-use crate::term::{name, Term};
+use rv_kernel_core::check::{Checker, LocalCtx};
+use rv_kernel_core::env::{Decl, Env};
+use rv_kernel_core::level::Level;
+use rv_kernel_core::quotient::{QUOT, QUOT_LIFT, QUOT_MK, QUOT_SOUND};
+use rv_kernel_core::term::{name, Term};
 
 /// `Eq.{lvl} T x y`.
 fn eq_app(lvl: Level, t: Term, x: Term, y: Term) -> Term {
@@ -95,7 +95,7 @@ fn refl_app(lvl: Level, t: Term, x: Term) -> Term {
 }
 
 /// A tiny named-variable context, so the (fairly deep) term below can be built by name
-/// rather than by hand-counted de Bruijn indices (the style [`crate::quotient`] uses for
+/// rather than by hand-counted de Bruijn indices (the style [`rv_kernel_core::quotient`] uses for
 /// its schema types — here the term is a *value*, not just a type, and deep enough that
 /// name-based lookup is much less error-prone).
 #[derive(Clone)]
@@ -261,7 +261,7 @@ fn funext_value(u: Level, v: Level) -> Term {
 
 /// Install `funext.{u,v} : Π (A:Sort u)(B:Sort v)(f g:A→B), (Π x:A. Eq B (f x)(g x)) →
 /// Eq (A→B) f g` as a genuine, type-checked **definition** (not an axiom) — see the module
-/// doc. Requires `Quot`/`Quot.mk`/`Quot.sound`/`Quot.lift` ([`crate::quotient::install_quot`])
+/// doc. Requires `Quot`/`Quot.mk`/`Quot.sound`/`Quot.lift` ([`rv_kernel_core::quotient::install_quot`])
 /// to already be installed.
 pub fn install_funext(env: &mut Env) -> Result<(), String> {
     for req in [QUOT, QUOT_MK, QUOT_SOUND, QUOT_LIFT] {
@@ -289,11 +289,11 @@ pub fn install_funext(env: &mut Env) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::check::Checker;
+    use rv_kernel_core::check::Checker;
     use crate::generate::{declare_inductive, eq_spec, nat_spec};
-    use crate::quotient::install_quot;
-    use crate::reduce::Reducer;
-    use crate::term::name as nm;
+    use rv_kernel_core::quotient::install_quot;
+    use rv_kernel_core::reduce::Reducer;
+    use rv_kernel_core::term::name as nm;
 
     fn env_with_funext() -> Env {
         let mut env = Env::new();

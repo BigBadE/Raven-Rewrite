@@ -14,11 +14,11 @@
 //!   bottom-up. [`classify`] reads that off as the spec/exec distinction: a pure
 //!   computation is admissible as logic (a `spec`), an effectful one is `exec`.
 
-use crate::check::{Checker, LocalCtx};
+use rv_kernel_core::check::{Checker, LocalCtx};
 use crate::effect::Comp;
 use crate::erase;
-use crate::reduce::Reducer;
-use crate::term::{Grade, Term};
+use rv_kernel_core::reduce::Reducer;
+use rv_kernel_core::term::{Grade, Term};
 use crate::Env;
 
 /// Re-grade the `Π` binders of `ty`: type/proof parameters become grade `0`.
@@ -96,8 +96,8 @@ pub fn classify(c: &Comp) -> Mode {
 mod tests {
     use super::*;
     use crate::erase::{erase, Erased};
-    use crate::kernel::Kernel;
-    use crate::term::name;
+    use rv_kernel_core::kernel::Kernel;
+    use rv_kernel_core::term::name;
 
     fn cn(s: &str) -> Term {
         Term::cnst(name(s), vec![])

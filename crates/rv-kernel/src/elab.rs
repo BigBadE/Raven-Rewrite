@@ -1,4 +1,4 @@
-//! Elaboration: surface ([`crate::surface`]) → core ([`crate::term`]).
+//! Elaboration: surface ([`crate::surface`]) → core ([`rv_kernel_core::term`]).
 //!
 //! The elaborator's main job is turning **named** binders into **de Bruijn** indices
 //! and resolving every name to either a local variable or an environment constant. It
@@ -12,12 +12,13 @@
 //! definitions, inductives, and proofs as readable text and have the trusted
 //! [`Kernel`] check them.
 
-use crate::check::{Checker, LocalCtx};
+use rv_kernel_core::check::{Checker, LocalCtx};
 use crate::generate::{CtorSpec, IndSpec};
-use crate::kernel::Kernel;
-use crate::level::Level;
+use crate::kernel_ext::KernelExt;
+use rv_kernel_core::kernel::Kernel;
+use rv_kernel_core::level::Level;
 use crate::surface::{self, Binder, Command, Expr, SLevel};
-use crate::term::{name, Term};
+use rv_kernel_core::term::{name, Term};
 use crate::Env;
 
 /// Elaborates surface expressions against a fixed environment.
@@ -409,7 +410,7 @@ mod tests {
         .expect("a polymorphic list should declare");
 
         match k.env().get("Lst").unwrap() {
-            crate::env::Decl::Inductive(i) => {
+            rv_kernel_core::env::Decl::Inductive(i) => {
                 assert_eq!(i.num_params, 1, "the <A> parameter is a param, not an index");
                 assert_eq!(i.num_indices, 0);
             }

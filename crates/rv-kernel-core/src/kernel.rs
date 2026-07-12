@@ -5,19 +5,28 @@
 //! well-formed declarations. (The lower-level [`Env::insert`] and the Phase-1
 //! `declare_raw` bypass these checks and are for bootstrapping/oracles.)
 //!
-//! Four ways to extend the environment:
+//! Two ways to extend the environment directly from this crate:
 //! * [`Kernel::add_axiom`] — a name and a type (which must be a well-formed type),
 //!   trusted as stated.
 //! * [`Kernel::add_definition`] — a name, type, and value, where the value is checked
 //!   against the type. Unfolds by δ.
-//! * [`Kernel::declare_inductive`] — an inductive family (positivity + recursor
-//!   synthesis live in [`crate::generate`]).
 //! * [`Kernel::check`] / [`Kernel::infer`] — type-check a term against the current
 //!   environment (e.g. a candidate proof).
+//!
+//! Inductive/coinductive declaration and the axiomatic schema installers
+//! (`declare_inductive`, `declare_mutual`, `declare_coinductive`, `install_quot`,
+//! `install_trunc`, `install_funext`, `check_usage`) are **not** inherent methods here:
+//! their *synthesis*/derivation logic (`rv_kernel::generate`, `::mutual`, `::graded`,
+//! `::funext`) is untrusted and lives in the `rv-kernel` crate, which depends on this
+//! one — not the other way around. `rv-kernel` provides them back as an extension
+//! trait (`KernelExt`, in `rv_kernel::kernel_ext`) implemented for this [`Kernel`],
+//! using [`Kernel::env_mut`] as the sanctioned mutation point. The *typing rules* those
+//! installers must satisfy (the shape [`crate::inductive::declare_raw`] enforces, and
+//! the constant schemas in [`crate::quotient`]/[`crate::trunc`]/[`crate::circle`]/
+//! [`crate::hit`]/[`crate::coinductive`]) still live here, in the trusted core.
 
 use crate::check::{Checker, LocalCtx};
 use crate::env::{Decl, Env};
-use crate::generate::{declare_inductive, IndSpec};
 use crate::term::{name, Term};
 
 /// Reject any term still carrying an elaboration hole (a term or level metavariable)
@@ -45,6 +54,14 @@ impl Kernel {
     /// Borrow the underlying environment (e.g. to build a [`Checker`] or reducer).
     pub fn env(&self) -> &Env {
         &self.env
+    }
+
+    /// Mutably borrow the underlying environment. This is the sanctioned extension
+    /// point for `rv_kernel::kernel_ext::KernelExt` (untrusted schema installers /
+    /// inductive synthesis) — those calls still land on [`crate::env::Env::insert`] under the
+    /// hood exactly as before the crate split, they just no longer live in this crate.
+    pub fn env_mut(&mut self) -> &mut Env {
+        &mut self.env
     }
 
     /// A checker bound to the current environment.
@@ -82,62 +99,6 @@ impl Kernel {
                 .map_err(|e| format!("definition '{n}': value does not match type: {e}"))?;
         }
         self.env.insert(name(n), Decl::Def { num_levels, ty, value })
-    }
-
-    /// Declare an inductive family.
-    pub fn declare_inductive(&mut self, spec: IndSpec) -> Result<(), String> {
-        declare_inductive(&mut self.env, spec)
-    }
-
-    /// Declare a **mutual** group of inductive families simultaneously.
-    pub fn declare_mutual(&mut self, specs: Vec<IndSpec>) -> Result<(), String> {
-        crate::mutual::declare_mutual(&mut self.env, specs)
-    }
-
-    /// Declare a **coinductive** ("codata") family: a greatest fixpoint given by its
-    /// destructors, with a generated corecursor (see [`crate::coinductive`]).
-    pub fn declare_coinductive(
-        &mut self,
-        spec: crate::coinductive::CoindSpec,
-    ) -> Result<(), String> {
-        crate::coinductive::declare_coinductive(&mut self.env, spec)
-    }
-
-    /// Install the fixed **quotient** schema (`Quot`, `Quot.mk`, `Quot.sound`,
-    /// `Quot.lift`, `Quot.ind`). Requires the `Eq` inductive to already be present. See
-    /// [`crate::quotient`] for the types and the soundness argument.
-    pub fn install_quot(&mut self) -> Result<(), String> {
-        crate::quotient::install_quot(&mut self.env)
-    }
-
-    /// Install the fixed **propositional-truncation** higher-inductive schema (`Trunc`,
-    /// `Trunc.tr`, `Trunc.eq`, `Trunc.lift`, `Trunc.ind`). Requires the `Eq` inductive to
-    /// already be present. See [`crate::trunc`] for the types and the soundness argument.
-    pub fn install_trunc(&mut self) -> Result<(), String> {
-        crate::trunc::install_trunc(&mut self.env)
-    }
-
-    /// Install `funext` — function extensionality — **derived** from `Quot`/`Quot.sound`/
-    /// `Quot.lift` (requires [`Kernel::install_quot`] first) plus this kernel's already-
-    /// definitional η-conversion. See [`crate::funext`] for the statement and proof.
-    pub fn install_funext(&mut self) -> Result<(), String> {
-        crate::funext::install_funext(&mut self.env)
-    }
-
-    /// Check the QTT usage discipline (`crate::graded`) of the stored definition
-    /// `name`: a graded binder (linear `1`/erased `0`) in its type must be used
-    /// accordingly in its value. Ungraded (`ω`, the default) binders always pass, so
-    /// this only ever rejects code that actually opts into a grade annotation — it is
-    /// **not** run automatically by [`Kernel::add_definition`] (existing callers, and
-    /// the `graded` module's own unit tests, rely on `add_definition` alone never
-    /// enforcing usage). The surface layer (the `fun`/`forall` graded-binder syntax)
-    /// calls this explicitly after elaborating each proof-fragment declaration.
-    pub fn check_usage(&self, n: &str) -> Result<(), String> {
-        match self.env.get(n) {
-            Some(Decl::Def { ty, value, .. }) => crate::graded::check_usage_against(&self.env, value, ty)
-                .map_err(|e| format!("definition '{n}': {e}")),
-            _ => Ok(()), // axioms/inductives/etc. carry no value to check usage of.
-        }
     }
 
     /// Infer the type of a closed term against the current environment.
