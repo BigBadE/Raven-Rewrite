@@ -159,6 +159,43 @@ impl Kernel {
     }
 }
 
+/// **Independent re-check harness.** Given a fully-elaborated environment — the actual
+/// result of running the elaborator, tactic engine, or a schema installer over a whole
+/// proof corpus — re-derive trust from scratch: for every stored [`Decl::Def`], build a
+/// brand-new [`Checker`] and check its `value` against its `ty`, ignoring entirely how the
+/// definition was produced.
+///
+/// This is the concrete, testable core of the trust-split: [`Kernel::add_definition`]
+/// already checks each definition *at insertion time*, but that only proves the checker
+/// accepted the term the elaborator handed it *then*, via the elaborator's own call path.
+/// This function re-walks the finished environment after the fact through a fresh
+/// [`Checker`], so it also catches anything that reached the environment through a raw
+/// [`Env::insert`] (a schema installer bypass, see the module docs) *if* that bypass ever
+/// stored a `Def` rather than an axiomatic constant — those never should, and this harness
+/// is what turns "never should" into "verified they don't, on the whole corpus."
+///
+/// Non-`Def` declarations (axioms, inductives, recursors, constructors, and the `Quot`/
+/// `Trunc`/`Circle`/coinductive primitive schemas) carry no value to check — they are
+/// trusted as stated, by design (see the crate-level trust map in `lib.rs`). Only `Def`
+/// entries have a value/type pair that can be independently re-verified.
+///
+/// Returns the number of definitions re-checked, or the first failure with the offending
+/// name.
+pub fn recheck_all_definitions(env: &Env) -> Result<usize, String> {
+    let mut n = 0usize;
+    for (name, decl) in env.iter() {
+        if let Decl::Def { ty, value, .. } = decl {
+            reject_meta(ty).map_err(|e| format!("independent re-check of '{name}': {e}"))?;
+            reject_meta(value).map_err(|e| format!("independent re-check of '{name}': {e}"))?;
+            let chk = Checker::new(env);
+            chk.check(&mut LocalCtx::new(), value, ty)
+                .map_err(|e| format!("independent re-check of '{name}' failed: {e}"))?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,5 +246,38 @@ mod tests {
         )
         .unwrap();
         assert!(k.env().contains("id"));
+    }
+
+    #[test]
+    fn recheck_harness_accepts_a_healthy_environment() {
+        let mut k = Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("a", 0, Term::cnst(name("A"), vec![])).unwrap();
+        k.add_definition(
+            "id_A",
+            0,
+            Term::arrow(Term::cnst(name("A"), vec![]), Term::cnst(name("A"), vec![])),
+            Term::lam(Term::cnst(name("A"), vec![]), Term::Var(0)),
+        )
+        .unwrap();
+        // One `Def` in the environment (`A`/`a` are axioms, no value to re-check).
+        assert_eq!(recheck_all_definitions(k.env()).unwrap(), 1);
+    }
+
+    #[test]
+    fn recheck_harness_catches_a_smuggled_bad_definition() {
+        // Bypass `Kernel::add_definition` entirely — insert an ill-typed `Def` straight
+        // into a raw `Env`, the way a buggy schema installer might (see the module docs
+        // on `Env::insert`/`declare_raw` bypasses). The front door (`add_definition`)
+        // would have rejected this; the harness must too, on replay.
+        let mut env = Env::new();
+        env.insert(name("A"), Decl::Axiom { num_levels: 0, ty: Term::typ(0) }).unwrap();
+        env.insert(
+            name("bad"),
+            Decl::Def { num_levels: 0, ty: Term::cnst(name("A"), vec![]), value: Term::typ(0) },
+        )
+        .unwrap();
+        let err = recheck_all_definitions(&env).unwrap_err();
+        assert!(err.contains("bad"), "got: {err}");
     }
 }
