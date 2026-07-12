@@ -43,6 +43,7 @@ pub mod level;
 pub mod logic;
 pub mod mutual;
 pub mod nbe;
+pub mod quotient;
 pub mod reduce;
 pub mod surface;
 pub mod term;

@@ -14,7 +14,7 @@
 //! be adopted as the performance path with confidence, while the proven reducer
 //! remains the reference.
 
-use crate::env::{Decl, Env};
+use crate::env::{Decl, Env, QuotRole};
 use crate::level::{self, Level};
 use crate::term::{Grade, Name, Term};
 use std::rc::Rc;
@@ -154,10 +154,16 @@ impl<'a> Nbe<'a> {
             Value::Stuck(h, spine) => {
                 let mut spine = spine.clone();
                 spine.push(a);
-                // A recursor may fire (ι); otherwise a destructor may fire (ν).
+                // A recursor may fire (ι); otherwise a destructor may fire (ν);
+                // otherwise `Quot.lift` may fire (the quotient computation rule).
                 let stuck = self.try_iota(h.clone(), spine);
                 if let Value::Stuck(h2, spine2) = &*stuck {
-                    self.try_nu(h2.clone(), spine2.clone())
+                    let stuck = self.try_nu(h2.clone(), spine2.clone());
+                    if let Value::Stuck(h3, spine3) = &*stuck {
+                        self.try_quot_lift(h3.clone(), spine3.clone())
+                    } else {
+                        stuck
+                    }
                 } else {
                     stuck
                 }
@@ -253,6 +259,36 @@ impl<'a> Nbe<'a> {
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+        Rc::new(Value::Stuck(h, spine))
+    }
+
+    /// If `h spine` is `Quot.lift` saturated on a `Quot.mk` scrutinee, fire the single
+    /// quotient computation rule `Quot.lift … f resp (Quot.mk … a) ↦ f a`; otherwise
+    /// leave it stuck. The exact dual of [`try_iota`]/[`try_nu`] for the fixed
+    /// `Quot.lift` constant: `f` is at spine index 3, the scrutinee `q` at index 5, and
+    /// the representative `a` is the last argument of the `Quot.mk` spine `[A, R, a]`.
+    fn try_quot_lift(&self, h: Head, spine: Vec<Rc<Value>>) -> Rc<Value> {
+        const F_POS: usize = 3;
+        const SCRUT_POS: usize = 5;
+        if let Head::Const(lname, _) = &h {
+            if matches!(self.env.get(lname), Some(Decl::Quot(q)) if q.role == QuotRole::Lift)
+                && spine.len() > SCRUT_POS
+            {
+                if let Value::Stuck(Head::Const(mkn, _), margs) = &*spine[SCRUT_POS] {
+                    if matches!(self.env.get(mkn), Some(Decl::Quot(q)) if q.role == QuotRole::Mk)
+                        && margs.len() == 3
+                    {
+                        let a = margs[2].clone();
+                        let f = spine[F_POS].clone();
+                        let mut v = self.vapp(f, a);
+                        for extra in &spine[SCRUT_POS + 1..] {
+                            v = self.vapp(v, extra.clone());
+                        }
+                        return v;
                     }
                 }
             }
