@@ -27,6 +27,7 @@ pub mod env;
 pub mod face;
 pub mod hit;
 pub mod inductive;
+pub mod interval_hit;
 pub mod kan;
 pub mod kernel;
 pub mod level;
