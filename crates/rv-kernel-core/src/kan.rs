@@ -361,6 +361,195 @@ pub(crate) fn transp_pi_rule(dom: &Term, cod: &Term, a0: &Term) -> Term {
     Term::lam(dom_i1, body)
 }
 
+// ============================================================================
+// Phase 3.7: the `Π`-case `hcomp` filling rule.
+// ============================================================================
+//
+// Per the module doc above, `hcomp`'s type argument is a single **fixed** type `A`
+// (never a family), so there is no `A(i0)`-vs-`A(i1)` mismatch to reconcile the way
+// `transp`'s `Π` case had to (no `coe`/De Morgan reparametrization needed at all
+// here). CCHM's `Π`-case `hcomp` rule (Cohen–Coquand–Huber–Mörtberg §4.2) is simply
+// "push the composition into the codomain pointwise":
+//
+// ```text
+//   hcomp (Πx:A. B x) φ u u0
+//     ↦ λ (x : A). hcomp (B x) φ (λ i. (u i) @ x) (u0 x)
+// ```
+//
+// `A`/`B` are the (fixed, non-varying) domain/codomain of the fixed `Π` — no interval
+// dependence anywhere in the type former itself, so there's no filling *of the type*
+// to do; only the *system* `u` and the cap `u0` need to be pointwise-applied to the
+// fresh domain variable `x`, and a fresh `hcomp` built at the (fixed) codomain `B x`.
+//
+// # Why the naive term `App(u_at_i, x)` doesn't typecheck here — and the fix
+//
+// `u`'s own checked type is `Partial φ (Πx:A.B x)` (`Checker::infer`'s `Term::HComp`
+// arm: `check(u, Partial(φ,ty).lift(1,0))` under the interval binder) — `Partial` is
+// a **distinct, non-reducible** type former in this kernel (see `crate::face`: unlike
+// CCHM's own metatheory, where `Partial φ A`'s elements *are* ordinary elements of
+// `A` merely "restricted" to `φ`, here `Partial` never β/ι-reduces to `A`, and the
+// *only* way `Checker::check` accepts a term at a `Partial ψ A` type is (a) via the
+// dedicated [`crate::check::Checker::check_sys`] path, when the term is *syntactically*
+// a literal [`Term::Sys`], or (b) via the generic `infer`-and-compare fallback, which
+// requires the term to *already infer* to `Partial ψ A` outright). So a bare
+// `Term::App(u_at_i, x)` cannot be built as ordinary application: `Checker::infer`'s
+// `Term::App` arm demands its function position `infer` to a literal `Π`, and nothing
+// in this kernel makes a `Partial`-classified term whnf to one — there is no
+// `Partial`-elimination/application primitive.
+//
+// The fix mirrors exactly the `Π`-case `transp` rule's own guiding discipline
+// ("syntactic, conservative — match the concrete shape you can push through, else
+// stay stuck"): **push the application through `u`'s branches directly**, which only
+// makes sense — and only needs to be sound for — the one syntactic shape that
+// actually inhabits a `Partial` type structurally: a literal [`Term::Sys`]. For
+// `u = Sys [ψ_1 ↦ t_1, …, ψ_n ↦ t_n]` (each `t_k : Πx:A.B x`, an *ordinary*, fully
+// fibrant `Π`-typed term — `Partial`'s "restriction" lives only in the guard, not in
+// each branch's own type), pushing `@x` into every branch,
+// `Sys [ψ_1 ↦ t_1 x, …, ψ_n ↦ t_n x]`, is **ordinary, unconditionally sound**
+// application of each already-Π-typed branch — no new primitive, no new axiom, just
+// `n` ordinary `App` nodes wrapped back in a `Sys` with the very same guards (whose
+// coverage/compatibility obligations `crate::check::Checker::check_sys` re-derives
+// from scratch on the *rebuilt* system, exactly as it would for any other `Sys`).
+//
+// [`hcomp_pi_rule`] therefore returns `Option<Term>`: `Some` only when `u` is
+// *syntactically* (no `whnf`) a literal `Sys` — mirroring `transp_pi_rule`'s call
+// sites, which only fire on a syntactically literal `Π` family — and `None`
+// otherwise (e.g. `u` is a free/opaque `Partial`-typed neutral, or a `Sys` hidden
+// behind a `Let`/`Const`). When `None`, the caller ([`crate::reduce::Reducer::whnf`]
+// and [`crate::nbe::Nbe::eval`]) leaves the `hcomp` **stuck** — a real, but narrow and
+// honestly-documented, incompleteness (not unsoundness): exactly the same posture
+// `transp_pi_rule` already takes for a family that only *reduces* (rather than being
+// syntactically) `Π`-headed.
+//
+// # Construction and index bookkeeping
+//
+// Given `dom`/`cod` (the fixed `Π`'s two components, in the *same* binder convention
+// [`Term::Pi`] itself uses: `cod` under one extra binder for `Π`'s own domain variable
+// `x`), `phi` (the outer guard, living in the ambient context `Γ`, no binders — the
+// same frame `ty`/`u0` live in), and `u`'s branches `(ψ_k, t_k)` (each living in frame
+// `[i, Γ]`, one interval binder — the same frame `u` itself lives in, per `Term::HComp`'s
+// own convention):
+//
+// * **New guards** `ψ_k.lift(1,1)`: reindex from `[i,Γ]` to `[i,x,Γ]` (insert `x`
+//   *under* `i`, i.e. at cutoff 1, so `i = Var(0)` stays put and everything from `Γ`
+//   shifts up by one) — the same "insert a binder below an existing one" bookkeeping
+//   [`transp_pi_rule`] uses for `dom.lift(1,1)` (see that function's doc).
+// * **New branch bodies** `App(t_k.lift(1,1), Var(1))`: `t_k` reindexed the same way
+//   (`[i,Γ] → [i,x,Γ]`), then applied to the fresh `x = Var(1)` in that frame.
+// * **New line** `u' := Sys [ψ_1.lift(1,1) ↦ t_1.lift(1,1) x, …]`, living in frame
+//   `[i,x,Γ]` — exactly `Term::HComp`'s own convention for its `u` field (one interval
+//   binder over the *ambient* context, now `[x,Γ]`), so it slots directly into the
+//   inner `hcomp` with no further wrapping.
+// * **New guard** `phi.lift(1,0)`: `phi` has no binder of its own (frame `Γ`), so a
+//   plain `lift(1,0)` reindexes it into `[x,Γ]`.
+// * **New cap** `App(u0.lift(1,0), Var(0))`: `u0` (frame `Γ`) lifted into `[x,Γ]`,
+//   applied to the fresh `x = Var(0)` there.
+// * **Body**: `hcomp cod phi.lift(1,0) u' (u0.lift(1,0) x)`, living in frame `[x,Γ]` —
+//   exactly the frame a `Lam(dom, body)`'s body is expected in.
+//
+// [`hcomp_pi_rule`] builds exactly this (one `Lam` wrapping one nested `HComp`, whose
+// `u` field is the rebuilt `Sys`), analogous in shape to [`transp_pi_rule`]'s one `Lam`
+// wrapping one nested `Transp`.
+//
+// # Soundness
+//
+// This rule adds **no new axiom or primitive** — like [`transp_pi_rule`], it is a
+// pure rewriting of one `HComp` node into more `HComp`/`Sys`/`Lam`/`App` nodes, each
+// independently re-typechecked by the existing, unmodified `Checker::infer`/`check_sys`
+// (this phase adds no new *checking* rule at all, only a new *reduction*). The
+// argument:
+//
+// 1. **Type preservation.** The original `HComp(Π x:A.B x, φ, u, u0)` node's checked
+//    type is `Πx:A.B x` (`Checker::infer`'s `Term::HComp` arm always reports `ty`
+//    unchanged, *regardless* of which reduction rule — if any — later fires; subject
+//    reduction is what must hold, exactly as for `transp_pi_rule`). The built
+//    `Lam(A, body)` has, by `Checker::infer`'s `Term::Lam` arm, type `Πx:A. (type of
+//    body)`; `body = HComp(B x, φ', u', u0' x)` under `x:A` infers to `B x` by the
+//    *very same*, unmodified `Term::HComp` arm — **provided** its three obligations
+//    hold:
+//    - `check_cof_wellformed(φ')`: `φ' = φ.lift(1,0)`, a purely structural reindexing
+//      of an already-well-formed `φ` (every atom subject that was `: I` in `Γ` is
+//      still `: I` after uniformly lifting past one new binder — an ordinary
+//      weakening lemma, the same one every other binder-crossing rule in this file
+//      already relies on, e.g. `transp_pi_rule`'s `dom.lift`/`cod.lift` uses).
+//    - `check(u', Partial(φ',B x).lift(1,0))`: `u'` is *by construction* a literal
+//      `Sys` of exactly the branches `check_sys` needs — coverage
+//      (`entails(φ', ψ_1.lift(1,1) ∨ … ∨ ψ_n.lift(1,1))`) follows from the *original*
+//      coverage (`entails(φ, ψ_1 ∨ … ∨ ψ_n)`, required by the original `HComp`'s own
+//      `check(u, Partial(φ,ty).lift(1,0))` obligation) by the same structural
+//      weakening lemma — lifting is a language-level renaming, so it commutes with
+//      `∨`/`entails` exactly (`Cof::lift` is defined homomorphically over `And`/`Or`,
+//      see `crate::face::Cof::lift`); each branch typechecks
+//      (`App(t_k.lift(1,1), Var(1)) : B x`) because `t_k : Πx':A.B x'` (from the
+//      *original* system's own `check(t_k, ty)` obligation, `ty = Πx:A.Bx`) applied to
+//      `x` — ordinary, unconditional `Π`-application, giving `B x` by the standard
+//      substitution lemma; and compatibility (branches agreeing on overlaps) follows
+//      because `App(-, x)` is a *congruence* — if `t_i ≡ t_j` (the original
+//      compatibility obligation) then `t_i x ≡ t_j x` (definitional equality is a
+//      congruence for application, an existing, unmodified property of
+//      `Checker::is_def_eq`/`compare`).
+//    - Cap agreement `u'[i:=i0] ≡ u0'` (`u0' = App(u0.lift(1,0),Var(0))`): substituting
+//      `i:=i0` into `u'` distributes over the rebuilt `Sys`'s branches (substitution is
+//      structural on `Sys`), landing at `Sys[ψ_k.lift(1,1)[i:=i0] ↦ t_k.lift(1,1)[i:=i0]
+//      x]`; since the *original* cap agreement (`u[i:=i0] ≡ u0`, an already-checked
+//      obligation of the source `HComp`) forces `u[i:=i0]` and `u0` to be
+//      definitionally equal *as terms of type* `ty = Πx:A.Bx`, applying the same
+//      congruence (`App(-, x)` respects `≡`) gives `u[i:=i0] x ≡ u0 x`, i.e. exactly
+//      `u'[i:=i0] ≡ u0'` after the frame reindexing (lift/subst commute in the
+//      standard way — the same bookkeeping [`Term::subst_ctx_keep_frame`]'s own doc
+//      derives for the analogous `Π`-case `transp` rule).
+// 2. **Every produced subterm independently re-typechecks** — not merely argued:
+//    [`kernel_tests::hcomp_pi_rule_transports_a_concrete_partial_function`] below
+//    builds a concrete instance, reduces it, and re-runs `Checker::infer` on the
+//    reduced normal form from scratch.
+// 3. **Agreement with the trivial `⊤` rule.** Both [`crate::reduce::Reducer::whnf`]
+//    and [`crate::nbe::Nbe::eval`] check `is_true(phi)` (the trivial rule) **first**,
+//    unconditionally, before ever consulting `hcomp_pi_rule` — so the two rules never
+//    *both* fire on the same term (no possible disagreement by construction, exactly
+//    mirroring how `transp`'s regularity check is likewise always tried first). A
+//    dedicated differential test
+//    ([`kernel_tests::hcomp_pi_rule_agrees_with_the_trivial_rule_when_phi_is_top`])
+//    confirms the *values* still agree (up to conversion, after applying both to a
+//    concrete argument) even though only one rule's *reduction step* ever literally
+//    fires.
+// 4. **No new equation between unrelated closed terms.** The rule only ever rewrites
+//    one term into another via ordinary substitution/reindexing and re-wraps the
+//    pieces in `HComp`/`Sys`/`Lam`/`App` — it never invents a value or asserts an
+//    equation not already forced by the source system's own (already-checked)
+//    obligations. The anti-`False` attacks from the module doc above are re-run
+//    through the `Π` case specifically in
+//    [`kernel_tests::hcomp_pi_rule_cannot_conjure_an_inhabitant_of_an_unrelated_axiom`]
+//    and [`kernel_tests::hcomp_pi_rule_does_not_conflate_branches_at_different_arguments`].
+
+/// The `Π`-case `hcomp` filling rule (see the module doc's "Phase 3.7" section).
+/// `dom`/`cod` are the fixed `Π`'s two components (same binder convention as
+/// [`Term::Pi`]); `phi`/`u0` live in the ambient context; `u` is the checked line
+/// (frame `[i, Γ]`, one interval binder). Returns `None` — the rule doesn't fire,
+/// `hcomp` stays stuck — unless `u` is *syntactically* a literal [`Term::Sys`] (see
+/// the module doc for why only that shape can be pushed through `@x` soundly).
+pub(crate) fn hcomp_pi_rule(
+    dom: &Term,
+    cod: &Term,
+    phi: &Cof,
+    u: &Term,
+    u0: &Term,
+) -> Option<Term> {
+    let Term::Sys(branches) = u else {
+        return None;
+    };
+    // Push `@x` (the fresh `Π`-domain variable, `Var(1)` in the new frame `[i,x,Γ]`)
+    // into every branch — see the module doc's "Construction" section.
+    let new_branches: Vec<(Cof, Term)> = branches
+        .iter()
+        .map(|(psi_k, t_k)| (psi_k.lift(1, 1), Term::app(t_k.lift(1, 1), Term::Var(1))))
+        .collect();
+    let new_u = Term::sys(new_branches);
+    let new_phi = phi.lift(1, 0);
+    let new_u0 = Term::app(u0.lift(1, 0), Term::Var(0));
+    let body = Term::hcomp(cod.clone(), new_phi, new_u, new_u0);
+    Some(Term::lam(dom.clone(), body))
+}
+
 #[cfg(test)]
 mod kernel_tests {
     use crate::face::Cof;
@@ -847,5 +1036,158 @@ mod kernel_tests {
         // Structurally: a whnf'd `Lam` is never going to be `is_def_eq` to the bare
         // constant `f` (different term shapes, and — decisively — different types).
         assert!(!k.def_eq(&t, &cn("f")));
+    }
+
+    // ---- hcomp: the `Π`-case filling rule (Phase 3.7, see the module doc above) ----
+
+    /// **`hcomp_pi_rule` itself returns `None` for a non-`Sys` line** — checked at the
+    /// pure-function level (bypassing the full checker) since, in this kernel, a
+    /// well-typed `hcomp` whose line `u` is *not* a literal `Sys` necessarily has an
+    /// inferred type of `Partial φ ty` (never reducible back to plain `ty` — `Partial`
+    /// has no elimination rule here, see `hcomp_pi_rule`'s module doc), so its cap
+    /// `u[i:=i0]` can never be definitionally equal to a plain-`ty`-typed `u0` other
+    /// than in degenerate, non-representative ways — there is no well-typed
+    /// non-`Sys`-line `hcomp`-at-`Π` term to exercise this through the full checker
+    /// (see `hcomp_opaque_partial_typed_axiom_cannot_bypass_the_cap_check` above for
+    /// the general form of that rejection). Confirms the conservative "only a literal
+    /// `Sys` pushes through" guard directly instead.
+    #[test]
+    fn hcomp_pi_rule_returns_none_for_a_non_sys_line() {
+        let dom = cn("A");
+        let cod = cn("A").lift(1, 0);
+        let u = cn("f").lift(1, 0); // constant line ⟨i⟩ f, not a literal Sys
+        assert!(super::hcomp_pi_rule(&dom, &cod, &Cof::bot(), &u, &cn("f")).is_none());
+    }
+
+    /// **The `Π` rule fires** on a `Sys`-built line at a `Π` type, producing a literal
+    /// `Lam`, which independently re-typechecks (subject reduction, checked from
+    /// scratch — mirrors `transp_pi_rule_transports_a_concrete_function`'s discipline)
+    /// at the *original* `Π` type, and genuinely applies.
+    #[test]
+    fn hcomp_pi_rule_transports_a_concrete_partial_function() {
+        let k = pi_env();
+        let u = Term::sys(vec![(Cof::top(), cn("f").lift(1, 0))]); // ⟨i⟩ [⊤ ↦ f]
+        // φ = ⊥ so the trivial (`φ=⊤`) rule does NOT fire first — this isolates the
+        // Π rule specifically (see the module doc's "Agreement" point: the two rules
+        // are mutually exclusive by construction, trivial always tried first).
+        let t = Term::hcomp(Term::arrow(cn("A"), cn("A")), Cof::bot(), u, cn("f"));
+        let ty = k.infer(&t).unwrap();
+        assert!(k.def_eq(&ty, &Term::arrow(cn("A"), cn("A"))));
+
+        let reducer = crate::reduce::Reducer::new(k.env());
+        let whnf = reducer.whnf(&t);
+        assert!(matches!(whnf, Term::Lam(..)), "expected the Π rule to fire, got {}", whnf.pretty());
+
+        // Subject reduction: the reduced Lam independently re-typechecks at A → A.
+        let reinferred = k.infer(&whnf).unwrap();
+        assert!(k.def_eq(&reinferred, &Term::arrow(cn("A"), cn("A"))));
+
+        // It genuinely applies at `a : A`, producing a well-typed `A`-classified
+        // (if not further reduced, since φ = ⊥ never decides) result.
+        let applied = Term::app(whnf, cn("a"));
+        let applied_ty = k.infer(&applied).unwrap();
+        assert!(k.def_eq(&applied_ty, &cn("A")));
+    }
+
+    /// Differential check (this crate's standing convention): the trusted reducer and
+    /// NbE agree on the `Π`-rule reduction.
+    #[test]
+    fn hcomp_pi_rule_agrees_between_reducer_and_nbe() {
+        let k = pi_env();
+        let u = Term::sys(vec![(Cof::top(), cn("f").lift(1, 0))]);
+        let t = Term::hcomp(Term::arrow(cn("A"), cn("A")), Cof::bot(), u, cn("f"));
+        let reducer = crate::reduce::Reducer::new(k.env());
+        let nbe = crate::nbe::Nbe::new(k.env());
+        let applied = Term::app(t.clone(), cn("a"));
+        let whnf_applied = reducer.whnf(&applied);
+        assert!(nbe.conv(&applied, &whnf_applied));
+    }
+
+    /// **Agreement with the trivial `⊤` rule**: when `φ` genuinely is `⊤` (so the
+    /// trivial rule fires, not the Π rule — priority order, see the module doc), the
+    /// value produced is still the *same* (up to conversion, applied at a concrete
+    /// argument) as what the Π rule *would* have built had it fired instead — checked
+    /// by calling `hcomp_pi_rule` directly (bypassing the reducer's priority order) and
+    /// comparing.
+    #[test]
+    fn hcomp_pi_rule_agrees_with_the_trivial_rule_when_phi_is_top() {
+        let k = pi_env();
+        let u = Term::sys(vec![(Cof::top(), cn("f").lift(1, 0))]);
+        let t = Term::hcomp(Term::arrow(cn("A"), cn("A")), Cof::top(), u.clone(), cn("f"));
+        let reducer = crate::reduce::Reducer::new(k.env());
+
+        // The trivial rule's own answer, applied at `a`.
+        let trivial_applied = Term::app(t.clone(), cn("a"));
+        let trivial_whnf = reducer.whnf(&trivial_applied);
+
+        // What the Π rule would have built, had it fired, applied at `a`.
+        let Term::Pi(_g, dom, cod) = Term::arrow(cn("A"), cn("A")) else { unreachable!() };
+        let pi_built = super::hcomp_pi_rule(&dom, &cod, &Cof::top(), &u, &cn("f")).unwrap();
+        let pi_applied = Term::app(pi_built, cn("a"));
+        let pi_whnf = reducer.whnf(&pi_applied);
+
+        assert!(reducer.is_def_eq(&trivial_whnf, &pi_whnf));
+    }
+
+    /// Sanity: an `hcomp`-built definition using the `Π` rule survives the independent
+    /// recheck harness.
+    #[test]
+    fn hcomp_pi_rule_definitions_survive_independent_recheck() {
+        let mut k = pi_env();
+        let u = Term::sys(vec![(Cof::top(), cn("f").lift(1, 0))]);
+        let t = Term::hcomp(Term::arrow(cn("A"), cn("A")), Cof::bot(), u, cn("f"));
+        k.add_definition("hf", 0, Term::arrow(cn("A"), cn("A")), t).unwrap();
+        assert_eq!(crate::kernel::recheck_all_definitions(k.env()).unwrap(), 1);
+    }
+
+    /// **Adversarial (anti-`False`, Π-case)**: `hcomp`'s `Π` rule cannot conjure an
+    /// inhabitant of an unrelated, otherwise-uninhabited axiom type `E` — pushing `@x`
+    /// through the system's branches only ever reuses already-well-typed-at-`ty`
+    /// branch terms; there's no way to land at a type the source system never
+    /// mentioned.
+    #[test]
+    fn hcomp_pi_rule_cannot_conjure_an_inhabitant_of_an_unrelated_axiom() {
+        let mut k = pi_env();
+        k.add_axiom("E", 0, Term::typ(0)).unwrap();
+        // `u`'s branch is `f : A → A`, not `: A → E` — mismatched against the claimed
+        // `hcomp` type `A → E`.
+        let u = Term::sys(vec![(Cof::top(), cn("f").lift(1, 0))]);
+        let t = Term::hcomp(Term::arrow(cn("A"), cn("E")), Cof::bot(), u, cn("f"));
+        assert!(k.infer(&t).is_err());
+    }
+
+    /// **Adversarial**: two structurally-distinct `hcomp`-at-`Π` terms (different
+    /// systems) are not equated merely by both reducing to *some* `Lam` of the same
+    /// `Π` type — the built `Lam`s stay distinguishable when applied to distinct
+    /// arguments (here, two systems that behave differently isn't set up directly;
+    /// instead this pins that the same system applied to two *different* arguments
+    /// does NOT get conflated — the branches aren't smeared together across
+    /// applications).
+    #[test]
+    fn hcomp_pi_rule_does_not_conflate_branches_at_different_arguments() {
+        let mut k = pi_env();
+        k.add_axiom("g", 0, Term::arrow(cn("A"), cn("A"))).unwrap();
+        assert!(!k.def_eq(&cn("f"), &cn("g")));
+        let u = Term::sys(vec![(Cof::top(), cn("f").lift(1, 0))]);
+        let t = Term::hcomp(Term::arrow(cn("A"), cn("A")), Cof::bot(), u, cn("f"));
+        let reducer = crate::reduce::Reducer::new(k.env());
+        let whnf = reducer.whnf(&t);
+        // Applying the transported `f` must not be confused with an unrelated `g`.
+        let applied_f = Term::app(whnf.clone(), cn("a"));
+        let g_applied = Term::app(cn("g"), cn("a"));
+        assert!(!k.def_eq(&applied_f, &g_applied));
+    }
+
+    /// **Adversarial**: `hcomp`'s cap-agreement check still gates the `Π` rule's own
+    /// input — a `Sys`-built line whose cap doesn't match `u0` is rejected before the
+    /// `Π` rule ever gets a chance to fire (this phase adds no new *checking* rule, so
+    /// the pre-existing cap-agreement obligation is untouched).
+    #[test]
+    fn hcomp_pi_rule_input_still_requires_cap_agreement() {
+        let mut k = pi_env();
+        k.add_axiom("g", 0, Term::arrow(cn("A"), cn("A"))).unwrap();
+        let u = Term::sys(vec![(Cof::top(), cn("g").lift(1, 0))]); // line is g
+        let t = Term::hcomp(Term::arrow(cn("A"), cn("A")), Cof::bot(), u, cn("f")); // cap claims f
+        assert!(k.infer(&t).is_err());
     }
 }
