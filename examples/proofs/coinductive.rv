@@ -13,10 +13,11 @@
 //   Stream.head A (Stream.corec A X h t s)  ↝  h s
 //   Stream.tail A (Stream.corec A X h t s)  ↝  Stream.corec A X h t (t s)
 //
-// (Observations are named via `def`s first, then compared in a `fn`'s return type —
-// a dotted call such as `Stream.head(...)` isn't yet supported as the *head* of a
-// `fn`'s return-type expression, only in value position; naming it first sidesteps
-// that surface-grammar gap without touching `rv-syntax`.)
+// A dotted call such as `Stream.head(...)` is usable directly as (part of) a `fn`'s
+// return-type expression — `parse_type` in `rv-syntax` accepts a `.field`/`.method(args)`
+// continuation on a type-expression head, lowering to the same `Expr::Field`/
+// `Expr::MethodCall` the value-expression parser produces (see `parse_app_spine`), so no
+// `def`-wrapper is needed to name the observation first.
 
 enum Nat { Zero, Succ(Nat) }
 
@@ -34,36 +35,29 @@ def seven() : Nat := Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ
 def one() : Nat := Nat::Succ(Nat::Zero)
 def two() : Nat := Nat::Succ(Nat::Succ(Nat::Zero))
 
-// The observations, named so a `fn`'s return type can compare them by an ordinary
-// (non-dotted) head.
-def repeat7_head() : Nat := Stream.head(Nat, repeat(seven()))
-def repeat7_tail_tail_head() : Nat := Stream.head(Nat, Stream.tail(Nat, Stream.tail(Nat, repeat(seven()))))
-def nats_at_0() : Nat := Stream.head(Nat, nats())
-def nats_at_1() : Nat := Stream.head(Nat, Stream.tail(Nat, nats()))
-def nats_at_2() : Nat := Stream.head(Nat, Stream.tail(Nat, Stream.tail(Nat, nats())))
-
 // `head (repeat 7) = 7`, definitionally — the ν-rule on `Stream.head` fires through
-// `Stream.corec` without any further reasoning.
-fn repeat_head() -> repeat7_head() == seven() {
+// `Stream.corec` without any further reasoning. The observation is written directly
+// (dotted head) in the `fn`'s return type.
+fn repeat_head() -> Stream.head(Nat, repeat(seven())) == seven() {
     Eq::refl(Nat, seven())
 }
 
 // `head (tail (tail (repeat 7))) = 7` — observing through several `tail`s of a
 // constant stream still yields the seed, definitionally.
-fn repeat_tail_tail_head() -> repeat7_tail_tail_head() == seven() {
+fn repeat_tail_tail_head() -> Stream.head(Nat, Stream.tail(Nat, Stream.tail(Nat, repeat(seven())))) == seven() {
     Eq::refl(Nat, seven())
 }
 
 // `nats` counts up: `nats[0] = 0`, `nats[1] = 1`, `nats[2] = 2`, each observation
 // firing the ν-rule (`head` composed with a chain of `tail`s) definitionally.
-fn nats_0() -> nats_at_0() == Nat::Zero {
+fn nats_0() -> Stream.head(Nat, nats()) == Nat::Zero {
     Eq::refl(Nat, Nat::Zero)
 }
 
-fn nats_1() -> nats_at_1() == one() {
+fn nats_1() -> Stream.head(Nat, Stream.tail(Nat, nats())) == one() {
     Eq::refl(Nat, one())
 }
 
-fn nats_2() -> nats_at_2() == two() {
+fn nats_2() -> Stream.head(Nat, Stream.tail(Nat, Stream.tail(Nat, nats()))) == two() {
     Eq::refl(Nat, two())
 }
