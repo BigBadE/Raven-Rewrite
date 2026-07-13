@@ -122,39 +122,39 @@ fn le_antisym(a: Nat, b: Nat, h1: Le(a, b)) -> Le(b, a) -> a == b {
 
 // ----- max / min -----------------------------------------------------------------------------
 
-// `max`/`min` are curried (`Nat -> (Nat -> Nat)`), matching the `nth`/`lookup` idiom used
-// elsewhere in the corpus: a self-recursive call from inside a *second*, nested `match` needs
-// the recursion parameter returned as a function rather than matched directly, so the
-// elaborator can see the self-reference resolve inside the returned closure.
-fn max(n: Nat) -> (Nat -> Nat) {
+// `max`/`min` recurse on both parameters at once (`n` via the outer `match`, `m` via a
+// nested one in the `Succ` arm) — the elaborator auto-curries this internally so the
+// self-recursive call's induction hypothesis is a function of `m`, but the source stays
+// the natural two-parameter form.
+fn max(n: Nat, m: Nat) -> Nat {
     match n {
-      | Nat::Zero    => fun (m: Nat) => m
-      | Nat::Succ(a) => fun (m: Nat) => match m {
+      | Nat::Zero    => m
+      | Nat::Succ(a) => match m {
           | Nat::Zero    => Nat::Succ(a)
-          | Nat::Succ(b) => Nat::Succ(max(a)(b))
+          | Nat::Succ(b) => Nat::Succ(max(a, b))
         }
     }
 }
 
-fn min(n: Nat) -> (Nat -> Nat) {
+fn min(n: Nat, m: Nat) -> Nat {
     match n {
-      | Nat::Zero    => fun (m: Nat) => Nat::Zero
-      | Nat::Succ(a) => fun (m: Nat) => match m {
+      | Nat::Zero    => Nat::Zero
+      | Nat::Succ(a) => match m {
           | Nat::Zero    => Nat::Zero
-          | Nat::Succ(b) => Nat::Succ(min(a)(b))
+          | Nat::Succ(b) => Nat::Succ(min(a, b))
         }
     }
 }
 
 // `max n 0 == n` (definitional in both directions once `n` is split), used to close the `Zero`
 // case of `max_comm`.
-fn max_zero_r(n: Nat) -> max(n)(Nat::Zero) == n {
+fn max_zero_r(n: Nat) -> max(n, Nat::Zero) == n {
     match n {
       | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
       | Nat::Succ(a) => Eq::refl(Nat, Nat::Succ(a))
     }
 }
-fn min_zero_r(n: Nat) -> min(n)(Nat::Zero) == Nat::Zero {
+fn min_zero_r(n: Nat) -> min(n, Nat::Zero) == Nat::Zero {
     match n {
       | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
       | Nat::Succ(a) => Eq::refl(Nat, Nat::Zero)
@@ -162,67 +162,67 @@ fn min_zero_r(n: Nat) -> min(n)(Nat::Zero) == Nat::Zero {
 }
 
 // THEOREM: `max` commutes.
-fn max_comm(n: Nat) -> (m: Nat) -> max(n)(m) == max(m)(n) {
+fn max_comm(n: Nat) -> (m: Nat) -> max(n, m) == max(m, n) {
     match n {
-      | Nat::Zero    => fun (m: Nat) => symm(Nat, max(m)(Nat::Zero), m, max_zero_r(m))
+      | Nat::Zero    => fun (m: Nat) => symm(Nat, max(m, Nat::Zero), m, max_zero_r(m))
       | Nat::Succ(a) => fun (m: Nat) => match m {
           | Nat::Zero    => Eq::refl(Nat, Nat::Succ(a))
-          | Nat::Succ(b) => congr_arg(Nat, Nat, Nat::Succ, max(a)(b), max(b)(a), max_comm(a)(b))
+          | Nat::Succ(b) => congr_arg(Nat, Nat, Nat::Succ, max(a, b), max(b, a), max_comm(a)(b))
         }
     }
 }
 
 // THEOREM: `min` commutes.
-fn min_comm(n: Nat) -> (m: Nat) -> min(n)(m) == min(m)(n) {
+fn min_comm(n: Nat) -> (m: Nat) -> min(n, m) == min(m, n) {
     match n {
-      | Nat::Zero    => fun (m: Nat) => symm(Nat, min(m)(Nat::Zero), Nat::Zero, min_zero_r(m))
+      | Nat::Zero    => fun (m: Nat) => symm(Nat, min(m, Nat::Zero), Nat::Zero, min_zero_r(m))
       | Nat::Succ(a) => fun (m: Nat) => match m {
           | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
-          | Nat::Succ(b) => congr_arg(Nat, Nat, Nat::Succ, min(a)(b), min(b)(a), min_comm(a)(b))
+          | Nat::Succ(b) => congr_arg(Nat, Nat, Nat::Succ, min(a, b), min(b, a), min_comm(a)(b))
         }
     }
 }
 
 // `n <= max n m`, by induction.
-fn le_max_l(n: Nat) -> (m: Nat) -> Le(n, max(n)(m)) {
+fn le_max_l(n: Nat) -> (m: Nat) -> Le(n, max(n, m)) {
     match n {
       | Nat::Zero    => fun (m: Nat) => le_zero(m)
       | Nat::Succ(a) => fun (m: Nat) => match m {
           | Nat::Zero    => le_refl(Nat::Succ(a))
-          | Nat::Succ(b) => Le::LeSucc(a, max(a)(b), le_max_l(a)(b))
+          | Nat::Succ(b) => Le::LeSucc(a, max(a, b), le_max_l(a)(b))
         }
     }
 }
 
 // `m <= max n m`, by induction.
-fn le_max_r(n: Nat) -> (m: Nat) -> Le(m, max(n)(m)) {
+fn le_max_r(n: Nat) -> (m: Nat) -> Le(m, max(n, m)) {
     match n {
       | Nat::Zero    => fun (m: Nat) => le_refl(m)
       | Nat::Succ(a) => fun (m: Nat) => match m {
           | Nat::Zero    => le_zero(Nat::Succ(a))
-          | Nat::Succ(b) => Le::LeSucc(b, max(a)(b), le_max_r(a)(b))
+          | Nat::Succ(b) => Le::LeSucc(b, max(a, b), le_max_r(a)(b))
         }
     }
 }
 
 // `min n m <= n`, by induction.
-fn min_le_l(n: Nat) -> (m: Nat) -> Le(min(n)(m), n) {
+fn min_le_l(n: Nat) -> (m: Nat) -> Le(min(n, m), n) {
     match n {
       | Nat::Zero    => fun (m: Nat) => le_refl(Nat::Zero)
       | Nat::Succ(a) => fun (m: Nat) => match m {
           | Nat::Zero    => le_zero(Nat::Succ(a))
-          | Nat::Succ(b) => Le::LeSucc(min(a)(b), a, min_le_l(a)(b))
+          | Nat::Succ(b) => Le::LeSucc(min(a, b), a, min_le_l(a)(b))
         }
     }
 }
 
 // `min n m <= m`, by induction.
-fn min_le_r(n: Nat) -> (m: Nat) -> Le(min(n)(m), m) {
+fn min_le_r(n: Nat) -> (m: Nat) -> Le(min(n, m), m) {
     match n {
       | Nat::Zero    => fun (m: Nat) => le_zero(m)
       | Nat::Succ(a) => fun (m: Nat) => match m {
           | Nat::Zero    => le_refl(Nat::Zero)
-          | Nat::Succ(b) => Le::LeSucc(min(a)(b), b, min_le_r(a)(b))
+          | Nat::Succ(b) => Le::LeSucc(min(a, b), b, min_le_r(a)(b))
         }
     }
 }

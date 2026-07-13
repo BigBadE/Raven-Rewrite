@@ -171,19 +171,51 @@ impl Session {
     }
 
     /// Run a solo `fn`, rewriting any self-recursive name-calls into the `match` IH.
+    ///
+    /// A `match` on one parameter `n` compiles to `n`'s recursor with a *constant* motive
+    /// (see `elab_match`), so a plain non-dependent IH `a.rec` stands for the recursive
+    /// call with every *other* parameter held at the value it already has in the outer
+    /// scope — it cannot represent a call that varies a second parameter too (`max(a, b)`
+    /// for a `b` that isn't the outer `m`). The idiomatic fix is to curry: match `n` first,
+    /// return a function of the remaining parameters, so the IH is *itself* that function
+    /// and can be applied to any `b` (`max(a)(b)`). Rather than require every proof author
+    /// to write that by hand, auto-curry here: when the recursed parameter isn't the last
+    /// one and there's no `requires`/`ensures` to keep in the original parameter scope,
+    /// move every trailing parameter into the return type (as a `Π`) and into each arm's
+    /// body (as a `λ`) before elaboration — mechanically the same transform, done by the
+    /// (untrusted) elaborator instead of the source. This is purely a term rewrite; the
+    /// kernel re-checks the resulting definition like any other.
     fn run_solo_fn(&mut self, cmd: Command) -> Result<(), String> {
         let Command::Fn { name: nm, levels, params, ret, requires, ensures, body } = cmd else {
             unreachable!()
         };
-        let body = match match_recursion(&params, &body) {
+        match match_recursion(&params, &body) {
+            Some((spos, pnames, _)) if spos + 1 < pnames.len() && requires.is_empty() && ensures.is_empty() => {
+                let Expr::Match(scrut, arms) = body.peel().clone() else { unreachable!() };
+                let trailing: Vec<Binder> = params[spos + 1..].to_vec();
+                let new_params: Vec<Binder> = params[..=spos].to_vec();
+                let new_ret = surface::pi_telescope(trailing.clone(), ret.clone());
+                let curried_arms: Vec<MatchArm> = arms
+                    .into_iter()
+                    .map(|a| MatchArm {
+                        pat: a.pat,
+                        body: surface::lam_telescope(trailing.clone(), a.body),
+                    })
+                    .collect();
+                let curried_body = Expr::Match(scrut, curried_arms);
+                let mut recs = RecInfo::new();
+                recs.insert(nm.clone(), (spos, pnames[..=spos].to_vec()));
+                let rewritten = rewrite_rec_calls(&curried_body, &recs);
+                self.declare_fn(&nm, &levels, &new_params, &new_ret, &requires, &ensures, &rewritten)
+            }
             Some((spos, pnames, _)) => {
                 let mut recs = RecInfo::new();
                 recs.insert(nm.clone(), (spos, pnames));
-                rewrite_rec_calls(&body, &recs)
+                let body = rewrite_rec_calls(&body, &recs);
+                self.declare_fn(&nm, &levels, &params, &ret, &requires, &ensures, &body)
             }
-            None => body,
-        };
-        self.declare_fn(&nm, &levels, &params, &ret, &requires, &ensures, &body)
+            None => self.declare_fn(&nm, &levels, &params, &ret, &requires, &ensures, &body),
+        }
     }
 
     /// Compile a contiguous bundle of mutually-recursive `fn`s (one per group member).
