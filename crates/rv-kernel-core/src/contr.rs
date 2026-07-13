@@ -92,7 +92,7 @@
 //! `crate::cubical::j`/`refl`/`sym`, all pre-existing and already argued sound.
 
 use crate::check::Checker;
-use crate::cubical::{j, refl};
+use crate::cubical::{j, refl, trans};
 use crate::env::{Constructor, Decl, Env, Inductive, RecRule, Recursor};
 use crate::inductive::{declare_raw, RawInductive};
 use crate::level::Level;
@@ -664,6 +664,176 @@ fn declare_id_is_equiv(env: &mut Env) -> Result<(), String> {
     env.insert(name("idIsEquiv"), Decl::Def { num_levels: 1, ty, value })
 }
 
+// ============================================================================
+// h-levels: `isProp`/`isSet`/`isGroupoid`, and `isContrToIsProp` (HoTT book
+// §3.1/§3.11 and Definition 3.1.1/3.1.2 more generally, chapter 3 "Sets and
+// logic").
+// ============================================================================
+//
+// The h-level hierarchy classifies types by how much "higher path structure"
+// they carry, starting from contractibility (h-level 0):
+//
+// ```text
+//   isProp  A := Π (x y : A). Path A x y                       -- h-level 1
+//   isSet   A := Π (x y : A). isProp (Path A x y)               -- h-level 2
+//   isGroupoid A := Π (x y : A). isSet (Path A x y)             -- h-level 3
+// ```
+//
+// (HoTT book Definition 3.1.1 states `isProp`/`isSet` exactly this way — "any
+// two elements are equal" and "any two elements' equality proofs are
+// equal", respectively; `isGroupoid` extends the same pattern one level up,
+// as the book's §7.1 "h-level" discussion generalizes.) Each is installed as
+// a plain `Decl::Def` computing a `Sort`, exactly [`declare_is_equiv`]'s
+// "type synonym" encoding one level up: `isProp`/`isSet`/`isGroupoid` are
+// themselves *type-valued functions* (`Π (A:Sort u). Sort u`), not new
+// inductives — no constructor/recursor is needed since nothing eliminates an
+// `isProp A` value here, only *terms of* that Π-type are ever built (by
+// [`isContrToIsProp`] below, and by user code).
+//
+// `isContrToIsProp` (HoTT book Lemma 3.11.3, "conctractible types are
+// propositions") is the first payoff: given `c : IsContr A`, ANY two `x y :
+// A` are connected by a path built from `c`'s own center-connecting paths,
+// **without needing `trans_assoc`** — both `x` and `y` are joined to the
+// *same* midpoint (`c`'s `center`), so the construction is a single `trans`
+// application, not a nested/associated one:
+//
+// ```text
+//   isContrToIsProp A c x y := trans A x y (sym (c.paths x)) (c.paths y)
+//                            :  Path A x y
+// ```
+//
+// (`c.paths x : Path A center x`, so `sym (c.paths x) : Path A x center`;
+// `c.paths y : Path A center y`; `trans`'s own signature — see
+// `crate::cubical::trans`'s doc — infers the shared midpoint `center` from
+// the two paths' checked types and produces `Path A x y` directly.) This is
+// nothing but [`sym`] (this module) and [`crate::cubical::trans`] (already
+// proven sound — see that function's own doc) composed once: no new
+// checking or reduction rule, so it inherits both of their soundness
+// arguments verbatim.
+//
+// # `isPropToIsSet`: BLOCKED on `trans_assoc`
+//
+// The next classical step, "propositions are sets" (HoTT book Lemma 3.3.4),
+// is **not** attempted as a closed kernel term in this pass. Its standard
+// proof, for `f : isProp A` and `x y : A`, fixes `g := λy. f x y : Π y. Path
+// A x y` and shows any `p : Path A x y` equals `trans (sym (g x)) (g y)` via
+// `apd g p : transport^{λz. Path A x z}_p (g x) = g y`. Unwinding
+// `transport` along that family (HoTT book Lemma 2.11.2) gives `trans (g x)
+// p = g y`, i.e. a *2-dimensional* equation between paths-of-paths; peeling
+// it back to `p` itself needs
+//
+// ```text
+//   p  ≡  trans (sym (g x)) (trans (g x) p)          [left-inverse law, CLOSED
+//                                                       here: crate::cubical::
+//                                                       trans_inv_left]
+//      ≡  trans (trans (sym (g x)) (g x)) p           [REASSOCIATION —
+//                                                       trans_assoc, OPEN]
+//      ≡  trans (refl x) p  ≡  p                      [left-unit law, CLOSED
+//                                                       here: trans_left_unit]
+// ```
+//
+// The middle step is *exactly* `crate::cubical::trans_assoc`, which this
+// crate's own module doc documents as open (see `cubical.rs`'s "Phase 4.6"
+// section and its `#[ignore]`d `trans_assoc_closes` test): it *type-checks
+// as a term* but its stated Path-between-Paths goal does not close under
+// `k.infer`/`def_eq` yet (an `nbe.rs` gap in comparing `ap`-of-a-`Transp`-
+// subject inside a beta-redex, explicitly flagged as off-limits for this
+// pass). Since `isPropToIsSet`'s only known proof route funnels through
+// exactly that reassociation, it is intentionally **not attempted** here —
+// forcing a proof through the open gap risks landing an unsound or
+// non-type-checking term, which this module's own soundness discipline
+// (`check_contr_def_values`, adversarial tests) exists to prevent. `isProp`/
+// `isSet`/`isGroupoid` (the *statements*) and `isContrToIsProp` are landed
+// below as genuine, closed, kernel-checked progress; `isPropToIsSet` and the
+// further h-level tower (`isPropIsContr`, `isContr → isSet`, etc. — task
+// items 4/5) are left as documented future work gated on `trans_assoc`.
+
+/// `isProp.{u} : Π (A:Sort u). Sort u := λA. Π(x y:A). Path A x y` — "any two
+/// elements of `A` are equal" (HoTT book Definition 3.1.1, first half;
+/// h-level 1). A `Decl::Def` computing a `Sort`, the same "type synonym"
+/// encoding [`declare_is_equiv`] uses.
+pub fn declare_is_prop(env: &mut Env) -> Result<(), String> {
+    let u = || Level::param(0);
+    // ctx [A,x,y] (A=2,x=1,y=0): Path A x y
+    let body = Term::path(Term::Var(2), Term::Var(1), Term::Var(0));
+    // ctx [A,x] (A=1,x=0): Π(y:A). Path A x y — y's domain is A = Var(1) here.
+    let inner = Term::pi(Term::Var(1), body);
+    // ctx [A] (A=0): Π(x:A). Π(y:A). Path A x y — x's domain is A = Var(0) here.
+    let value = Term::lam(Term::Sort(u()), Term::pi(Term::Var(0), inner));
+    let ty = Term::pi(Term::Sort(u()), Term::Sort(u()));
+    env.insert(name("isProp"), Decl::Def { num_levels: 1, ty, value })
+}
+
+/// `isSet.{u} : Π (A:Sort u). Sort u := λA. Π(x y:A). isProp (Path A x y)` —
+/// "any two equality proofs of `A` are equal" (HoTT book Definition 3.1.1,
+/// second half; h-level 2). Requires [`declare_is_prop`] to already be
+/// installed (`isProp` is a free constant in `isSet`'s value).
+pub fn declare_is_set(env: &mut Env) -> Result<(), String> {
+    let u = || Level::param(0);
+    let is_prop = |t: Term| Term::app(Term::cnst(name("isProp"), vec![u()]), t);
+    // ctx [A,x,y] (A=2,x=1,y=0): isProp (Path A x y)
+    let body = is_prop(Term::path(Term::Var(2), Term::Var(1), Term::Var(0)));
+    let inner = Term::pi(Term::Var(1), body); // ctx [A,x]: y's domain is A = Var(1)
+    let value = Term::lam(Term::Sort(u()), Term::pi(Term::Var(0), inner)); // ctx [A]
+    let ty = Term::pi(Term::Sort(u()), Term::Sort(u()));
+    env.insert(name("isSet"), Decl::Def { num_levels: 1, ty, value })
+}
+
+/// `isGroupoid.{u} : Π (A:Sort u). Sort u := λA. Π(x y:A). isSet (Path A x
+/// y)` — h-level 3, the same pattern one level up. Requires
+/// [`declare_is_set`] to already be installed.
+pub fn declare_is_groupoid(env: &mut Env) -> Result<(), String> {
+    let u = || Level::param(0);
+    let is_set = |t: Term| Term::app(Term::cnst(name("isSet"), vec![u()]), t);
+    let body = is_set(Term::path(Term::Var(2), Term::Var(1), Term::Var(0))); // ctx [A,x,y]
+    let inner = Term::pi(Term::Var(1), body); // ctx [A,x]: y's domain is A = Var(1)
+    let value = Term::lam(Term::Sort(u()), Term::pi(Term::Var(0), inner)); // ctx [A]
+    let ty = Term::pi(Term::Sort(u()), Term::Sort(u()));
+    env.insert(name("isGroupoid"), Decl::Def { num_levels: 1, ty, value })
+}
+
+/// `isContrToIsProp.{u} : Π (A:Sort u). IsContr A → isProp A` — a
+/// contractible type is a proposition (HoTT book Lemma 3.11.3). See this
+/// section's module doc for the single-`trans` construction (no
+/// `trans_assoc` needed: both `x` and `y` are connected through the *same*
+/// midpoint, `c`'s own `center`). Requires [`declare_is_contr`] and
+/// [`declare_is_prop`] to already be installed.
+pub fn declare_is_contr_to_is_prop(env: &mut Env) -> Result<(), String> {
+    let u = || Level::param(0);
+    let iscontr = |a: Term| Term::app(Term::cnst(name("IsContr"), vec![u()]), a);
+    let is_prop = |a: Term| Term::app(Term::cnst(name("isProp"), vec![u()]), a);
+    let paths = |a: Term, c: Term, x: Term| {
+        Term::apps(Term::cnst(name("IsContr.paths"), vec![u()]), [a, c, x])
+    };
+
+    // ty := Π (A:Sort u). IsContr A → isProp A
+    let ty = Term::pi(
+        Term::Sort(u()),
+        // ctx [A] (A=0): IsContr A → isProp A
+        Term::arrow(iscontr(Term::Var(0)), is_prop(Term::Var(0))),
+    );
+
+    // value := λA. λc. λx. λy. trans A x y (sym (paths A c x)) (paths A c y)
+    // ctx [A,c,x,y]: A=3,c=2,x=1,y=0
+    let a_t = Term::Var(3);
+    let c_t = Term::Var(2);
+    let x_t = Term::Var(1);
+    let y_t = Term::Var(0);
+    let paths_x = paths(a_t.clone(), c_t.clone(), x_t.clone());
+    let paths_y = paths(a_t.clone(), c_t.clone(), y_t.clone());
+    let body = trans(&a_t, &x_t, &y_t, &sym(&paths_x), &paths_y);
+
+    // ctx [A,c,x]: y's domain is A, shifted to Var(2) at that binder.
+    let lam_y = Term::lam(Term::Var(2), body);
+    // ctx [A,c]: x's domain is A, shifted to Var(1) at that binder.
+    let lam_x = Term::lam(Term::Var(1), lam_y);
+    // ctx [A]: c's domain is IsContr A, A = Var(0) at that binder.
+    let lam_c = Term::lam(iscontr(Term::Var(0)), lam_x);
+    let value = Term::lam(Term::Sort(u()), lam_c);
+
+    env.insert(name("isContrToIsProp"), Decl::Def { num_levels: 1, ty, value })
+}
+
 /// Type-check every declaration's stated *type* (well-formedness sanity pass,
 /// mirroring `crate::equiv::check_equiv_types`).
 pub fn check_contr_types(env: &Env) -> Result<(), String> {
@@ -673,6 +843,7 @@ pub fn check_contr_types(env: &Env) -> Result<(), String> {
         "Fiber", "Fiber.mk", "Fiber.rec", "Fiber.a", "Fiber.p",
         "Fiber2",
         "IsEquiv", "idIsEquiv",
+        "isProp", "isSet", "isGroupoid", "isContrToIsProp",
     ] {
         let decl = env.get(n).ok_or_else(|| format!("missing '{n}'"))?;
         let mut ctx = crate::check::LocalCtx::new();
@@ -688,7 +859,10 @@ pub fn check_contr_types(env: &Env) -> Result<(), String> {
 #[cfg(test)]
 fn check_contr_def_values(env: &Env) -> Result<(), String> {
     let chk = Checker::new(env);
-    for n in ["IsContr.center", "IsContr.paths", "Fiber.a", "Fiber.p", "IsEquiv", "idIsEquiv"] {
+    for n in [
+        "IsContr.center", "IsContr.paths", "Fiber.a", "Fiber.p", "IsEquiv", "idIsEquiv",
+        "isProp", "isSet", "isGroupoid", "isContrToIsProp",
+    ] {
         let Some(Decl::Def { ty, value, .. }) = env.get(n) else {
             return Err(format!("'{n}' missing or not a Def"));
         };
@@ -710,6 +884,10 @@ mod tests {
         declare_fiber(&mut env).unwrap();
         declare_fiber2(&mut env).unwrap();
         declare_is_equiv(&mut env).unwrap();
+        declare_is_prop(&mut env).unwrap();
+        declare_is_set(&mut env).unwrap();
+        declare_is_groupoid(&mut env).unwrap();
+        declare_is_contr_to_is_prop(&mut env).unwrap();
         env
     }
 
@@ -804,6 +982,81 @@ mod tests {
         let expected = Term::app(Term::cnst(name("IsContr"), vec![Level::of_nat(1)]), nat);
         let mut ctx = crate::check::LocalCtx::new();
         assert!(chk.check(&mut ctx, &bogus, &expected).is_err());
+    }
+
+    /// `isContrToIsProp Nat idIsEquiv-derived-contractibility` is not directly
+    /// available (no closed `IsContr Nat` witness in this corpus), but the
+    /// *type* `isContrToIsProp Nat : IsContr Nat → isProp Nat` must itself
+    /// type-check and match the expected instance up to conversion.
+    #[test]
+    fn is_contr_to_is_prop_applies_to_nat() {
+        let mut env = Env::new();
+        declare_nat(&mut env).unwrap();
+        let env = {
+            let mut env = env;
+            declare_is_contr(&mut env).unwrap();
+            declare_is_prop(&mut env).unwrap();
+            declare_is_contr_to_is_prop(&mut env).unwrap();
+            env
+        };
+        let chk = Checker::new(&env);
+        let nat = Term::cnst(name("Nat"), vec![]);
+        let applied = Term::app(Term::cnst(name("isContrToIsProp"), vec![Level::of_nat(1)]), nat.clone());
+        let ty = chk.infer_closed(&applied).expect("isContrToIsProp Nat should type-check");
+        let iscontr_nat = Term::app(Term::cnst(name("IsContr"), vec![Level::of_nat(1)]), nat.clone());
+        let isprop_nat = Term::app(Term::cnst(name("isProp"), vec![Level::of_nat(1)]), nat);
+        let expected = Term::arrow(iscontr_nat, isprop_nat);
+        let r = Reducer::new(&env);
+        assert!(r.is_def_eq(&ty, &expected), "isContrToIsProp Nat has type {ty:?}, expected {expected:?}");
+    }
+
+    /// `isContrToIsProp` applied fully to a genuine `c : IsContr A` witness
+    /// (built directly via `IsContr.mk` from a reflexivity-only contraction,
+    /// the simplest nontrivial contractible-type shape: `A := Nat`'s
+    /// singleton-at-a-point is not literally contractible, so we use an
+    /// *opaque* axiom-postulated `c` instead — the point of this test is
+    /// that the fully-applied term type-checks at the exact goal `Path A x
+    /// y`, not that `Nat` itself is contractible) produces a well-typed
+    /// `Path A x y` witness.
+    #[test]
+    fn is_contr_to_is_prop_produces_a_path_from_an_opaque_witness() {
+        let mut env = Env::new();
+        declare_nat(&mut env).unwrap();
+        declare_is_contr(&mut env).unwrap();
+        declare_is_prop(&mut env).unwrap();
+        declare_is_contr_to_is_prop(&mut env).unwrap();
+        let nat = Term::cnst(name("Nat"), vec![]);
+        let iscontr_nat = Term::app(Term::cnst(name("IsContr"), vec![Level::of_nat(1)]), nat.clone());
+        env.insert(name("c_ax"), Decl::Axiom { num_levels: 0, ty: iscontr_nat }).unwrap();
+        let x = Term::cnst(name("Nat.zero"), vec![]);
+        let y = Term::app(Term::cnst(name("Nat.succ"), vec![]), x.clone());
+        let c = Term::cnst(name("c_ax"), vec![]);
+        let applied = Term::apps(
+            Term::cnst(name("isContrToIsProp"), vec![Level::of_nat(1)]),
+            [nat.clone(), c, x.clone(), y.clone()],
+        );
+        let chk = Checker::new(&env);
+        let ty = chk.infer_closed(&applied).expect("isContrToIsProp Nat c x y should type-check");
+        let expected = Term::path(nat, x, y);
+        let r = Reducer::new(&env);
+        assert!(r.is_def_eq(&ty, &expected), "isContrToIsProp Nat c x y has type {ty:?}, expected {expected:?}");
+    }
+
+    /// `isSet`/`isGroupoid`'s definitions type-check and their stated shapes
+    /// (`Π A. Sort u`) match at a concrete instantiation.
+    #[test]
+    fn is_set_and_is_groupoid_apply_to_nat() {
+        let mut env = Env::new();
+        declare_nat(&mut env).unwrap();
+        declare_is_prop(&mut env).unwrap();
+        declare_is_set(&mut env).unwrap();
+        declare_is_groupoid(&mut env).unwrap();
+        let chk = Checker::new(&env);
+        let nat = Term::cnst(name("Nat"), vec![]);
+        let is_set_nat = Term::app(Term::cnst(name("isSet"), vec![Level::of_nat(1)]), nat.clone());
+        let is_gpd_nat = Term::app(Term::cnst(name("isGroupoid"), vec![Level::of_nat(1)]), nat);
+        chk.infer_closed(&is_set_nat).expect("isSet Nat should type-check");
+        chk.infer_closed(&is_gpd_nat).expect("isGroupoid Nat should type-check");
     }
 
     /// Adversarial: a bogus term must not check against `Fiber A B f b` either.
