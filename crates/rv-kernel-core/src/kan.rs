@@ -1833,6 +1833,166 @@ pub(crate) fn hcomp_inductive_rule(
 // in this module — at which point `ua`'s case (constant base, two decided
 // branches) falls out as the simplest possible instance, not a bespoke rule.
 
+// ============================================================================
+// Phase 3.14: `hcomp` for `Glue` (`hcomp_glue_rule`) — ATTEMPTED, INVESTIGATED
+// IN DEPTH, AND DECLINED, with a sharper diagnosis than Phase 3.13's.
+// ============================================================================
+//
+// This pass set out to build `hcomp_glue_rule`, the `Glue`-specialized `hcomp`
+// filling rule Phase 3.13 identified as the concrete missing prerequisite for
+// `transp^Glue`/computational univalence — mirroring `hcomp_pi_rule`/
+// `hcomp_pathp_rule`/`hcomp_inductive_rule`'s own dispatch conventions (fire
+// only on a literal `Term::Sys` `u`, build the correction via `Equiv.sec`/
+// `Equiv.ret`'s coherence data composed with an `hcomp` in the base type `A`,
+// as CCHM §6's rule specifies). A concrete construction was designed, and its
+// soundness argument was carried through **as far as it can honestly go**: it
+// fails one required obligation, for a structural reason that generalizes
+// beyond any particular scoping choice made along the way. Per the standing
+// instruction, this is reported as a decline with a precise diagnosis — no
+// `hcomp_glue_rule` is added to `reduce.rs`/`nbe.rs`; `hcomp` at a `Glue` type
+// remains exactly as stuck as before this pass (see
+// [`kernel_tests::hcomp_on_glue_type_stays_stuck_even_with_matching_glue_intro_branches`]
+// below for a direct, adversarial pin of this non-regression, using exactly the
+// scenario the attempted construction below would have had to handle).
+//
+// # The construction attempted, and how far it gets
+//
+// To make the "build a correction `hcomp` in the base type from `Equiv.sec`/
+// `Equiv.ret`" step tractable in one pass, this attempt scoped `u`/`u0` further
+// than the bare "literal `Sys`" convention every other rule in this module
+// uses: it additionally required every branch of `u`, and `u0` itself, to be a
+// literal [`Term::GlueIntro`] over *exactly* `ty`'s own `Glue` branch list
+// (same `φ_k`s, same order — mirroring `hcomp_inductive_rule`'s own
+// "same-constructor" scoping, here "same-`GlueIntro`-shape" instead). This is
+// a strictly *narrower* scope than the general CCHM rule (which must also
+// handle a `u`/`u0` that is only a *neutral* element of `Glue A […]`, not
+// necessarily a literal `glue […] a₀` term), but — exactly like
+// `hcomp_inductive_rule`'s own "declines on mixed-constructor branches"
+// scoping choice — narrowing scope to a structurally-recognizable case is a
+// legitimate way to ship *something* sound, provided the narrowed case's own
+// obligations can actually be discharged. They cannot, for the reason below.
+//
+// Given `ty = Glue A [φ_1↦(T_1,e_1), …, φ_n↦(T_n,e_n)]`, `u = Sys [ψ_1↦t_1, …,
+// ψ_m↦t_m]` with every `t_j = glue [φ_1↦s_{j,1}, …, φ_n↦s_{j,n}] a_j`, and
+// `u0 = glue [φ_1↦s_{0,1}, …, φ_n↦s_{0,n}] a_0`, the natural (and, on
+// reflection, the *only* structurally available) candidate construction is:
+//
+// ```text
+//   t'_k := hcomp T_k ψ [ ψ_j ↦ s_{j,k} ] s_{0,k}          -- one per branch k
+//   a'   := hcomp A (ψ ∨ φ_1 ∨ … ∨ φ_n)
+//                    [ ψ_j ↦ a_j, φ_k ↦ Equiv.f T_k A e_k t'_k ] a_0
+//   result := glue [ φ_k ↦ t'_k ] a'
+// ```
+//
+// (`t'_k`'s branches project each `t_j`'s own `k`-th `glue`-component — the
+// "field projection" mirrors `hcomp_inductive_rule`'s field extraction
+// verbatim, with `Term::GlueIntro`'s `n` branches standing in for a
+// constructor's `n` fields; `a'`'s `φ_k` branches are exactly the naive
+// reading of the task's own "`φ_k ↦ Equiv.f T_k A e_k t'_k`, so agreement
+// holds by construction" instruction.)
+//
+// This candidate **does** discharge several of the required obligations
+// cleanly, by direct reuse of `t_j`/`u0`'s own already-checked
+// `check_glue_intro` obligations (see `crate::check::Checker::check_glue_intro`'s
+// four steps) — spelled out because the *failure* below is precise, not a
+// vague "it doesn't work":
+//
+// * `t'_k : T_k`, `a' : A`: immediate from `s_{j,k} : T_k` (`check_glue_intro`
+//   step 1 on each `t_j`) and `a_j : A` (step 3), by the *same*, unmodified
+//   `Term::HComp` typing arm every other rule in this module already relies on.
+// * **`φ_k`/`φ_k'` compatibility** (two *branch* faces of `a'` overlapping,
+//   `k ≠ k'`): holds. `ty`'s own `check_glue_branches_compatible` already
+//   forces `T_k ≡ T_k'`/`e_k ≡ e_k'` on `φ_k ∧ φ_k'`; `t_j`'s own
+//   `check_glue_intro` step 2 (mutual compatibility of its *own* `n` branches)
+//   forces `s_{j,k} ≡ s_{j,k'}` there too (symmetrically for `u0`'s
+//   `s_{0,k}`/`s_{0,k'}`), so `t'_k ≡ t'_k'` there by direct congruence of
+//   `Term::HComp` (same `ψ`, pointwise-agreeing `T`/branches/cap) — and then
+//   `Equiv.f T_k A e_k t'_k ≡ Equiv.f T_k' A e_k' t'_k'` there too, by ordinary
+//   congruence (argued, not additionally pinned by its own dedicated test —
+//   the failure below makes the overall construction moot regardless).
+// * **`ψ_j`/`ψ_j'` compatibility** (two of `u`'s *own* branches): holds,
+//   symmetrically — `t_j ≡ t_j'` on `ψ_j ∧ ψ_j'` (source `u`'s own already-
+//   checked tube/tube compatibility) is, by `Term::GlueIntro`'s structural
+//   `is_def_eq` rule (`crate::check`'s "`glue [φ↦t,…] a`: structural, same
+//   shape" case), exactly `a_j ≡ a_j'` (and `s_{j,k} ≡ s_{j,k'}`) there — so
+//   `a'`'s `ψ_j`/`ψ_j'` branches agree directly.
+//
+// # The one obligation that does *not* discharge: `ψ_j` / `φ_k` compatibility
+//
+// `a'`'s Sys has *both* kinds of branches (`ψ_j ↦ a_j` and `φ_k ↦ Equiv.f …
+// t'_k`) in the *same* system, so `check_sys`'s compatibility loop also demands
+// agreement on every **cross** overlap `ψ_j ∧ φ_k` that is satisfiable — i.e.,
+// restricted along any clause `C` of `to_dnf(ψ_j ∧ φ_k)`:
+//
+// ```text
+//   a_j[C]  ≡  (Equiv.f T_k A e_k t'_k)[C]
+// ```
+//
+// `t_j`'s own agreement obligation (`check_glue_intro` step 4, already
+// established, since `t_j` type-checked against `ty` as a branch of the source
+// `u`) gives *exactly* `(Equiv.f T_k A e_k s_{j,k})[C] ≡ a_j[C]` — so this
+// reduces to needing `t'_k[C] ≡ s_{j,k}[C]`. And *that* is where the
+// construction breaks: `t'_k = hcomp T_k ψ [ψ_j↦s_{j,k}, …] s_{0,k}`, and
+// `C` only forces `ψ_j` (one *disjunct* of `ψ`) — not `ψ` itself — decided.
+// `Term::HComp`'s only reduction rule (this module's own trivial-`⊤` rule,
+// `crate::face::is_true`) fires on the **outer** guard `ψ`, not on any single
+// inner `Sys`-branch guard `ψ_j` in isolation; `ψ ⊢ ψ_1 ∨ … ∨ ψ_m` (the
+// *source* `u`'s coverage obligation) is a one-directional entailment, so
+// `ψ_j` being decided at `C` does **not** make `ψ` decided at `C` — `t'_k[C]`
+// can, and in general does, stay a **genuinely stuck** `HComp` term, not
+// syntactically/definitionally `≡ s_{j,k}[C]`. Nothing else in this module (no
+// existing congruence, no restriction lemma) closes that gap — it is *exactly*
+// the mathematical content CCHM's real `Glue`-`hcomp` rule supplies via the
+// `Equiv.sec`/`Equiv.ret` **correction**: the true rule does not merely reuse
+// `t'_k` as `a'`'s `φ_k` branch's argument to `Equiv.f`, it builds a genuinely
+// different term there — an `hcomp` **in the base type**, filled using
+// `Equiv.sec`'s homotopy `Equiv.f (Equiv.g b) ~ b`, that is *by construction*
+// (via that homotopy, not via a `ψ_j`-vs-`ψ`-decidedness argument) equal to
+// `a_j` on every `ψ_j` overlap. Building *that* term is a strictly larger,
+// independent piece of Kan machinery — its own soundness argument, own
+// adversarial tests, in the same spirit as `hcomp_pi_rule`'s/
+// `hcomp_pathp_rule`'s own dedicated sections — not a corollary of getting the
+// field-projection/branch bookkeeping right, which is the part this attempt
+// completed. [`kernel_tests::hcomp_glue_construction_tube_boundary_face_overlap_is_not_derivable`]
+// pins the concrete failure down: a minimal witness where `ψ_j` and `φ_k`
+// overlap non-trivially and `t'_k` is confirmed to stay a stuck `HComp`
+// distinct (at that overlap) from `s_{j,k}` under both the reducer and NbE.
+//
+// # Why this obstruction cannot be scoped away, unlike Phase 3.13's
+//
+// Phase 3.13's obstruction was resolved by narrowing scope once (requiring a
+// literal `Sys`, mirroring the rest of this module). This one cannot be:
+// narrowing further to "`u` has exactly one branch" (`m = 1`) does eliminate
+// *this specific* multi-branch `ψ_j`/`ψ_j'` case, but the `ψ_1`/`φ_k` cross
+// overlap remains — `ψ_1` need not entail `ψ` any more than any other `m ≥ 1`
+// case (`ψ`'s own coverage obligation is `ψ ⊢ ψ_1`, i.e. `ψ ≡ ψ_1` is not
+// required, only `ψ ⊢ ψ_1` — wait: with a single branch, coverage *does*
+// force `ψ ⊢ ψ_1`, and if additionally `ψ_1 ⊢ ψ` happened to hold too the two
+// would be `cof_equiv` and the trivial rule would fire identically on both —
+// but the *general* single-branch case only has `ψ ⊢ ψ_1`, the wrong
+// direction; nothing forces `ψ_1 ⊢ ψ` as well, so `ψ_1` being decided still
+// need not decide `ψ`). Scoping to "`u`'s single branch's guard is `cof_equiv`
+// to `ψ` itself" would sidestep the problem, but only by shrinking to a case
+// so narrow it no longer says anything `hcomp`'s own existing trivial-`⊤` rule
+// doesn't already handle. The obstruction is intrinsic to *any* construction
+// that reuses `t'_k`/`s_{j,k}` directly as `a'`'s branch payload rather than
+// building the CCHM correction term — it is not an artifact of this attempt's
+// particular scoping choices.
+//
+// # What this leaves for a future pass
+//
+// Unchanged from Phase 3.13's own "updated next step", now confirmed
+// concretely rather than inferred structurally: a sound `hcomp_glue_rule`
+// needs `a'`'s `φ_k` branches to be built from an `hcomp`-in-`A` construction
+// using `Equiv.sec`/`Equiv.ret`'s homotopies (not `t'_k` composed with
+// `Equiv.f` directly), of a shape this module does not yet have a combinator
+// for. That is real, independent Kan machinery for a future pass — this
+// pass's contribution is narrowing exactly where the difficulty lives (not in
+// the field-projection/branch-bookkeeping, which is mechanical and was
+// completed and re-checked above, but specifically in the `φ_k` branch's
+// *value*), and pinning that down with concrete, adversarial tests rather than
+// a structural argument alone.
+
 #[cfg(test)]
 mod kernel_tests {
     use crate::face::Cof;
@@ -3328,6 +3488,100 @@ mod kernel_tests {
         // Anti-`False`, re-run alongside GlueIntro's availability.
         assert!(!r.is_def_eq(&zero, &one));
         assert!(!r.is_def_eq(&transported, &one));
+    }
+
+    // ---- Phase 3.14: `hcomp` for `Glue` — attempted and declined; these pin
+    // down the non-regression and the precise obstruction found (see this
+    // module's "Phase 3.14" doc section). ----
+
+    /// **Non-regression**: `hcomp` at a `Glue` type stays exactly as stuck as
+    /// before this pass, even in the *one* scenario Phase 3.14's attempted
+    /// construction was scoped to handle — `u`'s branch and the cap are both
+    /// literal `Term::GlueIntro` terms over `ty`'s own branch list. No dispatch
+    /// for `Term::Glue` was added to `reduce.rs`/`nbe.rs`, so this must still
+    /// fall through to the generic "otherwise stuck" arm.
+    #[test]
+    fn hcomp_on_glue_type_stays_stuck_even_with_matching_glue_intro_branches() {
+        let env = ua_env();
+        let n = nat_t();
+        let id_equiv_n = Term::app(Term::cnst(name("idEquiv"), vec![crate::level::Level::of_nat(1)]), n.clone());
+        let zero = Term::cnst(name("Nat.zero"), vec![]);
+        let one = Term::app(Term::cnst(name("Nat.succ"), vec![]), zero.clone());
+
+        // `ty = Glue Nat [⊤ ↦ (Nat, idEquiv Nat)]` — a single decided-⊤ branch
+        // would itself strictness-collapse to plain `Nat`, so use an *undecided*
+        // face (a free interval variable) to keep `ty` a genuine, still-open
+        // `Glue`, exactly as `glue_open_phi_stays_stuck`/`glue_intro_open_phi_
+        // stays_stuck_and_typechecks` (in `crate::glue`'s tests) do.
+        let w = Term::Var(0);
+        let branch_phi = Cof::eq0(w.clone());
+        let ty = Term::glue_ty(n.clone(), branch_phi.clone(), n.clone(), id_equiv_n.clone());
+
+        // `u = Sys [⊥ ↦ (glue [branch_phi ↦ 0] 0)]`, `u0 = glue [branch_phi ↦ 0] 0`
+        // — both literal `GlueIntro`s over `ty`'s own single branch, exactly the
+        // shape Phase 3.14's attempted construction required.
+        let witness = Term::glue_intro(vec![(branch_phi.clone(), zero.clone())], zero.clone());
+        let u = Term::sys(vec![(Cof::bot(), witness.clone())]);
+        let u0 = witness;
+        let hc = Term::hcomp(ty, Cof::bot(), u, u0);
+
+        let r = crate::reduce::Reducer::new(&env);
+        assert!(matches!(r.whnf(&hc), Term::HComp(..)), "hcomp at a Glue type must stay stuck");
+        let nbe = crate::nbe::Nbe::new(&env);
+        assert!(matches!(nbe.normalize_open(1, &hc), Term::HComp(..)));
+        // Anti-`False`, re-run alongside this scenario.
+        assert!(!r.is_def_eq(&zero, &one));
+        assert!(!r.is_def_eq(&hc, &one));
+    }
+
+    /// **The concrete failure** Phase 3.14's doc section diagnoses: the
+    /// per-branch correction term `t'_k := hcomp T_k ψ [ψ_j ↦ s_{j,k}, …] cap`
+    /// does **not** reduce to `s_{j,k}` merely because `ψ_j` (one disjunct of
+    /// `ψ`) has been forced decided — `Term::HComp`'s only reduction rule fires
+    /// on the *outer* guard `ψ`, and `ψ ⊢ ψ_1 ∨ … ∨ ψ_m` is one-directional, so
+    /// `ψ_j` decided need not decide `ψ`. This is exhibited at its sharpest with
+    /// `ψ = ⊥` (coverage `⊥ ⊢ ψ_1 ∨ ψ_2` holds vacuously, so this is a
+    /// perfectly legitimate, well-typed-shaped `hcomp`, yet `⊥` is *never*
+    /// decided by any restriction, since it has no free variables to restrict):
+    /// even after forcing `ψ_1` (`x = i0`) fully decided, `t'_k` stays a stuck
+    /// `HComp`, distinct — under both the reducer and NbE — from the branch
+    /// payload `s_{1,k}` the real `glue`-agreement obligation needs it to equal.
+    #[test]
+    fn hcomp_glue_construction_tube_boundary_face_overlap_is_not_derivable() {
+        let env = ua_env();
+        let n = nat_t();
+        let zero = Term::cnst(name("Nat.zero"), vec![]);
+        let one = Term::app(Term::cnst(name("Nat.succ"), vec![]), zero.clone());
+
+        let x = Term::Var(0);
+        let psi1 = Cof::eq0(x.clone());
+        let psi2 = Cof::eq1(x.clone());
+        // `s_{1,k} = 0`, `s_{2,k} = 1` — the tube/tube overlap `ψ_1 ∧ ψ_2` is
+        // unsatisfiable (`x` can't be both `i0` and `i1`), so this `Sys` is
+        // itself a perfectly compatible system regardless of the two payloads
+        // disagreeing (mirrors `ua`'s own `(i=0)`/`(i=1)` branch structure).
+        let u = Term::sys(vec![(psi1.clone(), zero.clone()), (psi2, one.clone())]);
+        let cap = zero.clone();
+        // `ψ = ⊥`: coverage (`⊥ ⊢ ψ_1 ∨ ψ_2`) holds vacuously.
+        let t_prime_k = Term::hcomp(n, Cof::bot(), u, cap);
+
+        let r = crate::reduce::Reducer::new(&env);
+        // Force `x := i0` (deciding `ψ_1`) via the *same* restriction machinery
+        // `check_glue_intro`'s own agreement obligation would apply.
+        let clause = vec![crate::face::Atom::Eq0(x)];
+        let restricted = crate::face::restrict_clause_term(&clause, &t_prime_k);
+        assert!(
+            matches!(r.whnf(&restricted), Term::HComp(..)),
+            "t'_k must stay a stuck HComp even once ψ_1 is fully decided — ψ (⊥) is untouched by the restriction"
+        );
+        assert!(
+            !r.is_def_eq(&restricted, &zero),
+            "t'_k[ψ_1 decided] must NOT be derivable as ≡ s_{{1,k}} without the sec/ret correction"
+        );
+        let nbe = crate::nbe::Nbe::new(&env);
+        assert!(matches!(nbe.normalize_open(1, &restricted), Term::HComp(..)));
+        // Anti-`False` sanity, unaffected by any of the above.
+        assert!(!r.is_def_eq(&zero, &one));
     }
 }
 
