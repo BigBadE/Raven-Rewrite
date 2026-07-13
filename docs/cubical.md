@@ -114,6 +114,84 @@ is its own record-shaped inductive:
   right type; `idHAE`'s own `tau` witness is the deferred piece — see that
   module's doc for exactly what is and is not proved).
 
+These three hierarchy levels relate as bi-invertible `Equiv` ⊇ half-adjoint
+`IsHAE` ⊇ contractible-fibers `IsEquiv`: `IsHAE`/`IsEquiv` are strictly
+stronger (carry coherence/contractibility `Equiv` does not), and the standard
+HoTT result is that all three are *logically* equivalent notions of
+"equivalence" — but this kernel does not (yet) carry the conversions between
+them as derived terms; each is installed and used independently (`Equiv` for
+`Glue`/`ua`'s strictness laws, `IsEquiv` for `Univalence`'s statement below,
+`IsHAE` on its own as the coherent notion the missing `hcomp_glue_rule` in §6
+needs).
+
+### 3.1 The equivalence algebra (`idToEquiv`, `symEquiv`, `compEquiv`, `ap`-functoriality)
+
+`equiv.rs` also derives, from `Equiv`/`idEquiv` alone (no new checking or
+reduction rule — every one of these is a plain term built from `J`/`Equiv.rec`/
+`refl` against the existing, already-argued-sound machinery):
+
+- `idToEquiv A B p : Equiv A B`, given `p : Path (Sort u) A B` — the canonical
+  map "a path between types is an equivalence", built by `J`-eliminating `p`
+  with `idEquiv A` as the base case. `idToEquiv A A (refl A)` reduces —
+  genuinely, by `J`'s own ι-rule, not just propositionally — back to `idEquiv A`.
+  `idToEquivFn A B := λp. idToEquiv A B p` is the same map abstracted over `p`,
+  the shape `Univalence` (below) needs.
+- `symEquiv A B e : Equiv B A`, given `e : Equiv A B` — bi-invertibility is
+  symmetric **by construction**: swap `f`/`g` and `sec`/`ret`, no `J` or case
+  analysis on `e` needed.
+- `compEquiv A B C e1 e2 : Equiv A C`, given `e1 : Equiv A B`, `e2 : Equiv B C`
+  — composes the underlying maps and pastes the `sec`/`ret` witnesses via
+  `ap`/`trans`.
+- **Groupoid coherences** (HoTT book §2.4/§4.1 — `≃` is reflexive/symmetric/
+  transitive): `compEquivIdL_f`/`_g` and `compEquivIdR_f`/`_g` — `compEquiv`'s
+  left/right unit laws, at the underlying `f`/`g` **field** level only (not the
+  full `Equiv` record equality — that would need `trans_assoc`, see §6, which
+  is `#[ignore]`d), closed by plain `refl` plus the checker's Π-η. `symEquivInv`
+  — `symEquiv` is its own inverse, as a **full** `Equiv A B` record path (this
+  one needs no `J`/`trans` at all, so it is reachable even without
+  `trans_assoc`).
+- **`ap`-functoriality** (HoTT book Lemma 2.2.1/2.2.2): `apId ty a b p : Path _
+  (ap id p) p` (the identity law) and `apComp a_ty b_ty c_ty f g x y p : Path _
+  (ap (g∘f) p) (ap g (ap f p))` (the composition law), both `J`-derived with a
+  `refl`/`refl (refl _)` base case. `ap_trans` (interchange with `trans`, HoTT
+  Lemma 2.2.2(iii)) exists in `equiv.rs` but is not yet surfaced by name (see
+  the surfacing list below).
+
+All of the above are surfaced as ordinary by-name-callable `.rv` constants —
+`idToEquiv`/`symEquiv`/`compEquiv`/`compEquivIdL_f`/`compEquivIdL_g`/
+`compEquivIdR_f`/`compEquivIdR_g`/`symEquivInv`/`apId`/`apComp` — via
+`crates/rv-kernel/src/cubical_surface.rs::install_equiv_algebra` (see §5), and
+exercised end-to-end in `examples/proofs/cubical_showcase.rv`.
+
+### 3.2 `Univalence`, the statement
+
+`univalence_ty` states — as a kernel `Type`, not a proof — HoTT book Axiom
+2.10.3 / CCHM §6: `Univalence.{u} := Π (A B : Sort u) (e : Equiv A B). IsContr
+(Fiber2 (Path (Sort u) A B) (Equiv A B) (idToEquivFn A B) e)`, i.e. "for every
+`A B : Type`, `idToEquiv`'s fiber over every `e : Equiv A B` is contractible"
+— the contractible-fibers characterization of "is an equivalence" (HoTT book
+Definition 4.4.1), applied to `idToEquivFn`. This needs a **bi-level** fiber
+former, `Fiber2.{u,v}` (`contr.rs`, a bare `Decl::Axiom` — see that function's
+doc for why the existing mono-universe `Fiber`/`IsEquiv` cannot express this:
+`Path (Sort u) A B` classifies one universe *above* `Equiv A B`), since
+`idToEquivFn`'s domain and codomain are not same-sorted.
+
+`univalence_ty` only **states** the type; it is not proved here. Proving it
+needs, for every `e : Equiv A B`, a center (`ua e : Path (Sort u) A B`, §4
+below) *and* a proof that `idToEquiv (ua e)` is `Path`-equal to `e` —
+which needs `transport (ua e) ↦ e.f` to hold **computationally** (the exact
+gap §6 documents as investigated three times and declined each time). So
+`Univalence` sits on the same open item as `ua`'s computation rule: stated,
+checked well-formed, not closed.
+
+Surfaced as a `.rv` constant `Univalence : Type1`, fixed at the base universe
+— `rv-syntax` has no explicit universe-level-argument surface syntax
+(`Name.{u}`), so a genuinely `.{u}`-polymorphic installation would be
+permanently unreachable by name (see `install_equiv_algebra`'s doc comment).
+`examples/proofs/cubical_showcase.rv` exercises this as `axiom univalence_axiom
+: Univalence` — assuming it, purely to demonstrate the statement itself
+type-checks and is by-name-callable, not proving it.
+
 ## 4. `Glue`/`ua` (`glue.rs`, `Term::Glue`/`Term::Unglue`/`Term::GlueIntro`)
 
 `Glue A [φ_1 ↦ (T_1,e_1), …]` is a type that is `T_k` where `φ_k` holds and `A`
@@ -170,6 +248,14 @@ PApp,PathTy,PathPTy}` arms, since `I` can never be an ordinary `Π`-domain).
     (`rv_kernel_core::contr`).
   - `install_hae` → `IsHAE`/`idHAE` (`rv_kernel_core::equiv_hae`).
   - `install_ua` → `ua` (above).
+  - `install_fiber2` → `Fiber2` (`rv_kernel_core::contr::declare_fiber2`),
+    needed by `Univalence` (§3.2) below.
+  - `install_equiv_algebra` (new) → `crates/rv-kernel/src/cubical_surface.rs::
+    install_equiv_algebra`: `idToEquiv`/`symEquiv`/`compEquiv`,
+    `compEquivIdL_f`/`_g`/`compEquivIdR_f`/`_g`/`symEquivInv` (the groupoid
+    coherences), `apId`/`apComp` (`ap`-functoriality), and `Univalence` (§3.1/
+    §3.2 above). Requires `Equiv`/`idEquiv`/`IsContr`/`Fiber2` already
+    installed.
 - `crates/rv-driver/src/lib.rs`'s prelude (`verify_rv_session`/`vm_eval`/
   `nbe_eval`) calls all of the above, after `install_cubical`, so every `.rv`
   program sees the whole layer by name with no per-file setup.

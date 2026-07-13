@@ -134,6 +134,19 @@ pub trait KernelExt {
     /// first. See [`rv_kernel_core::glue::ua`]/`ua_ty`.
     fn install_ua(&mut self) -> Result<(), String>;
 
+    /// Install `Fiber2.{u,v}` — the bi-level fiber former the `Univalence` statement
+    /// (see [`KernelExt::install_equiv_algebra`]) needs — as a bare
+    /// [`rv_kernel_core::env::Decl::Axiom`]. See [`rv_kernel_core::contr::declare_fiber2`].
+    fn install_fiber2(&mut self) -> Result<(), String>;
+
+    /// Install the by-name-callable **equivalence-algebra** constants
+    /// `idToEquiv`/`symEquiv`/`compEquiv` and the `Univalence` statement itself
+    /// (as a `Type`-valued constant, not a proved axiom) — see
+    /// [`crate::cubical_surface::install_equiv_algebra`]. Requires
+    /// [`KernelExt::install_equiv`], [`KernelExt::install_contr`] (for `IsContr`),
+    /// and [`KernelExt::install_fiber2`] first.
+    fn install_equiv_algebra(&mut self) -> Result<(), String>;
+
     /// Check the QTT usage discipline (`crate::graded`) of the stored definition
     /// `name`: a graded binder (linear `1`/erased `0`) in its type must be used
     /// accordingly in its value. Ungraded (`ω`, the default) binders always pass, so
@@ -302,6 +315,14 @@ impl KernelExt for Kernel {
 
     fn install_ua(&mut self) -> Result<(), String> {
         crate::cubical_surface::install_ua(self.env_mut())
+    }
+
+    fn install_fiber2(&mut self) -> Result<(), String> {
+        rv_kernel_core::contr::declare_fiber2(self.env_mut())
+    }
+
+    fn install_equiv_algebra(&mut self) -> Result<(), String> {
+        crate::cubical_surface::install_equiv_algebra(self.env_mut())
     }
 
     fn check_usage(&self, n: &str) -> Result<(), String> {
