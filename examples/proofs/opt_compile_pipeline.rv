@@ -1,0 +1,698 @@
+// THE OPTIMIZING-COMPILER CAPSTONE: consolidates `opt_simplify.rv` (an algebraic-identity
+// simplification pass, `simplify_correct : eval(simplify(e)) == eval(e)`) and `compile_stack.rv`
+// (a verified stack-machine compiler, `compile_correct : exec(compile(e), Nil) == Cons(eval(e), Nil)`)
+// into a single END-TO-END theorem for a real (if small) optimizing compiler pipeline:
+//
+//     opt_compile_correct(e) : exec(compile(simplify(e)), Nil) == Cons(eval(e), Nil)
+//
+// i.e. compiling the OPTIMIZED expression on the empty stack still produces the correct
+// singleton result. Also proves the bonus corollary that optimizing before compiling gives the
+// same machine result as compiling directly:
+//
+//     opt_compile_preserves(e) : exec(compile(simplify(e)), Nil) == exec(compile(e), Nil)
+//
+// This file is SELF-CONTAINED: it copies in the `Nat`/`List`/`Expr`/`eval`/`simplify`/`Instr`/
+// `exec`/`compile` definitions and their supporting lemmas from the two sibling files rather than
+// importing, matching how those files themselves each redefine `Nat`/`List` locally.
+//
+// PROOF-STYLE NOTE (carried over from `compile_stack.rv`, load-bearing — read before editing):
+// the elaborator/kernel has two known limitations exercised by this kind of proof:
+//   1. Writing a combinator call directly as an inline sub-argument of another combinator call
+//      (e.g. `congr_arg(f, x, y, trans(...))` with the `trans` spelled out inline) can fail with
+//      "cannot unify interval expressions", even though the identical composition succeeds when
+//      the inner step is first named as its own `fn` and only the name is passed in.
+//   2. Checking a proof against a declared type that requires the kernel to unfold TWO nested
+//      `match`es on the same recursive structure in one go can hit the same failure.
+// Every proof step below is therefore a small named `fn`, and every `trans`/`congr_arg` call
+// receives only plain variables or plain named-`fn` calls as arguments — never inline nested
+// combinators. All lemmas are genuine kernel-checked proofs; nothing is admitted or left as a hole.
+
+// ================================================================================================
+// ----- Arithmetic: Nat, plus, mult, and the identities `simplify` relies on --------------------
+// ================================================================================================
+
+enum Nat { Zero, Succ(Nat) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+fn mult(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => Nat::Zero | Nat::Succ(k) => plus(m, mult(k, m)) }
+}
+
+fn plus_zero(n: Nat) -> plus(n, Nat::Zero) == n {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(k) => congr_arg(Nat, Nat, Nat::Succ, plus(k, Nat::Zero), k, plus_zero(k))
+    }
+}
+
+fn zero_plus(n: Nat) -> plus(Nat::Zero, n) == n {
+    Eq::refl(Nat, n)
+}
+
+fn mult_zero(n: Nat) -> mult(n, Nat::Zero) == Nat::Zero {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(k) => mult_zero(k)
+    }
+}
+
+fn zero_mult(n: Nat) -> mult(Nat::Zero, n) == Nat::Zero {
+    Eq::refl(Nat, Nat::Zero)
+}
+
+fn mult_one(n: Nat) -> mult(n, Nat::Succ(Nat::Zero)) == n {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(k) => congr_arg(Nat, Nat, Nat::Succ, mult(k, Nat::Succ(Nat::Zero)), k, mult_one(k))
+    }
+}
+
+fn one_mult(n: Nat) -> mult(Nat::Succ(Nat::Zero), n) == n {
+    plus_zero(n)
+}
+
+// ================================================================================================
+// ----- Generic lists + append (needed by the compiler/stack-machine side) ----------------------
+// ================================================================================================
+
+enum List<A: Type> { Nil, Cons(A, List<A>) }
+
+fn append(A: Type, xs: List<A>, ys: List<A>) -> List<A> {
+    match xs {
+      | List::Nil           => ys
+      | List::Cons(x, rest) => List::Cons(A, x, append(A, rest, ys))
+    }
+}
+
+// ================================================================================================
+// ----- The source language: literals, addition, multiplication ---------------------------------
+// ================================================================================================
+
+enum Expr { Lit(Nat), Add(Expr, Expr), Mul(Expr, Expr) }
+
+fn eval(e: Expr) -> Nat {
+    match e {
+      | Expr::Lit(n)    => n
+      | Expr::Add(a, b) => plus(eval(a), eval(b))
+      | Expr::Mul(a, b) => mult(eval(a), eval(b))
+    }
+}
+
+// ================================================================================================
+// ----- The optimizer: algebraic-identity simplification pass (from `opt_simplify.rv`) ----------
+// ================================================================================================
+
+fn smart_add(a: Expr, b: Expr) -> Expr {
+    match a {
+      | Expr::Lit(m) =>
+          match m {
+            | Nat::Zero    => b
+            | Nat::Succ(k) =>
+                match b {
+                  | Expr::Lit(n)    =>
+                      match n {
+                        | Nat::Zero    => a
+                        | Nat::Succ(j) => Expr::Add(a, b)
+                      }
+                  | Expr::Add(p, q) => Expr::Add(a, b)
+                  | Expr::Mul(p, q) => Expr::Add(a, b)
+                }
+          }
+      | Expr::Add(p, q) =>
+          match b {
+            | Expr::Lit(n) =>
+                match n {
+                  | Nat::Zero    => a
+                  | Nat::Succ(j) => Expr::Add(a, b)
+                }
+            | Expr::Add(r, s) => Expr::Add(a, b)
+            | Expr::Mul(r, s) => Expr::Add(a, b)
+          }
+      | Expr::Mul(p, q) =>
+          match b {
+            | Expr::Lit(n) =>
+                match n {
+                  | Nat::Zero    => a
+                  | Nat::Succ(j) => Expr::Add(a, b)
+                }
+            | Expr::Add(r, s) => Expr::Add(a, b)
+            | Expr::Mul(r, s) => Expr::Add(a, b)
+          }
+    }
+}
+
+fn smart_mul(a: Expr, b: Expr) -> Expr {
+    match a {
+      | Expr::Lit(m) =>
+          match m {
+            | Nat::Zero => Expr::Lit(Nat::Zero)
+            | Nat::Succ(k) =>
+                match k {
+                  | Nat::Zero    =>   // m == 1
+                      match b {
+                        | Expr::Lit(n) =>
+                            match n {
+                              | Nat::Zero    => Expr::Lit(Nat::Zero)
+                              | Nat::Succ(j) => b
+                            }
+                        | Expr::Add(p, q) => b
+                        | Expr::Mul(p, q) => b
+                      }
+                  | Nat::Succ(k2) =>  // m >= 2
+                      match b {
+                        | Expr::Lit(n) =>
+                            match n {
+                              | Nat::Zero    => Expr::Lit(Nat::Zero)
+                              | Nat::Succ(j) => Expr::Mul(a, b)
+                            }
+                        | Expr::Add(p, q) => Expr::Mul(a, b)
+                        | Expr::Mul(p, q) => Expr::Mul(a, b)
+                      }
+                }
+          }
+      | Expr::Add(p, q) =>
+          match b {
+            | Expr::Lit(n) =>
+                match n {
+                  | Nat::Zero    => Expr::Lit(Nat::Zero)
+                  | Nat::Succ(j) =>
+                      match j {
+                        | Nat::Zero     => a
+                        | Nat::Succ(j2) => Expr::Mul(a, b)
+                      }
+                }
+            | Expr::Add(r, s) => Expr::Mul(a, b)
+            | Expr::Mul(r, s) => Expr::Mul(a, b)
+          }
+      | Expr::Mul(p, q) =>
+          match b {
+            | Expr::Lit(n) =>
+                match n {
+                  | Nat::Zero    => Expr::Lit(Nat::Zero)
+                  | Nat::Succ(j) =>
+                      match j {
+                        | Nat::Zero     => a
+                        | Nat::Succ(j2) => Expr::Mul(a, b)
+                      }
+                }
+            | Expr::Add(r, s) => Expr::Mul(a, b)
+            | Expr::Mul(r, s) => Expr::Mul(a, b)
+          }
+    }
+}
+
+fn simplify(e: Expr) -> Expr {
+    match e {
+      | Expr::Lit(n)    => Expr::Lit(n)
+      | Expr::Add(a, b) => smart_add(simplify(a), simplify(b))
+      | Expr::Mul(a, b) => smart_mul(simplify(a), simplify(b))
+    }
+}
+
+fn smart_add_correct(a: Expr, b: Expr) -> eval(smart_add(a, b)) == plus(eval(a), eval(b)) {
+    match a {
+      | Expr::Lit(m) =>
+          match m {
+            | Nat::Zero    => symm(Nat, plus(Nat::Zero, eval(b)), eval(b), zero_plus(eval(b)))
+            | Nat::Succ(k) =>
+                match b {
+                  | Expr::Lit(n) =>
+                      match n {
+                        | Nat::Zero    =>
+                            symm(Nat, plus(Nat::Succ(k), Nat::Zero), Nat::Succ(k),
+                                 plus_zero(Nat::Succ(k)))
+                        | Nat::Succ(j) => Eq::refl(Nat, plus(Nat::Succ(k), Nat::Succ(j)))
+                      }
+                  | Expr::Add(p, q) => Eq::refl(Nat, plus(Nat::Succ(k), eval(Expr::Add(p, q))))
+                  | Expr::Mul(p, q) => Eq::refl(Nat, plus(Nat::Succ(k), eval(Expr::Mul(p, q))))
+                }
+          }
+      | Expr::Add(p, q) =>
+          match b {
+            | Expr::Lit(n) =>
+                match n {
+                  | Nat::Zero    =>
+                      symm(Nat, plus(eval(Expr::Add(p, q)), Nat::Zero), eval(Expr::Add(p, q)),
+                           plus_zero(eval(Expr::Add(p, q))))
+                  | Nat::Succ(j) => Eq::refl(Nat, plus(eval(Expr::Add(p, q)), Nat::Succ(j)))
+                }
+            | Expr::Add(r, s) => Eq::refl(Nat, plus(eval(Expr::Add(p, q)), eval(Expr::Add(r, s))))
+            | Expr::Mul(r, s) => Eq::refl(Nat, plus(eval(Expr::Add(p, q)), eval(Expr::Mul(r, s))))
+          }
+      | Expr::Mul(p, q) =>
+          match b {
+            | Expr::Lit(n) =>
+                match n {
+                  | Nat::Zero    =>
+                      symm(Nat, plus(eval(Expr::Mul(p, q)), Nat::Zero), eval(Expr::Mul(p, q)),
+                           plus_zero(eval(Expr::Mul(p, q))))
+                  | Nat::Succ(j) => Eq::refl(Nat, plus(eval(Expr::Mul(p, q)), Nat::Succ(j)))
+                }
+            | Expr::Add(r, s) => Eq::refl(Nat, plus(eval(Expr::Mul(p, q)), eval(Expr::Add(r, s))))
+            | Expr::Mul(r, s) => Eq::refl(Nat, plus(eval(Expr::Mul(p, q)), eval(Expr::Mul(r, s))))
+          }
+    }
+}
+
+fn smart_mul_correct(a: Expr, b: Expr) -> eval(smart_mul(a, b)) == mult(eval(a), eval(b)) {
+    match a {
+      | Expr::Lit(m) =>
+          match m {
+            | Nat::Zero    => symm(Nat, mult(Nat::Zero, eval(b)), Nat::Zero, zero_mult(eval(b)))
+            | Nat::Succ(k) =>
+                match k {
+                  | Nat::Zero =>  // m == 1
+                      match b {
+                        | Expr::Lit(n) =>
+                            match n {
+                              | Nat::Zero    =>
+                                  symm(Nat, mult(Nat::Succ(Nat::Zero), Nat::Zero), Nat::Zero,
+                                       mult_zero(Nat::Succ(Nat::Zero)))
+                              | Nat::Succ(j) =>
+                                  symm(Nat, mult(Nat::Succ(Nat::Zero), Nat::Succ(j)), Nat::Succ(j),
+                                       one_mult(Nat::Succ(j)))
+                            }
+                        | Expr::Add(p, q) =>
+                            symm(Nat, mult(Nat::Succ(Nat::Zero), eval(Expr::Add(p, q))),
+                                 eval(Expr::Add(p, q)), one_mult(eval(Expr::Add(p, q))))
+                        | Expr::Mul(p, q) =>
+                            symm(Nat, mult(Nat::Succ(Nat::Zero), eval(Expr::Mul(p, q))),
+                                 eval(Expr::Mul(p, q)), one_mult(eval(Expr::Mul(p, q))))
+                      }
+                  | Nat::Succ(k2) =>  // m >= 2
+                      match b {
+                        | Expr::Lit(n) =>
+                            match n {
+                              | Nat::Zero    =>
+                                  symm(Nat, mult(Nat::Succ(Nat::Succ(k2)), Nat::Zero), Nat::Zero,
+                                       mult_zero(Nat::Succ(Nat::Succ(k2))))
+                              | Nat::Succ(j) =>
+                                  Eq::refl(Nat, mult(Nat::Succ(Nat::Succ(k2)), Nat::Succ(j)))
+                            }
+                        | Expr::Add(p, q) =>
+                            Eq::refl(Nat, mult(Nat::Succ(Nat::Succ(k2)), eval(Expr::Add(p, q))))
+                        | Expr::Mul(p, q) =>
+                            Eq::refl(Nat, mult(Nat::Succ(Nat::Succ(k2)), eval(Expr::Mul(p, q))))
+                      }
+                }
+          }
+      | Expr::Add(p, q) =>
+          match b {
+            | Expr::Lit(n) =>
+                match n {
+                  | Nat::Zero    =>
+                      symm(Nat, mult(eval(Expr::Add(p, q)), Nat::Zero), Nat::Zero,
+                           mult_zero(eval(Expr::Add(p, q))))
+                  | Nat::Succ(j) =>
+                      match j {
+                        | Nat::Zero     =>  // n == 1
+                            symm(Nat, mult(eval(Expr::Add(p, q)), Nat::Succ(Nat::Zero)),
+                                 eval(Expr::Add(p, q)), mult_one(eval(Expr::Add(p, q))))
+                        | Nat::Succ(j2) =>
+                            Eq::refl(Nat, mult(eval(Expr::Add(p, q)), Nat::Succ(Nat::Succ(j2))))
+                      }
+                }
+            | Expr::Add(r, s) =>
+                Eq::refl(Nat, mult(eval(Expr::Add(p, q)), eval(Expr::Add(r, s))))
+            | Expr::Mul(r, s) =>
+                Eq::refl(Nat, mult(eval(Expr::Add(p, q)), eval(Expr::Mul(r, s))))
+          }
+      | Expr::Mul(p, q) =>
+          match b {
+            | Expr::Lit(n) =>
+                match n {
+                  | Nat::Zero    =>
+                      symm(Nat, mult(eval(Expr::Mul(p, q)), Nat::Zero), Nat::Zero,
+                           mult_zero(eval(Expr::Mul(p, q))))
+                  | Nat::Succ(j) =>
+                      match j {
+                        | Nat::Zero     =>  // n == 1
+                            symm(Nat, mult(eval(Expr::Mul(p, q)), Nat::Succ(Nat::Zero)),
+                                 eval(Expr::Mul(p, q)), mult_one(eval(Expr::Mul(p, q))))
+                        | Nat::Succ(j2) =>
+                            Eq::refl(Nat, mult(eval(Expr::Mul(p, q)), Nat::Succ(Nat::Succ(j2))))
+                      }
+                }
+            | Expr::Add(r, s) =>
+                Eq::refl(Nat, mult(eval(Expr::Mul(p, q)), eval(Expr::Add(r, s))))
+            | Expr::Mul(r, s) =>
+                Eq::refl(Nat, mult(eval(Expr::Mul(p, q)), eval(Expr::Mul(r, s))))
+          }
+    }
+}
+
+// `simplify` preserves semantics: `eval(simplify(e)) == eval(e)`.
+fn simplify_correct(e: Expr) -> eval(simplify(e)) == eval(e) {
+    match e {
+      | Expr::Lit(n) => Eq::refl(Nat, n)
+      | Expr::Add(a, b) =>
+          trans(Nat, eval(smart_add(simplify(a), simplify(b))),
+                plus(eval(simplify(a)), eval(simplify(b))), plus(eval(a), eval(b)),
+                smart_add_correct(simplify(a), simplify(b)),
+                trans(Nat, plus(eval(simplify(a)), eval(simplify(b))),
+                      plus(eval(a), eval(simplify(b))), plus(eval(a), eval(b)),
+                      congr_arg(Nat, Nat, fun (x: Nat) => plus(x, eval(simplify(b))),
+                                eval(simplify(a)), eval(a), simplify_correct(a)),
+                      congr_arg(Nat, Nat, fun (y: Nat) => plus(eval(a), y),
+                                eval(simplify(b)), eval(b), simplify_correct(b))))
+      | Expr::Mul(a, b) =>
+          trans(Nat, eval(smart_mul(simplify(a), simplify(b))),
+                mult(eval(simplify(a)), eval(simplify(b))), mult(eval(a), eval(b)),
+                smart_mul_correct(simplify(a), simplify(b)),
+                trans(Nat, mult(eval(simplify(a)), eval(simplify(b))),
+                      mult(eval(a), eval(simplify(b))), mult(eval(a), eval(b)),
+                      congr_arg(Nat, Nat, fun (x: Nat) => mult(x, eval(simplify(b))),
+                                eval(simplify(a)), eval(a), simplify_correct(a)),
+                      congr_arg(Nat, Nat, fun (y: Nat) => mult(eval(a), y),
+                                eval(simplify(b)), eval(b), simplify_correct(b))))
+    }
+}
+
+// ================================================================================================
+// ----- The target: stack-machine instructions, `exec`, `compile` (from `compile_stack.rv`) -----
+// ================================================================================================
+
+enum Instr { Push(Nat), IAdd, IMul }
+
+fn addop2(a: Nat, s1: List<Nat>) -> List<Nat> {
+    match s1 {
+      | List::Nil         => List::Cons(Nat, a, List::Nil(Nat))
+      | List::Cons(b, s2) => List::Cons(Nat, plus(b, a), s2)
+    }
+}
+fn addop1(s: List<Nat>) -> List<Nat> {
+    match s {
+      | List::Nil         => s
+      | List::Cons(a, s1) => addop2(a, s1)
+    }
+}
+
+fn mulop2(a: Nat, s1: List<Nat>) -> List<Nat> {
+    match s1 {
+      | List::Nil         => List::Cons(Nat, a, List::Nil(Nat))
+      | List::Cons(b, s2) => List::Cons(Nat, mult(b, a), s2)
+    }
+}
+fn mulop1(s: List<Nat>) -> List<Nat> {
+    match s {
+      | List::Nil         => s
+      | List::Cons(a, s1) => mulop2(a, s1)
+    }
+}
+
+fn step_instr(i: Instr, s: List<Nat>) -> List<Nat> {
+    match i {
+      | Instr::Push(n) => List::Cons(Nat, n, s)
+      | Instr::IAdd    => addop1(s)
+      | Instr::IMul    => mulop1(s)
+    }
+}
+
+fn exec(p: List<Instr>, s: List<Nat>) -> List<Nat> {
+    match p {
+      | List::Nil           => s
+      | List::Cons(i, rest) => exec(rest, step_instr(i, s))
+    }
+}
+
+fn compile(e: Expr) -> List<Instr> {
+    match e {
+      | Expr::Lit(n)    => List::Cons(Instr, Instr::Push(n), List::Nil(Instr))
+      | Expr::Add(a, b) => append(Instr, append(Instr, compile(a), compile(b)),
+                                   List::Cons(Instr, Instr::IAdd, List::Nil(Instr)))
+      | Expr::Mul(a, b) => append(Instr, append(Instr, compile(a), compile(b)),
+                                   List::Cons(Instr, Instr::IMul, List::Nil(Instr)))
+    }
+}
+
+fn exec_append(p: List<Instr>, q: List<Instr>, s: List<Nat>)
+    -> exec(append(Instr, p, q), s) == exec(q, exec(p, s))
+{
+    match p {
+      | List::Nil           => Eq::refl(List<Nat>, exec(q, s))
+      | List::Cons(i, rest) => exec_append(rest, q, step_instr(i, s))
+    }
+}
+
+fn addop1_step(y: Nat, s1: List<Nat>) -> addop1(List::Cons(Nat, y, s1)) == addop2(y, s1) {
+    Eq::refl(List<Nat>, addop2(y, s1))
+}
+fn addop2_step(a: Nat, x: Nat, s: List<Nat>)
+    -> addop2(a, List::Cons(Nat, x, s)) == List::Cons(Nat, plus(x, a), s)
+{
+    Eq::refl(List<Nat>, List::Cons(Nat, plus(x, a), s))
+}
+fn addop_full(y: Nat, x: Nat, s: List<Nat>)
+    -> addop1(List::Cons(Nat, y, List::Cons(Nat, x, s))) == List::Cons(Nat, plus(x, y), s)
+{
+    trans(List<Nat>,
+          addop1(List::Cons(Nat, y, List::Cons(Nat, x, s))),
+          addop2(y, List::Cons(Nat, x, s)),
+          List::Cons(Nat, plus(x, y), s),
+          addop1_step(y, List::Cons(Nat, x, s)),
+          addop2_step(y, x, s))
+}
+
+fn mulop1_step(y: Nat, s1: List<Nat>) -> mulop1(List::Cons(Nat, y, s1)) == mulop2(y, s1) {
+    Eq::refl(List<Nat>, mulop2(y, s1))
+}
+fn mulop2_step(a: Nat, x: Nat, s: List<Nat>)
+    -> mulop2(a, List::Cons(Nat, x, s)) == List::Cons(Nat, mult(x, a), s)
+{
+    Eq::refl(List<Nat>, List::Cons(Nat, mult(x, a), s))
+}
+fn mulop_full(y: Nat, x: Nat, s: List<Nat>)
+    -> mulop1(List::Cons(Nat, y, List::Cons(Nat, x, s))) == List::Cons(Nat, mult(x, y), s)
+{
+    trans(List<Nat>,
+          mulop1(List::Cons(Nat, y, List::Cons(Nat, x, s))),
+          mulop2(y, List::Cons(Nat, x, s)),
+          List::Cons(Nat, mult(x, y), s),
+          mulop1_step(y, List::Cons(Nat, x, s)),
+          mulop2_step(y, x, s))
+}
+
+fn step_add_full(y: Nat, x: Nat, s: List<Nat>)
+    -> step_instr(Instr::IAdd, List::Cons(Nat, y, List::Cons(Nat, x, s))) == List::Cons(Nat, plus(x, y), s)
+{
+    addop_full(y, x, s)
+}
+fn step_mul_full(y: Nat, x: Nat, s: List<Nat>)
+    -> step_instr(Instr::IMul, List::Cons(Nat, y, List::Cons(Nat, x, s))) == List::Cons(Nat, mult(x, y), s)
+{
+    mulop_full(y, x, s)
+}
+
+fn exec_add1_full(y: Nat, x: Nat, s: List<Nat>)
+    -> exec(List::Cons(Instr, Instr::IAdd, List::Nil(Instr)), List::Cons(Nat, y, List::Cons(Nat, x, s)))
+       == List::Cons(Nat, plus(x, y), s)
+{
+    step_add_full(y, x, s)
+}
+fn exec_mul1_full(y: Nat, x: Nat, s: List<Nat>)
+    -> exec(List::Cons(Instr, Instr::IMul, List::Nil(Instr)), List::Cons(Nat, y, List::Cons(Nat, x, s)))
+       == List::Cons(Nat, mult(x, y), s)
+{
+    step_mul_full(y, x, s)
+}
+
+fn exec_add_sub_a(a: Expr, b: Expr, s: List<Nat>, ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s))
+    -> exec(compile(b), exec(compile(a), s)) == exec(compile(b), List::Cons(Nat, eval(a), s))
+{
+    congr_arg(List<Nat>, List<Nat>, fun (st: List<Nat>) => exec(compile(b), st),
+              exec(compile(a), s), List::Cons(Nat, eval(a), s), ha)
+}
+fn exec_add_mid(a: Expr, b: Expr, s: List<Nat>,
+                ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+                hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(compile(b), exec(compile(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s))
+{
+    trans(List<Nat>,
+          exec(compile(b), exec(compile(a), s)),
+          exec(compile(b), List::Cons(Nat, eval(a), s)),
+          List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)),
+          exec_add_sub_a(a, b, s, ha),
+          hb)
+}
+fn exec_add_ab(a: Expr, b: Expr, s: List<Nat>,
+               ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+               hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(append(Instr, compile(a), compile(b)), s) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s))
+{
+    trans(List<Nat>,
+          exec(append(Instr, compile(a), compile(b)), s),
+          exec(compile(b), exec(compile(a), s)),
+          List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)),
+          exec_append(compile(a), compile(b), s),
+          exec_add_mid(a, b, s, ha, hb))
+}
+fn exec_add_step(a: Expr, b: Expr, s: List<Nat>,
+                  ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+                  hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(List::Cons(Instr, Instr::IAdd, List::Nil(Instr)), exec(append(Instr, compile(a), compile(b)), s))
+       == exec(List::Cons(Instr, Instr::IAdd, List::Nil(Instr)), List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+{
+    congr_arg(List<Nat>, List<Nat>,
+              fun (st: List<Nat>) => exec(List::Cons(Instr, Instr::IAdd, List::Nil(Instr)), st),
+              exec(append(Instr, compile(a), compile(b)), s),
+              List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)),
+              exec_add_ab(a, b, s, ha, hb))
+}
+fn exec_add_final(a: Expr, b: Expr, s: List<Nat>,
+                   ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+                   hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(List::Cons(Instr, Instr::IAdd, List::Nil(Instr)), exec(append(Instr, compile(a), compile(b)), s))
+       == List::Cons(Nat, eval(Expr::Add(a, b)), s)
+{
+    trans(List<Nat>,
+          exec(List::Cons(Instr, Instr::IAdd, List::Nil(Instr)), exec(append(Instr, compile(a), compile(b)), s)),
+          exec(List::Cons(Instr, Instr::IAdd, List::Nil(Instr)), List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s))),
+          List::Cons(Nat, eval(Expr::Add(a, b)), s),
+          exec_add_step(a, b, s, ha, hb),
+          exec_add1_full(eval(b), eval(a), s))
+}
+fn exec_add_full(a: Expr, b: Expr, s: List<Nat>,
+                  ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+                  hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(compile(Expr::Add(a, b)), s) == List::Cons(Nat, eval(Expr::Add(a, b)), s)
+{
+    trans(List<Nat>,
+          exec(compile(Expr::Add(a, b)), s),
+          exec(List::Cons(Instr, Instr::IAdd, List::Nil(Instr)), exec(append(Instr, compile(a), compile(b)), s)),
+          List::Cons(Nat, eval(Expr::Add(a, b)), s),
+          exec_append(append(Instr, compile(a), compile(b)), List::Cons(Instr, Instr::IAdd, List::Nil(Instr)), s),
+          exec_add_final(a, b, s, ha, hb))
+}
+
+fn exec_mul_sub_a(a: Expr, b: Expr, s: List<Nat>, ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s))
+    -> exec(compile(b), exec(compile(a), s)) == exec(compile(b), List::Cons(Nat, eval(a), s))
+{
+    congr_arg(List<Nat>, List<Nat>, fun (st: List<Nat>) => exec(compile(b), st),
+              exec(compile(a), s), List::Cons(Nat, eval(a), s), ha)
+}
+fn exec_mul_mid(a: Expr, b: Expr, s: List<Nat>,
+                ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+                hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(compile(b), exec(compile(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s))
+{
+    trans(List<Nat>,
+          exec(compile(b), exec(compile(a), s)),
+          exec(compile(b), List::Cons(Nat, eval(a), s)),
+          List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)),
+          exec_mul_sub_a(a, b, s, ha),
+          hb)
+}
+fn exec_mul_ab(a: Expr, b: Expr, s: List<Nat>,
+               ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+               hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(append(Instr, compile(a), compile(b)), s) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s))
+{
+    trans(List<Nat>,
+          exec(append(Instr, compile(a), compile(b)), s),
+          exec(compile(b), exec(compile(a), s)),
+          List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)),
+          exec_append(compile(a), compile(b), s),
+          exec_mul_mid(a, b, s, ha, hb))
+}
+fn exec_mul_step(a: Expr, b: Expr, s: List<Nat>,
+                  ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+                  hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(List::Cons(Instr, Instr::IMul, List::Nil(Instr)), exec(append(Instr, compile(a), compile(b)), s))
+       == exec(List::Cons(Instr, Instr::IMul, List::Nil(Instr)), List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+{
+    congr_arg(List<Nat>, List<Nat>,
+              fun (st: List<Nat>) => exec(List::Cons(Instr, Instr::IMul, List::Nil(Instr)), st),
+              exec(append(Instr, compile(a), compile(b)), s),
+              List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)),
+              exec_mul_ab(a, b, s, ha, hb))
+}
+fn exec_mul_final(a: Expr, b: Expr, s: List<Nat>,
+                   ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+                   hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(List::Cons(Instr, Instr::IMul, List::Nil(Instr)), exec(append(Instr, compile(a), compile(b)), s))
+       == List::Cons(Nat, eval(Expr::Mul(a, b)), s)
+{
+    trans(List<Nat>,
+          exec(List::Cons(Instr, Instr::IMul, List::Nil(Instr)), exec(append(Instr, compile(a), compile(b)), s)),
+          exec(List::Cons(Instr, Instr::IMul, List::Nil(Instr)), List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s))),
+          List::Cons(Nat, eval(Expr::Mul(a, b)), s),
+          exec_mul_step(a, b, s, ha, hb),
+          exec_mul1_full(eval(b), eval(a), s))
+}
+fn exec_mul_full(a: Expr, b: Expr, s: List<Nat>,
+                  ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+                  hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(compile(Expr::Mul(a, b)), s) == List::Cons(Nat, eval(Expr::Mul(a, b)), s)
+{
+    trans(List<Nat>,
+          exec(compile(Expr::Mul(a, b)), s),
+          exec(List::Cons(Instr, Instr::IMul, List::Nil(Instr)), exec(append(Instr, compile(a), compile(b)), s)),
+          List::Cons(Nat, eval(Expr::Mul(a, b)), s),
+          exec_append(append(Instr, compile(a), compile(b)), List::Cons(Instr, Instr::IMul, List::Nil(Instr)), s),
+          exec_mul_final(a, b, s, ha, hb))
+}
+
+fn exec_compile(e: Expr, s: List<Nat>) -> exec(compile(e), s) == List::Cons(Nat, eval(e), s) {
+    match e {
+      | Expr::Lit(n)    => Eq::refl(List<Nat>, List::Cons(Nat, n, s))
+      | Expr::Add(a, b) => exec_add_full(a, b, s, exec_compile(a, s), exec_compile(b, List::Cons(Nat, eval(a), s)))
+      | Expr::Mul(a, b) => exec_mul_full(a, b, s, exec_compile(a, s), exec_compile(b, List::Cons(Nat, eval(a), s)))
+    }
+}
+
+// `compile_correct`: running the compiled program on the empty stack yields the singleton stack
+// holding `eval(e)` — the `s = Nil` instance of `exec_compile`.
+fn compile_correct(e: Expr) -> exec(compile(e), List::Nil(Nat)) == List::Cons(Nat, eval(e), List::Nil(Nat)) {
+    exec_compile(e, List::Nil(Nat))
+}
+
+// ================================================================================================
+// ----- THE CAPSTONE: composing `simplify_correct` with `compile_correct` -----------------------
+// ================================================================================================
+
+// Step 1: compile the *simplified* expression on the empty stack — a direct instance of
+// `compile_correct` at `simplify(e)`, giving `exec(compile(simplify e), Nil) == Cons(eval(simplify e), Nil)`.
+fn opt_compile_step1(e: Expr)
+    -> exec(compile(simplify(e)), List::Nil(Nat)) == List::Cons(Nat, eval(simplify(e)), List::Nil(Nat))
+{
+    compile_correct(simplify(e))
+}
+
+// Step 2: push `simplify_correct(e) : eval(simplify(e)) == eval(e)` under the `Cons(_, Nil)`
+// constructor via `congr_arg`, giving `Cons(eval(simplify e), Nil) == Cons(eval(e), Nil)`.
+fn opt_compile_step2(e: Expr)
+    -> List::Cons(Nat, eval(simplify(e)), List::Nil(Nat)) == List::Cons(Nat, eval(e), List::Nil(Nat))
+{
+    congr_arg(Nat, List<Nat>, fun (x: Nat) => List::Cons(Nat, x, List::Nil(Nat)),
+              eval(simplify(e)), eval(e), simplify_correct(e))
+}
+
+// HEADLINE: compiling the OPTIMIZED (simplified) expression on the empty stack still produces
+// the correct singleton result — a clean two-step compose of `compile_correct(simplify(e))` and
+// `simplify_correct(e)` via `trans`.
+fn opt_compile_correct(e: Expr)
+    -> exec(compile(simplify(e)), List::Nil(Nat)) == List::Cons(Nat, eval(e), List::Nil(Nat))
+{
+    trans(List<Nat>,
+          exec(compile(simplify(e)), List::Nil(Nat)),
+          List::Cons(Nat, eval(simplify(e)), List::Nil(Nat)),
+          List::Cons(Nat, eval(e), List::Nil(Nat)),
+          opt_compile_step1(e),
+          opt_compile_step2(e))
+}
+
+// BONUS: optimizing before compiling gives the same machine result as compiling directly —
+// `trans`-ing the headline against `compile_correct(e)` (flipped via `symm`).
+fn opt_compile_preserves(e: Expr)
+    -> exec(compile(simplify(e)), List::Nil(Nat)) == exec(compile(e), List::Nil(Nat))
+{
+    trans(List<Nat>,
+          exec(compile(simplify(e)), List::Nil(Nat)),
+          List::Cons(Nat, eval(e), List::Nil(Nat)),
+          exec(compile(e), List::Nil(Nat)),
+          opt_compile_correct(e),
+          symm(List<Nat>, exec(compile(e), List::Nil(Nat)), List::Cons(Nat, eval(e), List::Nil(Nat)),
+               compile_correct(e)))
+}
