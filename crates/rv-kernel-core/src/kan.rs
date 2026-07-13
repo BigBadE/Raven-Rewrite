@@ -1584,6 +1584,149 @@ pub(crate) fn hcomp_inductive_rule(
     ))
 }
 
+// ============================================================================
+// Phase 3.12: `transp` through a `Glue` line (computational univalence) —
+// INVESTIGATED AND DECLINED (Target C).
+// ============================================================================
+//
+// This section documents the CCHM `transp^{i.Glue …}` rule — including its
+// specialization to exactly the `ua`-shaped line `transp (λi. ua A B e @ i) a0`
+// — and the precise, structural reason neither is wired into
+// `reduce.rs`/`nbe.rs` this pass. Nothing below changes `Term::Transp`'s
+// behavior: a `transp` through a `Glue` line (`ua`-shaped or otherwise) stays
+// **stuck**, exactly as before this pass. Per the standing instruction, an
+// honest decline with a precise diagnosis is the reported outcome — no new
+// reduction rule, no pattern-matched shortcut, is added to the trusted core.
+//
+// # The goal, restated precisely
+//
+// `crate::glue::ua` builds `ua A B e := ⟨i⟩ Glue B [(i=0)↦(A,e),(i=1)↦(B,idE)]`,
+// and `crate::cubical::transport(p, a) := transp (λi. p @ i) ⊥ a`. Composing
+// them: `transport (ua A B e) a0` elaborates to
+//
+// ```text
+//   Transp( PApp(PLam(Glue B [(i=0)↦(A,e),(i=1)↦(B,idEquiv B)]), Var(0)), ⊥, a0 )
+// ```
+//
+// whose family, once its outer `PApp(PLam …, Var 0)` β-redex is peeled (an
+// ordinary, unconditionally sound simplification — see `Term::PApp`'s own
+// β-rule in `reduce.rs`), is exactly `i.Glue B [(i=0)↦(A,e),(i=1)↦(B,idEquiv B)]`.
+// The goal is for this to reduce to `Equiv.f A B e a0` — the "propositions as
+// types" content of univalence being *computational*, not merely provable.
+//
+// # Why the general CCHM rule doesn't apply directly
+//
+// CCHM (§6.4) states `transp`/`comp` through `i.Glue (A i) [φ(i) ↦ (T(i), w(i))]`
+// for a *single* cofibration `φ` that may vary continuously in `i`, with a
+// *single* type family `T` defined (only) where `φ` holds, and a *single*
+// equivalence family `w : T ≃ A` likewise defined only there. Spelled out, the
+// rule composes three things: (1) a transport of the *base* `A(i)` along `i`
+// (needed whenever `φ` fails to hold throughout — the base is where the result
+// ultimately "lives" once glued data runs out); (2) a transport of `T(i)` along
+// `i`, valid only under `φ`; and (3) a correction term built from `w`'s
+// homotopies (`sec`/`ret`) via an `hcomp` in the base type `A`, because the two
+// transports from (1)/(2) need not agree on the nose where they overlap — only
+// up to the equivalence's own coherence data. This is *exactly* the same
+// per-type-former Kan recursion this module's top-level doc already lists as
+// blocked (`comp`, "composition along a varying family") — a real
+// `transp^Glue`/`comp^Glue` is not a special case bolted onto `Glue` alone; it
+// is CCHM's `Π`/`PathP`-style filling rule *for* `Glue`, requiring the same
+// `hcomp`-in-the-codomain machinery `transp_pi_rule`/`hcomp_pi_rule` needed for
+// `Π`, but now composed with `Equiv`'s bi-invertibility data on top.
+//
+// `ua`'s line does *not* sidestep this. It looks simpler — the base `B` is
+// syntactically **constant** in `i` (so component (1) above is trivially the
+// identity, by the very regularity rule this module already implements), and
+// each branch's `T`/`w` is *also* individually constant (`A`/`e` on `(i=0)`,
+// `B`/`idEquiv B` on `(i=1)`) — but `ua`'s two branches sit on **complementary,
+// individually-decided** faces `(i=0)` and `(i=1)`, not on one face `φ(i)` that
+// is *itself* varying continuously with a single, once-only-defined `T`. There
+// is no single `T(i)` connecting `A` to `B` continuously across the interval to
+// hand to a Kan filling rule at all — the "family" only exists as two disjoint,
+// boundary-only facts. Concretely: at any *generic* (undecided) point of the
+// interval — the one place a genuine `transp^Glue` filling rule must produce
+// data — `Glue B […]` is **stuck** (see `crate::term::Term::Glue`'s doc and
+// `glue.rs`'s `glue_open_phi_stays_stuck` test): there is no canonical element
+// of it to fill with, and no `Term::GlueIntro` (`glue`, the introduction form)
+// exists yet in this kernel to construct one (see `glue.rs`'s module doc,
+// "Deferred"). A sound `transp^Glue` rule would need to *produce* an
+// intermediate glued value at that generic point (via `hcomp`+`glue`) and only
+// then observe its `i0`/`i1` boundaries collapse to `A`/`B` — it cannot instead
+// jump straight from "the boundaries are `A` and `B`" to "the answer is
+// `Equiv.f a0`" without that intermediate construction, because nothing in this
+// kernel has verified that shortcut is *definitionally* the same thing the
+// general rule would produce.
+//
+// # Why a syntax-matched "ua-shaped shortcut" is not a sound alternative
+//
+// The tempting alternative — special-case `reduce.rs`'s `Term::Transp` arm to
+// recognize the literal syntactic shape `Glue B [(i=0)↦(A,e),(i=1)↦(B,idEquiv
+// B)]` and rewrite straight to `Equiv.f A B e a0` — was considered and
+// rejected. Two independent problems:
+//
+// 1. **It would be a new axiom, not a derived computation.** Every other rule
+//    in this module (`transp_pi_rule`, `hcomp_pi_rule`, `hcomp_pathp_rule`,
+//    `transp_inductive_rule`, `hcomp_inductive_rule`) is *sound by
+//    construction*: each is checked (see each rule's own doc, point "type
+//    preservation") to independently re-typecheck to the *same* type the
+//    original stuck term already had, using only primitives (`Transp`,
+//    `HComp`, ordinary `App`/`Lam`) whose own soundness is separately
+//    established. A "pattern-match on `ua`'s shape, output `Equiv.f a0`" rule
+//    has no such derivation — it would be asserting, by fiat, the specific
+//    mathematical *fact* "`transport(ua e) = e.f`" as a new primitive
+//    reduction, rather than deriving it from `Glue`'s own Kan structure. That
+//    fact is true in full cubical type theory, but true-and-unimplemented is
+//    exactly the gap Target C exists to report honestly, not paper over with a
+//    syntactically-scoped special case that happens to be independently
+//    known-correct.
+//
+// 2. **It cannot be checked by this module's own soundness discipline.** Every
+//    existing rule's soundness argument leans on "the built term re-typechecks
+//    to the stuck term's own type from scratch" (point 2 in each rule's doc) —
+//    a mechanical, adversarially-testable check. A hard-coded `ua`-shape
+//    rewrite *would* pass that specific check (`Equiv.f A B e a0 : B` is easy
+//    to confirm), so the usual test would not catch what's actually missing:
+//    there is no way, with the primitives available (no `Glue`
+//    `hcomp`/`comp`, no `glue` intro), to verify the *stronger* property every
+//    other Kan rule in this module satisfies implicitly — that the rule
+//    computes the value a *fully general* `transp^Glue`/`comp^Glue`
+//    implementation would have computed, not merely *some* type-correct
+//    value. Shipping a rule whose correctness cannot be checked against the
+//    general construction it is supposedly a special case of is precisely the
+//    "REVERT anything you cannot fully stand behind" situation the task
+//    describes.
+//
+// # What's confirmed unaffected (non-regression)
+//
+// [`kernel_tests::transp_through_ua_line_stays_stuck`] and
+// [`kernel_tests::transp_through_ua_line_cannot_smuggle_a_false_equation`]
+// below pin down that `transport (ua A B e) a0` — for both `idEquiv` and a
+// genuinely distinct pair `A ≠ B` — remains a stuck `Transp`/well-typed neutral
+// under both the reducer and NbE (identical behavior to every other
+// not-yet-covered `transp` shape, e.g. a `Σ`/record family), and that this
+// stuck-ness cannot be abused to prove a false equation between distinct
+// closed `Nat`s — the same anti-`False` battery every other phase in this
+// module runs, confirming the *absence* of a Glue-transport rule is exactly as
+// safe as its presence would need to be.
+//
+// # What this leaves for a future pass
+//
+// Target A (the fully general `transp`/`comp^Glue`) subsumes Target B (the
+// `ua`-specialized case) precisely because — as argued above — there is no
+// simpler, independently-derivable "just for `ua`" shortcut; both require the
+// same missing prerequisites: `Term::GlueIntro`/`glue` (the introduction
+// form), `hcomp` specialized to `Glue`, and a correction term built from
+// `Equiv.sec`/`Equiv.ret`. Landing `Π`'s `comp` (composition along a varying
+// family, already flagged as blocked by the Cartesian-interval `Π` reversal
+// issue at this module's top) is a *harder* prerequisite than `Glue`'s Kan
+// structure needs in isolation — `Glue`'s own filling rule does not require
+// reversing `Π`, only `hcomp` in an *arbitrary* (here, the base `A`/`B`) type,
+// which this module already has machinery for (`hcomp_pi_rule`,
+// `hcomp_pathp_rule`, `hcomp_inductive_rule` all instantiate exactly that
+// pattern for other type formers) — so a future `Glue`-specific `hcomp`/`comp`
+// pass, followed by a `glue` introduction form, is the concrete next step, not
+// blocked on resolving `Π`'s harder reversal problem first.
+
 #[cfg(test)]
 mod kernel_tests {
     use crate::face::Cof;
@@ -2958,6 +3101,77 @@ mod kernel_tests {
         let t1 = Term::hcomp(list_of(cn("A")), Cof::bot(), u1, xs1);
         let t2 = Term::hcomp(list_of(cn("A")), Cof::bot(), u2, xs2);
         assert!(!k.def_eq(&t1, &t2));
+    }
+
+    // ---- Phase 3.12: `transp` through a `Glue`/`ua` line — declined, so these
+    // pin down "stays honestly stuck", not a computed answer (see this module's
+    // "Phase 3.12" doc for the full obstruction argument). ----
+
+    fn ua_env() -> crate::env::Env {
+        let mut env = crate::env::Env::new();
+        crate::inductive::declare_nat(&mut env).unwrap();
+        crate::equiv::declare_equiv(&mut env).unwrap();
+        env
+    }
+
+    fn nat_t() -> Term {
+        Term::cnst(name("Nat"), vec![])
+    }
+
+    /// `transport (ua Nat Nat (idEquiv Nat)) zero` — the cleanest possible case
+    /// (identity equivalence, so *if* this reduced, the "obvious" answer would
+    /// just be `zero` again) — stays a stuck `Term::Transp`, under both the
+    /// reducer and NbE, exactly as before this pass: no Glue-transport rule was
+    /// wired in, so nothing here should have started firing.
+    #[test]
+    fn transp_through_ua_line_stays_stuck() {
+        let env = ua_env();
+        let lvl = crate::level::Level::of_nat(1);
+        let n = nat_t();
+        let e = Term::app(Term::cnst(name("idEquiv"), vec![lvl.clone()]), n.clone());
+        let p = crate::glue::ua(lvl, n.clone(), n.clone(), e);
+        let zero = Term::cnst(name("Nat.zero"), vec![]);
+        let transported = crate::cubical::transport(&p, &zero);
+
+        let r = crate::reduce::Reducer::new(&env);
+        assert!(
+            matches!(r.whnf(&transported), Term::Transp(..)),
+            "no Glue-transport rule is wired in: whnf must leave a stuck Transp"
+        );
+        let nbe = crate::nbe::Nbe::new(&env);
+        assert!(
+            matches!(nbe.normalize(&transported), Term::Transp(..)),
+            "NbE must agree: still stuck, not silently computed to `zero` (or anything else)"
+        );
+    }
+
+    /// **Anti-`False`**: with `A ≠ B` (`A = Nat`, `B = Nat → Nat`) the stuck
+    /// `transport (ua A B e) a0` must not be usable to manufacture any equation
+    /// between distinct closed `Nat`s — confirming the *absence* of a
+    /// Glue-transport rule is exactly as safe as a correct one would need to be
+    /// (a stuck neutral proves nothing).
+    #[test]
+    fn transp_through_ua_line_cannot_smuggle_a_false_equation() {
+        let env = ua_env();
+        let lvl = crate::level::Level::of_nat(1);
+        let n = nat_t();
+        let arrow = Term::arrow(n.clone(), n.clone());
+        // A bogus `e : Equiv Nat (Nat->Nat)` is fine here — this test only probes
+        // *reduction*, and `ua`'s boundary rule (see `glue.rs`) never inspects
+        // `e`'s content, only whether the guarding face is decided.
+        let bogus_e = Term::lam(n.clone(), Term::Var(0));
+        let p = crate::glue::ua(lvl, n.clone(), arrow, bogus_e);
+        let zero = Term::cnst(name("Nat.zero"), vec![]);
+        let one = Term::app(Term::cnst(name("Nat.succ"), vec![]), zero.clone());
+        let transported = crate::cubical::transport(&p, &zero);
+
+        let r = crate::reduce::Reducer::new(&env);
+        // Stays stuck (same shape as above)...
+        assert!(matches!(r.whnf(&transported), Term::Transp(..)));
+        // ...and in particular is never compared/reduced down to `one`, nor does
+        // its mere presence perturb the unrelated fact that `zero ≠ one`.
+        assert!(!r.is_def_eq(&zero, &one));
+        assert!(!r.is_def_eq(&transported, &one));
     }
 }
 
