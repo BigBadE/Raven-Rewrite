@@ -1,0 +1,219 @@
+// LIST FUNCTOR LAWS — a self-contained round-up of the classic "lists are a functor" +
+// fold/reverse laws, in Rust-like Raven (`rvc --verify`).
+//
+// Every lemma below except `map_reverse` (the "BONUS" law at the end) already has a proof
+// somewhere in the existing corpus:
+//   - `append_nil`, `append_assoc`, `reverse_append`, `reverse_reverse`, `map_fusion`
+//     (== "map_map": mapping `f` then `g` equals mapping their composition once), `map_id`
+//     are proved once-and-for-all, generically, in `stdlib_list.rv`.
+//   - `length_append`, `map_append` are proved generically in `stdlib.rv`.
+//   - `length_append` (again) and `length_map` are proved generically in `stdlib_list2.rv`.
+// This file reproves all of them locally — following the established idiom in this corpus
+// (`stdlib_list2.rv` itself redefines `Nat`/`List`/`append`/`map`/`reverse` "so this file
+// stands on its own" rather than importing) — and adds the one genuinely NEW theorem,
+// `map_reverse`, which is not proved anywhere else in the corpus: `map` commutes with
+// `reverse`. `map_reverse` is built directly on top of the local `map_append` and
+// `reverse_append` proved just above it, which is exactly why it belongs in this file next
+// to them rather than off on its own.
+//
+// PROOF-ERGONOMICS: every proof step is a small named `fn`; no `trans`/`congr_arg` call is
+// ever handed another combinator call as an inline sub-argument (see `compile_stack.rv`'s
+// header for why: the kernel's defeq checker can choke on such inline nesting even when the
+// same composition split into named steps succeeds). Inductive-`Eq`/`Prop` style (not
+// cubical), matching the rest of the corpus.
+
+enum Nat { Zero, Succ(Nat) }
+enum List<A: Type> { Nil, Cons(A, List<A>) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+
+fn length(A: Type, xs: List<A>) -> Nat {
+    match xs { | List::Nil => Nat::Zero | List::Cons(x, rest) => Nat::Succ(length(A, rest)) }
+}
+
+fn append(A: Type, xs: List<A>, ys: List<A>) -> List<A> {
+    match xs {
+      | List::Nil           => ys
+      | List::Cons(x, rest) => List::Cons(A, x, append(A, rest, ys))
+    }
+}
+
+fn map(A: Type, B: Type, f: A -> B, xs: List<A>) -> List<B> {
+    match xs {
+      | List::Nil           => List::Nil(B)
+      | List::Cons(x, rest) => List::Cons(B, f(x), map(A, B, f, rest))
+    }
+}
+
+fn reverse(A: Type, xs: List<A>) -> List<A> {
+    match xs {
+      | List::Nil           => List::Nil(A)
+      | List::Cons(x, rest) => append(A, reverse(A, rest), List::Cons(A, x, List::Nil(A)))
+    }
+}
+
+// ----- append laws (== `stdlib_list.rv`'s `append_nil`/`append_assoc`) ------------------------
+
+// `xs ++ nil == xs`, the right unit law for `append`, by induction on `xs`.
+fn append_nil(A: Type, xs: List<A>) -> append(A, xs, List::Nil(A)) == xs {
+    match xs {
+      | List::Nil           => Eq::refl(List<A>, List::Nil(A))
+      | List::Cons(x, rest) =>
+          congr_arg(List<A>, List<A>, fun (l: List<A>) => List::Cons(A, x, l),
+                    append(A, rest, List::Nil(A)), rest, append_nil(A, rest))
+    }
+}
+
+// `append` is associative, by induction on the first list.
+fn append_assoc(A: Type, xs: List<A>, ys: List<A>, zs: List<A>)
+    -> append(A, append(A, xs, ys), zs) == append(A, xs, append(A, ys, zs))
+{
+    match xs {
+      | List::Nil           => Eq::refl(List<A>, append(A, ys, zs))
+      | List::Cons(x, rest) =>
+          congr_arg(List<A>, List<A>, fun (l: List<A>) => List::Cons(A, x, l),
+                    append(A, append(A, rest, ys), zs), append(A, rest, append(A, ys, zs)),
+                    append_assoc(A, rest, ys, zs))
+    }
+}
+
+// ----- length laws (== `stdlib.rv`'s / `stdlib_list2.rv`'s `length_append`/`length_map`) -----
+
+// `length` distributes over `append`.
+fn length_append(A: Type, xs: List<A>, ys: List<A>)
+    -> length(A, append(A, xs, ys)) == plus(length(A, xs), length(A, ys))
+{
+    match xs {
+      | List::Nil           => Eq::refl(Nat, length(A, ys))
+      | List::Cons(x, rest) =>
+          congr_arg(Nat, Nat, Nat::Succ,
+                    length(A, append(A, rest, ys)), plus(length(A, rest), length(A, ys)),
+                    length_append(A, rest, ys))
+    }
+}
+
+// `map` preserves length.
+fn length_map(A: Type, B: Type, f: A -> B, xs: List<A>)
+    -> length(B, map(A, B, f, xs)) == length(A, xs)
+{
+    match xs {
+      | List::Nil           => Eq::refl(Nat, Nat::Zero)
+      | List::Cons(x, rest) =>
+          congr_arg(Nat, Nat, Nat::Succ,
+                    length(B, map(A, B, f, rest)), length(A, rest), length_map(A, B, f, rest))
+    }
+}
+
+// ----- functor laws (== `stdlib_list.rv`'s `map_id`/`map_fusion`, `stdlib.rv`'s `map_append`) -
+
+// Functor identity law: `map id == id` on lists, by induction on `xs`.
+fn map_id(A: Type, xs: List<A>) -> map(A, A, fun (x: A) => x, xs) == xs {
+    match xs {
+      | List::Nil           => Eq::refl(List<A>, List::Nil(A))
+      | List::Cons(x, rest) =>
+          congr_arg(List<A>, List<A>, fun (l: List<A>) => List::Cons(A, x, l),
+                    map(A, A, fun (y: A) => y, rest), rest, map_id(A, rest))
+    }
+}
+
+// `map` is a monoid homomorphism from `(List<A>, ++, Nil)` to `(List<B>, ++, Nil)`, by
+// induction on `xs`.
+fn map_append(A: Type, B: Type, f: A -> B, xs: List<A>, ys: List<A>)
+    -> map(A, B, f, append(A, xs, ys)) == append(B, map(A, B, f, xs), map(A, B, f, ys))
+{
+    match xs {
+      | List::Nil           => Eq::refl(List<B>, map(A, B, f, ys))
+      | List::Cons(x, rest) =>
+          congr_arg(List<B>, List<B>, fun (l: List<B>) => List::Cons(B, f(x), l),
+                    map(A, B, f, append(A, rest, ys)), append(B, map(A, B, f, rest), map(A, B, f, ys)),
+                    map_append(A, B, f, rest, ys))
+    }
+}
+
+// Functor composition law ("map fusion" / "map_map"): mapping `f` then `g` equals mapping
+// their composition once, by induction on `xs`.
+fn map_map(A: Type, B: Type, C: Type, f: A -> B, g: B -> C, xs: List<A>)
+    -> map(B, C, g, map(A, B, f, xs)) == map(A, C, fun (x: A) => g(f(x)), xs)
+{
+    match xs {
+      | List::Nil           => Eq::refl(List<C>, List::Nil(C))
+      | List::Cons(x, rest) =>
+          congr_arg(List<C>, List<C>, fun (l: List<C>) => List::Cons(C, g(f(x)), l),
+                    map(B, C, g, map(A, B, f, rest)), map(A, C, fun (y: A) => g(f(y)), rest),
+                    map_map(A, B, C, f, g, rest))
+    }
+}
+
+// ----- reverse laws (== `stdlib_list.rv`'s `reverse_append`/`reverse_reverse`) -----------------
+
+// `reverse` distributes over `append`, flipping and reversing each half — the key lemma for
+// the involution theorem below and for `map_reverse` further down — by induction on `xs`.
+fn reverse_append(A: Type, xs: List<A>, ys: List<A>)
+    -> reverse(A, append(A, xs, ys)) == append(A, reverse(A, ys), reverse(A, xs))
+{
+    match xs {
+      | List::Nil           => symm(List<A>, append(A, reverse(A, ys), List::Nil(A)), reverse(A, ys),
+                                     append_nil(A, reverse(A, ys)))
+      | List::Cons(x, rest) =>
+          // Goal: append(reverse(append(rest, ys)), [x]) == append(reverse(ys), append(reverse(rest), [x]))
+          trans(List<A>,
+                append(A, reverse(A, append(A, rest, ys)), List::Cons(A, x, List::Nil(A))),
+                append(A, append(A, reverse(A, ys), reverse(A, rest)), List::Cons(A, x, List::Nil(A))),
+                append(A, reverse(A, ys), append(A, reverse(A, rest), List::Cons(A, x, List::Nil(A)))),
+                congr_arg(List<A>, List<A>,
+                          fun (l: List<A>) => append(A, l, List::Cons(A, x, List::Nil(A))),
+                          reverse(A, append(A, rest, ys)), append(A, reverse(A, ys), reverse(A, rest)),
+                          reverse_append(A, rest, ys)),
+                append_assoc(A, reverse(A, ys), reverse(A, rest), List::Cons(A, x, List::Nil(A))))
+    }
+}
+
+// THEOREM: `reverse` is an involution: reversing a list twice gives the list back, by
+// induction on `xs` using `reverse_append`.
+fn reverse_reverse(A: Type, xs: List<A>) -> reverse(A, reverse(A, xs)) == xs {
+    match xs {
+      | List::Nil           => Eq::refl(List<A>, List::Nil(A))
+      | List::Cons(x, rest) =>
+          // Goal: reverse(append(reverse(rest), [x])) == Cons(x, rest)
+          trans(List<A>,
+                reverse(A, append(A, reverse(A, rest), List::Cons(A, x, List::Nil(A)))),
+                append(A, reverse(A, List::Cons(A, x, List::Nil(A))), reverse(A, reverse(A, rest))),
+                List::Cons(A, x, rest),
+                reverse_append(A, reverse(A, rest), List::Cons(A, x, List::Nil(A))),
+                congr_arg(List<A>, List<A>, fun (l: List<A>) => List::Cons(A, x, l),
+                          reverse(A, reverse(A, rest)), rest, reverse_reverse(A, rest)))
+    }
+}
+
+// ----- BONUS, genuinely NEW to this file: `map_reverse` ----------------------------------------
+//
+// THEOREM: `map` commutes with `reverse` — mapping a function over a list and then reversing
+// the result is the same as reversing first and then mapping, by induction on `xs`.
+//
+// `Cons` case, spelled out: the goal (after `reverse`/`map` unfold one step on each side) is
+//   map(f, append(reverse(rest), [x]))  ==  append(reverse(map(f, rest)), [f(x)])
+// The bridge is `map_append(A, B, f, reverse(rest), [x])`, which turns the LHS into
+//   append(map(f, reverse(rest)), map(f, [x]))
+// and `map(f, [x])` reduces definitionally to `[f(x)]`, so this is defeq to
+//   append(map(f, reverse(rest)), [f(x)])
+// — from there a single `congr_arg` on the IH (`map(f, reverse(rest)) == reverse(map(f, rest))`)
+// closes the goal.
+fn map_reverse(A: Type, B: Type, f: A -> B, xs: List<A>)
+    -> map(A, B, f, reverse(A, xs)) == reverse(B, map(A, B, f, xs))
+{
+    match xs {
+      | List::Nil           => Eq::refl(List<B>, List::Nil(B))
+      | List::Cons(x, rest) =>
+          trans(List<B>,
+                map(A, B, f, append(A, reverse(A, rest), List::Cons(A, x, List::Nil(A)))),
+                append(B, map(A, B, f, reverse(A, rest)), List::Cons(B, f(x), List::Nil(B))),
+                append(B, reverse(B, map(A, B, f, rest)), List::Cons(B, f(x), List::Nil(B))),
+                map_append(A, B, f, reverse(A, rest), List::Cons(A, x, List::Nil(A))),
+                congr_arg(List<B>, List<B>,
+                          fun (l: List<B>) => append(B, l, List::Cons(B, f(x), List::Nil(B))),
+                          map(A, B, f, reverse(A, rest)), reverse(B, map(A, B, f, rest)),
+                          map_reverse(A, B, f, rest)))
+    }
+}

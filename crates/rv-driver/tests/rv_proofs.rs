@@ -403,6 +403,14 @@ fn rle_codec() {
     check("rle.rv");
 }
 
+/// List functor + fold/reverse laws: map fusion (`map f (map g xs) == map (f∘g) xs`),
+/// `reverse` involution, and the genuinely-new `map_reverse` naturality law. See
+/// `examples/proofs/list_laws.rv`.
+#[test]
+fn list_laws() {
+    check("list_laws.rv");
+}
+
 #[test]
 fn funext_smoke_test() {
     let src = r#"
