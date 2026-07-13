@@ -172,6 +172,15 @@ fn opt_constfold() {
     check("opt_constfold.rv");
 }
 
+/// A verified stack-machine compiler: `Expr` (literals/`+`/`*`) compiled to a flat `Instr`
+/// program for a stack machine `exec`, with the headline
+/// `compile_correct : exec(compile(e), Nil) == Cons(eval(e), Nil)`, proved via the standard
+/// generalized-stack strengthening `exec_compile : exec(compile(e), s) == Cons(eval(e), s)`.
+#[test]
+fn compile_stack() {
+    check("compile_stack.rv");
+}
+
 /// Algebraic simplification (`e+0=e`, `0+e=e`, `e*1=e`, `1*e=e`, `e*0=0`, `0*e=0`) via smart
 /// constructors, with the headline `simplify_correct : eval(simplify(e)) == eval(e)`.
 #[test]
