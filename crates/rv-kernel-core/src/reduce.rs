@@ -292,6 +292,16 @@ impl<'e> Reducer<'e> {
                 // on a decided `⊤` face, `unglue` is that branch's `e_k.f`; off every
                 // face (all decided `⊥`), `unglue` is the identity; otherwise stuck.
                 Term::Unglue(a, branches, u) => {
+                    // β: `unglue A […] (glue […] a) ↦ a` (see
+                    // `crate::term::Term::GlueIntro`'s doc) — checked *before* the
+                    // ⊤/⊥ strictness rules below, since this fires unconditionally
+                    // once the scrutinee is literally a `glue` introduction,
+                    // regardless of whether any face happens to be decided.
+                    let uw = self.whnf(u);
+                    if let Term::GlueIntro(_, ga) = &uw {
+                        head = (**ga).clone();
+                        continue;
+                    }
                     if let Some((_, t, e)) = branches.iter().find(|(phi, _, _)| crate::face::is_true(phi)) {
                         // `Equiv.f T A e u` — the level argument is a genuine
                         // universe-polymorphism parameter of `Equiv.f`'s *type*
@@ -314,6 +324,20 @@ impl<'e> Reducer<'e> {
                         args = a2;
                     } else if branches.iter().all(|(phi, _, _)| crate::face::is_false(phi)) {
                         head = (**u).clone();
+                    } else {
+                        break;
+                    }
+                }
+                // `glue [φ_1 ↦ t_1, …] a` (see `crate::term::Term::GlueIntro`): the
+                // same two strictness laws as `Glue` itself (mirroring `Value`'s
+                // "collapse when a face is decided" convention) — the *first*
+                // branch whose `φ_k` is decided `⊤` reduces to `t_k`; if *every*
+                // `φ_k` is decided `⊥`, reduces to plain `a`. Otherwise stuck.
+                Term::GlueIntro(branches, a) => {
+                    if let Some((_, t)) = branches.iter().find(|(phi, _)| crate::face::is_true(phi)) {
+                        head = (**t).clone();
+                    } else if branches.iter().all(|(phi, _)| crate::face::is_false(phi)) {
+                        head = (**a).clone();
                     } else {
                         break;
                     }
@@ -916,6 +940,18 @@ impl<'e> Reducer<'e> {
                     && crate::face::cof_equiv(p1, p2)
                     && self.is_def_eq(u1, u2)
                     && self.is_def_eq(u01, u02)
+            }
+            // `glue [φ ↦ t, …] a` (see `crate::term::Term::GlueIntro`): structural,
+            // mirroring `Sys`/`Transp`/`HComp` above (this lower-level reducer has
+            // no `Glue`/`Unglue` structural-equality arm of its own either — see
+            // `check::Checker::compare`, the authoritative conversion relation
+            // used by the type-checker, for the complete treatment).
+            (Term::GlueIntro(b1, a1), Term::GlueIntro(b2, a2)) => {
+                self.is_def_eq(a1, a2)
+                    && b1.len() == b2.len()
+                    && b1.iter().zip(b2.iter()).all(|((p1, t1), (p2, t2))| {
+                        crate::face::cof_equiv(p1, p2) && self.is_def_eq(t1, t2)
+                    })
             }
             _ => false,
         }

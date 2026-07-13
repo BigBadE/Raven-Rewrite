@@ -2271,6 +2271,15 @@ fn abstract_occurrences(e: &Term, target: &Term, k: usize) -> Term {
                 .collect(),
             abstract_occurrences(u, target, k),
         ),
+        // `glue [φ↦t] a` (see `rv_kernel_core::term::Term::GlueIntro`): no surface
+        // syntax yet, kept structurally sound like `Glue`/`Unglue` above.
+        Term::GlueIntro(branches, a) => Term::glue_intro(
+            branches
+                .iter()
+                .map(|(p, t)| (abstract_occurrences_cof(p, target, k), abstract_occurrences(t, target, k)))
+                .collect(),
+            abstract_occurrences(a, target, k),
+        ),
     }
 }
 
@@ -2464,6 +2473,13 @@ pub(crate) fn replace_with_var(t: &Term, target: &Term, k: usize) -> Term {
                     .collect(),
                 go(u, target, k, depth),
             ),
+            Term::GlueIntro(branches, a) => Term::glue_intro(
+                branches
+                    .iter()
+                    .map(|(p, t2)| ((**p).clone(), go(t2, target, k, depth)))
+                    .collect(),
+                go(a, target, k, depth),
+            ),
         }
     }
     go(t, target, k, 0)
@@ -2528,6 +2544,10 @@ fn subst_db_var(t: &Term, d: usize, u: &Term) -> Term {
                 branches.iter().map(|(p, t2, e)| ((**p).clone(), go(t2, d, u, depth), go(e, d, u, depth))).collect(),
                 go(uu, d, u, depth),
             ),
+            Term::GlueIntro(branches, a) => Term::glue_intro(
+                branches.iter().map(|(p, t2)| ((**p).clone(), go(t2, d, u, depth))).collect(),
+                go(a, d, u, depth),
+            ),
         }
     }
     go(t, d, u, 0)
@@ -2572,6 +2592,9 @@ fn occurs_term(t: &Term, target: &Term) -> bool {
                     || branches.iter().any(|(_, t2, e)| go(t2, target, depth) || go(e, target, depth))
                     || go(u, target, depth)
             }
+            Term::GlueIntro(branches, a) => {
+                go(a, target, depth) || branches.iter().any(|(_, t2)| go(t2, target, depth))
+            }
         }
     }
     go(t, target, 0)
@@ -2609,6 +2632,9 @@ fn occurs_var(t: &Term, d: usize) -> bool {
                     || branches.iter().any(|(_, t2, e)| go(t2, d, depth) || go(e, d, depth))
                     || go(u, d, depth)
             }
+            Term::GlueIntro(branches, a) => {
+                go(a, d, depth) || branches.iter().any(|(_, t2)| go(t2, d, depth))
+            }
         }
     }
     go(t, d, 0)
@@ -2642,6 +2668,9 @@ fn occurs_const(n: &str, t: &Term) -> bool {
             occurs_const(n, a)
                 || branches.iter().any(|(_, t, e)| occurs_const(n, t) || occurs_const(n, e))
                 || occurs_const(n, u)
+        }
+        Term::GlueIntro(branches, a) => {
+            occurs_const(n, a) || branches.iter().any(|(_, t)| occurs_const(n, t))
         }
     }
 }
@@ -2712,6 +2741,9 @@ fn is_closed_at(t: &Term, depth: usize) -> bool {
             is_closed_at(a, depth)
                 && branches.iter().all(|(_, t, e)| is_closed_at(t, depth) && is_closed_at(e, depth))
                 && is_closed_at(u, depth)
+        }
+        Term::GlueIntro(branches, a) => {
+            is_closed_at(a, depth) && branches.iter().all(|(_, t)| is_closed_at(t, depth))
         }
     }
 }

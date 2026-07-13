@@ -242,6 +242,51 @@ pub enum Term {
     /// be a `T_k`-typed term running through `e_k.f` (see `crate::glue`'s module
     /// doc for the precise "what's deferred" scope).
     Unglue(Rc<Term>, Rc<Vec<(Rc<Cof>, Rc<Term>, Rc<Term>)>>, Rc<Term>),
+
+    /// `glue [φ_1 ↦ t_1, …, φ_n ↦ t_n] a` — the **introduction** form for
+    /// [`Term::Glue`] (CCHM, *Cubical Type Theory*, §6.2's `glue`), deferred by
+    /// the earlier `Glue`/`unglue` pass (see `Term::Glue`'s doc) and added here.
+    /// Fields: the branch list `[φ_k ↦ t_k]` (each `t_k` a partial element,
+    /// defined — and required to type-check — on its own `φ_k`), and the base
+    /// element `a : A`.
+    ///
+    /// **Typing** (checked, not inferred — see `crate::check::Checker::check`'s
+    /// special case, mirroring [`Term::Sys`]'s check-only status): against an
+    /// expected `Glue A [φ_1↦(T_1,e_1), …, φ_n↦(T_n,e_n)]`,
+    ///   * the branch lists must line up index-for-index: `φ_k` here must be
+    ///     semantically the *same* cofibration as the Glue type's own `φ_k`
+    ///     (`crate::face::cof_equiv`), and `t_k : T_k`;
+    ///   * the `t_k` must be mutually compatible on their overlaps (the same
+    ///     restriction-aware condition [`crate::check::Checker::check_glue_branches_compatible`]
+    ///     already imposes on `Glue`'s own `(T,e)` pairs, applied here to the
+    ///     `t_k` payloads);
+    ///   * `a : A`;
+    ///   * and, the one genuinely new obligation, **agreement**: on each `φ_k`,
+    ///     `Equiv.f T_k A e_k t_k ≡ a` (restriction-aware, exactly like the
+    ///     compatibility check above) — the glued partial data must map to the
+    ///     base under the equivalence, wherever it's defined.
+    ///
+    /// **Reduction** (`crate::reduce::Reducer::whnf`/`crate::nbe::Nbe`,
+    /// differentially checked):
+    ///   * `unglue A […] (glue […] a) ↦ a` — the defining β-rule connecting this
+    ///     introduction form to [`Term::Unglue`]'s elimination.
+    ///   * **Strictness**, mirroring `Glue`'s own two laws: `glue […, φ_k↦t_k, …]
+    ///     a ↦ t_k` when `φ_k` is decided `⊤` (first such `k`); `glue […] a ↦ a`
+    ///     when *every* `φ_k` is decided `⊥` (matching `Glue A […] ↦ A` at that
+    ///     same face — a `Glue`-typed value there really is just an `A`-value).
+    ///
+    /// **Soundness**: `glue [φ↦t] a` type-checks only when the agreement
+    /// condition genuinely holds (checked via `is_def_eq`, which can only
+    /// *reject*, never fabricate an equation — see `crate::check`'s module doc),
+    /// so this adds no way to inhabit an *undecided* `Glue` with data that
+    /// disagrees with its own base under `unglue`; on a *decided* face the
+    /// strictness law collapses `Glue` to plain `T_k`/`A` exactly as before, so
+    /// `glue` there is just ordinary `T_k`/`A`-typed data the caller already had
+    /// to produce (no new axiom). **Deferred**: `glue`-η (`glue [φ↦unglue g] (unglue
+    /// g) ≡ g`) and the Kan structure (`hcomp`/`comp` for `Glue`, `transp^Glue`) —
+    /// see `crate::kan`'s "Phase 3.12" doc for why the latter needed exactly this
+    /// introduction form as a prerequisite, now unblocked for a future pass.
+    GlueIntro(Rc<Vec<(Rc<Cof>, Rc<Term>)>>, Rc<Term>),
 }
 
 impl Term {
@@ -361,6 +406,15 @@ impl Term {
     pub fn hcomp(ty: Term, phi: Cof, u: Term, u0: Term) -> Term {
         Term::HComp(Rc::new(ty), Rc::new(phi), Rc::new(u), Rc::new(u0))
     }
+    /// `glue [φ_1 ↦ t_1, …] a` (see [`Term::GlueIntro`]). Does **not** itself check
+    /// the agreement/compatibility obligations — that's `crate::check::Checker::check`'s
+    /// job (a bare term-former, just like `Term::sys`/`Term::glue_ty_multi`).
+    pub fn glue_intro(branches: Vec<(Cof, Term)>, a: Term) -> Term {
+        Term::GlueIntro(
+            Rc::new(branches.into_iter().map(|(p, t)| (Rc::new(p), Rc::new(t))).collect()),
+            Rc::new(a),
+        )
+    }
 
     /// Re-index free variables: add `amount` to every `Var(i)` with `i >= cutoff`.
     /// Used to move a term under `amount` new binders (`cutoff` counts the binders
@@ -440,6 +494,15 @@ impl Term {
                         .collect(),
                 ),
                 Rc::new(u.lift(amount, cutoff)),
+            ),
+            Term::GlueIntro(branches, a) => Term::GlueIntro(
+                Rc::new(
+                    branches
+                        .iter()
+                        .map(|(p, t)| (Rc::new(p.lift(amount, cutoff)), Rc::new(t.lift(amount, cutoff))))
+                        .collect(),
+                ),
+                Rc::new(a.lift(amount, cutoff)),
             ),
         }
     }
@@ -528,6 +591,15 @@ impl Term {
                         .collect(),
                 ),
                 Rc::new(u.subst(depth, replacement)),
+            ),
+            Term::GlueIntro(branches, a) => Term::GlueIntro(
+                Rc::new(
+                    branches
+                        .iter()
+                        .map(|(p, t)| (Rc::new(p.subst(depth, replacement)), Rc::new(t.subst(depth, replacement))))
+                        .collect(),
+                ),
+                Rc::new(a.subst(depth, replacement)),
             ),
         }
     }
@@ -656,6 +728,20 @@ impl Term {
                 ),
                 Rc::new(u.replace_free_var(depth, replacement)),
             ),
+            Term::GlueIntro(branches, a) => Term::GlueIntro(
+                Rc::new(
+                    branches
+                        .iter()
+                        .map(|(p, t)| {
+                            (
+                                Rc::new(p.replace_free_var(depth, replacement)),
+                                Rc::new(t.replace_free_var(depth, replacement)),
+                            )
+                        })
+                        .collect(),
+                ),
+                Rc::new(a.replace_free_var(depth, replacement)),
+            ),
         }
     }
 
@@ -773,6 +859,20 @@ impl Term {
                         .collect(),
                 ),
                 Rc::new(u.subst_ctx_go(images, depth)),
+            ),
+            Term::GlueIntro(branches, a) => Term::GlueIntro(
+                Rc::new(
+                    branches
+                        .iter()
+                        .map(|(p, t)| {
+                            (
+                                Rc::new(p.subst_ctx_go(images, depth)),
+                                Rc::new(t.subst_ctx_go(images, depth)),
+                            )
+                        })
+                        .collect(),
+                ),
+                Rc::new(a.subst_ctx_go(images, depth)),
             ),
         }
     }
@@ -915,6 +1015,20 @@ impl Term {
                 ),
                 Rc::new(u.subst_ctx_keep_frame_go(images, depth)),
             ),
+            Term::GlueIntro(branches, a) => Term::GlueIntro(
+                Rc::new(
+                    branches
+                        .iter()
+                        .map(|(p, t)| {
+                            (
+                                Rc::new(p.subst_ctx_keep_frame_go(images, depth)),
+                                Rc::new(t.subst_ctx_keep_frame_go(images, depth)),
+                            )
+                        })
+                        .collect(),
+                ),
+                Rc::new(a.subst_ctx_keep_frame_go(images, depth)),
+            ),
         }
     }
 
@@ -1013,6 +1127,17 @@ impl Term {
                 ),
                 Rc::new(u.instantiate_levels(args)),
             ),
+            Term::GlueIntro(branches, a) => Term::GlueIntro(
+                Rc::new(
+                    branches
+                        .iter()
+                        .map(|(p, t)| {
+                            (Rc::new(p.instantiate_levels(args)), Rc::new(t.instantiate_levels(args)))
+                        })
+                        .collect(),
+                ),
+                Rc::new(a.instantiate_levels(args)),
+            ),
         }
     }
 
@@ -1047,6 +1172,9 @@ impl Term {
                 a.has_meta()
                     || branches.iter().any(|(p, t, e)| p.has_meta() || t.has_meta() || e.has_meta())
                     || u.has_meta()
+            }
+            Term::GlueIntro(branches, a) => {
+                a.has_meta() || branches.iter().any(|(p, t)| p.has_meta() || t.has_meta())
             }
         }
     }
@@ -1156,6 +1284,14 @@ impl Term {
                     .collect();
                 let us = u.pp(names, 3);
                 paren_if(prec >= 3, format!("unglue {as_} [{}] {us}", bs.join(", ")))
+            }
+            Term::GlueIntro(branches, a) => {
+                let bs: Vec<String> = branches
+                    .iter()
+                    .map(|(p, t)| format!("{} ↦ {}", p.pp(names), t.pp(names, 0)))
+                    .collect();
+                let as_ = a.pp(names, 3);
+                paren_if(prec >= 3, format!("glue [{}] {as_}", bs.join(", ")))
             }
             Term::Var(i) => {
                 let n = names.len();
@@ -1276,6 +1412,10 @@ pub(crate) fn mentions_var(t: &Term, k: usize) -> bool {
                 })
                 || mentions_var(u, k)
         }
+        Term::GlueIntro(branches, a) => {
+            mentions_var(a, k)
+                || branches.iter().any(|(p, t)| crate::face::mentions_var(p, k) || mentions_var(t, k))
+        }
     }
 }
 
@@ -1359,6 +1499,13 @@ pub(crate) fn free_var_bound_at(t: &Term, depth: usize) -> usize {
                         .unwrap_or(0),
                 )
                 .max(go(u, depth)),
+            Term::GlueIntro(branches, a) => go(a, depth).max(
+                branches
+                    .iter()
+                    .map(|(p, t)| crate::face::free_var_bound(p, depth).max(go(t, depth)))
+                    .max()
+                    .unwrap_or(0),
+            ),
         }
     }
     go(t, depth)

@@ -526,6 +526,10 @@ fn mentions_var(t: &Term, k: usize) -> bool {
                 })
                 || mentions_var(u, k)
         }
+        Term::GlueIntro(branches, a) => {
+            mentions_var(a, k)
+                || branches.iter().any(|(p, t2)| crate::face::mentions_var(p, k) || mentions_var(t2, k))
+        }
     }
 }
 

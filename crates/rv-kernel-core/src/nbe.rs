@@ -87,6 +87,30 @@ pub enum Value {
     /// A **stuck** `unglue A [φ_1 ↦ (T_1,e_1), …] u` — mirrors [`Value::Glue`]'s
     /// stuck case, plus the scrutinee `u`.
     Unglue(Rc<Value>, GlueClosure, Rc<Value>),
+    /// A **stuck** `glue [φ_1 ↦ t_1, …] a` (see
+    /// [`crate::term::Term::GlueIntro`]): no branch's `φ_k` is decided `⊤`, and
+    /// not every `φ_k` is decided `⊥` (mirrors [`Nbe::eval_glue_branches`]'s
+    /// decision, specialized to a `(φ,t)` list with no `e`), so it stays as
+    /// deferred data — every branch's `t_k` evaluated eagerly, the `φ_k`s kept
+    /// raw alongside one shared captured environment (the [`GlueIntroClosure`]
+    /// pattern, the `e`-free analogue of [`GlueClosure`]), plus the base `a`.
+    GlueIntro(GlueIntroClosure, Rc<Value>),
+}
+
+/// Deferred data for a stuck [`Value::GlueIntro`]: the raw guards `φ_1, …, φ_n`
+/// together with their branches' *eagerly evaluated* `t_k` values, sharing one
+/// captured environment (the `e`-free analogue of [`GlueClosure`]).
+#[derive(Clone)]
+pub struct GlueIntroClosure {
+    env: Rc<VEnv>,
+    branches: Rc<Vec<(Rc<Cof>, Rc<Value>)>>,
+}
+
+/// [`GlueDecision`]'s analogue for [`Value::GlueIntro`] (no `e` to carry).
+enum GlueIntroDecision {
+    Top(Rc<Value>),
+    Bot,
+    Stuck(Vec<(Rc<Cof>, Rc<Value>)>),
 }
 
 /// Deferred data for a stuck [`Value::Glue`]/[`Value::Unglue`]: the raw guards
@@ -413,7 +437,16 @@ impl<'a> Nbe<'a> {
             // on a decided `⊤` branch, `e_k.f u`; off every branch (all `⊥`), the
             // identity; otherwise stays stuck.
             Term::Unglue(a, branches, u) => {
-                if let Some((_, t, e)) =
+                let uv = self.eval(venv, u);
+                // β: `unglue A […] (glue […] a) ↦ a` (see
+                // `crate::term::Term::GlueIntro`'s doc, and
+                // `crate::reduce::Reducer::whnf`'s matching arm — differentially
+                // tested) — checked before the ⊤/⊥ strictness rules below, since
+                // it fires unconditionally once the scrutinee is literally a
+                // `glue` introduction.
+                if let Value::GlueIntro(_, ga) = &*uv {
+                    ga.clone()
+                } else if let Some((_, t, e)) =
                     branches.iter().find(|(phi, _, _)| self.eval_face(venv, phi) == Some(true))
                 {
                     // `Equiv.f T A e u` (see `crate::reduce::Reducer::whnf`'s
@@ -431,7 +464,7 @@ impl<'a> Nbe<'a> {
                     );
                     self.eval(venv, &ef_term)
                 } else if branches.iter().all(|(phi, _, _)| self.eval_face(venv, phi) == Some(false)) {
-                    self.eval(venv, u)
+                    uv
                 } else {
                     Rc::new(Value::Unglue(
                         self.eval(venv, a),
@@ -444,11 +477,40 @@ impl<'a> Nbe<'a> {
                                     .collect(),
                             ),
                         },
-                        self.eval(venv, u),
+                        uv,
                     ))
                 }
             }
+            // `glue [φ_1 ↦ t_1, …] a` (see `crate::term::Term::GlueIntro`, and
+            // `crate::reduce::Reducer::whnf`'s matching arm — differentially
+            // tested): the same two strictness laws as `Term::Glue` — the first
+            // `φ_k` decided `⊤` reduces to `t_k`; every `φ_k` decided `⊥` reduces
+            // to plain `a`; otherwise stays stuck.
+            Term::GlueIntro(branches, a) => match self.eval_glue_intro_branches(venv, branches) {
+                GlueIntroDecision::Top(t) => t,
+                GlueIntroDecision::Bot => self.eval(venv, a),
+                GlueIntroDecision::Stuck(vbranches) => Rc::new(Value::GlueIntro(
+                    GlueIntroClosure { env: venv.clone(), branches: Rc::new(vbranches) },
+                    self.eval(venv, a),
+                )),
+            },
         }
+    }
+
+    /// [`Self::eval_glue_branches`]'s analogue for [`Term::GlueIntro`] (no `e` to
+    /// carry per branch).
+    fn eval_glue_intro_branches(
+        &self,
+        venv: &Rc<VEnv>,
+        branches: &[(Rc<Cof>, Rc<Term>)],
+    ) -> GlueIntroDecision {
+        if let Some((_, t)) = branches.iter().find(|(phi, _)| self.eval_face(venv, phi) == Some(true)) {
+            return GlueIntroDecision::Top(self.eval(venv, t));
+        }
+        if branches.iter().all(|(phi, _)| self.eval_face(venv, phi) == Some(false)) {
+            return GlueIntroDecision::Bot;
+        }
+        GlueIntroDecision::Stuck(branches.iter().map(|(p, t)| (p.clone(), self.eval(venv, t))).collect())
     }
 
     /// Evaluate every branch's guard against `venv`; if the first decided-`⊤`
@@ -1100,6 +1162,14 @@ impl<'a> Nbe<'a> {
                     .collect();
                 Term::unglue(self.quote(level, a), branches, self.quote(level, u))
             }
+            Value::GlueIntro(gc, a) => {
+                let branches = gc
+                    .branches
+                    .iter()
+                    .map(|(p, t)| (Rc::new(self.quote_cof(level, &gc.env, p)), Rc::new(self.quote(level, t))))
+                    .collect();
+                Term::GlueIntro(Rc::new(branches), Rc::new(self.quote(level, a)))
+            }
         }
     }
 
@@ -1221,6 +1291,13 @@ fn alpha_eta_eq(a: &Term, b: &Term) -> bool {
                     crate::face::cof_equiv(p1, p2) && alpha_eta_eq(t1, t2) && alpha_eta_eq(e1, e2)
                 })
                 && alpha_eta_eq(u1, u2)
+        }
+        (Term::GlueIntro(b1, a1), Term::GlueIntro(b2, a2)) => {
+            alpha_eta_eq(a1, a2)
+                && b1.len() == b2.len()
+                && b1.iter().zip(b2.iter()).all(|((p1, t1), (p2, t2))| {
+                    crate::face::cof_equiv(p1, p2) && alpha_eta_eq(t1, t2)
+                })
         }
         _ => false,
     }

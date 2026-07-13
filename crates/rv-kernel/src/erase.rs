@@ -212,8 +212,11 @@ impl<'a> Eraser<'a> {
             // `unglue` carries genuine runtime data (its scrutinee `u`) via
             // `Equiv.f` on the decided-`⊤` face — same footing as `Transp`/`HComp`:
             // not yet supported as an erasure target.
-            Term::Transp(..) | Term::HComp(..) | Term::Unglue(..) => {
-                Err("erasure of `transp`/`hcomp`/`unglue` is not yet supported".to_string())
+            // `glue [φ↦t] a` (see `rv_kernel_core::term::Term::GlueIntro`): no
+            // surface syntax produces it yet either — same footing as
+            // `Transp`/`HComp`/`Unglue` above.
+            Term::Transp(..) | Term::HComp(..) | Term::Unglue(..) | Term::GlueIntro(..) => {
+                Err("erasure of `transp`/`hcomp`/`unglue`/`glue` is not yet supported".to_string())
             }
             // A λ encountered as an atom: erase against its inferred type.
             Term::Lam(..) => {

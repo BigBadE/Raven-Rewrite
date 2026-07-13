@@ -327,6 +327,15 @@ impl<'e> Checker<'e> {
                 self.check(ctx, u, &glue_ty)?;
                 Ok((**a).clone())
             }
+
+            // `glue [φ ↦ t, …] a` (see `Term::GlueIntro`) is check-only, exactly
+            // like `Term::Sys` — it needs an expected `Glue A […]` to know each
+            // branch's `T_k`/`e_k`. See `Checker::check`'s special case and
+            // `Checker::check_glue_intro`.
+            Term::GlueIntro(..) => Err(
+                "cannot infer the type of `glue [φ ↦ t, …] a`; check it against a `Glue A [...]` type"
+                    .to_string(),
+            ),
         }
     }
 
@@ -368,6 +377,112 @@ impl<'e> Checker<'e> {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Check `glue [φ_1↦t_1, …] a` (see [`crate::term::Term::GlueIntro`]) against
+    /// an expected `Glue A [φ_1↦(T_1,e_1), …]` type. Four obligations, in order:
+    ///
+    /// 1. **Shape match**: same number of branches, each `φ_k` here semantically
+    ///    the same cofibration as the Glue type's `φ_k` (index-for-index — see
+    ///    `Term::GlueIntro`'s doc for why this kernel doesn't attempt to permute
+    ///    or re-derive a correspondence), and `t_k : T_k`.
+    /// 2. **Mutual compatibility** of the `t_k` on their overlaps — the same
+    ///    restriction-aware condition [`Self::check_glue_branches_compatible`]
+    ///    already imposes on `Glue`'s own `(T,e)` pairs, here applied to the
+    ///    `t_k` payloads (reusing the Glue type's own guards, already confirmed
+    ///    equivalent to this term's guards by step 1).
+    /// 3. `a : A`.
+    /// 4. **Agreement**: on each `φ_k` (restriction-aware, exactly like step 2 —
+    ///    a face that's unconditionally `⊥` imposes no obligation, since
+    ///    `overlap_clauses(φ_k, ⊤) = to_dnf(φ_k)` is then empty),
+    ///    `Equiv.f T_k A e_k t_k ≡ a`: the glued partial data must map to the
+    ///    base under the equivalence wherever it's defined. This is the one
+    ///    obligation with no `Glue`-type analogue — it's what makes `glue`
+    ///    genuinely introduce an element of `Glue A […]`, not just restate its
+    ///    formation data.
+    fn check_glue_intro(
+        &self,
+        ctx: &mut LocalCtx,
+        branches: &[(Rc<Cof>, Rc<Term>)],
+        a: &Term,
+        expected: &Term,
+    ) -> Result<(), String> {
+        let expected_w = self.reducer().whnf(expected);
+        let Term::Glue(base_ty, glue_branches) = &expected_w else {
+            return Err(format!(
+                "`glue [φ ↦ t, …] a` must be checked against a `Glue A [...]` type, got {}",
+                expected_w.pretty()
+            ));
+        };
+        if branches.len() != glue_branches.len() {
+            return Err(format!(
+                "glue: branch count mismatch (term has {}, the Glue type has {})",
+                branches.len(),
+                glue_branches.len()
+            ));
+        }
+        let sort_a = self.infer_sort(ctx, base_ty)?;
+
+        // Step 1: shape match + per-branch typing.
+        for (i, ((phi, t), (gphi, gt, _ge))) in branches.iter().zip(glue_branches.iter()).enumerate() {
+            self.check_cof_wellformed(ctx, phi)?;
+            if !face::cof_equiv(phi, gphi) {
+                return Err(format!(
+                    "glue: branch {i}'s cofibration does not match the Glue type's corresponding branch"
+                ));
+            }
+            self.check(ctx, t, gt)?;
+        }
+
+        // Step 2: mutual compatibility of the t_k on overlaps (reuse the Glue
+        // type's own guards — already confirmed cof_equiv to this term's own,
+        // above).
+        for i in 0..branches.len() {
+            for j in (i + 1)..branches.len() {
+                let overlap = Cof::and((*glue_branches[i].0).clone(), (*glue_branches[j].0).clone());
+                if face::is_false(&overlap) {
+                    continue;
+                }
+                for clause in face::overlap_clauses(&glue_branches[i].0, &glue_branches[j].0) {
+                    let ti = face::restrict_clause_term(&clause, &branches[i].1);
+                    let tj = face::restrict_clause_term(&clause, &branches[j].1);
+                    if !self.is_def_eq(ctx, &ti, &tj) {
+                        return Err(format!(
+                            "incompatible glue: branches {i} and {j} disagree on their overlap \
+                             (φ_{i} ∧ φ_{j} is satisfiable, but the branch terms are not \
+                             definitionally equal after restricting to the overlapping face)"
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Step 3: the base.
+        self.check(ctx, a, base_ty)?;
+
+        // Step 4: agreement — on φ_k, Equiv.f T_k A e_k t_k ≡ a, restriction-aware.
+        for (i, ((_phi, t), (gphi, gt, ge))) in branches.iter().zip(glue_branches.iter()).enumerate() {
+            let clauses = face::overlap_clauses(gphi, &Cof::top());
+            if clauses.is_empty() {
+                continue; // φ_k unsatisfiable: vacuous, nothing to check
+            }
+            let ef = Term::apps(
+                Term::cnst(crate::term::name("Equiv.f"), vec![sort_a.clone()]),
+                [(**gt).clone(), (**base_ty).clone(), (**ge).clone(), (**t).clone()],
+            );
+            for clause in clauses {
+                let lhs = face::restrict_clause_term(&clause, &ef);
+                let rhs = face::restrict_clause_term(&clause, a);
+                if !self.is_def_eq(ctx, &lhs, &rhs) {
+                    return Err(format!(
+                        "glue: branch {i} does not agree with the base `a` under `Equiv.f` on its \
+                         face φ_{i} (Equiv.f T_{i} A e_{i} t_{i} ≢ a after restricting to the face)"
+                    ));
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -472,6 +587,10 @@ impl<'e> Checker<'e> {
         // `Partial ψ A`.
         if let Term::Sys(branches) = t {
             return self.check_sys(ctx, branches, expected);
+        }
+        // `glue [φ ↦ t, …] a` is likewise check-only (see `Term::GlueIntro`'s doc).
+        if let Term::GlueIntro(branches, a) = t {
+            return self.check_glue_intro(ctx, branches, a, expected);
         }
         let inferred = self.infer(ctx, t)?;
         if self.is_def_eq(ctx, &inferred, expected) {
@@ -671,6 +790,15 @@ impl<'e> Checker<'e> {
                         face::cof_equiv(p1, p2) && self.compare(ctx, t1, t2) && self.compare(ctx, e1, e2)
                     })
                     && self.compare(ctx, u1, u2)
+            }
+            // `glue [φ ↦ t, …] a` (see `Term::GlueIntro`): structural, same shape
+            // as `Glue`/`Unglue` above.
+            (Term::GlueIntro(b1, a1), Term::GlueIntro(b2, a2)) => {
+                self.compare(ctx, a1, a2)
+                    && b1.len() == b2.len()
+                    && b1.iter().zip(b2.iter()).all(|((p1, t1), (p2, t2))| {
+                        face::cof_equiv(p1, p2) && self.compare(ctx, t1, t2)
+                    })
             }
             _ => false,
         };

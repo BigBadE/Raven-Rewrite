@@ -453,6 +453,19 @@ impl<'e> Graded<'e> {
                 let uu = self.infer(u_scrut)?;
                 Ok(u.add(&uu))
             }
+            // `glue [φ_k↦t_k] a` (see `rv_kernel_core::term::Term::GlueIntro`):
+            // every branch's `t_k` and the base `a` are genuine runtime data (not
+            // types), so their usage is summed at ordinary grade — the same
+            // conservative "sum every branch" policy `Sys` uses above (we don't
+            // statically know which `φ_k` will hold).
+            Term::GlueIntro(branches, a) => {
+                let mut u = Usage::empty();
+                for (_phi, t) in branches.iter() {
+                    u = u.add(&self.infer(t)?);
+                }
+                let ua = self.infer(a)?;
+                Ok(u.add(&ua))
+            }
         }
     }
 
