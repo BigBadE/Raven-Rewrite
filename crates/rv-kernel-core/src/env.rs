@@ -473,17 +473,28 @@ pub struct S1c {
 /// ι-rules against scrutinees built from *that same* HIT's constructors — two
 /// distinct `declare_cubical_hit` calls never cross-fire, exactly as
 /// [`Hit`]/[`HitRole`] already ensure for the propositional (`Eq`-based) schema.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum CubHitRole {
     /// The type former `H : Type 0`.
     Type,
-    /// The `i`-th (0-based) nullary point constructor `H.point_i : H`.
-    Point(u32),
-    /// The `j`-th (0-based) cubical path constructor `H.path_j : Path H
-    /// H.point_{lhs} H.point_{rhs}` — a genuine `PathP`/`PLam`-classified path (see
-    /// [`crate::cubical`]), not an inductive `Eq`. `lhs == rhs` is a legal
-    /// self-loop (as `S1cRole::Loop` is a fixed instance of).
-    Path { idx: u32, lhs: u32, rhs: u32 },
+    /// The `i`-th (0-based) point constructor `H.point_i`, tagged with its field
+    /// list exactly as [`HitRole::Point`]: `fields[j] == true` means field `j` is a
+    /// **strictly-positive recursive** occurrence of `H` itself (the `Rec` ι-rule
+    /// threads a recursive `H.rec` call through it, plus an extra induction-hypothesis
+    /// binder in the recursor's motive-dependent case type — see
+    /// [`crate::cubical_hit`]); `false` means a non-recursive field of some fixed,
+    /// closed (`H`-free) type. `fields.len()` is this point constructor's arity — `0`
+    /// recovers the original nullary case (`I2`/`S1c`/figure-eight).
+    Point { idx: u32, fields: Rc<Vec<bool>> },
+    /// The `j`-th (0-based) cubical path constructor `H.path_j : Π quantifiers..,
+    /// Path H (H.point_{lhs} lhs_args..) (H.point_{rhs} rhs_args..)` — a genuine
+    /// `PathP`/`PLam`-classified path (see [`crate::cubical`]), not an inductive
+    /// `Eq`. `lhs == rhs` is a legal self-loop. `num_quant` is the number of extra
+    /// universally-quantified binders `H.path_j` takes before yielding the `Path`
+    /// (`0` recovers the original unquantified case) — the ι-rule matches the
+    /// scrutinee's path-constructor spine against exactly this many arguments before
+    /// firing, mirroring [`HitRole::Point`]'s arity check.
+    Path { idx: u32, lhs: u32, rhs: u32, num_quant: u32 },
     /// The **`Type`-valued, computing** dependent recursor `H.rec`, generically
     /// synthesized for `num_points` point constructors and `num_paths` path
     /// constructors (see [`crate::cubical_hit`] for the exact signature and
