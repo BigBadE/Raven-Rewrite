@@ -162,7 +162,7 @@ impl KernelExt for Kernel {
             name: "S2".to_string(),
             points: vec![CubPointSpec::nullary("S2.base")],
             paths: vec![],
-            surfaces: vec![CubSurfSpec { name: "S2.surf".to_string(), base: 0 }],
+            surfaces: vec![CubSurfSpec::s2("S2.surf", 0)],
         };
         rv_kernel_core::cubical_hit::declare_cubical_hit(self.env_mut(), &spec)
     }
