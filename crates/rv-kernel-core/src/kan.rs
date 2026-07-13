@@ -1726,6 +1726,112 @@ pub(crate) fn hcomp_inductive_rule(
 // pattern for other type formers) — so a future `Glue`-specific `hcomp`/`comp`
 // pass, followed by a `glue` introduction form, is the concrete next step, not
 // blocked on resolving `Π`'s harder reversal problem first.
+//
+// ============================================================================
+// Phase 3.13: `transp^Glue`/`ua`-transport RETRIED now that `Term::GlueIntro`
+// exists — RE-INVESTIGATED AND DECLINED AGAIN, with the diagnosis corrected.
+// ============================================================================
+//
+// The prerequisite Phase 3.12 named as missing — a `glue` introduction form —
+// now exists (`Term::GlueIntro`, `crate::glue`'s "glue" tests, and the
+// `unglue(glue…a) ↦ a` β-rule; see `glue.rs`'s module doc). This section
+// re-examines whether that removes the obstruction, and reports precisely what
+// is (and is not) now derivable. As before: nothing below changes `Term::Transp`
+// or `Term::HComp`'s behavior — `transp` through any `Glue` line, `ua`-shaped or
+// not, stays exactly as stuck as it was before this pass. No new reduction rule
+// is added.
+//
+// # Correcting Phase 3.12's framing of the obstruction
+//
+// Phase 3.12's doc (above) argued the general rule doesn't apply to `ua`
+// because "`ua`'s two branches sit on complementary, individually-decided faces
+// … not on one face `φ(i)` that is itself varying continuously with a single …
+// `T`." That framing overstates the obstruction: CCHM's `Glue` (and this
+// kernel's own [`Term::Glue`]) is already defined for an arbitrary *system* of
+// branches `[φ_1 ↦ (T_1,e_1), …, φ_n ↦ (T_n,e_n)]`, not just a single
+// continuously-varying face — `ua`'s two-branch, disjoint-decided-face system is
+// a perfectly ordinary instance of that general shape, not a structurally
+// different one. The *real* content of `transp^Glue` is not "one face `T`
+// varying continuously"; it is, for **each** branch `k`, independently:
+//
+//   1. transport the *base* `A(i)` from `i=0` to `i=1` (trivial here — `ua`'s
+//      base is the syntactically constant `B`, so this is the identity, by the
+//      regularity rule already implemented);
+//   2. for the branch(es) whose `φ_k` holds at the source endpoint, transport
+//      `T_k(i)` under `φ_k` (also trivial for `ua` — each branch's `T`/`e` is
+//      individually constant: `A`/`e` throughout `(i=0)`, `B`/`idEquiv B`
+//      throughout `(i=1)`); then
+//   3. **glue** the transported `T`-result back onto the transported base via
+//      `Term::GlueIntro`, correcting the (generally non-definitional) mismatch
+//      between "transport-then-apply-`e`" and "apply-`e`-then-transport" using
+//      `Equiv.sec`/`Equiv.ret`'s coherence data, composed via an `hcomp` **in
+//      the base type**.
+//
+// So `Term::GlueIntro` genuinely does remove *one* real prerequisite (step 3's
+// output shape now exists to construct at all). What it does *not* provide is
+// step 3's *correction term* — an `hcomp` in the base type `B`, built from
+// `Equiv.sec`/`Equiv.ret`, of exactly the shape `hcomp_pi_rule`/
+// `hcomp_pathp_rule`/`hcomp_inductive_rule` each independently hand-build for
+// their own type former. No `hcomp_glue_rule` (the `Glue`-specific analogue)
+// exists in this module, and — critically — `ua`'s base `B` is an **opaque,
+// caller-supplied type**, not fixed to `Π`/`PathP`/an inductive: a sound
+// `transp^Glue` must build its correction `hcomp` *in whatever `B` the caller
+// instantiated `ua` at*, which this module has no generic "hcomp in an
+// arbitrary type" combinator for (only per-type-former specializations). Even
+// though `ua`'s own soundness gates in this task only exercise `B = Nat`
+// (where `hcomp_inductive_rule` *could* in principle supply that piece), wiring
+// a `transp` rule for `Term::Glue`/`Term::Transp` into `reduce.rs`/`nbe.rs`
+// that only works for inductive `B` and silently stays stuck (or, worse,
+// panics) for `Π`/`PathP`/opaque-axiom `B` would be exactly the kind of
+// partial, type-former-incomplete rule this module's top-level doc already
+// rules out ("a wrong or partial computation rule" is treated the same as an
+// unsound one — see this module's opening "deliberately MINIMAL sound core"
+// section). Building `hcomp_glue_rule` generically (dispatching to
+// `hcomp_pi_rule`/`hcomp_pathp_rule`/`hcomp_inductive_rule`/regularity as
+// appropriate for whatever `B` turns out to be, with a *sound fallback* — stay
+// stuck — for a `B` none of those cover) is therefore the concrete remaining
+// prerequisite, not yet attempted this pass: it is real, non-trivial new Kan
+// machinery (its own soundness argument, its own adversarial test suite,
+// mirroring each of `hcomp_pi_rule`'s/`hcomp_pathp_rule`'s own point-by-point
+// doc), not a one-line pattern match now that `glue` intro exists.
+//
+// # Why no `ua`-scoped shortcut is shipped either, even now
+//
+// The same two objections Phase 3.12 raised against a hard-coded
+// `Glue B [(i=0)↦(A,e),(i=1)↦(B,idEquiv B)] ↝ Equiv.f A B e a0` pattern-match
+// still apply verbatim: (1) it would assert the univalence computation rule as
+// a new axiom rather than derive it from `Glue`'s Kan structure — `Term::GlueIntro`
+// changes *what can be constructed*, not *what has been derived* — and (2) this
+// module's soundness discipline requires each rule's output to be checked
+// against what the *general* rule would have produced, which — absent
+// `hcomp_glue_rule` — there is still nothing to check against. Constructing the
+// correction term *by hand* for exactly `ua`'s shape (using `GlueIntro` +
+// `Equiv.sec`/`ret` + `hcomp_inductive_rule`/regularity, scoped to constant
+// bases only) was attempted as a design sketch during this pass and set aside:
+// it independently re-derives (rather than reuses) a piece of the general
+// `Glue`-`hcomp` rule for exactly one caller, which is precisely the "special
+// case bolted on rather than derived" pattern Phase 3.12 already rejected —
+// doing it honestly means building the general `hcomp_glue_rule` first, then
+// specializing, not the reverse.
+//
+// # Non-regression (re-confirmed with `GlueIntro` now present)
+//
+// [`kernel_tests::transp_through_ua_line_stays_stuck_even_with_glue_intro_available`]
+// below re-runs Phase 3.12's two pins with `Term::GlueIntro` now installed in
+// the environment (via `declare_equiv`/`ua`/`crate::glue`), confirming its
+// presence alone does not perturb `transp`'s behavior on a `Glue` line: still a
+// stuck `Term::Transp` under both the reducer and NbE, and still safe against
+// the anti-`False` battery.
+//
+// # Updated next step
+//
+// Unchanged in spirit from Phase 3.12, sharpened: (1) a generic `hcomp_glue_rule`
+// (dispatching to existing per-type-former `hcomp` rules for the base, with a
+// sound stuck fallback when the base's shape isn't covered), then (2) a
+// `transp_glue_rule` built from it plus `Equiv.sec`/`ret`, independently
+// re-typechecked and reducer/NbE cross-checked exactly like every existing rule
+// in this module — at which point `ua`'s case (constant base, two decided
+// branches) falls out as the simplest possible instance, not a bespoke rule.
 
 #[cfg(test)]
 mod kernel_tests {
@@ -3170,6 +3276,56 @@ mod kernel_tests {
         assert!(matches!(r.whnf(&transported), Term::Transp(..)));
         // ...and in particular is never compared/reduced down to `one`, nor does
         // its mere presence perturb the unrelated fact that `zero ≠ one`.
+        assert!(!r.is_def_eq(&zero, &one));
+        assert!(!r.is_def_eq(&transported, &one));
+    }
+
+    // ---- Phase 3.13: re-confirm the above with `Term::GlueIntro` installed ----
+
+    /// **Non-regression**: [`transp_through_ua_line_stays_stuck`] and
+    /// [`transp_through_ua_line_cannot_smuggle_a_false_equation`] re-run with
+    /// `Term::GlueIntro` (the `glue` introduction form) now available in the
+    /// environment and exercised alongside the `Transp` — its mere presence
+    /// (declaring `Equiv`, building a `glue [(i=0)↦a0] a0`-shaped witness of
+    /// `Glue`'s branch type at a *different* interval variable, then leaving
+    /// the actual `transport (ua e) a0` untouched) must not perturb `transp`'s
+    /// stuck-ness on the `Glue`/`ua` line: still a stuck `Term::Transp` under
+    /// both the reducer and NbE, and the anti-`False` battery still holds. This
+    /// pins down that Phase 3.13's diagnosis (a real `Glue`-`hcomp` rule is
+    /// still missing, `GlueIntro` alone doesn't supply it) matches the kernel's
+    /// actual behavior, not just its documentation.
+    #[test]
+    fn transp_through_ua_line_stays_stuck_even_with_glue_intro_available() {
+        let env = ua_env();
+        let lvl = crate::level::Level::of_nat(1);
+        let n = nat_t();
+        let e = Term::app(Term::cnst(name("idEquiv"), vec![lvl.clone()]), n.clone());
+        let p = crate::glue::ua(lvl.clone(), n.clone(), n.clone(), e.clone());
+        let zero = Term::cnst(name("Nat.zero"), vec![]);
+        let one = Term::app(Term::cnst(name("Nat.succ"), vec![]), zero.clone());
+
+        // A genuine `Term::GlueIntro` witness of `ua`'s own branch type, built
+        // and independently type-checked, sitting in the same environment/
+        // universe as the `transport (ua e) zero` under test — confirming
+        // `GlueIntro`'s mere availability (not just its *existence* as a
+        // variant) doesn't change anything about `Transp`'s behavior.
+        let phi = Cof::eq0(Term::Var(0));
+        let g = Term::glue_intro(vec![(phi.clone(), zero.clone().lift(1, 0))], zero.clone().lift(1, 0));
+        let gty = Term::glue_ty(n.clone().lift(1, 0), phi, n.clone().lift(1, 0), e.lift(1, 0));
+        let chk = crate::check::Checker::new(&env);
+        let mut ctx = crate::check::LocalCtx::new();
+        ctx.push(Term::I);
+        chk.check(&mut ctx, &g, &gty).expect("glue intro witness should still check fine");
+
+        let transported = crate::cubical::transport(&p, &zero);
+        let r = crate::reduce::Reducer::new(&env);
+        assert!(
+            matches!(r.whnf(&transported), Term::Transp(..)),
+            "GlueIntro's presence must not make transp(ua) start firing"
+        );
+        let nbe = crate::nbe::Nbe::new(&env);
+        assert!(matches!(nbe.normalize(&transported), Term::Transp(..)));
+        // Anti-`False`, re-run alongside GlueIntro's availability.
         assert!(!r.is_def_eq(&zero, &one));
         assert!(!r.is_def_eq(&transported, &one));
     }

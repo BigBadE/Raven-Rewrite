@@ -63,17 +63,25 @@
 //! and any `glue` introduction former beyond what `ua`'s *type-only* use of
 //! `Glue` requires.
 //!
-//! **This was investigated in depth in a later pass** (the "computational
-//! univalence" task): both the fully general `transp^Glue` rule and a rule
-//! scoped to exactly this `ua`-shaped line were designed and then declined as
-//! *not independently derivable* from primitives currently in this kernel (no
-//! `glue` introduction form, no `Glue`-specialized `hcomp`) — see
-//! `crate::kan`'s "Phase 3.12" doc section for the full obstruction argument,
-//! and `crate::kan::kernel_tests::transp_through_ua_line_stays_stuck`/
-//! `transp_through_ua_line_cannot_smuggle_a_false_equation` for the
-//! non-regression pins (still stuck, still safe). Nothing in this module or
-//! `reduce.rs`/`nbe.rs` changed as a result — `transport (ua e) a₀` remains a
-//! stuck `Transp`, exactly as before.
+//! **This was investigated in depth in later passes** (the "computational
+//! univalence" task, twice): both the fully general `transp^Glue` rule and a
+//! rule scoped to exactly this `ua`-shaped line were designed and then
+//! declined as *not independently derivable* from primitives currently in this
+//! kernel — see `crate::kan`'s "Phase 3.12" doc section for the original
+//! obstruction argument (no `glue` introduction form, no `Glue`-specialized
+//! `hcomp`). A later pass added `Term::GlueIntro` (the `glue` introduction
+//! form — see this module's own "`glue`" test section above), which removes
+//! *that* prerequisite; `crate::kan`'s "Phase 3.13" doc section re-investigated
+//! with `GlueIntro` available and declined again, with a corrected diagnosis:
+//! the real remaining prerequisite is a `Glue`-specialized `hcomp`/`comp` rule
+//! (an `hcomp_glue_rule` mirroring `hcomp_pi_rule`/`hcomp_pathp_rule`/
+//! `hcomp_inductive_rule`), not yet implemented. See
+//! `crate::kan::kernel_tests::transp_through_ua_line_stays_stuck`/
+//! `transp_through_ua_line_cannot_smuggle_a_false_equation`/
+//! `transp_through_ua_line_stays_stuck_even_with_glue_intro_available` for the
+//! non-regression pins (still stuck, still safe, unaffected by `GlueIntro`'s
+//! presence). Nothing in this module or `reduce.rs`/`nbe.rs` changed as a
+//! result — `transport (ua e) a₀` remains a stuck `Transp`, exactly as before.
 use crate::face::Cof;
 use crate::level::Level;
 use crate::term::{name, Term};
