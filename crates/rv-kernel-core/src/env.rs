@@ -496,14 +496,19 @@ pub enum CubHitRole {
     /// firing, mirroring [`HitRole::Point`]'s arity check.
     Path { idx: u32, lhs: u32, rhs: u32, num_quant: u32 },
     /// The `k`-th (0-based) **2-dimensional ("surface"/higher) path constructor**
-    /// `H.surf_k : Path (Path H (H.point_base) (H.point_base)) (refl (H.point_base))
-    /// (refl (H.point_base))` — a genuine square/2-cell whose all four boundaries
-    /// are `refl` at a single **nullary** point constructor (the "S²" shape; see
-    /// [`crate::cubical_hit`]'s module doc, "2-dimensional (higher) path
-    /// constructors"). `base` is the (0-based) index of that nullary point
-    /// constructor. Doubly `PApp`-applied (`H.surf_k @ i @ j`), never singly —
-    /// the ι-rule matches exactly that doubly-applied spine shape.
-    Surf { idx: u32, base: u32 },
+    /// `H.surf_k : PathP (λi. Path H (l@i) (r@i)) top bottom` — a genuine
+    /// square/2-cell based at a single **nullary** point constructor `base`, whose
+    /// four sides `l`/`r`/`top`/`bottom` are each either `refl (H.point_base)`
+    /// (`None`) or a declared, **unquantified self-loop** 1-path constructor at
+    /// `base` (`Some(path_idx)`) — see [`crate::cubical_hit`]'s module doc,
+    /// "2-dimensional (higher) path constructors". The all-`None` case recovers
+    /// the original "S²" shape exactly; e.g. the torus `T²` sets `l = r =
+    /// Some(loopP_idx)`, `top = bottom = Some(loopQ_idx)`. `base` is the (0-based)
+    /// index of that nullary point constructor. Doubly `PApp`-applied
+    /// (`H.surf_k @ i @ j`), never singly — the ι-rule matches exactly that
+    /// doubly-applied spine shape (independent of the sides' shape, which only
+    /// affects *typing*, not this structural reduction rule).
+    Surf { idx: u32, base: u32, left: Option<u32>, right: Option<u32>, top: Option<u32>, bottom: Option<u32> },
     /// The **`Type`-valued, computing** dependent recursor `H.rec`, generically
     /// synthesized for `num_points` point constructors, `num_paths` path
     /// constructors, and `num_surfaces` 2-path ("surface") constructors (see
