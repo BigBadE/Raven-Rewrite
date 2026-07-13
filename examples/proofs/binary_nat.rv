@@ -1,0 +1,163 @@
+// BINARY NUMERAL REFINEMENT of unary `Nat`, in Rust-like Raven (`rvc --verify`).
+//
+// Self-contained: own unary `Nat { Zero, Succ(Nat) }` with `plus`, plus the handful of
+// arithmetic lemmas needed below (reusing the proof idioms of `stdlib_nat.rv`: `plus_zero`,
+// `plus_succ_r`, `plus_comm`). A least-significant-bit-first binary representation
+// `Bin { BZ, B0(Bin), B1(Bin) }` is then related to `Nat` by `toNat : Bin -> Nat`
+// (`toNat(BZ) = 0`, `toNat(B0 b) = 2*toNat(b)`, `toNat(B1 b) = 1 + 2*toNat(b)`, doubling spelled
+// as `plus(x, x)` rather than via `mult`, to keep the arithmetic lemmas minimal). Note `B0(BZ)`
+// and `BZ` both denote `0` — leading-zero non-uniqueness is fine, since we only prove the
+// *semantic* laws below, never injectivity/canonicity of `Bin`.
+//
+// TWO HEADLINE THEOREMS, both CLOSED with no admits/holes:
+//
+//   inc_correct(b) : toNat(inc(b)) == Succ(toNat(b))     -- binary increment implements
+//                                                            unary successor.
+//   roundtrip(n)   : toNat(fromNat(n)) == n               -- round-tripping a unary `Nat`
+//                                                            through binary is the identity.
+//
+// Kept in the inductive-`Eq`/`Prop` proof style used throughout this corpus (NOT cubical), and
+// following `bst.rv`/`compile_stack.rv`'s ergonomics: every proof step is a small named `fn`;
+// no `trans`/`congr_arg`/`symm` call is ever handed another combinator call as an inline
+// sub-argument (each such call gets its own named helper `fn`, referenced by name at the use
+// site) — this keeps the kernel's defeq checker from choking on deeply nested combinator terms.
+
+enum Nat { Zero, Succ(Nat) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+
+// n + 0 == n, by induction on n.
+fn plus_zero(n: Nat) -> plus(n, Nat::Zero) == n {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(k) => congr_arg(Nat, Nat, Nat::Succ, plus(k, Nat::Zero), k, plus_zero(k))
+    }
+}
+
+// n + (m + 1) == (n + m) + 1, by induction on n. Needed to push a `Succ` through `plus` on the
+// right — both for `plus_comm` and for the binary-carry arithmetic below.
+fn plus_succ_r(n: Nat, m: Nat) -> plus(n, Nat::Succ(m)) == Nat::Succ(plus(n, m)) {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Succ(m))
+      | Nat::Succ(k) =>
+          congr_arg(Nat, Nat, Nat::Succ, plus(k, Nat::Succ(m)), Nat::Succ(plus(k, m)),
+                    plus_succ_r(k, m))
+    }
+}
+
+// ----- small congruence helpers for `plus` in both arguments at once --------------------------
+
+fn congr_plus_l(a1: Nat, a2: Nat, b: Nat, p: a1 == a2) -> plus(a1, b) == plus(a2, b) {
+    congr_arg(Nat, Nat, fun (x: Nat) => plus(x, b), a1, a2, p)
+}
+
+fn congr_plus_r(a: Nat, b1: Nat, b2: Nat, p: b1 == b2) -> plus(a, b1) == plus(a, b2) {
+    congr_arg(Nat, Nat, fun (x: Nat) => plus(a, x), b1, b2, p)
+}
+
+// plus(a1, b1) == plus(a2, b2), given both components are equal — combines `congr_plus_l` and
+// `congr_plus_r` via a single `trans` (each sub-argument is a named-fn call, not an inline
+// combinator call).
+fn plus_congr2(a1: Nat, a2: Nat, b1: Nat, b2: Nat, pa: a1 == a2, pb: b1 == b2)
+    -> plus(a1, b1) == plus(a2, b2)
+{
+    trans(Nat, plus(a1, b1), plus(a2, b1), plus(a2, b2),
+          congr_plus_l(a1, a2, b1, pa),
+          congr_plus_r(a2, b1, b2, pb))
+}
+
+// (x+1) + (x+1) == (x+x)+1+1 — the "doubling a successor" step, the arithmetic heart of the
+// binary carry case: doubling commutes with `+1` up to two extra `Succ`s.
+fn succ_double_step(x: Nat)
+    -> plus(Nat::Succ(x), Nat::Succ(x)) == Nat::Succ(Nat::Succ(plus(x, x)))
+{
+    congr_arg(Nat, Nat, Nat::Succ, plus(x, Nat::Succ(x)), Nat::Succ(plus(x, x)),
+              plus_succ_r(x, x))
+}
+
+// ----- binary representation -------------------------------------------------------------------
+
+// Least-significant-bit first: `BZ` is 0, `B0(b)` appends a 0 bit (doubles), `B1(b)` appends a
+// 1 bit (doubles and adds 1). `B0(BZ)` and `BZ` both denote 0 — that non-uniqueness is fine,
+// we only ever reason about `toNat`, never about `Bin` structural equality.
+enum Bin { BZ, B0(Bin), B1(Bin) }
+
+fn toNat(b: Bin) -> Nat {
+    match b {
+      | Bin::BZ    => Nat::Zero
+      | Bin::B0(k) => plus(toNat(k), toNat(k))
+      | Bin::B1(k) => Nat::Succ(plus(toNat(k), toNat(k)))
+    }
+}
+
+// Binary successor: the standard carry-propagating `inc`.
+fn inc(b: Bin) -> Bin {
+    match b {
+      | Bin::BZ    => Bin::B1(Bin::BZ)
+      | Bin::B0(k) => Bin::B1(k)
+      | Bin::B1(k) => Bin::B0(inc(k))
+    }
+}
+
+// HEADLINE 1: binary increment implements unary successor, by induction on `b`.
+//
+//   BZ case:    toNat(inc(BZ)) = toNat(B1(BZ)) = Succ(plus(0,0)) = Succ(0) = Succ(toNat(BZ))
+//               — closes by `refl` (`plus(Zero,Zero)` reduces definitionally to `Zero`).
+//   B0(k) case: toNat(inc(B0(k))) = toNat(B1(k)) = Succ(plus(toNat(k),toNat(k)))
+//               = Succ(toNat(B0(k))) — closes by `refl` directly (no carry, no IH needed).
+//   B1(k) case: the carry case. toNat(inc(B1(k))) = toNat(B0(inc(k))) =
+//               plus(toNat(inc(k)), toNat(inc(k))). Using the IH `toNat(inc(k)) ==
+//               Succ(toNat(k))`, doubling both sides (`plus_congr2`) turns this into
+//               `plus(Succ(toNat(k)), Succ(toNat(k)))`, and `succ_double_step` finishes:
+//               that equals `Succ(Succ(plus(toNat(k),toNat(k))))`, which is definitionally
+//               `Succ(toNat(B1(k)))`.
+fn inc_correct(b: Bin) -> toNat(inc(b)) == Nat::Succ(toNat(b)) {
+    match b {
+      | Bin::BZ    => Eq::refl(Nat, Nat::Succ(Nat::Zero))
+      | Bin::B0(k) => Eq::refl(Nat, Nat::Succ(plus(toNat(k), toNat(k))))
+      | Bin::B1(k) =>
+          trans(Nat,
+                plus(toNat(inc(k)), toNat(inc(k))),
+                plus(Nat::Succ(toNat(k)), Nat::Succ(toNat(k))),
+                Nat::Succ(Nat::Succ(plus(toNat(k), toNat(k)))),
+                plus_congr2(toNat(inc(k)), Nat::Succ(toNat(k)),
+                            toNat(inc(k)), Nat::Succ(toNat(k)),
+                            inc_correct(k), inc_correct(k)),
+                succ_double_step(toNat(k)))
+    }
+}
+
+// ----- the other direction: unary -> binary ----------------------------------------------------
+
+fn fromNat(n: Nat) -> Bin {
+    match n { | Nat::Zero => Bin::BZ | Nat::Succ(k) => inc(fromNat(k)) }
+}
+
+// Succ(toNat(fromNat(k))) == Succ(k), given the IH that toNat(fromNat(k)) == k. A named step
+// so `roundtrip`'s `Succ` case can combine it with `inc_correct` via a single `trans`.
+fn roundtrip_succ_step(k: Nat, ih: toNat(fromNat(k)) == k)
+    -> Nat::Succ(toNat(fromNat(k))) == Nat::Succ(k)
+{
+    congr_arg(Nat, Nat, Nat::Succ, toNat(fromNat(k)), k, ih)
+}
+
+// HEADLINE 2: round-tripping a unary `Nat` through the binary representation is the identity,
+// by induction on `n`, using `inc_correct` at the `Succ` step:
+//   toNat(fromNat(Succ k)) = toNat(inc(fromNat k)) == Succ(toNat(fromNat k)) == Succ(k).
+fn roundtrip(n: Nat) -> toNat(fromNat(n)) == n {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(k) =>
+          trans(Nat, toNat(inc(fromNat(k))), Nat::Succ(toNat(fromNat(k))), Nat::Succ(k),
+                inc_correct(fromNat(k)),
+                roundtrip_succ_step(k, roundtrip(k)))
+    }
+}
+
+// BONUS (a binary adder `add_bin` with `toNat(add_bin(a,b)) == plus(toNat(a),toNat(b))`) was
+// not attempted: carry-propagating binary addition needs a genuine 3-way carry lemma
+// (doubling distributing over `plus` with an extra carry bit threaded through both `B0`/`B1`
+// cases pairwise, i.e. a 3x3 case split versus `inc`'s 1x3 split) that didn't fit in scope
+// once both headlines above were closed; left as a documented future extension.

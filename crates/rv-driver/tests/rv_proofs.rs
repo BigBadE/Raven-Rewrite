@@ -44,6 +44,15 @@ fn stdlib_nat() {
     check("stdlib_nat.rv");
 }
 
+/// A binary numeral representation (`Bin { BZ, B0, B1 }`) refines unary `Nat`: binary `inc`
+/// implements unary `Succ` (`inc_correct`), and round-tripping a `Nat` through binary is the
+/// identity (`roundtrip`) — a classic two-representations-plus-proved-correct-conversion
+/// data-refinement showcase.
+#[test]
+fn binary_nat() {
+    check("binary_nat.rv");
+}
+
 /// `reverse` (with its involution law), `map` fusion, and `map_id` extending the generic
 /// `List<A>` library in `stdlib.rv`.
 #[test]
