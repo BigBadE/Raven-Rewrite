@@ -111,6 +111,50 @@
 //! **recursive** point (`cons : Nat → FreeMonoidC → FreeMonoidC`, no paths) to
 //! isolate the recursive-field ι-substitution from the quantified-path machinery.
 //!
+//! ## 2-dimensional (higher) path constructors: `S²`
+//!
+//! `p ≥ 0` genuinely **2-dimensional cubical "surface" (2-path) constructors**
+//! `H.surf_0, …, H.surf_{p-1}` — see [`CubSurfSpec`] — are also supported, in the
+//! **"S²" shape**: each `H.surf_k : Path (Path H p p) (refl p) (refl p)`, a
+//! square/2-cell whose all four boundaries are `refl` at a single **nullary**
+//! point constructor `p`. `tests::s2_spec` declares the sphere `S²` this way:
+//! one point `S2g.base`, one 2-cell `S2g.surf : Path (Path S2g base base) (refl
+//! base) (refl base)` — the simplest HIT the 1-path-only schema above cannot
+//! express at all (no `Path`-classified term can itself be a *point* of `H`, so
+//! a genuine "loop of loops" needs a strictly higher-dimensional constructor).
+//! The recursor gains one **doubly-quantified `PathP`** case per surface,
+//!
+//! ```text
+//!   t_k : PathP (λi. PathP (λj. C (H.surf_k @ i @ j)) c_base c_base)
+//!               (refl c_base) (refl c_base)
+//! ```
+//!
+//! (`c_base` the base point's own recursor case — trivial, since `base` is
+//! nullary), with ι-rule `H.rec .. (H.surf_k @ i @ j) ↦ (t_k @ i) @ j` — see
+//! [`Self::declare_cubical_hit`]'s surface-declaration block and
+//! [`crate::reduce::Reducer::try_cubical_hit_rec`]/
+//! [`crate::nbe::Nbe::try_cubical_hit_rec`]'s surface arms (tried *before* the
+//! ordinary 1-path arm in both, since a surface's doubly-`PApp`-applied
+//! scrutinee shape is structurally a special case of the 1-path arm's broader
+//! `PApp(p, r)` pattern — see those functions' doc comments for exactly how the
+//! two are disambiguated without cross-firing). Getting `t_k`'s own type to
+//! *type-check* required one small, general extension to
+//! [`crate::check::Checker::path_boundary_one`] — chasing one extra level of the
+//! same boundary equation it already establishes for ordinary 1-paths (see that
+//! function's updated doc comment for the exact addition and its soundness
+//! argument); no change to [`crate::reduce`]'s untyped reduction rules was
+//! needed or made (the reducer/NbE ι-rules above are ordinary, narrowly-scoped
+//! *reduction* rules, structurally disjoint from that *typing-time* boundary
+//! extension).
+//!
+//! `tests::s2_surf_iota_computes_and_boundary_agrees` checks the ι-rule computes
+//! for a concrete witness and that all four corners (`i0`/`i1` × `j0`/`j1`)
+//! agree with the point rule; `tests::rejects_surf_based_at_fielded_point`/
+//! `tests::rejects_surf_out_of_range_base` are the adversarial rejection tests;
+//! `tests::no_cross_fire_between_two_distinct_s2_hits`/
+//! `tests::cannot_prove_false_via_surf_schema` mirror the 1-path schema's
+//! identical soundness tests one dimension up.
+//!
 //! ## What's deferred
 //!
 //! * **Path constructors touching a recursive point constructor** — the path
@@ -125,8 +169,20 @@
 //! * **A genuinely dependent eliminator requiring `hcomp`/`transp` beyond direct
 //!   `PathP` application** (composing across multiple path constructors) — not
 //!   attempted, as before.
-//! * **Higher (2-)path constructors** (paths between paths) — only 1-paths, as
-//!   before.
+//! * **The fully general 2-path ("square") schema** — an arbitrary square `c :
+//!   PathP (λi. Path H (l @ i) (r @ i)) p q` between two *arbitrary, possibly
+//!   distinct* declared 1-paths `l`/`r` (e.g. the torus `T²`'s `surf : p·q ≡
+//!   q·p`), rather than the "S²" restriction landed here (all four sides `refl`
+//!   at one nullary point). Only the "S²" shape is implemented — see the
+//!   section above. A general square's boundary coherence would need the
+//!   **general** (not one-level-bounded) version of the
+//!   `path_boundary_one` extension described above, plus quantified/fielded
+//!   surfaces analogous to §"Quantified path recursor case" — a materially
+//!   larger change deferred in favor of landing a genuinely sound, if simpler,
+//!   higher HIT.
+//! * **3-dimensional (or higher) path constructors** — not attempted; the
+//!   `path_boundary_one` extension above is bounded to exactly one extra level
+//!   (matching this schema's "at most 2-dimensional" scope).
 //! * **Indexed/parametric HITs** (`H` itself taking parameters or indices) — out of
 //!   scope, as `crate::hit`'s module doc argues for its identical restriction.
 //!
@@ -205,6 +261,26 @@
 //!   structurally mirroring one another exactly (generalized over fielded points
 //!   and quantified paths, guarded by `id`); every test below checks both
 //!   independently and compares normal forms.
+//! * **The 2-path ("S²") schema adds no new checking or reduction primitive
+//!   either.** `H.surf_k`'s declared type is an ordinary `PathP`-of-`PathP`,
+//!   checked by the *pre-existing* `Term::PathP` formation rule (twice,
+//!   structurally) — exactly like every other constant this module declares;
+//!   its ι-rule ([`crate::reduce::Reducer::try_cubical_hit_rec`]/
+//!   [`crate::nbe::Nbe::try_cubical_hit_rec`]'s surface arms) fires *only* on a
+//!   literal, doubly-`PApp`-applied `H.surf_k @ i @ j` for the *same* HIT `id`
+//!   — never on a singly-applied surface (which isn't even `H`-typed — its type
+//!   is `Path H p p` — adversarial test `rec_stuck_on_underapplied_surf`), a
+//!   neutral, or a different HIT's surface (guarded by `id`, test
+//!   `no_cross_fire_between_two_distinct_s2_hits`). The one genuinely new piece
+//!   is [`crate::check::Checker::path_boundary_one`]'s one-level-deeper nested
+//!   boundary case (needed to type-check `t_k`'s own `PathP`-of-`PathP` goal) —
+//!   which, per that function's own doc comment, derives no equation beyond
+//!   what the inner `PApp`'s own already-checked `PathP` typing judgement
+//!   already forces; it is a **typing-time** extension only, entirely disjoint
+//!   from the (unmodified) untyped reduction rules in `crate::reduce`/
+//!   `crate::nbe`. Anti-`False` (test `cannot_prove_false_via_surf_schema`) and
+//!   reducer/NbE agreement (test `s2_surf_iota_computes_and_boundary_agrees`)
+//!   are checked exactly as for the 1-path schema, one dimension up.
 
 use crate::env::{CubHit, CubHitRole, Decl, Env};
 use crate::level::Level;
@@ -275,14 +351,32 @@ impl CubPathSpec {
     }
 }
 
+/// A user's declaration of one **2-dimensional ("surface"/higher) path
+/// constructor** — restricted to the "S²" shape (see the module doc,
+/// "2-dimensional (higher) path constructors"): a square/2-cell based at a
+/// single **nullary** point constructor, `H.name : Path (Path H p p) (refl p)
+/// (refl p)` where `p = H.point_{base}`. This is deliberately *not* the fully
+/// general square-with-arbitrary-1-path-sides schema (deferred — see the module
+/// doc's "What's deferred") — landing the simplest genuinely-higher case (`S²`)
+/// soundly, rather than a broken general one.
+#[derive(Clone, Debug)]
+pub struct CubSurfSpec {
+    pub name: String,
+    /// The (must be **nullary** — arity 0) point constructor this 2-cell is
+    /// based at, all four ways round.
+    pub base: usize,
+}
+
 /// A user-supplied specification of a cubical HIT: its type-former name, its
-/// (possibly fielded) point constructors, and its (possibly quantified) path
-/// constructors. See the module doc for the exact supported class.
+/// (possibly fielded) point constructors, its (possibly quantified) path
+/// constructors, and its (S²-shaped) 2-path ("surface") constructors. See the
+/// module doc for the exact supported class.
 #[derive(Clone, Debug)]
 pub struct CubHitSpec {
     pub name: String,
     pub points: Vec<CubPointSpec>,
     pub paths: Vec<CubPathSpec>,
+    pub surfaces: Vec<CubSurfSpec>,
 }
 
 impl CubHitSpec {
@@ -342,6 +436,10 @@ fn point(spec: &CubHitSpec, i: usize) -> Term {
 /// `H.path_j` (bare constant; apply separately for a quantified path).
 fn pathc(spec: &CubHitSpec, j: usize) -> Term {
     Term::cnst(name(&spec.paths[j].name), vec![])
+}
+/// `H.surf_k` (bare constant; `@`-apply twice for the 2-cell).
+fn surfc(spec: &CubHitSpec, k: usize) -> Term {
+    Term::cnst(name(&spec.surfaces[k].name), vec![])
 }
 
 /// Build a de-Bruijn `Var` referencing the binder assigned **level** `level`
@@ -409,6 +507,7 @@ fn point_case_ty(spec: &CubHitSpec, i: usize, c_level_depth: usize) -> Term {
 pub fn declare_cubical_hit(env: &mut Env, spec: &CubHitSpec) -> Result<(), String> {
     let n = spec.points.len();
     let m = spec.paths.len();
+    let p = spec.surfaces.len();
     if n == 0 {
         return Err("a cubical HIT needs at least one point constructor".to_string());
     }
@@ -456,9 +555,29 @@ pub fn declare_cubical_hit(env: &mut Env, spec: &CubHitSpec) -> Result<(), Strin
         }
     }
 
+    // 2-path ("surface") constructors: `base` must be in range and NULLARY (the
+    // "S²" restriction — see `CubSurfSpec`'s doc comment and the module doc's
+    // "What's deferred" for the general-square case this doesn't attempt).
+    for surf in &spec.surfaces {
+        if surf.base >= n {
+            return Err(format!(
+                "surface constructor '{}' has an out-of-range base point (index {}, but only {n} points)",
+                surf.name, surf.base
+            ));
+        }
+        if !spec.points[surf.base].fields.is_empty() {
+            return Err(format!(
+                "surface constructor '{}' targets point constructor '{}', which is not nullary — 2-path \
+                 constructors may only (yet) be based at a nullary point (see module docs, 'S²' restriction)",
+                surf.name, spec.points[surf.base].name
+            ));
+        }
+    }
+
     let mut all_names: Vec<&str> = vec![spec.name.as_str()];
     all_names.extend(spec.points.iter().map(|p| p.name.as_str()));
     all_names.extend(spec.paths.iter().map(|p| p.name.as_str()));
+    all_names.extend(spec.surfaces.iter().map(|s| s.name.as_str()));
     let rec_name_owned = spec.rec_name();
     all_names.push(&rec_name_owned);
     for nm in &all_names {
@@ -541,15 +660,37 @@ pub fn declare_cubical_hit(env: &mut Env, spec: &CubHitSpec) -> Result<(), Strin
     }
 
     // ------------------------------------------------------------------
+    // H.surf_k : Path (Path H p p) (refl p) (refl p), where p = H.point_{base}
+    // (the "S²" 2-path shape — see `CubSurfSpec`'s doc comment).
+    // ------------------------------------------------------------------
+    for (k, surf) in spec.surfaces.iter().enumerate() {
+        let base_pt = point(spec, surf.base); // nullary, so the bare constant IS the point value.
+        let inner = Term::path(hconst(spec), base_pt.clone(), base_pt.clone());
+        let refl_base = crate::cubical::refl(&base_pt);
+        let ty = Term::path(inner, refl_base.clone(), refl_base);
+        env.insert(
+            name(&surf.name),
+            Decl::CubHit(Rc::new(CubHit {
+                id: id.clone(),
+                role: CubHitRole::Surf { idx: k as u32, base: surf.base as u32 },
+                num_levels: 0,
+                ty,
+            })),
+        )?;
+    }
+
+    // ------------------------------------------------------------------
     // H.rec.{v} : Π (C : H -> Sort v)
     //               (c_0 : ..) .. (c_{n-1} : ..)
     //               (s_0 : ..) .. (s_{m-1} : ..)
+    //               (t_0 : ..) .. (t_{p-1} : ..)
     //               (x : H), C x
     //
     // Binder levels (0-based, introduction order): C=0, c_i=1+i, s_j=1+n+j,
-    // x=1+n+m — see `var_at`'s doc comment for the depth/level convention.
+    // t_k=1+n+m+k, x=1+n+m+p — see `var_at`'s doc comment for the depth/level
+    // convention.
     // ------------------------------------------------------------------
-    let x_level = 1 + n + m;
+    let x_level = 1 + n + m + p;
 
     // Innermost: `C x`, written at depth = x_level + 1.
     let codomain = {
@@ -558,6 +699,38 @@ pub fn declare_cubical_hit(env: &mut Env, spec: &CubHitSpec) -> Result<(), Strin
     };
     // `x : H`, written at depth = x_level.
     let mut acc = Term::pi(hconst(spec), codomain);
+
+    // t_{p-1} .. t_0, each written at depth = 1 + n + m + k (before its own
+    // double-interval telescope is opened). Mirrors `H.surf_k`'s own declared
+    // type exactly, one level up: `H` -> `C` (applied), `H.point_base` -> the
+    // point recursor case `c_base` (a plain var reference, since `base` is
+    // nullary — no field telescope to thread through), and the boundary
+    // `refl`/`Path` structure preserved verbatim, so that `t_k`'s type is
+    // always well-formed by the *same* `PathP`/`Path` typing rules `H.surf_k`
+    // itself was checked against above (see the module doc's soundness
+    // argument, "Boundary coherence").
+    for k in (0..p).rev() {
+        let surf = &spec.surfaces[k];
+        let depth = 1 + n + m + k;
+        // `c_base`, the base point's recursor case, at the two depths it's
+        // needed at (before/after opening the outer interval binder `i`).
+        let c_base_outer = var_at(1 + surf.base, depth);
+        let c_base_inner = var_at(1 + surf.base, depth + 1);
+        let inner_family = {
+            // Depth right after opening BOTH interval binders `i` (level =
+            // `depth`) and `j` (level = `depth + 1`).
+            let fam_depth = depth + 2;
+            let c_ref = var_at(0, fam_depth);
+            let i_ref = var_at(depth, fam_depth);
+            let j_ref = var_at(depth + 1, fam_depth);
+            let surf_call = Term::papp(Term::papp(surfc(spec, k), i_ref), j_ref);
+            Term::app(c_ref, surf_call)
+        };
+        let inner_pathp = Term::pathp(inner_family, c_base_inner.clone(), c_base_inner);
+        let outer_refl = crate::cubical::refl(&c_base_outer);
+        let t_ty = Term::pathp(inner_pathp, outer_refl.clone(), outer_refl);
+        acc = Term::pi(t_ty, acc);
+    }
 
     // s_{m-1} .. s_0, each written at depth = 1 + n + j (before its own
     // quantifier/PathP telescope is opened).
@@ -605,7 +778,7 @@ pub fn declare_cubical_hit(env: &mut Env, spec: &CubHitSpec) -> Result<(), Strin
         name(&rec_name_owned),
         Decl::CubHit(Rc::new(CubHit {
             id,
-            role: CubHitRole::Rec { num_points: n as u32, num_paths: m as u32 },
+            role: CubHitRole::Rec { num_points: n as u32, num_paths: m as u32, num_surfaces: p as u32 },
             num_levels: 1,
             ty: rec_ty,
         })),
@@ -652,6 +825,7 @@ mod tests {
             name: "MyI".to_string(),
             points: vec![CubPointSpec::nullary("MyI.zero"), CubPointSpec::nullary("MyI.one")],
             paths: vec![CubPathSpec::simple("MyI.seg", 0, 1)],
+            surfaces: vec![],
         };
         declare_cubical_hit(&mut env, &spec).unwrap();
         let chk = Checker::new(&env);
@@ -663,7 +837,9 @@ mod tests {
     #[test]
     fn rejects_zero_points() {
         let mut env = base_env();
-        let spec = CubHitSpec { name: "Empty2".to_string(), points: vec![], paths: vec![] };
+        let spec = CubHitSpec { name: "Empty2".to_string(), points: vec![], paths: vec![],
+            surfaces: vec![],
+        };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("at least one point"), "got: {err}");
     }
@@ -675,6 +851,7 @@ mod tests {
             name: "Bad".to_string(),
             points: vec![CubPointSpec::nullary("Bad.p0")],
             paths: vec![CubPathSpec::simple("Bad.bogus", 0, 5)],
+            surfaces: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("out-of-range"), "got: {err}");
@@ -687,6 +864,7 @@ mod tests {
             name: "Dup".to_string(),
             points: vec![CubPointSpec::nullary("Dup.p0")],
             paths: vec![],
+            surfaces: vec![],
         };
         declare_cubical_hit(&mut env, &spec).unwrap();
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
@@ -705,6 +883,7 @@ mod tests {
                 fields: vec![Field::NonRec(Term::arrow(Term::cnst(name("Bad"), vec![]), cn("Nat")))],
             }],
             paths: vec![],
+            surfaces: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("strict positivity") || err.contains("mentioning"), "got: {err}");
@@ -727,6 +906,7 @@ mod tests {
                 lhs: (0, vec![]),
                 rhs: (1, vec![lit(0), Term::cnst(name("Bad.unit"), vec![])]),
             }],
+            surfaces: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("recursive field"), "got: {err}");
@@ -745,6 +925,7 @@ mod tests {
                 lhs: (0, vec![lit(0)]),
                 rhs: (0, vec![]), // wrong arity
             }],
+            surfaces: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("arity"), "got: {err}");
@@ -759,6 +940,7 @@ mod tests {
             name: "I2g".to_string(),
             points: vec![CubPointSpec::nullary("I2g.zero"), CubPointSpec::nullary("I2g.one")],
             paths: vec![CubPathSpec::simple("I2g.seg", 0, 1)],
+            surfaces: vec![],
         }
     }
 
@@ -829,6 +1011,7 @@ mod tests {
             name: "S1g".to_string(),
             points: vec![CubPointSpec::nullary("S1g.base")],
             paths: vec![CubPathSpec::simple("S1g.loop", 0, 0)],
+            surfaces: vec![],
         }
     }
 
@@ -895,6 +1078,7 @@ mod tests {
             name: "Fig8".to_string(),
             points: vec![CubPointSpec::nullary("Fig8.base")],
             paths: vec![CubPathSpec::simple("Fig8.loop1", 0, 0), CubPathSpec::simple("Fig8.loop2", 0, 0)],
+            surfaces: vec![],
         }
     }
 
@@ -970,11 +1154,13 @@ mod tests {
             name: "Ia".to_string(),
             points: vec![CubPointSpec::nullary("Ia.zero"), CubPointSpec::nullary("Ia.one")],
             paths: vec![CubPathSpec::simple("Ia.seg", 0, 1)],
+            surfaces: vec![],
         };
         let spec_b = CubHitSpec {
             name: "Ib".to_string(),
             points: vec![CubPointSpec::nullary("Ib.zero"), CubPointSpec::nullary("Ib.one")],
             paths: vec![CubPathSpec::simple("Ib.seg", 0, 1)],
+            surfaces: vec![],
         };
         declare_cubical_hit(&mut env, &spec_a).unwrap();
         declare_cubical_hit(&mut env, &spec_b).unwrap();
@@ -1041,6 +1227,7 @@ mod tests {
                 },
             ],
             paths: vec![],
+            surfaces: vec![],
         }
     }
 
@@ -1165,6 +1352,7 @@ mod tests {
                 lhs: (0, vec![Term::Var(2)]),
                 rhs: (0, vec![Term::Var(1)]),
             }],
+            surfaces: vec![],
         };
         (env, spec)
     }
@@ -1314,6 +1502,7 @@ mod tests {
                 lhs: (0, vec![Term::Var(1)]),
                 rhs: (0, vec![Term::Var(1)]),
             }],
+            surfaces: vec![],
         };
         declare_cubical_hit(&mut env, &spec).unwrap();
 
@@ -1365,5 +1554,200 @@ mod tests {
         let red = Reducer::new(&env);
         let mk = |n: Term| Term::app(cn("NatSQ.mk"), n);
         assert!(!red.is_def_eq(&mk(lit(3)), &mk(lit(4))));
+    }
+
+    // ---------------------------------------------------------------------
+    // NEW: a genuine HIGHER cubical HIT — `S²`, one point (`base`) and one
+    // 2-path ("surface") constructor `surf : Path (Path S² base base) (refl
+    // base) (refl base)`, the simplest example the 1-path-only schema above
+    // cannot express (see the module doc, "2-dimensional (higher) path
+    // constructors").
+    // ---------------------------------------------------------------------
+
+    fn s2_spec() -> CubHitSpec {
+        CubHitSpec {
+            name: "S2g".to_string(),
+            points: vec![CubPointSpec::nullary("S2g.base")],
+            paths: vec![],
+            surfaces: vec![CubSurfSpec { name: "S2g.surf".to_string(), base: 0 }],
+        }
+    }
+
+    #[test]
+    fn s2_wellformed_and_surf_typechecks() {
+        let mut env = base_env();
+        declare_cubical_hit(&mut env, &s2_spec()).unwrap();
+        let chk = Checker::new(&env);
+        for n in ["S2g", "S2g.base", "S2g.surf", "S2g.rec"] {
+            chk.infer_closed(env.get(n).unwrap().ty()).unwrap_or_else(|e| panic!("{n} ill-formed: {e}"));
+        }
+        // `S2g.surf` itself checks against the literal `Path (Path S2g base base)
+        // (refl base) (refl base)` goal — pins the exact declared shape down.
+        let base = cn("S2g.base");
+        let inner = Term::path(cn("S2g"), base.clone(), base.clone());
+        let goal = Term::path(inner, crate::cubical::refl(&base), crate::cubical::refl(&base));
+        chk.check(&mut LocalCtx::new(), &cn("S2g.surf"), &goal).unwrap();
+    }
+
+    /// SOUNDNESS (adversarial): a 2-path ("surface") constructor may only be
+    /// based at a NULLARY point constructor (the "S²" restriction) — a fielded
+    /// base point is rejected.
+    #[test]
+    fn rejects_surf_based_at_fielded_point() {
+        let mut env = base_env();
+        let spec = CubHitSpec {
+            name: "Bad".to_string(),
+            points: vec![CubPointSpec { name: "Bad.mk".to_string(), fields: vec![Field::NonRec(cn("Nat"))] }],
+            paths: vec![],
+            surfaces: vec![CubSurfSpec { name: "Bad.surf".to_string(), base: 0 }],
+        };
+        let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
+        assert!(err.contains("not nullary") || err.contains("nullary"), "got: {err}");
+    }
+
+    /// SOUNDNESS (adversarial): an out-of-range `base` index is rejected.
+    #[test]
+    fn rejects_surf_out_of_range_base() {
+        let mut env = base_env();
+        let spec = CubHitSpec {
+            name: "Bad2".to_string(),
+            points: vec![CubPointSpec::nullary("Bad2.p0")],
+            paths: vec![],
+            surfaces: vec![CubSurfSpec { name: "Bad2.surf".to_string(), base: 5 }],
+        };
+        let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
+        assert!(err.contains("out-of-range"), "got: {err}");
+    }
+
+    /// COMPUTATION RULE: the 2-path ι-rule. `rec .. (surf @ i @ j)` reduces to
+    /// `(t @ i) @ j` for a CONCRETE (genuinely reducing) `PLam`-of-`PLam`
+    /// witness `t = refl (refl 7)` — differential reducer vs. NbE, and (since
+    /// `t` is concrete) exercises the boundary at every corner too (`i0`/`i1`
+    /// composed with `j0`/`j1` all collapse to the point rule's value, exactly
+    /// the argument the module doc's "Boundary coherence" section makes, now
+    /// one dimension up).
+    #[test]
+    fn s2_surf_iota_computes_and_boundary_agrees() {
+        let mut env = base_env();
+        declare_cubical_hit(&mut env, &s2_spec()).unwrap();
+        let u = Level::of_nat(1);
+        let seven = lit(7);
+        let motive = Term::lam(cn("S2g"), cn("Nat").lift(1, 0));
+        // `t := refl (refl 7) : Path (Path Nat 7 7) (refl 7) (refl 7)` — a
+        // concrete, genuinely-reducing witness (mirrors
+        // `natsq_glue_self_relation_boundary_computes`'s use of a concrete
+        // `PLam` witness rather than an opaque axiom, one dimension up).
+        let t = crate::cubical::refl(&crate::cubical::refl(&seven));
+        let rec = |scrut: Term| {
+            Term::apps(Term::cnst(name("S2g.rec"), vec![u.clone()]), [motive.clone(), seven.clone(), t.clone(), scrut])
+        };
+        let chk = Checker::new(&env);
+        let red = Reducer::new(&env);
+        let nbe = Nbe::new(&env);
+
+        // Point rule: `rec base = 7`.
+        let rb = rec(cn("S2g.base"));
+        chk.check(&mut LocalCtx::new(), &rb, &cn("Nat")).unwrap();
+        assert!(red.is_def_eq(&rb, &seven));
+        assert_eq!(nbe.normalize(&rb), nbe.normalize(&seven));
+
+        // 2-path rule: `rec (surf @ i @ j) = (t @ i) @ j = 7`, for symbolic
+        // `i`/`j` (two nested `plam`s; `i = Var(1)`, `j = Var(0)` inside).
+        let scrut = Term::papp(Term::papp(cn("S2g.surf"), Term::Var(1)), Term::Var(0));
+        let whole = Term::plam(Term::plam(rec(scrut)));
+        let ty = chk.infer_closed(&whole).unwrap();
+        let inner_ty = Term::path(cn("Nat"), seven.clone(), seven.clone());
+        let expected_ty =
+            Term::path(inner_ty, crate::cubical::refl(&seven), crate::cubical::refl(&seven));
+        assert!(red.is_def_eq(&ty, &expected_ty));
+        let expected = Term::plam(Term::plam(seven.lift(2, 0)));
+        assert!(red.is_def_eq(&whole, &expected));
+        assert_eq!(nbe.normalize(&whole), nbe.normalize(&expected));
+
+        // Boundary coherence at every corner: `surf @ i0/i1 @ j0/j1` all agree
+        // with the point rule (`rec base = 7`), for the concrete witness `t`.
+        for i_end in [Term::IZero, Term::IOne] {
+            for j_end in [Term::IZero, Term::IOne] {
+                let corner = rec(Term::papp(Term::papp(cn("S2g.surf"), i_end.clone()), j_end.clone()));
+                chk.check(&mut LocalCtx::new(), &corner, &cn("Nat")).unwrap();
+                assert!(red.is_def_eq(&corner, &rb), "reducer: corner {i_end:?}/{j_end:?} agrees with rec base");
+                assert_eq!(nbe.normalize(&corner), nbe.normalize(&rb), "nbe: corner {i_end:?}/{j_end:?}");
+            }
+        }
+    }
+
+    /// `H.rec` stays stuck on a partially-applied ("under-dimensioned") surface
+    /// — a SINGLE `@`-application `surf @ i` (not the required double
+    /// `surf @ i @ j`) must not misfire the 2-path ι-rule (it isn't even
+    /// `H`-typed — `surf @ i : Path S2g base base` — so this can only arise as
+    /// an ill-typed scrutinee/stuck neutral, exercised here directly at the
+    /// reducer level to pin down the ι-rule's own arity discipline).
+    #[test]
+    fn rec_stuck_on_underapplied_surf() {
+        let mut env = base_env();
+        declare_cubical_hit(&mut env, &s2_spec()).unwrap();
+        let u = Level::of_nat(1);
+        let motive = Term::lam(cn("S2g"), cn("Nat").lift(1, 0));
+        let t = crate::cubical::refl(&crate::cubical::refl(&lit(7)));
+        let partial = Term::papp(cn("S2g.surf"), Term::Var(0)); // only ONE `@`
+        let rec = Term::plam(Term::apps(
+            Term::cnst(name("S2g.rec"), vec![u]),
+            [motive, lit(7), t, partial],
+        ));
+        let red = Reducer::new(&env);
+        let result = red.whnf(&rec);
+        // Stays a stuck `PLam` around the (still-stuck) `H.rec` application —
+        // never collapses to a point-rule/surface-rule result.
+        match &result {
+            Term::PLam(body) => {
+                let (h, _) = body.unfold_apps();
+                assert!(matches!(h, Term::Const(n, _) if n == name("S2g.rec")));
+            }
+            other => panic!("expected a stuck PLam, got {other:?}"),
+        }
+    }
+
+    /// ANTI-`False`: cannot derive `Path Nat 0 1` via the 2-path schema either.
+    #[test]
+    fn cannot_prove_false_via_surf_schema() {
+        let mut env = base_env();
+        declare_cubical_hit(&mut env, &s2_spec()).unwrap();
+        let chk = Checker::new(&env);
+        let bogus_goal = Term::path(Term::path(cn("Nat"), lit(3), lit(3)), crate::cubical::refl(&lit(3)), crate::cubical::refl(&lit(3)));
+        // `S2g.surf`'s own declared type is `Path (Path S2g base base) ..` — an
+        // unrelated `Nat`-typed 2-path goal must not check.
+        assert!(chk.check(&mut LocalCtx::new(), &cn("S2g.surf"), &bogus_goal).is_err());
+        let red = Reducer::new(&env);
+        assert!(!red.is_def_eq(&lit(0), &lit(1)));
+    }
+
+    /// Adversarial: per-`id` no cross-fire between two independently declared
+    /// `S²`-shaped HITs (even structurally identical ones) — mirrors
+    /// `no_cross_fire_between_two_distinct_declared_hits` one dimension up.
+    #[test]
+    fn no_cross_fire_between_two_distinct_s2_hits() {
+        let mut env = base_env();
+        let spec_a = CubHitSpec {
+            name: "S2a".to_string(),
+            points: vec![CubPointSpec::nullary("S2a.base")],
+            paths: vec![],
+            surfaces: vec![CubSurfSpec { name: "S2a.surf".to_string(), base: 0 }],
+        };
+        let spec_b = CubHitSpec {
+            name: "S2b".to_string(),
+            points: vec![CubPointSpec::nullary("S2b.base")],
+            paths: vec![],
+            surfaces: vec![CubSurfSpec { name: "S2b.surf".to_string(), base: 0 }],
+        };
+        declare_cubical_hit(&mut env, &spec_a).unwrap();
+        declare_cubical_hit(&mut env, &spec_b).unwrap();
+        let chk = Checker::new(&env);
+        let motive = Term::lam(cn("S2a"), cn("Nat").lift(1, 0));
+        let t = crate::cubical::refl(&crate::cubical::refl(&lit(0)));
+        let bogus = Term::apps(
+            Term::cnst(name("S2a.rec"), vec![Level::of_nat(1)]),
+            [motive, lit(0), t, cn("S2b.base")],
+        );
+        assert!(chk.infer_closed(&bogus).is_err(), "S2a.rec must reject an S2b-typed scrutinee");
     }
 }

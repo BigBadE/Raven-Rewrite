@@ -495,11 +495,21 @@ pub enum CubHitRole {
     /// scrutinee's path-constructor spine against exactly this many arguments before
     /// firing, mirroring [`HitRole::Point`]'s arity check.
     Path { idx: u32, lhs: u32, rhs: u32, num_quant: u32 },
+    /// The `k`-th (0-based) **2-dimensional ("surface"/higher) path constructor**
+    /// `H.surf_k : Path (Path H (H.point_base) (H.point_base)) (refl (H.point_base))
+    /// (refl (H.point_base))` — a genuine square/2-cell whose all four boundaries
+    /// are `refl` at a single **nullary** point constructor (the "S²" shape; see
+    /// [`crate::cubical_hit`]'s module doc, "2-dimensional (higher) path
+    /// constructors"). `base` is the (0-based) index of that nullary point
+    /// constructor. Doubly `PApp`-applied (`H.surf_k @ i @ j`), never singly —
+    /// the ι-rule matches exactly that doubly-applied spine shape.
+    Surf { idx: u32, base: u32 },
     /// The **`Type`-valued, computing** dependent recursor `H.rec`, generically
-    /// synthesized for `num_points` point constructors and `num_paths` path
-    /// constructors (see [`crate::cubical_hit`] for the exact signature and
-    /// ι-rules — a direct generalization of [`I2Role::Rec`]/[`S1cRole::Rec`]).
-    Rec { num_points: u32, num_paths: u32 },
+    /// synthesized for `num_points` point constructors, `num_paths` path
+    /// constructors, and `num_surfaces` 2-path ("surface") constructors (see
+    /// [`crate::cubical_hit`] for the exact signature and ι-rules — a direct
+    /// generalization of [`I2Role::Rec`]/[`S1cRole::Rec`]).
+    Rec { num_points: u32, num_paths: u32, num_surfaces: u32 },
 }
 
 /// A member of a **general, user-declared cubical HIT**, installed by
