@@ -168,6 +168,11 @@ fn optimizer() {
 }
 
 #[test]
+fn opt_constfold() {
+    check("opt_constfold.rv");
+}
+
+#[test]
 fn le() {
     check("le.rv");
 }
