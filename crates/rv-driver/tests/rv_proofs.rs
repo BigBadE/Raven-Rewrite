@@ -172,6 +172,13 @@ fn opt_constfold() {
     check("opt_constfold.rv");
 }
 
+/// Algebraic simplification (`e+0=e`, `0+e=e`, `e*1=e`, `1*e=e`, `e*0=0`, `0*e=0`) via smart
+/// constructors, with the headline `simplify_correct : eval(simplify(e)) == eval(e)`.
+#[test]
+fn opt_simplify() {
+    check("opt_simplify.rv");
+}
+
 #[test]
 fn le() {
     check("le.rv");
