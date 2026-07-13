@@ -785,6 +785,348 @@ pub fn trans3(
     Term::app(Term::app(j_res, q.clone()), r.clone())
 }
 
+// ============================================================================
+// Phase 4 (square tooling): 2-dimensional paths — "squares" — and the
+// fundamental builders HoTT's naturality/`J` arguments need on top of them.
+//
+// A **square** at type `ty` with sides `top : Path ty a b`, `bottom : Path ty c
+// d`, `left : Path ty a c`, `right : Path ty b d` is drawn
+//
+// ```text
+//        top
+//    a ------> b
+//    |         |
+// left|         |right
+//    v         v
+//    c ------> d
+//      bottom
+// ```
+//
+// and is *itself* a path — a genuinely 2-dimensional one — between `top` and
+// `bottom`, living in the (interval-varying) type `Path ty (left@i) (right@i)`:
+//
+// ```text
+//   Square ty top bottom left right :≡ PathP (λi. Path ty (left@i) (right@i)) top bottom
+// ```
+//
+// This is nothing but `PathP`'s own type former applied one dimension up (see
+// [`square_ty`]) — no new primitive, matching this module's "everything is
+// `Path`/`PathP` plus already-proven-sound combinators" discipline.
+//
+// Builders landed here:
+//   * [`square_ty`]      — the type former itself.
+//   * [`const_square`]   — the totally-degenerate `refl`-square (all four sides
+//     `refl a`, filled by `refl (refl a)`; needs no reduction beyond what
+//     `idHAE`'s `tau` field already relies on).
+//   * [`conn_and`]/[`conn_or`] — the two **connection squares** built from a
+//     single path `p : Path ty a b` (`⟨i j⟩ p@(i∧j)` / `p@(i∨j)`), each with
+//     two degenerate (`refl`) corners and two copies of `p` itself — the
+//     squares `J`/homotopy-naturality arguments (HoTT §6.2/Lemma 2.4.3's own
+//     textbook proof) build on.
+//   * [`hcomp_square`]   — a square built from `Term::HComp` typed directly at
+//     a `square_ty` goal. **Caveat, stated plainly**: `crate::kan`'s own module
+//     doc ("Phase 3.8: the `PathP`-case `hcomp` filling rule — INVESTIGATED AND
+//     DECLINED") records that only `hcomp`'s *trivial* (`φ = ⊤`) rule computes
+//     at a `PathP` type — there is no general box-filling reduction rule for
+//     `hcomp` at `PathP` in this kernel yet. [`hcomp_square`] therefore only
+//     ever supplies `φ = ⊥` (so it reduces straight to the supplied total
+//     filler `u0`, exactly like [`transport`]'s own `φ = ⊥` convention) — it is
+//     useful for *typing* a fully-known square term at the `Square` goal via
+//     the `HComp` primitive (rather than a bare `PathP`/`PLam`), not for
+//     deriving new boundary data via genuine composition. A future pass wiring
+//     up `crate::kan`'s declined `PathP`-case rule would let this combinator
+//     (or a sibling) do real box-filling.
+//   * [`nat_sq`]          — the **naturality square for a homotopy** (HoTT book
+//     Lemma 2.4.3): given `H : Πx:A. Path B (f x) (g x)` and `p : Path A x y`,
+//     `natSq H p : Square B (H x) (H y) (ap f p) (ap g p)`. This is the
+//     keystone this whole phase exists for (see `crate::equiv_hae`'s module
+//     doc, "Deferred: biInvToHAE" — `τ'` needs exactly two instances of this).
+//     Built by a **single `J`-elimination on `p`** (exactly [`trans`]/
+//     [`trans3`]'s own pattern) — **no `hcomp` needed**: when `p = refl x`,
+//     `ap f (refl x)`/`ap g (refl x)` reduce (by [`ap`]'s own definition, PLam
+//     applied to a constant path) to `refl (f x)`/`refl (g x)` *on the nose*,
+//     collapsing the family `λi. Path B (ap f p @ i) (ap g p @ i)` at `y = x`,
+//     `p = refl x` down to the **constant** type `Path B (f x) (g x)` — so the
+//     base case is simply `refl (H x) : Path (Path B (f x) (g x)) (H x) (H
+//     x)`, no square-combinator needed for the base case itself. This mirrors
+//     `idHAE`'s own `tau := λa. refl (refl a)` trick (see `crate::equiv_hae`),
+//     one `J`-step more general.
+// ============================================================================
+
+/// `square_ty ty top bottom left right : Type` — the type of a **square**
+/// (see this section's module doc above for the picture/orientation):
+/// `PathP (λi. Path ty (left@i) (right@i)) top bottom`. Exactly `PathP`'s own
+/// type former, applied to a family built from `left`/`right`'s boundaries —
+/// no new primitive.
+pub fn square_ty(ty: &Term, top: &Term, bottom: &Term, left: &Term, right: &Term) -> Term {
+    let family = Term::path(
+        ty.lift(1, 0),
+        Term::papp(left.lift(1, 0), Term::Var(0)),
+        Term::papp(right.lift(1, 0), Term::Var(0)),
+    );
+    Term::pathp(family, top.clone(), bottom.clone())
+}
+
+/// `const_square a : Square ty (refl a) (refl a) (refl a) (refl a)` — the
+/// totally degenerate square: `refl (refl a)`, i.e. `⟨i⟩⟨j⟩ a` (constant in
+/// both dimensions). Checks purely by conversion/reduction: `square_ty`'s
+/// family, instantiated with `left = right = refl a`, reduces (both `(refl
+/// a)@i` boundaries are the constant `a`) to the constant type `Path ty a a`,
+/// which `refl (refl a) : Path (Path ty a a) (refl a) (refl a)` inhabits
+/// directly. Exactly `crate::equiv_hae::declare_id_hae`'s `tau_fn` pattern,
+/// factored out as a standalone, reusable combinator.
+pub fn const_square(a: &Term) -> Term {
+    refl(&refl(a))
+}
+
+/// `conn_and ty a b p : Square ty (refl a) p (refl a) p`, given `p : Path ty a
+/// b` — the "and"/`∧` **connection square** `⟨i⟩⟨j⟩ p @ (i ∧ j)`. Tracing the
+/// four boundaries (see this section's module doc for the `top`/`bottom`/
+/// `left`/`right` convention): at `i=i0`, `p@(i0∧j) ≡ p@i0 ≡ a` (constant) —
+/// `top = refl a`; at `i=i1`, `p@(i1∧j) ≡ p@j` — `bottom = p`; at `j=i0`,
+/// `p@(i∧i0) ≡ p@i0 ≡ a` — `left = refl a`; at `j=i1`, `p@(i∧i1) ≡ p@i` —
+/// `right = p`. This is exactly the connection square [`j`]'s own `connect`
+/// helper builds inline (see that function's body/doc) for `J`'s "payoff of
+/// path-η" argument, exposed here as a standalone, independently-typeable
+/// combinator so other constructions (e.g. [`nat_sq`]'s eventual callers) can
+/// reuse it without re-deriving it.
+pub fn conn_and(_ty: &Term, a: &Term, b: &Term, p: &Term) -> Term {
+    let _ = (a, b); // endpoints are read off `p`'s own checked type by the caller;
+    // kept as named parameters purely to document the intended `a`/`b`
+    // boundary shape at the call site, matching this module's other
+    // combinators' calling convention (e.g. `trans`'s `a`/`c`).
+    Term::plam(Term::plam(Term::papp(p.lift(2, 0), Term::imeet(Term::Var(1), Term::Var(0)))))
+}
+
+/// `conn_or ty a b p : Square ty p (refl b) p (refl b)`, given `p : Path ty a
+/// b` — the "or"/`∨` connection square `⟨i⟩⟨j⟩ p @ (i ∨ j)`, [`conn_and`]'s
+/// dual: at `i=i0`, `p@(i0∨j) ≡ p@j` — `top = p`; at `i=i1`, `p@(i1∨j) ≡ p@i1
+/// ≡ b` — `bottom = refl b`; at `j=i0`, `p@(i∨i0) ≡ p@i` — `left = p`; at
+/// `j=i1`, `p@(i∨i1) ≡ p@i1 ≡ b` — `right = refl b`.
+pub fn conn_or(_ty: &Term, a: &Term, b: &Term, p: &Term) -> Term {
+    let _ = (a, b); // see `conn_and`'s identical note.
+    Term::plam(Term::plam(Term::papp(p.lift(2, 0), Term::ijoin(Term::Var(1), Term::Var(0)))))
+}
+
+/// `hcomp_square ty top bottom left right filler : Square ty top bottom left
+/// right`, given a fully-known `filler` already inhabiting exactly that
+/// `Square` type — typed via `Term::HComp` (`φ = ⊥`, so it reduces straight to
+/// `filler` itself) rather than a bare `PathP`/`PLam`. See this section's
+/// module doc, [`hcomp_square`]'s own bullet, for the honest caveat: this is
+/// **not** genuine box-filling (`crate::kan`'s `PathP`-case `hcomp` rule is
+/// declined/unimplemented), just a way to route a square goal through the
+/// `HComp` primitive.
+pub fn hcomp_square(ty: &Term, top: &Term, bottom: &Term, left: &Term, right: &Term, filler: &Term) -> Term {
+    let goal = square_ty(ty, top, bottom, left, right);
+    Term::hcomp(goal, Cof::bot(), filler.lift(1, 0), filler.clone())
+}
+
+/// `nat_sq a_ty b_ty f g h x p : Square b_ty (h x) (h y) (ap f p) (ap g p)`,
+/// given `h : Πz:a_ty. Path b_ty (f z) (g z)` (a homotopy `f ~ g`), `x : a_ty`,
+/// and `p : Path a_ty x y` (`y` is inferred from `p`'s own checked type,
+/// exactly like [`j`]/[`trans`]'s own trailing endpoint arguments) — the
+/// **naturality square for a homotopy**, HoTT book Lemma 2.4.3. See this
+/// section's module doc for the full derivation; in short: `J`-eliminate `p`
+/// with motive `C := λ (y:a_ty) (q:Path a_ty x y). Square b_ty (h x) (h y) (ap
+/// f q) (ap g q)`; at the base case `y=x`, `q=refl x`, `ap f (refl x)`/`ap g
+/// (refl x)` reduce to `refl (f x)`/`refl (g x)`, collapsing `C x (refl x)`
+/// down (by the constant-family/regularity route `crate::kan`'s
+/// `family_is_constant` already provides, the same mechanism [`j`]'s own
+/// "computation on `refl`" section documents) to the plain 1-path type `Path
+/// (Path b_ty (f x) (g x)) (h x) (h x)`, which `refl (h x)` inhabits directly
+/// — **no `hcomp`, no connection square, needed for `nat_sq` itself.**
+pub fn nat_sq(a_ty: &Term, b_ty: &Term, f: &Term, g: &Term, h: &Term, x: &Term, p: &Term) -> Term {
+    // motive, ctx []: λ (y:a_ty) (q:Path a_ty x y). Square b_ty (h x) (h y) (ap f q) (ap g q)
+    let motive = Term::lam(
+        a_ty.clone(),
+        Term::lam(
+            // ctx [y]: Path a_ty x y
+            Term::path(a_ty.lift(1, 0), x.lift(1, 0), Term::Var(0)),
+            {
+                // ctx [y,q]: a_ty=+2, b_ty=+2, f=+2, g=+2, h=+2, x=+2; y=Var(1), q=Var(0)
+                let hx = Term::app(h.lift(2, 0), x.lift(2, 0));
+                let hy = Term::app(h.lift(2, 0), Term::Var(1));
+                let ap_f_q = ap(&f.lift(2, 0), &Term::Var(0));
+                let ap_g_q = ap(&g.lift(2, 0), &Term::Var(0));
+                square_ty(&b_ty.lift(2, 0), &hx, &hy, &ap_f_q, &ap_g_q)
+            },
+        ),
+    );
+    // base case, ctx []: refl (h x) : Path (Path b_ty (f x) (g x)) (h x) (h x) —
+    // matches `motive x (refl x)` up to the reductions this doc explains.
+    let d = refl(&Term::app(h.clone(), x.clone()));
+    j(&motive, &d, p)
+}
+
+#[cfg(test)]
+mod square_tests {
+    use super::*;
+    use crate::kernel::Kernel;
+    use crate::term::name;
+
+    fn cn(s: &str) -> Term {
+        Term::cnst(name(s), vec![])
+    }
+
+    /// `A B : Type 0`; `f g : A -> B`; `h : Πx. Path B (f x) (g x)`; `x y : A`;
+    /// `p : Path A x y`.
+    fn nat_sq_env() -> Kernel {
+        let mut k = Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("B", 0, Term::typ(0)).unwrap();
+        k.add_axiom("f", 0, Term::arrow(cn("A"), cn("B"))).unwrap();
+        k.add_axiom("g", 0, Term::arrow(cn("A"), cn("B"))).unwrap();
+        let h_ty = Term::pi(
+            cn("A"),
+            Term::path(cn("B"), Term::app(cn("f"), Term::Var(0)), Term::app(cn("g"), Term::Var(0))),
+        );
+        k.add_axiom("h", 0, h_ty).unwrap();
+        k.add_axiom("x", 0, cn("A")).unwrap();
+        k.add_axiom("y", 0, cn("A")).unwrap();
+        k.add_axiom("p", 0, Term::path(cn("A"), cn("x"), cn("y"))).unwrap();
+        k
+    }
+
+    /// `const_square a` checks at exactly `Square ty (refl a) (refl a) (refl a)
+    /// (refl a)`, for an abstract/axiomatized `a`.
+    #[test]
+    fn const_square_typechecks() {
+        let mut k = Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("a", 0, cn("A")).unwrap();
+        let a = cn("a");
+        let term = const_square(&a);
+        let expected = square_ty(&cn("A"), &refl(&a), &refl(&a), &refl(&a), &refl(&a));
+        k.check(&term, &expected).unwrap();
+        let ty = k.infer(&term).unwrap();
+        assert!(k.def_eq(&ty, &expected));
+    }
+
+    /// `conn_and`/`conn_or` each check at their documented `Square` types, for a
+    /// genuine (axiomatized, non-`refl`) path `p : Path A a b`.
+    #[test]
+    fn connection_squares_typecheck() {
+        let mut k = Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("a", 0, cn("A")).unwrap();
+        k.add_axiom("b", 0, cn("A")).unwrap();
+        k.add_axiom("p", 0, Term::path(cn("A"), cn("a"), cn("b"))).unwrap();
+        let (a, b, p) = (cn("a"), cn("b"), cn("p"));
+
+        let and_term = conn_and(&cn("A"), &a, &b, &p);
+        let and_expected = square_ty(&cn("A"), &refl(&a), &p, &refl(&a), &p);
+        k.check(&and_term, &and_expected).unwrap();
+
+        let or_term = conn_or(&cn("A"), &a, &b, &p);
+        let or_expected = square_ty(&cn("A"), &p, &refl(&b), &p, &refl(&b));
+        k.check(&or_term, &or_expected).unwrap();
+    }
+
+    /// `nat_sq` checks at exactly the documented naturality-square type `Square B
+    /// (h x) (h y) (ap f p) (ap g p)`, for a fully abstract/axiomatized homotopy
+    /// `h : f ~ g` and path `p : Path A x y` — the keystone lemma HoTT Lemma
+    /// 2.4.3, and the obstruction `crate::equiv_hae`'s `τ'` doc names directly.
+    #[test]
+    fn nat_sq_typechecks_for_an_abstract_homotopy() {
+        let k = nat_sq_env();
+        let term = nat_sq(&cn("A"), &cn("B"), &cn("f"), &cn("g"), &cn("h"), &cn("x"), &cn("p"));
+        let expected = square_ty(
+            &cn("B"),
+            &Term::app(cn("h"), cn("x")),
+            &Term::app(cn("h"), cn("y")),
+            &ap(&cn("f"), &cn("p")),
+            &ap(&cn("g"), &cn("p")),
+        );
+        let ty = k.infer(&term).expect("nat_sq should typecheck");
+        assert!(k.def_eq(&ty, &expected), "nat_sq has type {ty:?}, expected {expected:?}");
+        k.check(&term, &expected).unwrap();
+    }
+
+    /// `nat_sq h x (refl x)` still infers a well-formed type (`J`'s own
+    /// unconditional guarantee — see [`j`]'s soundness doc), instantiated at the
+    /// reflexivity case. At `p = refl x`, `ap f (refl x)`/`ap g (refl x)` are
+    /// individually *known* (by [`ap`]'s own definition) to reduce to `refl (f
+    /// x)`/`refl (g x)`, so this square's boundary degenerates to the constant
+    /// one at the level of what each side computes to — a full literal-term
+    /// `check` against `const_square`'s exact goal type is a further conversion-
+    /// depth question this pass does not chase (nested-application reduction
+    /// under two `PathP`/`Lam` layers is exactly the kind of friction point
+    /// `crate::equiv_hae`'s module doc documents elsewhere for `trans`/`sec_prime`
+    /// — not attempted here to avoid a second undiagnosed conversion gap).
+    #[test]
+    fn nat_sq_on_refl_still_infers_a_type() {
+        let k = nat_sq_env();
+        let term = nat_sq(&cn("A"), &cn("B"), &cn("f"), &cn("g"), &cn("h"), &cn("x"), &refl(&cn("x")));
+        k.infer(&term).expect("nat_sq on refl should still infer a type (J's unconditional guarantee)");
+    }
+
+    /// Dimensionality guard (mirroring `crate::equiv_hae::tests::
+    /// tau_type_is_genuinely_two_dimensional`): `nat_sq`'s inferred type is
+    /// definitionally equal to `square_ty`'s output — a `PathP` whose *own*
+    /// type-family argument is itself a `PathP` — i.e. genuinely a square, not a
+    /// plain 1-path silently accepted at a too-shallow type. (`square_ty`'s own
+    /// construction, checked directly here, is manifestly `PathP`-of-`PathP` by
+    /// inspection; `nat_sq`'s inferred type is confirmed *def-eq* to it, matching
+    /// this module's other soundness tests' discipline of comparing via
+    /// conversion rather than literal `infer`-output matching, since `infer`
+    /// does not itself beta-reduce the motive application.)
+    #[test]
+    fn nat_sq_type_is_genuinely_two_dimensional() {
+        let k = nat_sq_env();
+        let term = nat_sq(&cn("A"), &cn("B"), &cn("f"), &cn("g"), &cn("h"), &cn("x"), &cn("p"));
+        let expected = square_ty(
+            &cn("B"),
+            &Term::app(cn("h"), cn("x")),
+            &Term::app(cn("h"), cn("y")),
+            &ap(&cn("f"), &cn("p")),
+            &ap(&cn("g"), &cn("p")),
+        );
+        // `expected` is manifestly `PathP(PathP(..), _, _)` by construction.
+        match &expected {
+            Term::PathP(family, _, _) => assert!(matches!(family.as_ref(), Term::PathP(..))),
+            _ => unreachable!("square_ty always builds a PathP"),
+        }
+        let ty = k.infer(&term).expect("nat_sq should typecheck");
+        assert!(k.def_eq(&ty, &expected), "nat_sq's type is not def-eq to the genuine square type");
+    }
+
+    /// Adversarial: `nat_sq`'s output must not check against an unrelated
+    /// `Square` goal (e.g. with `left`/`right` swapped) — confirms the square is
+    /// pinned to its exact, documented orientation, not accidentally symmetric.
+    #[test]
+    fn nat_sq_does_not_check_against_a_swapped_square() {
+        let k = nat_sq_env();
+        let term = nat_sq(&cn("A"), &cn("B"), &cn("f"), &cn("g"), &cn("h"), &cn("x"), &cn("p"));
+        // Swap `left`/`right` — a distinct (in general) Square goal.
+        let wrong = square_ty(
+            &cn("B"),
+            &Term::app(cn("h"), cn("x")),
+            &Term::app(cn("h"), cn("y")),
+            &ap(&cn("g"), &cn("p")), // swapped
+            &ap(&cn("f"), &cn("p")), // swapped
+        );
+        let ty = k.infer(&term).unwrap();
+        assert!(!k.def_eq(&ty, &wrong), "nat_sq's square must not also satisfy the swapped orientation");
+        assert!(k.check(&term, &wrong).is_err());
+    }
+
+    /// Adversarial: a bogus 1-dimensional term (`refl` of one side) must not
+    /// check against the genuinely 2-dimensional `Square` goal.
+    #[test]
+    fn bogus_one_path_does_not_satisfy_square_type() {
+        let k = nat_sq_env();
+        let expected = square_ty(
+            &cn("B"),
+            &Term::app(cn("h"), cn("x")),
+            &Term::app(cn("h"), cn("y")),
+            &ap(&cn("f"), &cn("p")),
+            &ap(&cn("g"), &cn("p")),
+        );
+        let bogus = refl(&Term::app(cn("h"), cn("x")));
+        assert!(k.check(&bogus, &expected).is_err());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
