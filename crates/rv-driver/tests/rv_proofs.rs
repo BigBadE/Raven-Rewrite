@@ -37,6 +37,27 @@ fn generic_stdlib() {
     check("stdlib.rv");
 }
 
+/// `plus_comm` and a `mult` algebra (right-identity, right-zero, left-distributivity over
+/// `plus`) extending the verified Nat arithmetic in `nat_induction.rv`/`arith_assoc.rv`.
+#[test]
+fn stdlib_nat() {
+    check("stdlib_nat.rv");
+}
+
+/// `reverse` (with its involution law), `map` fusion, and `map_id` extending the generic
+/// `List<A>` library in `stdlib.rv`.
+#[test]
+fn stdlib_list() {
+    check("stdlib_list.rv");
+}
+
+/// `Option<A>`'s `bind` and its monad laws (left/right identity, associativity), plus the
+/// `map`/`bind` relating laws, extending `stdlib.rv`'s `Option<A>`.
+#[test]
+fn stdlib_option() {
+    check("stdlib_option.rv");
+}
+
 #[test]
 fn decide_reflection() {
     check("decide_demo.rv");

@@ -1,0 +1,62 @@
+// Extending the verified generic `Option<A>` library with `bind` and its monad laws (left
+// identity, right identity, associativity), plus a law relating `bind` and `map`. Proved by
+// case analysis, using `Eq::refl` and `congr_arg` from the standard prelude — matching
+// `stdlib.rv`'s `omap_id` in style. (`rvc --verify`.)
+
+enum Option<A: Type> { None, Some(A) }
+
+fn omap(A: Type, B: Type, f: A -> B, o: Option<A>) -> Option<B> {
+    match o { | Option::None => Option::None(B) | Option::Some(x) => Option::Some(B, f(x)) }
+}
+
+// Monadic bind: sequence an `Option<A>` into a function producing an `Option<B>`.
+fn obind(A: Type, B: Type, o: Option<A>, f: A -> Option<B>) -> Option<B> {
+    match o { | Option::None => Option::None(B) | Option::Some(x) => f(x) }
+}
+
+// LEFT IDENTITY: bind(return(a), f) == f(a). Holds by definitional reduction of `obind` on
+// `Some`, so `Eq::refl` closes it directly — stated as a lemma for documentation/reuse.
+fn obind_left_id(A: Type, B: Type, a: A, f: A -> Option<B>) -> obind(A, B, Option::Some(A, a), f) == f(a) {
+    Eq::refl(Option<B>, f(a))
+}
+
+// RIGHT IDENTITY: bind(o, return) == o, by case analysis on `o`.
+fn obind_right_id(A: Type, o: Option<A>) -> obind(A, A, o, fun (x: A) => Option::Some(A, x)) == o {
+    match o {
+      | Option::None    => Eq::refl(Option<A>, Option::None(A))
+      | Option::Some(x) => Eq::refl(Option<A>, Option::Some(A, x))
+    }
+}
+
+// ASSOCIATIVITY: bind(bind(o, f), g) == bind(o, fun x => bind(f(x), g)), by case analysis
+// on `o` (both sides reduce definitionally to the same term in each branch).
+fn obind_assoc(A: Type, B: Type, C: Type, o: Option<A>, f: A -> Option<B>, g: B -> Option<C>)
+    -> obind(B, C, obind(A, B, o, f), g) == obind(A, C, o, fun (x: A) => obind(B, C, f(x), g))
+{
+    match o {
+      | Option::None    => Eq::refl(Option<C>, Option::None(C))
+      | Option::Some(x) => Eq::refl(Option<C>, obind(B, C, f(x), g))
+    }
+}
+
+// `map` in terms of `bind`: mapping `f` is the same as binding into `x => Some(f(x))`, by
+// case analysis on `o`.
+fn omap_via_obind(A: Type, B: Type, f: A -> B, o: Option<A>)
+    -> omap(A, B, f, o) == obind(A, B, o, fun (x: A) => Option::Some(B, f(x)))
+{
+    match o {
+      | Option::None    => Eq::refl(Option<B>, Option::None(B))
+      | Option::Some(x) => Eq::refl(Option<B>, Option::Some(B, f(x)))
+    }
+}
+
+// `omap` is functorial: mapping `g` after `f` equals mapping their composition once, by case
+// analysis on `o` (the `Option` analogue of `stdlib_list.rv`'s `map_fusion`).
+fn omap_fusion(A: Type, B: Type, C: Type, f: A -> B, g: B -> C, o: Option<A>)
+    -> omap(B, C, g, omap(A, B, f, o)) == omap(A, C, fun (x: A) => g(f(x)), o)
+{
+    match o {
+      | Option::None    => Eq::refl(Option<C>, Option::None(C))
+      | Option::Some(x) => Eq::refl(Option<C>, Option::Some(C, g(f(x))))
+    }
+}

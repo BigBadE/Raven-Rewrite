@@ -1,0 +1,142 @@
+// Extending the verified Nat arithmetic library: commutativity of `plus`, and `mult` with its
+// basic algebraic laws (right-identity, right-zero, and left-distributivity over `plus`),
+// all proved by induction using the `Eq` combinators from the standard prelude
+// (`symm`/`trans`/`congr_arg`). (`rvc --verify`.)
+
+enum Nat { Zero, Succ(Nat) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+
+fn mult(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => Nat::Zero | Nat::Succ(k) => plus(m, mult(k, m)) }
+}
+
+// n + 0 == n, by induction on n.
+fn plus_zero(n: Nat) -> plus(n, Nat::Zero) == n {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(k) => congr_arg(Nat, Nat, Nat::Succ, plus(k, Nat::Zero), k, plus_zero(k))
+    }
+}
+
+// n + (m + 1) == (n + m) + 1, by induction on n. Needed to push a `Succ` through `plus` on the
+// right, which is the missing piece for commutativity.
+fn plus_succ_r(n: Nat, m: Nat) -> plus(n, Nat::Succ(m)) == Nat::Succ(plus(n, m)) {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Succ(m))
+      | Nat::Succ(k) =>
+          congr_arg(Nat, Nat, Nat::Succ, plus(k, Nat::Succ(m)), Nat::Succ(plus(k, m)),
+                    plus_succ_r(k, m))
+    }
+}
+
+// THEOREM: addition commutes, by induction on n using `plus_zero` and `plus_succ_r`.
+fn plus_comm(n: Nat, m: Nat) -> plus(n, m) == plus(m, n) {
+    match n {
+      | Nat::Zero    => symm(Nat, plus(m, Nat::Zero), m, plus_zero(m))
+      | Nat::Succ(k) =>
+          trans(Nat, Nat::Succ(plus(k, m)), Nat::Succ(plus(m, k)), plus(m, Nat::Succ(k)),
+                congr_arg(Nat, Nat, Nat::Succ, plus(k, m), plus(m, k), plus_comm(k, m)),
+                symm(Nat, plus(m, Nat::Succ(k)), Nat::Succ(plus(m, k)), plus_succ_r(m, k)))
+    }
+}
+
+// n * 0 == 0, by induction on n (the `Succ` case reduces `plus(Zero, mult(k, Zero))` to
+// `mult(k, Zero)` definitionally, so the IH closes it directly).
+fn mult_zero_r(n: Nat) -> mult(n, Nat::Zero) == Nat::Zero {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(k) => mult_zero_r(k)
+    }
+}
+
+// Helper: a + (b + c) == b + (a + c) — commuting the first two summands, via `plus_assoc` and
+// `plus_comm`.
+fn plus_assoc(a: Nat, b: Nat, c: Nat) -> plus(plus(a, b), c) == plus(a, plus(b, c)) {
+    match a {
+      | Nat::Zero    => Eq::refl(Nat, plus(b, c))
+      | Nat::Succ(k) =>
+          congr_arg(Nat, Nat, Nat::Succ, plus(plus(k, b), c), plus(k, plus(b, c)),
+                    plus_assoc(k, b, c))
+    }
+}
+
+fn plus_left_swap(a: Nat, b: Nat, c: Nat) -> plus(a, plus(b, c)) == plus(b, plus(a, c)) {
+    trans(Nat, plus(a, plus(b, c)), plus(plus(a, b), c), plus(b, plus(a, c)),
+          symm(Nat, plus(plus(a, b), c), plus(a, plus(b, c)), plus_assoc(a, b, c)),
+          trans(Nat, plus(plus(a, b), c), plus(plus(b, a), c), plus(b, plus(a, c)),
+                congr_arg(Nat, Nat, fun (x: Nat) => plus(x, c), plus(a, b), plus(b, a),
+                          plus_comm(a, b)),
+                plus_assoc(b, a, c)))
+}
+
+// n * (m + 1) == n + n * m, by induction on n. Needed to push a `Succ` through `mult` on the
+// right — the multiplicative analogue of `plus_succ_r`.
+fn mult_succ_r(n: Nat, m: Nat) -> mult(n, Nat::Succ(m)) == plus(n, mult(n, m)) {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(k) =>
+          // Goal (after one unfold on both sides):
+          //   plus(Succ m, mult(k, Succ m)) == Succ(plus(k, plus(m, mult(k, m))))
+          trans(Nat,
+                plus(Nat::Succ(m), mult(k, Nat::Succ(m))),
+                plus(Nat::Succ(m), plus(k, mult(k, m))),
+                Nat::Succ(plus(k, plus(m, mult(k, m)))),
+                congr_arg(Nat, Nat, fun (x: Nat) => plus(Nat::Succ(m), x),
+                          mult(k, Nat::Succ(m)), plus(k, mult(k, m)), mult_succ_r(k, m)),
+                trans(Nat,
+                      plus(Nat::Succ(m), plus(k, mult(k, m))),
+                      Nat::Succ(plus(m, plus(k, mult(k, m)))),
+                      Nat::Succ(plus(k, plus(m, mult(k, m)))),
+                      Eq::refl(Nat, Nat::Succ(plus(m, plus(k, mult(k, m))))),
+                      congr_arg(Nat, Nat, Nat::Succ,
+                                plus(m, plus(k, mult(k, m))), plus(k, plus(m, mult(k, m))),
+                                plus_left_swap(m, k, mult(k, m)))))
+    }
+}
+
+// n * 1 == n, by induction on n (Succ Zero is `1`).
+fn mult_one_r(n: Nat) -> mult(n, Nat::Succ(Nat::Zero)) == n {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(k) =>
+          // mult(Succ k, 1) reduces to plus(1, mult(k, 1)) = Succ(mult(k, 1)).
+          congr_arg(Nat, Nat, Nat::Succ, mult(k, Nat::Succ(Nat::Zero)), k, mult_one_r(k))
+    }
+}
+
+// Helper: (b + c) + (x + y) == (b + x) + (c + y) — reassociating a sum of four summands so the
+// middle pair swaps. Built from `plus_assoc`/`plus_comm`/`plus_left_swap`.
+fn plus_shuffle(b: Nat, c: Nat, x: Nat, y: Nat)
+    -> plus(plus(b, c), plus(x, y)) == plus(plus(b, x), plus(c, y))
+{
+    trans(Nat, plus(plus(b, c), plus(x, y)), plus(b, plus(c, plus(x, y))), plus(plus(b, x), plus(c, y)),
+          plus_assoc(b, c, plus(x, y)),
+          trans(Nat, plus(b, plus(c, plus(x, y))), plus(b, plus(x, plus(c, y))), plus(plus(b, x), plus(c, y)),
+                congr_arg(Nat, Nat, fun (z: Nat) => plus(b, z), plus(c, plus(x, y)), plus(x, plus(c, y)),
+                          plus_left_swap(c, x, y)),
+                symm(Nat, plus(plus(b, x), plus(c, y)), plus(b, plus(x, plus(c, y))),
+                     plus_assoc(b, x, plus(c, y)))))
+}
+
+// THEOREM: `mult` left-distributes over `plus`: a * (b + c) == a * b + a * c, by induction
+// on `a`.
+fn mult_plus_distrib_l(a: Nat, b: Nat, c: Nat)
+    -> mult(a, plus(b, c)) == plus(mult(a, b), mult(a, c))
+{
+    match a {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(k) =>
+          // Goal: plus(plus(b, c), mult(k, plus(b, c))) == plus(plus(b, mult(k, b)), plus(c, mult(k, c)))
+          trans(Nat,
+                plus(plus(b, c), mult(k, plus(b, c))),
+                plus(plus(b, c), plus(mult(k, b), mult(k, c))),
+                plus(plus(b, mult(k, b)), plus(c, mult(k, c))),
+                congr_arg(Nat, Nat, fun (x: Nat) => plus(plus(b, c), x),
+                          mult(k, plus(b, c)), plus(mult(k, b), mult(k, c)),
+                          mult_plus_distrib_l(k, b, c)),
+                plus_shuffle(b, c, mult(k, b), mult(k, c)))
+    }
+}

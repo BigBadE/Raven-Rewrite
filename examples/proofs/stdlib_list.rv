@@ -1,0 +1,115 @@
+// Extending the verified generic `List<A>` library: `reverse` and its involution law, and
+// `map` fusion (mapping two functions in sequence equals mapping their composition once).
+// Proved by induction, using `symm`/`trans`/`congr_arg` from the standard prelude and the
+// `append` lemmas already proved once-and-for-all in `stdlib.rv`. (`rvc --verify`.)
+
+enum List<A: Type> { Nil, Cons(A, List<A>) }
+
+fn append(A: Type, xs: List<A>, ys: List<A>) -> List<A> {
+    match xs {
+      | List::Nil           => ys
+      | List::Cons(x, rest) => List::Cons(A, x, append(A, rest, ys))
+    }
+}
+
+fn map(A: Type, B: Type, f: A -> B, xs: List<A>) -> List<B> {
+    match xs {
+      | List::Nil           => List::Nil(B)
+      | List::Cons(x, rest) => List::Cons(B, f(x), map(A, B, f, rest))
+    }
+}
+
+fn reverse(A: Type, xs: List<A>) -> List<A> {
+    match xs {
+      | List::Nil           => List::Nil(A)
+      | List::Cons(x, rest) => append(A, reverse(A, rest), List::Cons(A, x, List::Nil(A)))
+    }
+}
+
+// `append` is associative — once, for every element type, by induction on the first list.
+// (Reproved locally so this file stands on its own; matches `stdlib.rv`'s `append_assoc`.)
+fn append_assoc(A: Type, xs: List<A>, ys: List<A>, zs: List<A>)
+    -> append(A, append(A, xs, ys), zs) == append(A, xs, append(A, ys, zs))
+{
+    match xs {
+      | List::Nil           => Eq::refl(List<A>, append(A, ys, zs))
+      | List::Cons(x, rest) =>
+          congr_arg(List<A>, List<A>, fun (l: List<A>) => List::Cons(A, x, l),
+                    append(A, append(A, rest, ys), zs), append(A, rest, append(A, ys, zs)),
+                    append_assoc(A, rest, ys, zs))
+    }
+}
+
+// `xs ++ nil == xs`, the right unit law for `append`, by induction on `xs`.
+fn append_nil(A: Type, xs: List<A>) -> append(A, xs, List::Nil(A)) == xs {
+    match xs {
+      | List::Nil           => Eq::refl(List<A>, List::Nil(A))
+      | List::Cons(x, rest) =>
+          congr_arg(List<A>, List<A>, fun (l: List<A>) => List::Cons(A, x, l),
+                    append(A, rest, List::Nil(A)), rest, append_nil(A, rest))
+    }
+}
+
+// `reverse` distributes over `append`, flipping and reversing each half — the key lemma for
+// the involution theorem below, by induction on `xs`.
+fn reverse_append(A: Type, xs: List<A>, ys: List<A>)
+    -> reverse(A, append(A, xs, ys)) == append(A, reverse(A, ys), reverse(A, xs))
+{
+    match xs {
+      | List::Nil           => symm(List<A>, append(A, reverse(A, ys), List::Nil(A)), reverse(A, ys),
+                                     append_nil(A, reverse(A, ys)))
+      | List::Cons(x, rest) =>
+          // Goal: append(reverse(append(rest, ys)), [x]) == append(reverse(ys), append(reverse(rest), [x]))
+          trans(List<A>,
+                append(A, reverse(A, append(A, rest, ys)), List::Cons(A, x, List::Nil(A))),
+                append(A, append(A, reverse(A, ys), reverse(A, rest)), List::Cons(A, x, List::Nil(A))),
+                append(A, reverse(A, ys), append(A, reverse(A, rest), List::Cons(A, x, List::Nil(A)))),
+                congr_arg(List<A>, List<A>,
+                          fun (l: List<A>) => append(A, l, List::Cons(A, x, List::Nil(A))),
+                          reverse(A, append(A, rest, ys)), append(A, reverse(A, ys), reverse(A, rest)),
+                          reverse_append(A, rest, ys)),
+                append_assoc(A, reverse(A, ys), reverse(A, rest), List::Cons(A, x, List::Nil(A))))
+    }
+}
+
+// THEOREM: `reverse` is an involution: reversing a list twice gives the list back, by
+// induction on `xs` using `reverse_append`.
+fn reverse_reverse(A: Type, xs: List<A>) -> reverse(A, reverse(A, xs)) == xs {
+    match xs {
+      | List::Nil           => Eq::refl(List<A>, List::Nil(A))
+      | List::Cons(x, rest) =>
+          // Goal: reverse(append(reverse(rest), [x])) == Cons(x, rest)
+          trans(List<A>,
+                reverse(A, append(A, reverse(A, rest), List::Cons(A, x, List::Nil(A)))),
+                append(A, reverse(A, List::Cons(A, x, List::Nil(A))), reverse(A, reverse(A, rest))),
+                List::Cons(A, x, rest),
+                reverse_append(A, reverse(A, rest), List::Cons(A, x, List::Nil(A))),
+                congr_arg(List<A>, List<A>, fun (l: List<A>) => List::Cons(A, x, l),
+                          reverse(A, reverse(A, rest)), rest, reverse_reverse(A, rest)))
+    }
+}
+
+// THEOREM: `map` fusion — mapping `f` then `g` equals mapping their composition once, by
+// induction on `xs`.
+fn map_fusion(A: Type, B: Type, C: Type, f: A -> B, g: B -> C, xs: List<A>)
+    -> map(B, C, g, map(A, B, f, xs)) == map(A, C, fun (x: A) => g(f(x)), xs)
+{
+    match xs {
+      | List::Nil           => Eq::refl(List<C>, List::Nil(C))
+      | List::Cons(x, rest) =>
+          congr_arg(List<C>, List<C>, fun (l: List<C>) => List::Cons(C, g(f(x)), l),
+                    map(B, C, g, map(A, B, f, rest)), map(A, C, fun (y: A) => g(f(y)), rest),
+                    map_fusion(A, B, C, f, g, rest))
+    }
+}
+
+// `map id == id` on lists, by induction on `xs` (the pointwise analogue of `omap_id` in
+// `stdlib.rv`, lifted to lists).
+fn map_id(A: Type, xs: List<A>) -> map(A, A, fun (x: A) => x, xs) == xs {
+    match xs {
+      | List::Nil           => Eq::refl(List<A>, List::Nil(A))
+      | List::Cons(x, rest) =>
+          congr_arg(List<A>, List<A>, fun (l: List<A>) => List::Cons(A, x, l),
+                    map(A, A, fun (y: A) => y, rest), rest, map_id(A, rest))
+    }
+}
