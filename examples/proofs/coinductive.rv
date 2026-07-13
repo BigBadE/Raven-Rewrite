@@ -1,0 +1,69 @@
+// A worked example exercising the sound coinductive (`codata`) `Stream` primitive
+// (`Stream`, `Stream.head`, `Stream.tail`, `Stream.corec`) from surface `.rv` syntax.
+//
+// `Stream A` and its destructors/corecursor are installed once into every kernel
+// session (see `rv-driver`'s `verify_rv`/`vm_eval`/`nbe_eval`, which call
+// `KernelExt::declare_coinductive(rv_kernel::coinductive::stream_spec())`), so they
+// are usable by their dotted names directly — no declaration needed in this file.
+//
+// `Stream.corec` is the *only* way to build a `Stream`: an ordinary application of a
+// by-name-callable constant, so no new surface syntax is needed for corecursion.
+//   Stream.corec : Π (A : Type) (X : Type) (h : X -> A) (t : X -> X) (seed : X), Stream A
+// with the ν-rules (definitional, checked by the kernel's reducer/NbE):
+//   Stream.head A (Stream.corec A X h t s)  ↝  h s
+//   Stream.tail A (Stream.corec A X h t s)  ↝  Stream.corec A X h t (t s)
+//
+// (Observations are named via `def`s first, then compared in a `fn`'s return type —
+// a dotted call such as `Stream.head(...)` isn't yet supported as the *head* of a
+// `fn`'s return-type expression, only in value position; naming it first sidesteps
+// that surface-grammar gap without touching `rv-syntax`.)
+
+enum Nat { Zero, Succ(Nat) }
+
+// `repeat n` — the constant stream `n, n, n, …`: carrier `X = Nat`, head-step is the
+// identity, tail-step is also the identity (so the state never advances).
+def repeat(n: Nat) : Stream(Nat) :=
+    Stream.corec(Nat, Nat, fun (x: Nat) => x, fun (x: Nat) => x, n)
+
+// `nats` — the stream `0, 1, 2, …`: carrier `X = Nat`, head-step is the identity,
+// tail-step is `Nat::Succ`.
+def nats() : Stream(Nat) :=
+    Stream.corec(Nat, Nat, fun (x: Nat) => x, fun (x: Nat) => Nat::Succ(x), Nat::Zero)
+
+def seven() : Nat := Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(Nat::Succ(Nat::Zero)))))))
+def one() : Nat := Nat::Succ(Nat::Zero)
+def two() : Nat := Nat::Succ(Nat::Succ(Nat::Zero))
+
+// The observations, named so a `fn`'s return type can compare them by an ordinary
+// (non-dotted) head.
+def repeat7_head() : Nat := Stream.head(Nat, repeat(seven()))
+def repeat7_tail_tail_head() : Nat := Stream.head(Nat, Stream.tail(Nat, Stream.tail(Nat, repeat(seven()))))
+def nats_at_0() : Nat := Stream.head(Nat, nats())
+def nats_at_1() : Nat := Stream.head(Nat, Stream.tail(Nat, nats()))
+def nats_at_2() : Nat := Stream.head(Nat, Stream.tail(Nat, Stream.tail(Nat, nats())))
+
+// `head (repeat 7) = 7`, definitionally — the ν-rule on `Stream.head` fires through
+// `Stream.corec` without any further reasoning.
+fn repeat_head() -> repeat7_head() == seven() {
+    Eq::refl(Nat, seven())
+}
+
+// `head (tail (tail (repeat 7))) = 7` — observing through several `tail`s of a
+// constant stream still yields the seed, definitionally.
+fn repeat_tail_tail_head() -> repeat7_tail_tail_head() == seven() {
+    Eq::refl(Nat, seven())
+}
+
+// `nats` counts up: `nats[0] = 0`, `nats[1] = 1`, `nats[2] = 2`, each observation
+// firing the ν-rule (`head` composed with a chain of `tail`s) definitionally.
+fn nats_0() -> nats_at_0() == Nat::Zero {
+    Eq::refl(Nat, Nat::Zero)
+}
+
+fn nats_1() -> nats_at_1() == one() {
+    Eq::refl(Nat, one())
+}
+
+fn nats_2() -> nats_at_2() == two() {
+    Eq::refl(Nat, two())
+}

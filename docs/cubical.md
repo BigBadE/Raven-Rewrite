@@ -330,3 +330,51 @@ record in `kan.rs`'s own comments for the next pass to pick up.
   to `e.f a`; nothing in this pass touched `kan.rs`'s Phase 3.12–3.14
   obstruction (needs `IsHAE`'s coherence field threaded into a generic
   `hcomp_glue_rule`, not just `Equiv`'s bi-invertibility).
+- User-declared `codata` (arbitrary coinductive families from `.rv` source) —
+  see §8: only the fixed `Stream` coinductive is installed into the prelude;
+  there is no surface `codata` declaration form yet, so a user cannot define
+  their own coinductive from `.rv` (only via [`rv_kernel_core::coinductive`]
+  at the Rust level, as `KernelExt::declare_coinductive` does for `Stream`).
+
+## 8. Coinductive types (`crates/rv-kernel-core/src/coinductive.rs`)
+
+[`rv_kernel_core::coinductive`] gives a sound destructor/corecursor
+presentation of coinductive ("codata") types — greatest fixpoints, the dual of
+`rv_kernel::generate`'s inductive recursors. See that module's doc comment for
+the full soundness/productivity argument (in short: the *only* way to build an
+inhabitant is the generated corecursor `S.corec`, which always produces
+exactly one observation layer and places any recursive occurrence back under a
+fresh corecursor — so guardedness holds by construction, with nothing left for
+a guardedness checker to reject).
+
+**Surfaced to `.rv`** (this pass): every kernel session (`verify_rv`/
+`vm_eval`/`nbe_eval` in `rv-driver`) now installs a `Stream` coinductive via
+`KernelExt::declare_coinductive(rv_kernel::coinductive::stream_spec())`,
+alongside the existing `Quot`/`Trunc`/cubical HIT installers. `Stream`'s
+destructors and corecursor are ordinary by-name-callable constants —
+`Stream`, `Stream.head`, `Stream.tail`, `Stream.corec` — resolved through the
+same dotted-name mechanism `Quot.mk`/`Trunc.tr`/`S1c.rec` already use (a
+`recv.method(args)` surface call whose `recv` is a bare global name is looked
+up as the single constant `"recv.method"`), so **no new surface syntax was
+needed** for corecursion: it is just an application of `Stream.corec`.
+
+```text
+Stream.corec : Π (A : Type) (X : Type) (h : X -> A) (t : X -> X) (seed : X), Stream A
+Stream.head A (Stream.corec A X h t s)  ↝  h s                                  -- ν-rule
+Stream.tail A (Stream.corec A X h t s)  ↝  Stream.corec A X h t (t s)           -- ν-rule
+```
+
+See `examples/proofs/coinductive.rv` for a worked example: `repeat`/`nats`
+built via `Stream.corec`, with `Stream.head`/`Stream.tail` observations
+checked to compute definitionally (`Eq::refl`) through several layers of
+`Stream.tail`. One surface-grammar gap was found and *routed around* rather
+than fixed in `rv-syntax`: a dotted call (`Stream.head(...)`) is not yet
+accepted as the head of a `fn`'s return-type expression (only in value
+position), so the example names each observation with a `def` first and
+compares those names in the `fn` signature.
+
+A general `codata` **declaration** form (letting `.rv` source define its own
+coinductive families, mirroring `enum` on the inductive side) is not present —
+`declare_coinductive`/`CoindSpec` are called only from Rust (here, once, for
+the fixed `stream_spec()`). Adding that is future work; see the "What's not
+covered" list above.
