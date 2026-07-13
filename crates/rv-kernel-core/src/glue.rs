@@ -473,4 +473,234 @@ mod tests {
         assert!(matches!(r.whnf(&term), Term::PLam(_)));
         assert_eq!(nbe.normalize(&term), r.whnf(&nbe.normalize(&term)));
     }
+
+    // ---- `glue` (the `Term::GlueIntro` introduction form) ----
+    //
+    // Every positive/negative *checking* test below uses an **undecided** face
+    // (a bound interval variable, `Cof::eq0(Var(0))`), not a literal `⊤`: a
+    // `Glue` type whose face is already decided `⊤`/`⊥` collapses (by `Glue`'s
+    // own strictness — see `Term::Glue`'s doc) to plain `T`/`A` *before*
+    // `check_glue_intro` ever sees a `Term::Glue` to check against, so `glue`'s
+    // *checking* rule is only exercised on a genuinely open `Glue` type — its
+    // reduction rules (`glue_intro_top_strictness`/`glue_intro_bot_strictness`
+    // below), by contrast, are tested directly on the raw term (no `check`
+    // needed) precisely *because* they fire once a face **is** decided.
+
+    /// The positive case: `glue [(i=0) ↦ Nat.zero] Nat.zero` checks against
+    /// `Glue Nat [(i=0) ↦ (Nat, idEquiv Nat)]` — the agreement condition
+    /// `Equiv.f Nat Nat (idEquiv Nat) Nat.zero ≡ Nat.zero` holds since
+    /// `idEquiv`'s `f` is literally the identity.
+    #[test]
+    fn glue_intro_top_typechecks() {
+        let env = env_with_nat_equiv();
+        let chk = Checker::new(&env);
+        let zero = Term::cnst(name("Nat.zero"), vec![]);
+        let phi = Cof::eq0(Term::Var(0));
+        let g = Term::glue_intro(vec![(phi.clone(), zero.clone().lift(1, 0))], zero.clone().lift(1, 0));
+        let gty = Term::glue_ty(nat().lift(1, 0), phi, nat().lift(1, 0), id_equiv_nat().lift(1, 0));
+        let mut ctx = LocalCtx::new();
+        ctx.push(Term::I);
+        chk.check(&mut ctx, &g, &gty).expect("glue [(i=0)↦0] 0 : Glue Nat [(i=0)↦(Nat,idEquiv)] should check");
+    }
+
+    /// **Soundness-critical, adversarial**: the agreement condition is genuinely
+    /// enforced — `glue [(i=0) ↦ Nat.zero] Nat.one` (base disagrees with the
+    /// branch under `Equiv.f`) must be REJECTED, not silently accepted. Without
+    /// this check, `glue` could smuggle a `Glue`-typed value whose `unglue`
+    /// disagrees with what the type claims.
+    #[test]
+    fn glue_intro_rejects_disagreement_between_branch_and_base() {
+        let env = env_with_nat_equiv();
+        let chk = Checker::new(&env);
+        let zero = Term::cnst(name("Nat.zero"), vec![]);
+        let one = Term::app(Term::cnst(name("Nat.succ"), vec![]), zero.clone());
+        let phi = Cof::eq0(Term::Var(0));
+        // t=0, a=1: disagree.
+        let g = Term::glue_intro(vec![(phi.clone(), zero.lift(1, 0))], one.lift(1, 0));
+        let gty = Term::glue_ty(nat().lift(1, 0), phi, nat().lift(1, 0), id_equiv_nat().lift(1, 0));
+        let mut ctx = LocalCtx::new();
+        ctx.push(Term::I);
+        let err = chk.check(&mut ctx, &g, &gty).unwrap_err();
+        assert!(err.contains("agree"), "got: {err}");
+    }
+
+    /// **Adversarial**: `glue [φ ↦ t]` checked against a `Glue` type with a
+    /// *different number* of branches must be rejected outright (a shape
+    /// mismatch, not silently zip-truncated).
+    #[test]
+    fn glue_intro_rejects_branch_count_mismatch() {
+        let env = env_with_nat_equiv();
+        let chk = Checker::new(&env);
+        let zero = Term::cnst(name("Nat.zero"), vec![]);
+        let i = Term::Var(0);
+        let j = Term::Var(1);
+        let g = Term::glue_intro(vec![(Cof::eq0(i.clone()), zero.clone().lift(2, 0))], zero.lift(2, 0));
+        // A 2-branch Glue type (disjoint faces, both branches trivially compatible).
+        let gty = Term::glue_ty_multi(
+            nat().lift(2, 0),
+            vec![
+                (Cof::eq0(i), nat().lift(2, 0), id_equiv_nat().lift(2, 0)),
+                (Cof::eq0(j), nat().lift(2, 0), id_equiv_nat().lift(2, 0)),
+            ],
+        );
+        let mut ctx = LocalCtx::new();
+        ctx.push(Term::I);
+        ctx.push(Term::I);
+        let err = chk.check(&mut ctx, &g, &gty).unwrap_err();
+        assert!(err.contains("branch count"), "got: {err}");
+    }
+
+    /// **Adversarial**: the `glue` term's own branches must be mutually
+    /// compatible on their overlaps, exactly like `Glue`'s own `(T,e)` pairs —
+    /// two branches whose Glue-type guards are both `(i=0)` (so their overlap
+    /// is unconditionally `(i=0)`, itself undecided but still satisfiable) yet
+    /// whose `glue` payloads disagree (`Nat.zero` vs `Nat.succ Nat.zero`) must
+    /// be rejected.
+    #[test]
+    fn glue_intro_rejects_incompatible_own_branches() {
+        let env = env_with_nat_equiv();
+        let chk = Checker::new(&env);
+        let zero = Term::cnst(name("Nat.zero"), vec![]);
+        let one = Term::app(Term::cnst(name("Nat.succ"), vec![]), zero.clone());
+        let phi = Cof::eq0(Term::Var(0));
+        // A 2-branch Glue type where both branches share the same guard `(i=0)`
+        // (compatible: identical T/e).
+        let gty = Term::glue_ty_multi(
+            nat().lift(1, 0),
+            vec![
+                (phi.clone(), nat().lift(1, 0), id_equiv_nat().lift(1, 0)),
+                (phi.clone(), nat().lift(1, 0), id_equiv_nat().lift(1, 0)),
+            ],
+        );
+        let g = Term::glue_intro(
+            vec![(phi.clone(), zero.clone().lift(1, 0)), (phi, one.lift(1, 0))],
+            zero.lift(1, 0),
+        );
+        let mut ctx = LocalCtx::new();
+        ctx.push(Term::I);
+        let err = chk.check(&mut ctx, &g, &gty).unwrap_err();
+        assert!(err.contains("incompatible"), "got: {err}");
+    }
+
+    /// **β**: `unglue A […] (glue […] a) ↦ a` — the defining computation rule
+    /// connecting `glue`/`unglue`, checked both by the trusted [`Reducer`] and
+    /// independently by [`Nbe`] (differentially, this crate's standing
+    /// convention).
+    #[test]
+    fn glue_unglue_beta() {
+        let env = env_with_nat_equiv();
+        let zero = Term::cnst(name("Nat.zero"), vec![]);
+        let branches_ty = vec![(Cof::top(), nat(), id_equiv_nat())];
+        let g = Term::glue_intro(vec![(Cof::top(), zero.clone())], zero.clone());
+        let u = Term::unglue(nat(), branches_ty, g);
+
+        let r = Reducer::new(&env);
+        assert!(r.is_def_eq(&u, &zero), "unglue (glue [⊤↦0] 0) should reduce to 0");
+
+        let nbe = Nbe::new(&env);
+        assert_eq!(nbe.normalize(&u), nbe.normalize(&zero));
+    }
+
+    /// **β holds regardless of the face's decidedness**: even when the branch
+    /// guard is *undecided* (a free interval variable), `unglue (glue […] a)`
+    /// still β-reduces straight to `a` — this is the introduction/elimination
+    /// computation rule, independent of `Glue`'s own `⊤`/`⊥` strictness.
+    #[test]
+    fn glue_unglue_beta_holds_under_an_undecided_face() {
+        let env = env_with_nat_equiv();
+        let zero = Term::cnst(name("Nat.zero"), vec![]);
+        let phi = Cof::eq0(Term::Var(0)); // undecided under a bound interval var
+        let branches_ty = vec![(phi.clone(), nat().lift(1, 0), id_equiv_nat().lift(1, 0))];
+        let g = Term::glue_intro(vec![(phi, zero.clone().lift(1, 0))], zero.clone().lift(1, 0));
+        let u = Term::unglue(nat().lift(1, 0), branches_ty, g);
+
+        let r = Reducer::new(&env);
+        assert!(r.is_def_eq(&u, &zero.lift(1, 0)));
+        let nbe = Nbe::new(&env);
+        assert_eq!(nbe.normalize_open(1, &u), nbe.normalize_open(1, &zero.lift(1, 0)));
+    }
+
+    /// **`glue`'s `⊤`-strictness**: `glue […, ⊤ ↦ t, …] a` reduces straight to
+    /// `t` once its face is decided `⊤` — mirrors `Glue`'s own strictness law.
+    /// Checked by both the reducer and NbE.
+    #[test]
+    fn glue_intro_top_strictness() {
+        let env = env_with_nat_equiv();
+        let zero = Term::cnst(name("Nat.zero"), vec![]);
+        let one = Term::app(Term::cnst(name("Nat.succ"), vec![]), zero.clone());
+        // `a` is deliberately a *different* value (`one`) from the ⊤ branch's `t`
+        // (`zero`), so the test distinguishes "reduces to t" from "reduces to a".
+        let g = Term::glue_intro(vec![(Cof::top(), zero.clone())], one);
+
+        let r = Reducer::new(&env);
+        assert!(r.is_def_eq(&g, &zero), "glue [⊤↦0] 1 should reduce to 0 (the ⊤ branch)");
+
+        let nbe = Nbe::new(&env);
+        assert_eq!(nbe.normalize(&g), nbe.normalize(&zero));
+    }
+
+    /// **`glue`'s `⊥`-strictness**: with no branch at all (`φ = ⊥`), `glue [⊥↦t]
+    /// a` degenerates to plain `a` — checked by both the reducer and NbE.
+    #[test]
+    fn glue_intro_bot_strictness() {
+        let env = env_with_nat_equiv();
+        let zero = Term::cnst(name("Nat.zero"), vec![]);
+        let one = Term::app(Term::cnst(name("Nat.succ"), vec![]), zero.clone());
+        let g = Term::glue_intro(vec![(Cof::bot(), one)], zero.clone());
+
+        let r = Reducer::new(&env);
+        assert!(r.is_def_eq(&g, &zero), "glue [⊥↦1] 0 should reduce to 0 (the base a)");
+
+        let nbe = Nbe::new(&env);
+        assert_eq!(nbe.normalize(&g), nbe.normalize(&zero));
+    }
+
+    /// A genuinely **stuck** `glue [φ↦t] a` (`φ` an undecided free interval
+    /// variable) type-checks against its `Glue` type and stays stuck at both the
+    /// reducer's `whnf` and under NbE's `quote` — a valid normal form, not
+    /// silently collapsed to `t` or `a`.
+    #[test]
+    fn glue_intro_open_phi_stays_stuck_and_typechecks() {
+        let env = env_with_nat_equiv();
+        let chk = Checker::new(&env);
+        let zero = Term::cnst(name("Nat.zero"), vec![]);
+        let phi = Cof::eq0(Term::Var(0));
+        let gty = Term::glue_ty(nat().lift(1, 0), phi.clone(), nat().lift(1, 0), id_equiv_nat().lift(1, 0));
+        let g = Term::glue_intro(vec![(phi, zero.clone().lift(1, 0))], zero.lift(1, 0));
+
+        let mut ctx = LocalCtx::new();
+        ctx.push(Term::I);
+        chk.check(&mut ctx, &g, &gty).expect("glue [(i=0)↦0] 0 : Glue Nat [(i=0)↦(Nat,idEquiv)] should check");
+
+        let r = Reducer::new(&env);
+        assert!(matches!(r.whnf(&g), Term::GlueIntro(..)), "an undecided glue should stay stuck at whnf");
+
+        // Differential: NbE's own quoted normal form is likewise a `GlueIntro`
+        // (not silently reduced away), and the reducer agrees on the normal form.
+        let nbe = Nbe::new(&env);
+        let nf = nbe.normalize_open(1, &g);
+        assert!(matches!(nf, Term::GlueIntro(..)));
+        assert_eq!(nf, r.whnf(&g));
+    }
+
+    /// **Anti-`False`**: `glue` still cannot be used to manufacture a false
+    /// equation between distinct closed naturals. Even though `glue [⊤↦0] 0 :
+    /// Glue Nat [⊤↦(Nat,idEquiv Nat)]` is genuinely inhabited (that type ≡ `Nat`
+    /// by strictness), nothing about adding the `glue` introduction form makes
+    /// `Nat.zero` and `Nat.succ Nat.zero` equal.
+    #[test]
+    fn glue_intro_cannot_prove_false_nat_equation() {
+        let env = env_with_nat_equiv();
+        let chk = Checker::new(&env);
+        let zero = Term::cnst(name("Nat.zero"), vec![]);
+        let one = Term::app(Term::cnst(name("Nat.succ"), vec![]), zero.clone());
+        let phi = Cof::eq0(Term::Var(0));
+        let g = Term::glue_intro(vec![(phi.clone(), zero.clone().lift(1, 0))], zero.clone().lift(1, 0));
+        let gty = Term::glue_ty(nat().lift(1, 0), phi, nat().lift(1, 0), id_equiv_nat().lift(1, 0));
+        let mut ctx = LocalCtx::new();
+        ctx.push(Term::I);
+        chk.check(&mut ctx, &g, &gty).expect("glue [(i=0)↦0] 0 should check");
+        let r = Reducer::new(&env);
+        assert!(!r.is_def_eq(&zero, &one), "glue must not equate distinct naturals");
+    }
 }

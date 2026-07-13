@@ -59,6 +59,7 @@ pub fn occurs(n: &str, t: &Term) -> bool {
         Term::Unglue(a, branches, u) => {
             occurs(n, a) || branches.iter().any(|(_, t2, e)| occurs(n, t2) || occurs(n, e)) || occurs(n, u)
         }
+        Term::GlueIntro(branches, a) => occurs(n, a) || branches.iter().any(|(_, t2)| occurs(n, t2)),
     }
 }
 

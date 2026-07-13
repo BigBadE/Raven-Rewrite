@@ -223,6 +223,13 @@ impl Metas {
                     .collect::<Result<_, String>>()?;
                 Ok(Term::unglue(self.zonk(a)?, branches, self.zonk(u)?))
             }
+            Term::GlueIntro(branches, a) => {
+                let branches = branches
+                    .iter()
+                    .map(|(p, t)| Ok((std::rc::Rc::new(self.zonk_cof(p)?), std::rc::Rc::new(self.zonk(t)?))))
+                    .collect::<Result<_, String>>()?;
+                Ok(Term::GlueIntro(std::rc::Rc::new(branches), std::rc::Rc::new(self.zonk(a)?)))
+            }
         }
     }
 
@@ -598,6 +605,13 @@ fn invert(meta: u32, image: &[usize], t: &Term, depth: usize) -> Result<Term, St
                 .collect::<Result<_, String>>()?;
             Ok(Term::unglue(invert(meta, image, a, depth)?, branches, invert(meta, image, u, depth)?))
         }
+        Term::GlueIntro(branches, a) => {
+            let branches = branches
+                .iter()
+                .map(|(p, t2)| Ok(((**p).clone(), invert(meta, image, t2, depth)?)))
+                .collect::<Result<_, String>>()?;
+            Ok(Term::glue_intro(branches, invert(meta, image, a, depth)?))
+        }
     }
 }
 
@@ -640,6 +654,9 @@ fn occurs(m: u32, t: &Term) -> bool {
         Term::Glue(a, branches) => occurs(m, a) || branches.iter().any(|(_, t, e)| occurs(m, t) || occurs(m, e)),
         Term::Unglue(a, branches, u) => {
             occurs(m, a) || branches.iter().any(|(_, t, e)| occurs(m, t) || occurs(m, e)) || occurs(m, u)
+        }
+        Term::GlueIntro(branches, a) => {
+            occurs(m, a) || branches.iter().any(|(_, t)| occurs(m, t))
         }
     }
 }

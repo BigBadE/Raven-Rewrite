@@ -274,6 +274,9 @@ fn occurs_const(t: &Term, id: &Name) -> bool {
                 || branches.iter().any(|(_, t2, e)| occurs_const(t2, id) || occurs_const(e, id))
                 || occurs_const(u, id)
         }
+        Term::GlueIntro(branches, a) => {
+            occurs_const(a, id) || branches.iter().any(|(_, t2)| occurs_const(t2, id))
+        }
     }
 }
 
