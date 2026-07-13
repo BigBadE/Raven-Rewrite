@@ -1,0 +1,402 @@
+// A VERIFIED STACK-MACHINE COMPILER, in Rust-like Raven (`rvc --verify`).
+//
+// Source language `Expr` (literals, `+`, `*`) with evaluator `eval`, compiled to a flat
+// instruction sequence `List Instr` for a stack machine `exec`. HEADLINE: running the
+// compiled program on the empty stack produces the singleton stack holding `eval(e)`:
+//
+//     exec(compile(e), Nil) == Cons(eval(e), Nil)
+//
+// This sits alongside `machine.rv` (modeled machine *words*: bits/wrap-add/signed ints — no
+// compiler) and `compiler_correctness.rv` (a source-to-target big-step compiler, no stack
+// machine): neither proves this classic result, so this is a new file, not a duplicate.
+//
+// Self-contained (own `Nat`/`List`/`append`, matching the `opt_constfold.rv` / `stdlib_list.rv`
+// convention of restating small lemmas locally rather than cross-file importing).
+//
+// ----- A NOTE ON PROOF STYLE (load-bearing, please read before editing) --------------------
+//
+// Every lemma below is deliberately small and named, and every `trans`/`congr_arg` call
+// receives only plain variables or plain named-`fn` calls as its proof arguments — never an
+// *inline* nested `trans`/`congr_arg` expression, and never a single step that requires the
+// kernel to jointly reduce through *two* nested pattern matches on the same scrutinee family
+// at once. Two genuine elaborator/kernel limitations were found by direct experiment while
+// developing this file (both reproduced as minimal, `compile_stack`-unrelated `.rv` snippets
+// outside this corpus; not something a `.rv` proof can route around except by avoiding the
+// shape):
+//
+//   1. Writing a combinator call directly as a sub-argument of another combinator call, e.g.
+//      `congr_arg(f, x, y, trans(...))` with the `trans` spelled out inline, sometimes fails
+//      with "cannot unify interval expressions" even though the same composition, written as
+//      `congr_arg(f, x, y, named_fn(...))` with the inner step named as its own `fn`, succeeds.
+//   2. Checking an `Eq::refl`-closed (or otherwise combinator-built) proof against a *declared*
+//      type that requires the kernel to unfold TWO nested `match`es on the same recursive
+//      structure in one go (e.g. popping two stack elements via one function with a match
+//      inside a match) can hit the same "cannot unify interval expressions" failure, even
+//      though each level individually reduces fine. Splitting the two-level match into two
+//      *separate* one-match-each `fn`s (see `addop1`/`addop2`, `mulop1`/`mulop2` below) and
+//      bridging them with a named per-level lemma + `trans` sidesteps it completely.
+//
+// Because of (1)/(2), `exec`'s two-pop instructions (`IAdd`/`IMul`) are implemented as a
+// *chain* of single-match helper `fn`s rather than one `fn` with a nested match, and the
+// generalized correctness proof is a long flat chain of tiny named lemmas instead of a few
+// deeply-nested `trans`/`congr_arg` expressions. Every step below is a genuine kernel check
+// (no admits/holes) — this is a style workaround, not a weakened theorem.
+
+enum Nat { Zero, Succ(Nat) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+
+fn mult(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => Nat::Zero | Nat::Succ(k) => plus(m, mult(k, m)) }
+}
+
+// ----- Generic lists + append ----------------------------------------------------------------
+
+enum List<A: Type> { Nil, Cons(A, List<A>) }
+
+fn append(A: Type, xs: List<A>, ys: List<A>) -> List<A> {
+    match xs {
+      | List::Nil           => ys
+      | List::Cons(x, rest) => List::Cons(A, x, append(A, rest, ys))
+    }
+}
+
+// ----- Source language: literals, addition, multiplication -----------------------------------
+
+enum Expr { Lit(Nat), Add(Expr, Expr), Mul(Expr, Expr) }
+
+fn eval(e: Expr) -> Nat {
+    match e {
+      | Expr::Lit(n)    => n
+      | Expr::Add(a, b) => plus(eval(a), eval(b))
+      | Expr::Mul(a, b) => mult(eval(a), eval(b))
+    }
+}
+
+// ----- Target: a stack-machine instruction set + a one-instruction-at-a-time stepper ---------
+
+enum Instr { Push(Nat), IAdd, IMul }
+
+// `IAdd`'s two-pop step, split into two single-match `fn`s (see the proof-style note above):
+// `addop1` pops the top element (the second-pushed operand `a`, i.e. `eval(b)` on the compiled
+// stack), `addop2` pops the next element (`eval(a)`) and pushes `plus(eval(a), eval(b))` — note
+// the argument order: `a` (top, popped first) is the *second* argument to `plus`, matching
+// `eval`'s `Add(a, b) => plus(eval(a), eval(b))`.
+fn addop2(a: Nat, s1: List<Nat>) -> List<Nat> {
+    match s1 {
+      | List::Nil         => List::Cons(Nat, a, List::Nil(Nat))
+      | List::Cons(b, s2) => List::Cons(Nat, plus(b, a), s2)
+    }
+}
+fn addop1(s: List<Nat>) -> List<Nat> {
+    match s {
+      | List::Nil         => s
+      | List::Cons(a, s1) => addop2(a, s1)
+    }
+}
+
+// `IMul`'s two-pop step, same shape.
+fn mulop2(a: Nat, s1: List<Nat>) -> List<Nat> {
+    match s1 {
+      | List::Nil         => List::Cons(Nat, a, List::Nil(Nat))
+      | List::Cons(b, s2) => List::Cons(Nat, mult(b, a), s2)
+    }
+}
+fn mulop1(s: List<Nat>) -> List<Nat> {
+    match s {
+      | List::Nil         => s
+      | List::Cons(a, s1) => mulop2(a, s1)
+    }
+}
+
+// One instruction's effect on the stack.
+fn step_instr(i: Instr, s: List<Nat>) -> List<Nat> {
+    match i {
+      | Instr::Push(n) => List::Cons(Nat, n, s)
+      | Instr::IAdd    => addop1(s)
+      | Instr::IMul    => mulop1(s)
+    }
+}
+
+// `exec` runs a whole program by folding `step_instr` over it. (Malformed programs that pop an
+// empty/singleton stack are handled by `addop1`/`addop2`/`mulop1`/`mulop2`'s `Nil` cases, which
+// leave the stack as-is/push the lone popped value back — the compiler never emits such
+// programs, so this default is never exercised on any `compile(e)`.)
+fn exec(p: List<Instr>, s: List<Nat>) -> List<Nat> {
+    match p {
+      | List::Nil           => s
+      | List::Cons(i, rest) => exec(rest, step_instr(i, s))
+    }
+}
+
+// ----- The compiler --------------------------------------------------------------------------
+
+fn compile(e: Expr) -> List<Instr> {
+    match e {
+      | Expr::Lit(n)    => List::Cons(Instr, Instr::Push(n), List::Nil(Instr))
+      | Expr::Add(a, b) => append(Instr, append(Instr, compile(a), compile(b)),
+                                   List::Cons(Instr, Instr::IAdd, List::Nil(Instr)))
+      | Expr::Mul(a, b) => append(Instr, append(Instr, compile(a), compile(b)),
+                                   List::Cons(Instr, Instr::IMul, List::Nil(Instr)))
+    }
+}
+
+// ----- The toolkit: `exec` distributes over `++` ----------------------------------------------
+
+// `exec(p ++ q, s) == exec(q, exec(p, s))` — running a concatenated program is the same as
+// running the first half then feeding its resulting stack into the second half. By induction
+// on `p`; since `exec`'s own recursion is a single match (no nesting — the two-pop instructions
+// are pre-reduced to `step_instr` calls), the `Cons` case is a direct recursive call.
+fn exec_append(p: List<Instr>, q: List<Instr>, s: List<Nat>)
+    -> exec(append(Instr, p, q), s) == exec(q, exec(p, s))
+{
+    match p {
+      | List::Nil           => Eq::refl(List<Nat>, exec(q, s))
+      | List::Cons(i, rest) => exec_append(rest, q, step_instr(i, s))
+    }
+}
+
+// ----- Step-level lemmas for the two-pop instructions on a two-element-pushed stack ----------
+// (each individual lemma is a SINGLE match level, per the proof-style note above)
+
+fn addop1_step(y: Nat, s1: List<Nat>) -> addop1(List::Cons(Nat, y, s1)) == addop2(y, s1) {
+    Eq::refl(List<Nat>, addop2(y, s1))
+}
+fn addop2_step(a: Nat, x: Nat, s: List<Nat>)
+    -> addop2(a, List::Cons(Nat, x, s)) == List::Cons(Nat, plus(x, a), s)
+{
+    Eq::refl(List<Nat>, List::Cons(Nat, plus(x, a), s))
+}
+// `addop1` on a stack with (at least) `y` on top of `x`: pops both and pushes `plus(x, y)`.
+fn addop_full(y: Nat, x: Nat, s: List<Nat>)
+    -> addop1(List::Cons(Nat, y, List::Cons(Nat, x, s))) == List::Cons(Nat, plus(x, y), s)
+{
+    trans(List<Nat>,
+          addop1(List::Cons(Nat, y, List::Cons(Nat, x, s))),
+          addop2(y, List::Cons(Nat, x, s)),
+          List::Cons(Nat, plus(x, y), s),
+          addop1_step(y, List::Cons(Nat, x, s)),
+          addop2_step(y, x, s))
+}
+
+fn mulop1_step(y: Nat, s1: List<Nat>) -> mulop1(List::Cons(Nat, y, s1)) == mulop2(y, s1) {
+    Eq::refl(List<Nat>, mulop2(y, s1))
+}
+fn mulop2_step(a: Nat, x: Nat, s: List<Nat>)
+    -> mulop2(a, List::Cons(Nat, x, s)) == List::Cons(Nat, mult(x, a), s)
+{
+    Eq::refl(List<Nat>, List::Cons(Nat, mult(x, a), s))
+}
+fn mulop_full(y: Nat, x: Nat, s: List<Nat>)
+    -> mulop1(List::Cons(Nat, y, List::Cons(Nat, x, s))) == List::Cons(Nat, mult(x, y), s)
+{
+    trans(List<Nat>,
+          mulop1(List::Cons(Nat, y, List::Cons(Nat, x, s))),
+          mulop2(y, List::Cons(Nat, x, s)),
+          List::Cons(Nat, mult(x, y), s),
+          mulop1_step(y, List::Cons(Nat, x, s)),
+          mulop2_step(y, x, s))
+}
+
+// `step_instr(IAdd/IMul, ·)` on a two-element-pushed stack, in terms of `plus`/`mult`.
+fn step_add_full(y: Nat, x: Nat, s: List<Nat>)
+    -> step_instr(Instr::IAdd, List::Cons(Nat, y, List::Cons(Nat, x, s))) == List::Cons(Nat, plus(x, y), s)
+{
+    addop_full(y, x, s)
+}
+fn step_mul_full(y: Nat, x: Nat, s: List<Nat>)
+    -> step_instr(Instr::IMul, List::Cons(Nat, y, List::Cons(Nat, x, s))) == List::Cons(Nat, mult(x, y), s)
+{
+    mulop_full(y, x, s)
+}
+
+// `exec([IAdd], ·)` / `exec([IMul], ·)` on a two-element-pushed stack (one level of `exec`'s own
+// recursion, then the step lemma above).
+fn exec_add1_full(y: Nat, x: Nat, s: List<Nat>)
+    -> exec(List::Cons(Instr, Instr::IAdd, List::Nil(Instr)), List::Cons(Nat, y, List::Cons(Nat, x, s)))
+       == List::Cons(Nat, plus(x, y), s)
+{
+    step_add_full(y, x, s)
+}
+fn exec_mul1_full(y: Nat, x: Nat, s: List<Nat>)
+    -> exec(List::Cons(Instr, Instr::IMul, List::Nil(Instr)), List::Cons(Nat, y, List::Cons(Nat, x, s)))
+       == List::Cons(Nat, mult(x, y), s)
+{
+    step_mul_full(y, x, s)
+}
+
+// ----- The generalized compiler-correctness lemma, built from small named steps -------------
+//
+// `exec(compile(e), s) == Cons(eval(e), s)` for an ARBITRARY input stack `s` — the standard
+// strengthening needed to push the induction through `Add`/`Mul`, whose compiled code is a
+// concatenation of two sub-programs plus one final instruction. Below: the `Add` chain, then
+// the identical `Mul` chain, then `exec_compile` itself (by induction on `e`, calling the two
+// chains with the IHs supplied as ordinary self-recursive arguments), then the headline.
+
+// Substitute the IH for `a` inside `exec(compile(b), ·)`.
+fn exec_add_sub_a(a: Expr, b: Expr, s: List<Nat>, ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s))
+    -> exec(compile(b), exec(compile(a), s)) == exec(compile(b), List::Cons(Nat, eval(a), s))
+{
+    congr_arg(List<Nat>, List<Nat>, fun (st: List<Nat>) => exec(compile(b), st),
+              exec(compile(a), s), List::Cons(Nat, eval(a), s), ha)
+}
+// Combine with the IH for `b`: running `compile(a)` then `compile(b)` on `s` lands on
+// `Cons(eval(b), Cons(eval(a), s))`.
+fn exec_add_mid(a: Expr, b: Expr, s: List<Nat>,
+                ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+                hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(compile(b), exec(compile(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s))
+{
+    trans(List<Nat>,
+          exec(compile(b), exec(compile(a), s)),
+          exec(compile(b), List::Cons(Nat, eval(a), s)),
+          List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)),
+          exec_add_sub_a(a, b, s, ha),
+          hb)
+}
+// `exec(append(compile(a), compile(b)), s) == Cons(eval(b), Cons(eval(a), s))`.
+fn exec_add_ab(a: Expr, b: Expr, s: List<Nat>,
+               ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+               hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(append(Instr, compile(a), compile(b)), s) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s))
+{
+    trans(List<Nat>,
+          exec(append(Instr, compile(a), compile(b)), s),
+          exec(compile(b), exec(compile(a), s)),
+          List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)),
+          exec_append(compile(a), compile(b), s),
+          exec_add_mid(a, b, s, ha, hb))
+}
+// Push the combined `a`/`b` fact through the trailing `IAdd` instruction (a plain congruence —
+// `exec`'s own recursion is single-level, so this stays clear of the two-nested-match
+// limitation noted above).
+fn exec_add_step(a: Expr, b: Expr, s: List<Nat>,
+                  ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+                  hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(List::Cons(Instr, Instr::IAdd, List::Nil(Instr)), exec(append(Instr, compile(a), compile(b)), s))
+       == exec(List::Cons(Instr, Instr::IAdd, List::Nil(Instr)), List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+{
+    congr_arg(List<Nat>, List<Nat>,
+              fun (st: List<Nat>) => exec(List::Cons(Instr, Instr::IAdd, List::Nil(Instr)), st),
+              exec(append(Instr, compile(a), compile(b)), s),
+              List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)),
+              exec_add_ab(a, b, s, ha, hb))
+}
+// Land on the fully-reduced `plus` value via `exec_add1_full`.
+fn exec_add_final(a: Expr, b: Expr, s: List<Nat>,
+                   ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+                   hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(List::Cons(Instr, Instr::IAdd, List::Nil(Instr)), exec(append(Instr, compile(a), compile(b)), s))
+       == List::Cons(Nat, eval(Expr::Add(a, b)), s)
+{
+    trans(List<Nat>,
+          exec(List::Cons(Instr, Instr::IAdd, List::Nil(Instr)), exec(append(Instr, compile(a), compile(b)), s)),
+          exec(List::Cons(Instr, Instr::IAdd, List::Nil(Instr)), List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s))),
+          List::Cons(Nat, eval(Expr::Add(a, b)), s),
+          exec_add_step(a, b, s, ha, hb),
+          exec_add1_full(eval(b), eval(a), s))
+}
+// `exec(compile(Add(a,b)), s) == Cons(eval(Add(a,b)), s)`, given the IHs for `a`/`b`.
+fn exec_add_full(a: Expr, b: Expr, s: List<Nat>,
+                  ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+                  hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(compile(Expr::Add(a, b)), s) == List::Cons(Nat, eval(Expr::Add(a, b)), s)
+{
+    trans(List<Nat>,
+          exec(compile(Expr::Add(a, b)), s),
+          exec(List::Cons(Instr, Instr::IAdd, List::Nil(Instr)), exec(append(Instr, compile(a), compile(b)), s)),
+          List::Cons(Nat, eval(Expr::Add(a, b)), s),
+          exec_append(append(Instr, compile(a), compile(b)), List::Cons(Instr, Instr::IAdd, List::Nil(Instr)), s),
+          exec_add_final(a, b, s, ha, hb))
+}
+
+// Same shape for `Mul`.
+fn exec_mul_sub_a(a: Expr, b: Expr, s: List<Nat>, ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s))
+    -> exec(compile(b), exec(compile(a), s)) == exec(compile(b), List::Cons(Nat, eval(a), s))
+{
+    congr_arg(List<Nat>, List<Nat>, fun (st: List<Nat>) => exec(compile(b), st),
+              exec(compile(a), s), List::Cons(Nat, eval(a), s), ha)
+}
+fn exec_mul_mid(a: Expr, b: Expr, s: List<Nat>,
+                ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+                hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(compile(b), exec(compile(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s))
+{
+    trans(List<Nat>,
+          exec(compile(b), exec(compile(a), s)),
+          exec(compile(b), List::Cons(Nat, eval(a), s)),
+          List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)),
+          exec_mul_sub_a(a, b, s, ha),
+          hb)
+}
+fn exec_mul_ab(a: Expr, b: Expr, s: List<Nat>,
+               ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+               hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(append(Instr, compile(a), compile(b)), s) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s))
+{
+    trans(List<Nat>,
+          exec(append(Instr, compile(a), compile(b)), s),
+          exec(compile(b), exec(compile(a), s)),
+          List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)),
+          exec_append(compile(a), compile(b), s),
+          exec_mul_mid(a, b, s, ha, hb))
+}
+fn exec_mul_step(a: Expr, b: Expr, s: List<Nat>,
+                  ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+                  hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(List::Cons(Instr, Instr::IMul, List::Nil(Instr)), exec(append(Instr, compile(a), compile(b)), s))
+       == exec(List::Cons(Instr, Instr::IMul, List::Nil(Instr)), List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+{
+    congr_arg(List<Nat>, List<Nat>,
+              fun (st: List<Nat>) => exec(List::Cons(Instr, Instr::IMul, List::Nil(Instr)), st),
+              exec(append(Instr, compile(a), compile(b)), s),
+              List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)),
+              exec_mul_ab(a, b, s, ha, hb))
+}
+fn exec_mul_final(a: Expr, b: Expr, s: List<Nat>,
+                   ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+                   hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(List::Cons(Instr, Instr::IMul, List::Nil(Instr)), exec(append(Instr, compile(a), compile(b)), s))
+       == List::Cons(Nat, eval(Expr::Mul(a, b)), s)
+{
+    trans(List<Nat>,
+          exec(List::Cons(Instr, Instr::IMul, List::Nil(Instr)), exec(append(Instr, compile(a), compile(b)), s)),
+          exec(List::Cons(Instr, Instr::IMul, List::Nil(Instr)), List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s))),
+          List::Cons(Nat, eval(Expr::Mul(a, b)), s),
+          exec_mul_step(a, b, s, ha, hb),
+          exec_mul1_full(eval(b), eval(a), s))
+}
+fn exec_mul_full(a: Expr, b: Expr, s: List<Nat>,
+                  ha: exec(compile(a), s) == List::Cons(Nat, eval(a), s),
+                  hb: exec(compile(b), List::Cons(Nat, eval(a), s)) == List::Cons(Nat, eval(b), List::Cons(Nat, eval(a), s)))
+    -> exec(compile(Expr::Mul(a, b)), s) == List::Cons(Nat, eval(Expr::Mul(a, b)), s)
+{
+    trans(List<Nat>,
+          exec(compile(Expr::Mul(a, b)), s),
+          exec(List::Cons(Instr, Instr::IMul, List::Nil(Instr)), exec(append(Instr, compile(a), compile(b)), s)),
+          List::Cons(Nat, eval(Expr::Mul(a, b)), s),
+          exec_append(append(Instr, compile(a), compile(b)), List::Cons(Instr, Instr::IMul, List::Nil(Instr)), s),
+          exec_mul_final(a, b, s, ha, hb))
+}
+
+// `exec(compile(e), s) == Cons(eval(e), s)` for an ARBITRARY input stack `s`, by induction on
+// `e`, calling the `exec_add_full`/`exec_mul_full` combinators above with the IHs supplied as
+// ordinary self-recursive arguments (an actual mutually-recursive helper `fn` group here, where
+// the helpers themselves forward-reference `exec_compile`, hits a separate elaborator
+// limitation on cyclic non-inductive `fn` groups — so the IHs are threaded in as plain
+// arguments instead, keeping `exec_compile` itself the only self-recursive `fn`).
+fn exec_compile(e: Expr, s: List<Nat>) -> exec(compile(e), s) == List::Cons(Nat, eval(e), s) {
+    match e {
+      | Expr::Lit(n)    => Eq::refl(List<Nat>, List::Cons(Nat, n, s))
+      | Expr::Add(a, b) => exec_add_full(a, b, s, exec_compile(a, s), exec_compile(b, List::Cons(Nat, eval(a), s)))
+      | Expr::Mul(a, b) => exec_mul_full(a, b, s, exec_compile(a, s), exec_compile(b, List::Cons(Nat, eval(a), s)))
+    }
+}
+
+// HEADLINE: running the compiled program on the empty stack yields the singleton stack
+// holding `eval(e)` — the `s = Nil` instance of `exec_compile`.
+fn compile_correct(e: Expr) -> exec(compile(e), List::Nil(Nat)) == List::Cons(Nat, eval(e), List::Nil(Nat)) {
+    exec_compile(e, List::Nil(Nat))
+}
