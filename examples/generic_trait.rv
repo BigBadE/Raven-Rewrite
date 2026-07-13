@@ -1,5 +1,11 @@
 // Generics (type-erased) + a method via an `impl` block (desugared to a function).
 // `rvc examples/generic_trait.rv --run` borrow-checks, verifies, and runs main() = Int(7).
+//
+// `self.x + self.y` uses `wrapping_add`: struct fields carry no bound (aggregate
+// refinement — proving properties of a *field's range* rather than just its
+// identity — is still future `rv-core` growth, see ARCHITECTURE.md), so a checked
+// `+` here would emit an overflow obligation no proof can discharge for an
+// arbitrary `Point`. `wrapping_add` opts out, as in `examples/fixed_width_ints.rv`.
 
 struct Point {
   x: i64,
@@ -8,7 +14,7 @@ struct Point {
 
 impl Point {
   fn sum(self) -> i64 {
-    return self.x + self.y;
+    return wrapping_add(self.x, self.y);
   }
 }
 

@@ -254,6 +254,18 @@ fn graded_binder_linear_violation_rejected() {
     assert!(err.contains("usage discipline"), "expected a usage-discipline error, got: {err}");
 }
 
+/// The consolidation capstone: one file exercising the whole ladder — an
+/// executable fn with a borrow-checked strong update through `&mut` and a
+/// refinement-typed precondition (routed to `rv-solve` + the VM), an
+/// inductive proof by recursion, cubical `refl`/`ap`/`transport`/`J`, the
+/// genuinely-computing `S1c` HIT recursor, the `Equiv` algebra
+/// (`idEquiv`/`symEquiv`/`compEquiv`), and `ua`/`Univalence` STATED (not
+/// proved — see docs/cubical.md §6). See `examples/proofs/capstone.rv`.
+#[test]
+fn capstone() {
+    check("capstone.rv");
+}
+
 #[test]
 fn funext_smoke_test() {
     let src = r#"

@@ -1,5 +1,11 @@
 // A struct, constructed and read by field access.
 // `rvc examples/point.rv --run` runs main() = Int(7).
+//
+// `p.x + p.y` uses `wrapping_add`: struct fields carry no bound (aggregate
+// refinement is still future `rv-core` growth, see ARCHITECTURE.md), so a
+// checked `+` here would emit an overflow obligation no proof can discharge
+// for an arbitrary `Point`. `wrapping_add` opts out, as in
+// `examples/fixed_width_ints.rv`.
 
 struct Point {
   x: i64,
@@ -8,5 +14,5 @@ struct Point {
 
 fn main() -> i64 {
   let p: Point = Point { x: 3, y: 4 };
-  return p.x + p.y;
+  return wrapping_add(p.x, p.y);
 }
