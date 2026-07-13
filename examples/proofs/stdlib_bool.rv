@@ -1,0 +1,133 @@
+// A verified boolean algebra in Rust-like Raven, extending the small library in `bool_logic.rv`
+// with `or`, commutativity/associativity/identity laws for `and`/`or`, both distributivity
+// laws, both De Morgan laws, double negation, and absorption. Every lemma is proved by
+// exhaustive case analysis on `Bool`'s two constructors (each case closes by `Eq::refl` after
+// definitional unfolding — `Bool` is finite, so nested `match` decides everything).
+// (`rvc --verify`.)
+
+enum Bool { True, False }
+
+fn not(b: Bool) -> Bool {
+    match b { | Bool::True => Bool::False | Bool::False => Bool::True }
+}
+fn and(a: Bool, b: Bool) -> Bool {
+    match a { | Bool::True => b | Bool::False => Bool::False }
+}
+fn or(a: Bool, b: Bool) -> Bool {
+    match a { | Bool::True => Bool::True | Bool::False => b }
+}
+
+// ----- Double negation -----------------------------------------------------------------------
+
+fn not_not(b: Bool) -> not(not(b)) == b {
+    match b {
+      | Bool::True  => Eq::refl(Bool, Bool::True)
+      | Bool::False => Eq::refl(Bool, Bool::False)
+    }
+}
+
+// ----- and: identity / zero -------------------------------------------------------------------
+
+fn and_false(b: Bool) -> and(b, Bool::False) == Bool::False {
+    match b { | Bool::True => Eq::refl(Bool, Bool::False) | Bool::False => Eq::refl(Bool, Bool::False) }
+}
+fn and_true(b: Bool) -> and(b, Bool::True) == b {
+    match b { | Bool::True => Eq::refl(Bool, Bool::True) | Bool::False => Eq::refl(Bool, Bool::False) }
+}
+
+// ----- or: identity / one ----------------------------------------------------------------------
+
+fn or_false(b: Bool) -> or(b, Bool::False) == b {
+    match b { | Bool::True => Eq::refl(Bool, Bool::True) | Bool::False => Eq::refl(Bool, Bool::False) }
+}
+fn or_true(b: Bool) -> or(b, Bool::True) == Bool::True {
+    match b { | Bool::True => Eq::refl(Bool, Bool::True) | Bool::False => Eq::refl(Bool, Bool::True) }
+}
+
+// ----- Commutativity -----------------------------------------------------------------------
+
+fn and_comm(a: Bool, b: Bool) -> and(a, b) == and(b, a) {
+    match a {
+      | Bool::True  => symm(Bool, and(b, Bool::True), b, and_true(b))
+      | Bool::False => symm(Bool, and(b, Bool::False), Bool::False, and_false(b))
+    }
+}
+
+fn or_comm(a: Bool, b: Bool) -> or(a, b) == or(b, a) {
+    match a {
+      | Bool::True  => symm(Bool, or(b, Bool::True), Bool::True, or_true(b))
+      | Bool::False => symm(Bool, or(b, Bool::False), b, or_false(b))
+    }
+}
+
+// ----- Associativity -------------------------------------------------------------------------
+
+// `and` is associative, by exhaustive case analysis on all three arguments.
+fn and_assoc(a: Bool, b: Bool, c: Bool) -> and(and(a, b), c) == and(a, and(b, c)) {
+    match a {
+      | Bool::True  => Eq::refl(Bool, and(b, c))
+      | Bool::False => Eq::refl(Bool, Bool::False)
+    }
+}
+
+// `or` is associative, by exhaustive case analysis on all three arguments.
+fn or_assoc(a: Bool, b: Bool, c: Bool) -> or(or(a, b), c) == or(a, or(b, c)) {
+    match a {
+      | Bool::True  => Eq::refl(Bool, Bool::True)
+      | Bool::False => Eq::refl(Bool, or(b, c))
+    }
+}
+
+// ----- Distributivity ------------------------------------------------------------------------
+
+// `and` distributes over `or`: a && (b || c) == (a && b) || (a && c).
+fn and_or_distrib(a: Bool, b: Bool, c: Bool) -> and(a, or(b, c)) == or(and(a, b), and(a, c)) {
+    match a {
+      | Bool::True  => Eq::refl(Bool, or(b, c))
+      | Bool::False => Eq::refl(Bool, Bool::False)
+    }
+}
+
+// `or` distributes over `and`: a || (b && c) == (a || b) && (a || c).
+fn or_and_distrib(a: Bool, b: Bool, c: Bool) -> or(a, and(b, c)) == and(or(a, b), or(a, c)) {
+    match a {
+      | Bool::True  => Eq::refl(Bool, Bool::True)
+      | Bool::False => Eq::refl(Bool, and(b, c))
+    }
+}
+
+// ----- De Morgan ------------------------------------------------------------------------------
+
+// not(a && b) == not a || not b, by case analysis on both arguments.
+fn de_morgan_and(a: Bool, b: Bool) -> not(and(a, b)) == or(not(a), not(b)) {
+    match a {
+      | Bool::True  => Eq::refl(Bool, not(b))
+      | Bool::False => Eq::refl(Bool, Bool::True)
+    }
+}
+
+// not(a || b) == not a && not b, by case analysis on both arguments.
+fn de_morgan_or(a: Bool, b: Bool) -> not(or(a, b)) == and(not(a), not(b)) {
+    match a {
+      | Bool::True  => Eq::refl(Bool, Bool::False)
+      | Bool::False => Eq::refl(Bool, not(b))
+    }
+}
+
+// ----- Absorption -----------------------------------------------------------------------------
+
+// a && (a || b) == a, by case analysis on a.
+fn and_absorb(a: Bool, b: Bool) -> and(a, or(a, b)) == a {
+    match a {
+      | Bool::True  => Eq::refl(Bool, Bool::True)
+      | Bool::False => Eq::refl(Bool, Bool::False)
+    }
+}
+
+// a || (a && b) == a, by case analysis on a.
+fn or_absorb(a: Bool, b: Bool) -> or(a, and(a, b)) == a {
+    match a {
+      | Bool::True  => Eq::refl(Bool, Bool::True)
+      | Bool::False => Eq::refl(Bool, Bool::False)
+    }
+}

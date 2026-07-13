@@ -58,6 +58,28 @@ fn stdlib_option() {
     check("stdlib_option.rv");
 }
 
+/// A verified boolean algebra: `and`/`or` commutativity/associativity/identity, both
+/// distributivity laws, both De Morgan laws, double negation, and absorption — extending the
+/// small library in `bool_logic.rv`.
+#[test]
+fn stdlib_bool() {
+    check("stdlib_bool.rv");
+}
+
+/// Nat `<=` ordering: antisymmetry (extending `le.rv`/`le_trans.rv`), `max`/`min` with their
+/// commutativity/bounding lemmas, and monotonicity of `plus` w.r.t. `<=`.
+#[test]
+fn stdlib_order() {
+    check("stdlib_order.rv");
+}
+
+/// More `List<A>` lemmas: `length` vs. `reverse`, `mem`/`mem_append`, `filter` with a length
+/// bound, `all`/`any` distributing over `append`, and `foldr`'s append-fusion law.
+#[test]
+fn stdlib_list2() {
+    check("stdlib_list2.rv");
+}
+
 #[test]
 fn decide_reflection() {
     check("decide_demo.rv");

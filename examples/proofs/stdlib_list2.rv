@@ -1,0 +1,309 @@
+// Extending the verified generic `List<A>` library once more: `length` interacting with
+// `reverse`, boolean-predicate operations (`mem`/`mem_append`, `filter` with a length bound,
+// `all`/`any` with distribution-over-`append` lemmas), and `foldr` with its append-fusion law.
+// Proved by induction, reusing the `List<A>`/`Bool`/`Nat`/`Le` machinery already verified in
+// `stdlib.rv`, `stdlib_list.rv`, `stdlib_bool.rv` and `stdlib_order.rv` (redefined locally so
+// this file stands on its own). (`rvc --verify`.)
+
+enum Nat { Zero, Succ(Nat) }
+enum Bool { True, False }
+enum List<A: Type> { Nil, Cons(A, List<A>) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+fn and(a: Bool, b: Bool) -> Bool {
+    match a { | Bool::True => b | Bool::False => Bool::False }
+}
+fn or(a: Bool, b: Bool) -> Bool {
+    match a { | Bool::True => Bool::True | Bool::False => b }
+}
+// `or` is associative — needed for `mem_append`/`any_append` below (see `stdlib_bool.rv`).
+fn or_assoc(a: Bool, b: Bool, c: Bool) -> or(or(a, b), c) == or(a, or(b, c)) {
+    match a { | Bool::True => Eq::refl(Bool, Bool::True) | Bool::False => Eq::refl(Bool, or(b, c)) }
+}
+// `and` is associative — needed for `all_append` below.
+fn and_assoc(a: Bool, b: Bool, c: Bool) -> and(and(a, b), c) == and(a, and(b, c)) {
+    match a { | Bool::True => Eq::refl(Bool, and(b, c)) | Bool::False => Eq::refl(Bool, Bool::False) }
+}
+
+fn length(A: Type, xs: List<A>) -> Nat {
+    match xs { | List::Nil => Nat::Zero | List::Cons(x, rest) => Nat::Succ(length(A, rest)) }
+}
+fn append(A: Type, xs: List<A>, ys: List<A>) -> List<A> {
+    match xs {
+      | List::Nil           => ys
+      | List::Cons(x, rest) => List::Cons(A, x, append(A, rest, ys))
+    }
+}
+fn map(A: Type, B: Type, f: A -> B, xs: List<A>) -> List<B> {
+    match xs {
+      | List::Nil           => List::Nil(B)
+      | List::Cons(x, rest) => List::Cons(B, f(x), map(A, B, f, rest))
+    }
+}
+fn reverse(A: Type, xs: List<A>) -> List<A> {
+    match xs {
+      | List::Nil           => List::Nil(A)
+      | List::Cons(x, rest) => append(A, reverse(A, rest), List::Cons(A, x, List::Nil(A)))
+    }
+}
+
+// `<=` on Nat (reproved locally — see `le.rv`/`stdlib_order.rv`).
+enum Le(n: Nat, m: Nat) -> Prop {
+    LeZero(x: Nat)                       where n == Nat::Zero,    m == x;
+    LeSucc(a: Nat, b: Nat, h: Le(a, b))  where n == Nat::Succ(a), m == Nat::Succ(b);
+}
+fn le_refl(n: Nat) -> Le(n, n) {
+    match n { | Nat::Zero => Le::LeZero(Nat::Zero) | Nat::Succ(k) => Le::LeSucc(k, k, le_refl(k)) }
+}
+fn le_succ(n: Nat) -> Le(n, Nat::Succ(n)) {
+    match n { | Nat::Zero => Le::LeZero(Nat::Succ(Nat::Zero)) | Nat::Succ(k) => Le::LeSucc(k, Nat::Succ(k), le_succ(k)) }
+}
+fn le_zero(n: Nat) -> Le(Nat::Zero, n) { Le::LeZero(n) }
+
+// No-confusion + injectivity for Nat, and the `LeSuccInv`/`le_inv` convoy machinery, reproved
+// locally exactly as in `le_trans.rv`/`stdlib_order.rv` — needed to invert a `Le(Succ _, _)`
+// hypothesis so `le_trans` can recurse.
+fn is_zero(n: Nat) -> Prop {
+    match n { | Nat::Zero => True | Nat::Succ(k) => False }
+}
+fn zero_ne_succ(b: Nat, h: Nat::Zero == Nat::Succ(b)) -> False {
+    subst(Nat, is_zero, Nat::Zero, Nat::Succ(b), h, True::intro)
+}
+fn pred(n: Nat) -> Nat {
+    match n { | Nat::Zero => Nat::Zero | Nat::Succ(k) => k }
+}
+fn succ_inj(a: Nat, b: Nat, h: Nat::Succ(a) == Nat::Succ(b)) -> a == b {
+    congr_arg(Nat, Nat, pred, Nat::Succ(a), Nat::Succ(b), h)
+}
+enum LeSuccInv(b: Nat, c: Nat) -> Prop {
+    MkLSI(cc: Nat, h: Le(b, cc)) where c == Nat::Succ(cc);
+}
+fn le_inv(n: Nat, c: Nat, h: Le(n, c)) -> (b: Nat) -> (n == Nat::Succ(b)) -> LeSuccInv(b, c) {
+    match h {
+      | Le::LeZero(x) => fun (b: Nat) (en: Nat::Zero == Nat::Succ(b)) =>
+          False::rec(fun (z: False) => LeSuccInv(b, x), zero_ne_succ(b, en))
+      | Le::LeSucc(a, bb, hab) => fun (b: Nat) (en: Nat::Succ(a) == Nat::Succ(b)) =>
+          subst(Nat, fun (x: Nat) => LeSuccInv(x, Nat::Succ(bb)), a, b, succ_inj(a, b, en),
+                LeSuccInv::MkLSI(a, bb, hab))
+    }
+}
+fn le_trans(a: Nat, b: Nat, h1: Le(a, b)) -> (c: Nat) -> Le(b, c) -> Le(a, c) {
+    match h1 {
+      | Le::LeZero(x) => fun (c: Nat) (h2: Le(x, c)) => le_zero(c)
+      | Le::LeSucc(a2, b2, hab) => fun (c: Nat) (h2: Le(Nat::Succ(b2), c)) =>
+          let cvy : (ih2: (c3: Nat) -> Le(b2, c3) -> Le(a2, c3)) -> Le(Nat::Succ(a2), c) :=
+            match le_inv(Nat::Succ(b2), c, h2)(b2, Eq::refl(Nat, Nat::Succ(b2))) {
+              | LeSuccInv::MkLSI(bx, cc, hbc) =>
+                  fun (ih2: (c3: Nat) -> Le(bx, c3) -> Le(a2, c3)) =>
+                    Le::LeSucc(a2, cc, ih2(cc)(hbc))
+            }
+          in cvy(hab.rec)
+    }
+}
+
+// ----- `length` / `reverse` -------------------------------------------------------------------
+
+// `length` distributes over `append` (needed for `length_reverse` below).
+fn length_append(A: Type, xs: List<A>, ys: List<A>)
+    -> length(A, append(A, xs, ys)) == plus(length(A, xs), length(A, ys))
+{
+    match xs {
+      | List::Nil           => Eq::refl(Nat, length(A, ys))
+      | List::Cons(x, rest) =>
+          congr_arg(Nat, Nat, Nat::Succ,
+                    length(A, append(A, rest, ys)), plus(length(A, rest), length(A, ys)),
+                    length_append(A, rest, ys))
+    }
+}
+
+// `n + 1 == Succ n`, by induction on n (needed to close the `Succ` case of `length_reverse`).
+fn plus_one_r(n: Nat) -> plus(n, Nat::Succ(Nat::Zero)) == Nat::Succ(n) {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Succ(Nat::Zero))
+      | Nat::Succ(k) => congr_arg(Nat, Nat, Nat::Succ, plus(k, Nat::Succ(Nat::Zero)), Nat::Succ(k), plus_one_r(k))
+    }
+}
+
+// `map` preserves length — once, for every pair of element types and every function (see
+// `stdlib.rv`'s `map_length`, reproved locally).
+fn length_map(A: Type, B: Type, f: A -> B, xs: List<A>) -> length(B, map(A, B, f, xs)) == length(A, xs) {
+    match xs {
+      | List::Nil           => Eq::refl(Nat, Nat::Zero)
+      | List::Cons(x, rest) =>
+          congr_arg(Nat, Nat, Nat::Succ, length(B, map(A, B, f, rest)), length(A, rest), length_map(A, B, f, rest))
+    }
+}
+
+// THEOREM: `reverse` preserves length, by induction on `xs` using `length_append`/`plus_one_r`.
+fn length_reverse(A: Type, xs: List<A>) -> length(A, reverse(A, xs)) == length(A, xs) {
+    match xs {
+      | List::Nil           => Eq::refl(Nat, Nat::Zero)
+      | List::Cons(x, rest) =>
+          // Goal: length(append(reverse(rest), [x])) == Succ(length(rest))
+          trans(Nat,
+                length(A, append(A, reverse(A, rest), List::Cons(A, x, List::Nil(A)))),
+                plus(length(A, reverse(A, rest)), Nat::Succ(Nat::Zero)),
+                Nat::Succ(length(A, rest)),
+                length_append(A, reverse(A, rest), List::Cons(A, x, List::Nil(A))),
+                trans(Nat,
+                      plus(length(A, reverse(A, rest)), Nat::Succ(Nat::Zero)),
+                      Nat::Succ(length(A, reverse(A, rest))),
+                      Nat::Succ(length(A, rest)),
+                      plus_one_r(length(A, reverse(A, rest))),
+                      congr_arg(Nat, Nat, Nat::Succ, length(A, reverse(A, rest)), length(A, rest),
+                                length_reverse(A, rest))))
+    }
+}
+
+// ----- `mem` -----------------------------------------------------------------------------------
+
+// Membership w.r.t. a caller-supplied boolean equality test (`List<A>` has no built-in `==`
+// for a generic `A`).
+fn mem(A: Type, eqA: A -> A -> Bool, x: A, xs: List<A>) -> Bool {
+    match xs {
+      | List::Nil           => Bool::False
+      | List::Cons(y, rest) => or(eqA(x, y), mem(A, eqA, x, rest))
+    }
+}
+
+// THEOREM: membership distributes over `append`: `x in (xs ++ ys) == (x in xs) || (x in ys)`,
+// by induction on `xs` using `or_assoc`.
+fn mem_append(A: Type, eqA: A -> A -> Bool, x: A, xs: List<A>, ys: List<A>)
+    -> mem(A, eqA, x, append(A, xs, ys)) == or(mem(A, eqA, x, xs), mem(A, eqA, x, ys))
+{
+    match xs {
+      | List::Nil           => Eq::refl(Bool, mem(A, eqA, x, ys))
+      | List::Cons(y, rest) =>
+          // Goal: or(eqA(x,y), mem(x, append(rest,ys))) == or(or(eqA(x,y), mem(x,rest)), mem(x,ys))
+          trans(Bool,
+                or(eqA(x, y), mem(A, eqA, x, append(A, rest, ys))),
+                or(eqA(x, y), or(mem(A, eqA, x, rest), mem(A, eqA, x, ys))),
+                or(or(eqA(x, y), mem(A, eqA, x, rest)), mem(A, eqA, x, ys)),
+                congr_arg(Bool, Bool, fun (z: Bool) => or(eqA(x, y), z),
+                          mem(A, eqA, x, append(A, rest, ys)), or(mem(A, eqA, x, rest), mem(A, eqA, x, ys)),
+                          mem_append(A, eqA, x, rest, ys)),
+                symm(Bool, or(or(eqA(x, y), mem(A, eqA, x, rest)), mem(A, eqA, x, ys)),
+                     or(eqA(x, y), or(mem(A, eqA, x, rest), mem(A, eqA, x, ys))),
+                     or_assoc(eqA(x, y), mem(A, eqA, x, rest), mem(A, eqA, x, ys))))
+    }
+}
+
+// ----- `filter` ----------------------------------------------------------------------------
+
+fn filter(A: Type, p: A -> Bool, xs: List<A>) -> List<A> {
+    match xs {
+      | List::Nil           => List::Nil(A)
+      | List::Cons(x, rest) => match p(x) {
+          | Bool::True  => List::Cons(A, x, filter(A, p, rest))
+          | Bool::False => filter(A, p, rest)
+        }
+    }
+}
+
+// `filter`'s `Cons`-case body, with the predicate result abstracted to a plain `Bool`
+// parameter `b` instead of the opaque application `p(x)`. By construction,
+// `filter_hyp(A, p, x, rest, p(x))` unfolds to exactly `filter`'s own `Cons` branch, so the
+// two are definitionally equal — but unlike `p(x)`, matching on the bound variable `b` reduces
+// normally, which is what lets the length bound below go through without getting stuck on the
+// neutral term `p(x)`.
+fn filter_hyp(A: Type, p: A -> Bool, x: A, rest: List<A>, b: Bool) -> List<A> {
+    match b {
+      | Bool::True  => List::Cons(A, x, filter(A, p, rest))
+      | Bool::False => filter(A, p, rest)
+    }
+}
+
+fn filter_hyp_le(A: Type, p: A -> Bool, x: A, rest: List<A>, b: Bool)
+    -> Le(length(A, filter_hyp(A, p, x, rest, b)), Nat::Succ(length(A, filter(A, p, rest))))
+{
+    match b {
+      | Bool::True  => le_refl(Nat::Succ(length(A, filter(A, p, rest))))
+      | Bool::False => le_succ(length(A, filter(A, p, rest)))
+    }
+}
+
+// THEOREM: `filter` never grows a list: `length (filter p xs) <= length xs`, by induction on
+// `xs`, using `filter_hyp_le` at `b := p(x)` to sidestep the neutral-term reduction issue.
+fn length_filter_le(A: Type, p: A -> Bool, xs: List<A>) -> Le(length(A, filter(A, p, xs)), length(A, xs)) {
+    match xs {
+      | List::Nil           => le_refl(Nat::Zero)
+      | List::Cons(x, rest) =>
+          le_trans(length(A, filter(A, p, List::Cons(A, x, rest))), Nat::Succ(length(A, filter(A, p, rest))),
+                   filter_hyp_le(A, p, x, rest, p(x)),
+                   Nat::Succ(length(A, rest)),
+                   Le::LeSucc(length(A, filter(A, p, rest)), length(A, rest), length_filter_le(A, p, rest)))
+    }
+}
+
+// ----- `all` / `any` -------------------------------------------------------------------------
+
+fn all(A: Type, p: A -> Bool, xs: List<A>) -> Bool {
+    match xs { | List::Nil => Bool::True | List::Cons(x, rest) => and(p(x), all(A, p, rest)) }
+}
+fn any(A: Type, p: A -> Bool, xs: List<A>) -> Bool {
+    match xs { | List::Nil => Bool::False | List::Cons(x, rest) => or(p(x), any(A, p, rest)) }
+}
+
+// THEOREM: `any` distributes over `append`, by induction on `xs` using `or_assoc` (the
+// pointwise analogue of `mem_append`).
+fn any_append(A: Type, p: A -> Bool, xs: List<A>, ys: List<A>)
+    -> any(A, p, append(A, xs, ys)) == or(any(A, p, xs), any(A, p, ys))
+{
+    match xs {
+      | List::Nil           => Eq::refl(Bool, any(A, p, ys))
+      | List::Cons(x, rest) =>
+          trans(Bool,
+                or(p(x), any(A, p, append(A, rest, ys))),
+                or(p(x), or(any(A, p, rest), any(A, p, ys))),
+                or(or(p(x), any(A, p, rest)), any(A, p, ys)),
+                congr_arg(Bool, Bool, fun (z: Bool) => or(p(x), z),
+                          any(A, p, append(A, rest, ys)), or(any(A, p, rest), any(A, p, ys)),
+                          any_append(A, p, rest, ys)),
+                symm(Bool, or(or(p(x), any(A, p, rest)), any(A, p, ys)),
+                     or(p(x), or(any(A, p, rest), any(A, p, ys))),
+                     or_assoc(p(x), any(A, p, rest), any(A, p, ys))))
+    }
+}
+
+// THEOREM: `all` distributes over `append`, by induction on `xs` using `and_assoc` (the
+// pointwise dual of `any_append`).
+fn all_append(A: Type, p: A -> Bool, xs: List<A>, ys: List<A>)
+    -> all(A, p, append(A, xs, ys)) == and(all(A, p, xs), all(A, p, ys))
+{
+    match xs {
+      | List::Nil           => Eq::refl(Bool, all(A, p, ys))
+      | List::Cons(x, rest) =>
+          trans(Bool,
+                and(p(x), all(A, p, append(A, rest, ys))),
+                and(p(x), and(all(A, p, rest), all(A, p, ys))),
+                and(and(p(x), all(A, p, rest)), all(A, p, ys)),
+                congr_arg(Bool, Bool, fun (z: Bool) => and(p(x), z),
+                          all(A, p, append(A, rest, ys)), and(all(A, p, rest), all(A, p, ys)),
+                          all_append(A, p, rest, ys)),
+                symm(Bool, and(and(p(x), all(A, p, rest)), all(A, p, ys)),
+                     and(p(x), and(all(A, p, rest), all(A, p, ys))),
+                     and_assoc(p(x), all(A, p, rest), all(A, p, ys))))
+    }
+}
+
+// ----- `foldr` -----------------------------------------------------------------------------
+
+fn foldr(A: Type, B: Type, f: A -> B -> B, z: B, xs: List<A>) -> B {
+    match xs { | List::Nil => z | List::Cons(x, rest) => f(x, foldr(A, B, f, z, rest)) }
+}
+
+// THEOREM: `foldr` fuses across `append`: folding over `xs ++ ys` equals folding `xs` starting
+// from the fold of `ys` — by induction on `xs`.
+fn foldr_append(A: Type, B: Type, f: A -> B -> B, z: B, xs: List<A>, ys: List<A>)
+    -> foldr(A, B, f, z, append(A, xs, ys)) == foldr(A, B, f, foldr(A, B, f, z, ys), xs)
+{
+    match xs {
+      | List::Nil           => Eq::refl(B, foldr(A, B, f, z, ys))
+      | List::Cons(x, rest) =>
+          congr_arg(B, B, fun (w: B) => f(x, w),
+                    foldr(A, B, f, z, append(A, rest, ys)), foldr(A, B, f, foldr(A, B, f, z, ys), rest),
+                    foldr_append(A, B, f, z, rest, ys))
+    }
+}
