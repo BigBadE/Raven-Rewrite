@@ -1,0 +1,154 @@
+// Big-step vs. small-step equivalence for a tiny typed-arithmetic-style object language
+// (booleans with `if`, Peano naturals with `succ`), in Rust-like Raven (`rvc --verify`).
+//
+// This complements `typed_arith.rv` (which proves PROGRESS + PRESERVATION for a richer version
+// of this language via `Step`) with the *other* classic metatheory result relating the two
+// standard styles of operational semantics:
+//
+//   HEADLINE:  eval_to_steps : Eval(t, v) -> Steps(t, v)
+//              "big-step (natural) evaluation is sound w.r.t. small-step reduction" — if `t`
+//              big-steps to `v`, then `t` reaches `v` by a finite sequence of small steps.
+//
+// Deliberately dropped `Prd`/`IsZ` (present in `typed_arith.rv`) from the term language here:
+// their small-step rules (`SPrdS`, `SIsZS`) require a `Nv` (numeral-shape) side-condition on the
+// stepped-to numeral, which for an *untyped* `Eval` relation (no `HasType` premise threaded
+// through) isn't derivable in general — `Eval` alone doesn't guarantee its result looks like a
+// term that was ever reached by typed reduction. Keeping to `Suc`/`Iff`, whose small-step
+// congruence/computation rules carry no such side-condition, keeps the development honest and
+// fully closed with no admits.
+
+enum Ty { TNat, TBool }
+enum Tm { Tru, Fls, Iff(Tm, Tm, Tm), Zer, Suc(Tm) }
+
+// Values: booleans and Peano numerals.
+enum Value(t: Tm) -> Prop {
+    VTru                    where t == Tm::Tru;
+    VFls                    where t == Tm::Fls;
+    VZ                      where t == Tm::Zer;
+    VS(p: Tm, h: Value(p))  where t == Tm::Suc(p);
+}
+
+// Small-step call-by-value reduction (computation + congruence rules).
+enum Step(t: Tm, u: Tm) -> Prop {
+    SIfTru(a: Tm, b: Tm)  where t == Tm::Iff(Tm::Tru, a, b), u == a;
+    SIfFls(a: Tm, b: Tm)  where t == Tm::Iff(Tm::Fls, a, b), u == b;
+    SIf(c: Tm, c2: Tm, a: Tm, b: Tm, h: Step(c, c2))
+        where t == Tm::Iff(c, a, b), u == Tm::Iff(c2, a, b);
+    SSuc(p: Tm, p2: Tm, h: Step(p, p2))  where t == Tm::Suc(p), u == Tm::Suc(p2);
+}
+
+// Reflexive-transitive closure of `Step` (multi-step small-step reduction).
+enum Steps(t: Tm, u: Tm) -> Prop {
+    SRefl(x: Tm)  where t == x, u == x;
+    SCons(a: Tm, b: Tm, c: Tm, h1: Step(a, b), h2: Steps(b, c))  where t == a, u == c;
+}
+
+// Big-step ("natural") evaluation.
+enum Eval(t: Tm, v: Tm) -> Prop {
+    EvTru  where t == Tm::Tru, v == Tm::Tru;
+    EvFls  where t == Tm::Fls, v == Tm::Fls;
+    EvZer  where t == Tm::Zer, v == Tm::Zer;
+    EvSuc(p: Tm, pv: Tm, h: Eval(p, pv))  where t == Tm::Suc(p), v == Tm::Suc(pv);
+    EvIfT(c: Tm, a: Tm, b: Tm, v2: Tm, hc: Eval(c, Tm::Tru), h: Eval(a, v2))
+        where t == Tm::Iff(c, a, b), v == v2;
+    EvIfF(c: Tm, a: Tm, b: Tm, v2: Tm, hc: Eval(c, Tm::Fls), h: Eval(b, v2))
+        where t == Tm::Iff(c, a, b), v == v2;
+}
+
+// ---------------------------------------------------------------------------
+// `Steps` is a preorder (reflexive by `SRefl`, transitive by `steps_trans`) with one step lifted
+// by `one_step`. Transitivity is proved exactly like `le_trans.rv`'s transitivity of `Le`:
+// induction on the first derivation, curried over the second so the IH is abstracted over the
+// moving right endpoint.
+// ---------------------------------------------------------------------------
+
+fn steps_trans(t: Tm, u: Tm, h1: Steps(t, u)) -> (w: Tm) -> Steps(u, w) -> Steps(t, w) {
+    match h1 {
+      | Steps::SRefl(x) => fun (w: Tm) (h2: Steps(x, w)) => h2
+      | Steps::SCons(a, b, c, hab, hbc) =>
+          fun (w: Tm) (h2: Steps(c, w)) => Steps::SCons(a, b, w, hab, hbc.rec(w)(h2))
+    }
+}
+
+fn one_step(t: Tm, u: Tm, h: Step(t, u)) -> Steps(t, u) {
+    Steps::SCons(t, u, u, h, Steps::SRefl(u))
+}
+
+// Chain three `Steps` derivations end to end (used to assemble the `if` case: congruence in the
+// condition, then the head computation step, then the branch's own reduction sequence).
+fn steps_trans3(x: Tm, y: Tm, z: Tm, w: Tm, s1: Steps(x, y), s2: Steps(y, z), s3: Steps(z, w)) -> Steps(x, w) {
+    steps_trans(x, z, steps_trans(x, y, s1, z, s2), w, s3)
+}
+
+// ---------------------------------------------------------------------------
+// `Steps` congruence: lift a reduction sequence under `Suc` and under the condition of `Iff`.
+// Both go by induction on the `Steps` derivation being lifted (mirroring `steps_trans` above).
+// ---------------------------------------------------------------------------
+
+fn steps_suc(p: Tm, p2: Tm, h: Steps(p, p2)) -> Steps(Tm::Suc(p), Tm::Suc(p2)) {
+    match h {
+      | Steps::SRefl(x) => Steps::SRefl(Tm::Suc(x))
+      | Steps::SCons(a, b, c, hab, hbc) =>
+          Steps::SCons(Tm::Suc(a), Tm::Suc(b), Tm::Suc(c), Step::SSuc(a, b, hab), hbc.rec)
+    }
+}
+
+fn steps_if(a: Tm, b: Tm, c: Tm, c2: Tm, h: Steps(c, c2)) -> Steps(Tm::Iff(c, a, b), Tm::Iff(c2, a, b)) {
+    match h {
+      | Steps::SRefl(x) => Steps::SRefl(Tm::Iff(x, a, b))
+      | Steps::SCons(p, q, r, h1, h2) =>
+          Steps::SCons(Tm::Iff(p, a, b), Tm::Iff(q, a, b), Tm::Iff(r, a, b), Step::SIf(p, q, a, b, h1), h2.rec)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HEADLINE THEOREM: big-step evaluation implies multi-step small-step reduction to the same
+// value — "natural semantics is sound w.r.t. the reduction semantics." By induction on the
+// `Eval` derivation; the `if` cases assemble three legs with `steps_trans3`: reduce the
+// condition to `Tru`/`Fls` (congruence), fire the one computation step, then reduce the taken
+// branch to the final value.
+// ---------------------------------------------------------------------------
+
+fn eval_to_steps(t: Tm, v: Tm, h: Eval(t, v)) -> Steps(t, v) {
+    match h {
+      | Eval::EvTru => Steps::SRefl(Tm::Tru)
+      | Eval::EvFls => Steps::SRefl(Tm::Fls)
+      | Eval::EvZer => Steps::SRefl(Tm::Zer)
+      | Eval::EvSuc(p, pv, hp) => steps_suc(p, pv, hp.rec)
+      | Eval::EvIfT(c, a, b, v2, hc, ha) =>
+          steps_trans3(Tm::Iff(c, a, b), Tm::Iff(Tm::Tru, a, b), a, v2,
+              steps_if(a, b, c, Tm::Tru, hc.rec),
+              one_step(Tm::Iff(Tm::Tru, a, b), a, Step::SIfTru(a, b)),
+              ha.rec)
+      | Eval::EvIfF(c, a, b, v2, hc, hb) =>
+          steps_trans3(Tm::Iff(c, a, b), Tm::Iff(Tm::Fls, a, b), b, v2,
+              steps_if(a, b, c, Tm::Fls, hc.rec),
+              one_step(Tm::Iff(Tm::Fls, a, b), b, Step::SIfFls(a, b)),
+              hb.rec)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bonus lemmas, both closing cleanly: `Eval` only ever produces a `Value`, and every `Value`
+// big-steps to itself (the two halves of "`Eval`'s image is exactly the fixed points of `Eval`").
+// ---------------------------------------------------------------------------
+
+fn eval_value(t: Tm, v: Tm, h: Eval(t, v)) -> Value(v) {
+    match h {
+      | Eval::EvTru => Value::VTru
+      | Eval::EvFls => Value::VFls
+      | Eval::EvZer => Value::VZ
+      | Eval::EvSuc(p, pv, hp) => Value::VS(pv, hp.rec)
+      | Eval::EvIfT(c, a, b, v2, hc, ha) => ha.rec
+      | Eval::EvIfF(c, a, b, v2, hc, hb) => hb.rec
+    }
+}
+
+fn value_evals_self(v: Tm, h: Value(v)) -> Eval(v, v) {
+    match h {
+      | Value::VTru      => Eval::EvTru
+      | Value::VFls      => Eval::EvFls
+      | Value::VZ        => Eval::EvZer
+      | Value::VS(p, hp) => Eval::EvSuc(p, p, hp.rec)
+    }
+}
