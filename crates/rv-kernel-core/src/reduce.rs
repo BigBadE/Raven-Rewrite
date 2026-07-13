@@ -851,13 +851,17 @@ impl<'e> Reducer<'e> {
         rc: &crate::env::CubHit,
         args: &[Term],
     ) -> Option<Term> {
-        let (num_points, num_paths, num_surfaces, num_cubes) = match rc.role {
-            CubHitRole::Rec { num_points, num_paths, num_surfaces, num_cubes } => {
-                (num_points as usize, num_paths as usize, num_surfaces as usize, num_cubes as usize)
-            }
+        let (num_points, num_paths, num_surfaces, num_cubes, num_hypers) = match rc.role {
+            CubHitRole::Rec { num_points, num_paths, num_surfaces, num_cubes, num_hypers } => (
+                num_points as usize,
+                num_paths as usize,
+                num_surfaces as usize,
+                num_cubes as usize,
+                num_hypers as usize,
+            ),
             _ => return None,
         };
-        let scrut_pos = 1 + num_points + num_paths + num_surfaces + num_cubes;
+        let scrut_pos = 1 + num_points + num_paths + num_surfaces + num_cubes + num_hypers;
         if args.len() <= scrut_pos {
             return None; // not yet applied to the H value
         }
@@ -991,6 +995,54 @@ impl<'e> Reducer<'e> {
                                             applied = Term::app(applied, extra.clone());
                                         }
                                         return Some(applied);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Hyper (4-path / "S⁴") rule: scrutinee is (weak-head)
+        // `PApp(PApp(PApp(PApp(p, ri), rj), rk), rw)` with `p`'s own weak-head
+        // literally `H.hyper_l` of the same HIT `id`, applied to no extra
+        // arguments (hypers are always nullary — see `CubHyperSpec`'s doc
+        // comment). Structurally disjoint from the path/surface/cube rules
+        // above by the same argument the cube rule's own doc comment gives one
+        // level down: a quadruply-nested `PApp` chain whose innermost head is
+        // `Const` can never match the (singly-, doubly-, or triply-nested)
+        // `PApp` shapes those rules look for, so no cross-firing is possible
+        // between any of the four rules.
+        if let Term::PApp(p_outer, rw) = &scrut {
+            let p_outer_w = self.whnf(p_outer);
+            if let Term::PApp(p_mid2, rk) = &p_outer_w {
+                let p_mid2_w = self.whnf(p_mid2);
+                if let Term::PApp(p_mid, rj) = &p_mid2_w {
+                    let p_mid_w = self.whnf(p_mid);
+                    if let Term::PApp(p_inner, ri) = &p_mid_w {
+                        let p_inner_w = self.whnf(p_inner);
+                        let (hyper_head, hyper_args) = p_inner_w.unfold_apps();
+                        if hyper_args.is_empty() {
+                            if let Term::Const(hyper_name, _) = &hyper_head {
+                                if let Some(Decl::CubHit(c)) = self.env.get(hyper_name) {
+                                    if c.id == rc.id {
+                                        if let CubHitRole::Hyper { idx, .. } = &c.role {
+                                            let pos = 1
+                                                + num_points
+                                                + num_paths
+                                                + num_surfaces
+                                                + num_cubes
+                                                + *idx as usize;
+                                            let v = args[pos].clone();
+                                            let applied_i = Term::papp(v, (**ri).clone());
+                                            let applied_ij = Term::papp(applied_i, (**rj).clone());
+                                            let applied_ijk = Term::papp(applied_ij, (**rk).clone());
+                                            let mut applied = Term::papp(applied_ijk, (**rw).clone());
+                                            for extra in &args[scrut_pos + 1..] {
+                                                applied = Term::app(applied, extra.clone());
+                                            }
+                                            return Some(applied);
+                                        }
                                     }
                                 }
                             }

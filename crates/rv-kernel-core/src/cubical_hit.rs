@@ -190,6 +190,63 @@
 //! `tests::cannot_prove_false_via_surf_schema`/`tests::cannot_prove_false_via_torus_schema`
 //! mirror the 1-path schema's identical soundness tests one dimension up.
 //!
+//! ## 3- and 4-dimensional (higher) path constructors: `S³` and `S⁴`
+//!
+//! `q ≥ 0` fully-degenerate **3-dimensional ("cube") constructors** `H.cube_0,
+//! …, H.cube_{q-1}` (see [`CubCubeSpec`]) and `hh ≥ 0` fully-degenerate
+//! **4-dimensional ("hyper") constructors** `H.hyper_0, …, H.hyper_{hh-1}`
+//! (see [`CubHyperSpec`]) extend the 2-dimensional "S²" shape above by one,
+//! then two, more `PathP` levels — each based at a single **nullary** point
+//! constructor with **every** side `refl` (unlike [`CubSurfSpec`], no
+//! `left`/`right`/`top`/`bottom` choice at these dimensions — that
+//! generalization is deferred at dimension 2 and not re-attempted at 3/4).
+//! `tests::s3_spec`/`tests::s4_spec` declare the literal "one/two dimensions
+//! up from S²" spheres. The recursor gains one **triply-`PathP`** case per
+//! cube (`u_l`) and one **quadruply-`PathP`** case per hyper (`v_o`), each
+//! constructed by the identical wrap-in-one-more-`refl`/`PathP`-level move
+//! the previous dimension's case used (see [`declare_cubical_hit`]'s cube/hyper
+//! declaration blocks and their `u_l`/`v_o` recursor-telescope loops for the
+//! exact, purely mechanical, one-more-level construction). Both ι-rules
+//! ([`crate::reduce::Reducer::try_cubical_hit_rec`]/
+//! [`crate::nbe::Nbe::try_cubical_hit_rec`]'s cube/hyper arms) fire *only* on
+//! a literal, triply-/quadruply-`PApp`-applied scrutinee for the *same* HIT
+//! `id`, structurally disjoint from every lower-dimensional arm by the same
+//! "innermost head under a `Const`-shaped `PApp` chain of the wrong depth
+//! cannot match a chain of a different depth" argument given at each
+//! dimension (see those functions' doc comments); [`crate::check::Checker::path_boundary_one`]
+//! gained one more bounded nested level per dimension (now four total: 0
+//! through 4-fold `PApp`), each provably terminating because the probed term
+//! `p_{k+1}` is always **strictly smaller** than `p_k`.
+//!
+//! ## n-dimensional generalization: investigated, deferred
+//!
+//! A fully **dimension-generic** cell schema — one recursive `Cell { dim: u32,
+//! boundary: .. }` representation subsuming point/path/surf/cube/hyper (and
+//! extending losslessly to `dim ≥ 5`) with a single parameterized ι-rule and a
+//! recursive (rather than four times hand-unrolled) `path_boundary_one` — was
+//! considered for this revision. It was **not landed**: every one of the four
+//! existing dimensions has its own bespoke `CubXSpec` struct, its own
+//! `CubHitRole` variant, and its own hand-written reducer/NbE arm/recursor-
+//! telescope loop, each got there by successive *minimal, independently
+//! audited* one-more-level extensions (S¹/I² → S² → S³, landed here as S⁴) —
+//! collapsing all four into one recursive representation is a strictly larger
+//! surface-level rewrite (new de Bruijn bookkeeping for a runtime-`dim`-sized
+//! telescope, a genuinely recursive `path_boundary_one` whose termination
+//! argument is no longer "one more hardcoded level" but "structural recursion
+//! on `dim`", and a single ι-rule matching a *variable-depth* `PApp` chain
+//! instead of four independently-verified fixed-depth matches) that risks the
+//! standing invariant ("every existing HIT test stays green, unchanged") this
+//! module's soundness rests on. Per this task's own stated fallback, the
+//! smaller, definitely-sound extension — one more hardcoded dimension (`S⁴`,
+//! [`CubHyperSpec`]), built by literally copy-and-extending the `S³` pattern
+//! one level, leaving every existing `CubXSpec`/`CubHitRole` variant/reducer
+//! arm untouched — was landed instead. A genuine `Cell`-based n-generalization
+//! remains **future work**; the mechanical pattern established by the four
+//! landed dimensions (point → path → surf → cube → hyper, each one `PathP`
+//! level deeper, each `path_boundary_one` extension bounded and strictly
+//! decreasing) is exactly what such a generalization would need to formalize
+//! into a single recursive construction.
+//!
 //! ## What's deferred
 //!
 //! * **Path constructors touching a recursive point constructor** — the path
@@ -217,9 +274,12 @@
 //!   self-loops — a materially larger change (composite-path sides, quantified
 //!   surfaces) is deferred in favor of landing a genuinely sound, if still
 //!   restricted, general-square schema.
-//! * **3-dimensional (or higher) path constructors** — not attempted; the
-//!   `path_boundary_one` extension above is bounded to exactly one extra level
-//!   (matching this schema's "at most 2-dimensional" scope).
+//! * **5-dimensional (or higher) path constructors** — not attempted (see
+//!   "4-dimensional (higher) path constructors" below for exactly how far this
+//!   module reaches, and "n-dimensional generalization" for why a fully
+//!   dimension-generic schema was investigated but deferred); the
+//!   `path_boundary_one` extension is bounded to exactly one extra nested
+//!   level per dimension landed (0 through 4), never open-ended.
 //! * **Indexed/parametric HITs** (`H` itself taking parameters or indices) — out of
 //!   scope, as `crate::hit`'s module doc argues for its identical restriction.
 //!
@@ -480,10 +540,48 @@ impl CubCubeSpec {
     }
 }
 
+/// A user's declaration of one **4-dimensional ("hyper"/higher) path
+/// constructor** — a 4-cell based at a single **nullary** point constructor
+/// `p = H.point_{base}`, with **all-degenerate (`refl`) boundary**, i.e. type
+///
+/// ```text
+///   H.name : PathP (\i. PathP (\j. PathP (\k. Path H p p) (refl p) (refl p))
+///                    (refl (refl p)) (refl (refl p))))
+///             (refl (refl (refl p))) (refl (refl (refl p)))
+/// ```
+///
+/// — the literal "S³-one-dimension-up" shape: exactly [`CubCubeSpec::s3`]'s
+/// all-`refl` cube, generalized by one more `PathP` level (see the module
+/// doc's "4-dimensional (higher) path constructors" section). This is the
+/// same bounded, one-more-hardcoded-level extension [`CubCubeSpec`] itself
+/// was to [`CubSurfSpec::s2`] — a fully general dimension-generic `Cell`
+/// schema subsuming point/path/surf/cube/hyper into one recursive
+/// representation was investigated (see the module doc's "n-dimensional
+/// generalization" section) but deferred in favor of this smaller, easily
+/// audited, definitely-sound extension that keeps every existing HIT
+/// unchanged.
+#[derive(Clone, Debug)]
+pub struct CubHyperSpec {
+    pub name: String,
+    /// The (must be **nullary** — arity 0) point constructor this 4-cell is
+    /// based at, all sixteen corners.
+    pub base: usize,
+}
+
+impl CubHyperSpec {
+    /// The "S⁴" shape: a 4-cell based at a nullary point with fully
+    /// degenerate (`refl`) boundary — the simplest nontrivial 4-cell, one
+    /// dimension up from [`CubCubeSpec::s3`].
+    pub fn s4(name: impl Into<String>, base: usize) -> Self {
+        CubHyperSpec { name: name.into(), base }
+    }
+}
+
 /// A user-supplied specification of a cubical HIT: its type-former name, its
 /// (possibly fielded) point constructors, its (possibly quantified) path
-/// constructors, its (S²-shaped) 2-path ("surface") constructors, and its
-/// (S³-shaped, all-degenerate) 3-path ("cube") constructors. See the module
+/// constructors, its (S²-shaped) 2-path ("surface") constructors, its
+/// (S³-shaped, all-degenerate) 3-path ("cube") constructors, and its
+/// (S⁴-shaped, all-degenerate) 4-path ("hyper") constructors. See the module
 /// doc for the exact supported class.
 #[derive(Clone, Debug)]
 pub struct CubHitSpec {
@@ -492,6 +590,7 @@ pub struct CubHitSpec {
     pub paths: Vec<CubPathSpec>,
     pub surfaces: Vec<CubSurfSpec>,
     pub cubes: Vec<CubCubeSpec>,
+    pub hypers: Vec<CubHyperSpec>,
 }
 
 impl CubHitSpec {
@@ -559,6 +658,10 @@ fn surfc(spec: &CubHitSpec, k: usize) -> Term {
 /// `H.cube_l` (bare constant; `@`-apply three times for the 3-cell).
 fn cubec(spec: &CubHitSpec, l: usize) -> Term {
     Term::cnst(name(&spec.cubes[l].name), vec![])
+}
+/// `H.hyper_l` (bare constant; `@`-apply four times for the 4-cell).
+fn hyperc(spec: &CubHitSpec, l: usize) -> Term {
+    Term::cnst(name(&spec.hypers[l].name), vec![])
 }
 
 /// Build a de-Bruijn `Var` referencing the binder assigned **level** `level`
@@ -628,6 +731,7 @@ pub fn declare_cubical_hit(env: &mut Env, spec: &CubHitSpec) -> Result<(), Strin
     let m = spec.paths.len();
     let p = spec.surfaces.len();
     let q = spec.cubes.len();
+    let hh = spec.hypers.len();
     if n == 0 {
         return Err("a cubical HIT needs at least one point constructor".to_string());
     }
@@ -739,11 +843,32 @@ pub fn declare_cubical_hit(env: &mut Env, spec: &CubHitSpec) -> Result<(), Strin
         }
     }
 
+    // 4-path ("hyper") constructors: `base` must be in range and NULLARY (see
+    // `CubHyperSpec`'s doc comment — the all-degenerate "S⁴" shape only, no
+    // sides to validate since every side is `refl`, mirroring the cube check
+    // one dimension up).
+    for hyper in &spec.hypers {
+        if hyper.base >= n {
+            return Err(format!(
+                "hyper constructor '{}' has an out-of-range base point (index {}, but only {n} points)",
+                hyper.name, hyper.base
+            ));
+        }
+        if !spec.points[hyper.base].fields.is_empty() {
+            return Err(format!(
+                "hyper constructor '{}' targets point constructor '{}', which is not nullary — 4-path \
+                 constructors may only (yet) be based at a nullary point (see module docs)",
+                hyper.name, spec.points[hyper.base].name
+            ));
+        }
+    }
+
     let mut all_names: Vec<&str> = vec![spec.name.as_str()];
     all_names.extend(spec.points.iter().map(|p| p.name.as_str()));
     all_names.extend(spec.paths.iter().map(|p| p.name.as_str()));
     all_names.extend(spec.surfaces.iter().map(|s| s.name.as_str()));
     all_names.extend(spec.cubes.iter().map(|c| c.name.as_str()));
+    all_names.extend(spec.hypers.iter().map(|h| h.name.as_str()));
     let rec_name_owned = spec.rec_name();
     all_names.push(&rec_name_owned);
     for nm in &all_names {
@@ -924,18 +1049,50 @@ pub fn declare_cubical_hit(env: &mut Env, spec: &CubHitSpec) -> Result<(), Strin
     }
 
     // ------------------------------------------------------------------
+    // H.hyper_l : PathP (\i. PathP (\j. PathP (\k. Path H p p) (refl p) (refl p))
+    //              (refl (refl p)) (refl (refl p))) (refl (refl (refl p)))
+    //              (refl (refl (refl p))), where p = H.point_{base} — the
+    // fully-degenerate "S⁴" 4-cell (see `CubHyperSpec`'s doc comment). Every
+    // side is `refl`-of-`refl`-of-`refl` (constant) — literally
+    // `H.cube_l`'s own construction above, wrapped in one more `refl`/`PathP`
+    // level (mirrors the cube loop's identical comment one dimension down).
+    // ------------------------------------------------------------------
+    for (l, hyper) in spec.hypers.iter().enumerate() {
+        let base_pt = point(spec, hyper.base); // nullary, so the bare constant IS the point value.
+        let lvl0 = Term::path(hconst(spec), base_pt.clone(), base_pt.clone()); // Path H p p
+        let lvl1 = Term::pathp(lvl0, crate::cubical::refl(&base_pt), crate::cubical::refl(&base_pt));
+        let lvl2 = Term::pathp(
+            lvl1,
+            crate::cubical::refl(&crate::cubical::refl(&base_pt)),
+            crate::cubical::refl(&crate::cubical::refl(&base_pt)),
+        );
+        let refl3 = crate::cubical::refl(&crate::cubical::refl(&crate::cubical::refl(&base_pt)));
+        let ty = Term::pathp(lvl2, refl3.clone(), refl3);
+        env.insert(
+            name(&hyper.name),
+            Decl::CubHit(Rc::new(CubHit {
+                id: id.clone(),
+                role: CubHitRole::Hyper { idx: l as u32, base: hyper.base as u32 },
+                num_levels: 0,
+                ty,
+            })),
+        )?;
+    }
+
+    // ------------------------------------------------------------------
     // H.rec.{v} : Π (C : H -> Sort v)
     //               (c_0 : ..) .. (c_{n-1} : ..)
     //               (s_0 : ..) .. (s_{m-1} : ..)
     //               (t_0 : ..) .. (t_{p-1} : ..)
     //               (u_0 : ..) .. (u_{q-1} : ..)
+    //               (v_0 : ..) .. (v_{hh-1} : ..)
     //               (x : H), C x
     //
     // Binder levels (0-based, introduction order): C=0, c_i=1+i, s_j=1+n+j,
-    // t_k=1+n+m+k, u_l=1+n+m+p+l, x=1+n+m+p+q — see `var_at`'s doc comment
-    // for the depth/level convention.
+    // t_k=1+n+m+k, u_l=1+n+m+p+l, v_o=1+n+m+p+q+o, x=1+n+m+p+q+hh — see
+    // `var_at`'s doc comment for the depth/level convention.
     // ------------------------------------------------------------------
-    let x_level = 1 + n + m + p + q;
+    let x_level = 1 + n + m + p + q + hh;
 
     // Innermost: `C x`, written at depth = x_level + 1.
     let codomain = {
@@ -944,6 +1101,62 @@ pub fn declare_cubical_hit(env: &mut Env, spec: &CubHitSpec) -> Result<(), Strin
     };
     // `x : H`, written at depth = x_level.
     let mut acc = Term::pi(hconst(spec), codomain);
+
+    // v_{hh-1} .. v_0, each written at depth = 1 + n + m + p + q + o (before
+    // its own quadruple-interval telescope is opened). Mirrors `H.hyper_l`'s
+    // own declared type exactly, one level up from `u_l` below: `H` -> `C`
+    // (applied), `H.point_base` -> the point recursor case `c_base`, and the
+    // `refl`-of-`refl`-of-`refl` boundary structure preserved verbatim
+    // (every side of `H.hyper_l` is degenerate, so — exactly as the `u_l`
+    // loop's construction does one dimension down — each nested endpoint is
+    // simply `c_base` wrapped in the right number of `refl`s).
+    for o in (0..hh).rev() {
+        let hyper = &spec.hypers[o];
+        let depth = 1 + n + m + p + q + o;
+        let c_base_at = |d: usize| var_at(1 + hyper.base, d);
+        // Innermost: the `w`-level family `\w. C (hyper@i@j@k@w)`, written
+        // under all four interval binders (levels `depth`..`depth+3`).
+        let fam4 = {
+            let fam_depth = depth + 4;
+            let c_ref = var_at(0, fam_depth);
+            let i_ref = var_at(depth, fam_depth);
+            let j_ref = var_at(depth + 1, fam_depth);
+            let k_ref = var_at(depth + 2, fam_depth);
+            let w_ref = var_at(depth + 3, fam_depth);
+            let hyper_call =
+                Term::papp(Term::papp(Term::papp(Term::papp(hyperc(spec, o), i_ref), j_ref), k_ref), w_ref);
+            Term::app(c_ref, hyper_call)
+        };
+        // The `w`-level `PathP` — its own endpoints (the base case's boundary
+        // in `w`) are the bare `c_base`, at the depth right after `i`/`j`/`k`
+        // are opened.
+        let lvl3 = Term::pathp(fam4, c_base_at(depth + 3), c_base_at(depth + 3));
+        // The `k`-level `PathP` (a function of `i`, `j` only) — its own
+        // endpoints are `refl c_base` (a constant path in `w`), at the depth
+        // right after `i`/`j` are opened.
+        let lvl2 = Term::pathp(
+            lvl3,
+            crate::cubical::refl(&c_base_at(depth + 2)),
+            crate::cubical::refl(&c_base_at(depth + 2)),
+        );
+        // The `j`-level `PathP` (a function of `i` only) — its own endpoints
+        // are `refl (refl c_base)` (a constant square in `k`/`w`), at the
+        // depth right after `i` alone is opened.
+        let lvl1 = Term::pathp(
+            lvl2,
+            crate::cubical::refl(&crate::cubical::refl(&c_base_at(depth + 1))),
+            crate::cubical::refl(&crate::cubical::refl(&c_base_at(depth + 1))),
+        );
+        // The outer (`i`-level) `PathP` — `v_o`'s own type — with endpoints
+        // `refl (refl (refl c_base))` (a constant cube), at `depth` (no
+        // interval binder opened yet).
+        let v_ty = Term::pathp(
+            lvl1,
+            crate::cubical::refl(&crate::cubical::refl(&crate::cubical::refl(&c_base_at(depth)))),
+            crate::cubical::refl(&crate::cubical::refl(&crate::cubical::refl(&c_base_at(depth)))),
+        );
+        acc = Term::pi(v_ty, acc);
+    }
 
     // u_{q-1} .. u_0, each written at depth = 1 + n + m + p + l (before its
     // own triple-interval telescope is opened). Mirrors `H.cube_l`'s own
@@ -1108,6 +1321,7 @@ pub fn declare_cubical_hit(env: &mut Env, spec: &CubHitSpec) -> Result<(), Strin
                 num_paths: m as u32,
                 num_surfaces: p as u32,
                 num_cubes: q as u32,
+                num_hypers: hh as u32,
             },
             num_levels: 1,
             ty: rec_ty,
@@ -1157,6 +1371,7 @@ mod tests {
             paths: vec![CubPathSpec::simple("MyI.seg", 0, 1)],
             surfaces: vec![],
             cubes: vec![],
+            hypers: vec![],
         };
         declare_cubical_hit(&mut env, &spec).unwrap();
         let chk = Checker::new(&env);
@@ -1171,6 +1386,7 @@ mod tests {
         let spec = CubHitSpec { name: "Empty2".to_string(), points: vec![], paths: vec![],
             surfaces: vec![],
             cubes: vec![],
+            hypers: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("at least one point"), "got: {err}");
@@ -1185,6 +1401,7 @@ mod tests {
             paths: vec![CubPathSpec::simple("Bad.bogus", 0, 5)],
             surfaces: vec![],
             cubes: vec![],
+            hypers: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("out-of-range"), "got: {err}");
@@ -1199,6 +1416,7 @@ mod tests {
             paths: vec![],
             surfaces: vec![],
             cubes: vec![],
+            hypers: vec![],
         };
         declare_cubical_hit(&mut env, &spec).unwrap();
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
@@ -1219,6 +1437,7 @@ mod tests {
             paths: vec![],
             surfaces: vec![],
             cubes: vec![],
+            hypers: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("strict positivity") || err.contains("mentioning"), "got: {err}");
@@ -1243,6 +1462,7 @@ mod tests {
             }],
             surfaces: vec![],
             cubes: vec![],
+            hypers: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("recursive field"), "got: {err}");
@@ -1263,6 +1483,7 @@ mod tests {
             }],
             surfaces: vec![],
             cubes: vec![],
+            hypers: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("arity"), "got: {err}");
@@ -1279,6 +1500,7 @@ mod tests {
             paths: vec![CubPathSpec::simple("I2g.seg", 0, 1)],
             surfaces: vec![],
             cubes: vec![],
+            hypers: vec![],
         }
     }
 
@@ -1351,6 +1573,7 @@ mod tests {
             paths: vec![CubPathSpec::simple("S1g.loop", 0, 0)],
             surfaces: vec![],
             cubes: vec![],
+            hypers: vec![],
         }
     }
 
@@ -1419,6 +1642,7 @@ mod tests {
             paths: vec![CubPathSpec::simple("Fig8.loop1", 0, 0), CubPathSpec::simple("Fig8.loop2", 0, 0)],
             surfaces: vec![],
             cubes: vec![],
+            hypers: vec![],
         }
     }
 
@@ -1496,6 +1720,7 @@ mod tests {
             paths: vec![CubPathSpec::simple("Ia.seg", 0, 1)],
             surfaces: vec![],
             cubes: vec![],
+            hypers: vec![],
         };
         let spec_b = CubHitSpec {
             name: "Ib".to_string(),
@@ -1503,6 +1728,7 @@ mod tests {
             paths: vec![CubPathSpec::simple("Ib.seg", 0, 1)],
             surfaces: vec![],
             cubes: vec![],
+            hypers: vec![],
         };
         declare_cubical_hit(&mut env, &spec_a).unwrap();
         declare_cubical_hit(&mut env, &spec_b).unwrap();
@@ -1571,6 +1797,7 @@ mod tests {
             paths: vec![],
             surfaces: vec![],
             cubes: vec![],
+            hypers: vec![],
         }
     }
 
@@ -1697,6 +1924,7 @@ mod tests {
             }],
             surfaces: vec![],
             cubes: vec![],
+            hypers: vec![],
         };
         (env, spec)
     }
@@ -1848,6 +2076,7 @@ mod tests {
             }],
             surfaces: vec![],
             cubes: vec![],
+            hypers: vec![],
         };
         declare_cubical_hit(&mut env, &spec).unwrap();
 
@@ -1916,6 +2145,7 @@ mod tests {
             paths: vec![],
             surfaces: vec![CubSurfSpec::s2("S2g.surf", 0)],
             cubes: vec![],
+            hypers: vec![],
         }
     }
 
@@ -1947,6 +2177,7 @@ mod tests {
             paths: vec![],
             surfaces: vec![CubSurfSpec::s2("Bad.surf", 0)],
             cubes: vec![],
+            hypers: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("not nullary") || err.contains("nullary"), "got: {err}");
@@ -1962,6 +2193,7 @@ mod tests {
             paths: vec![],
             surfaces: vec![CubSurfSpec::s2("Bad2.surf", 5)],
             cubes: vec![],
+            hypers: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("out-of-range"), "got: {err}");
@@ -2081,6 +2313,7 @@ mod tests {
             paths: vec![],
             surfaces: vec![CubSurfSpec::s2("S2a.surf", 0)],
             cubes: vec![],
+            hypers: vec![],
         };
         let spec_b = CubHitSpec {
             name: "S2b".to_string(),
@@ -2088,6 +2321,7 @@ mod tests {
             paths: vec![],
             surfaces: vec![CubSurfSpec::s2("S2b.surf", 0)],
             cubes: vec![],
+            hypers: vec![],
         };
         declare_cubical_hit(&mut env, &spec_a).unwrap();
         declare_cubical_hit(&mut env, &spec_b).unwrap();
@@ -2127,6 +2361,7 @@ mod tests {
                 bottom: Some(1),
             }],
             cubes: vec![],
+            hypers: vec![],
         }
     }
 
@@ -2244,6 +2479,7 @@ mod tests {
                 bottom: None,
             }],
             cubes: vec![],
+            hypers: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("out-of-range"), "got: {err}");
@@ -2268,6 +2504,7 @@ mod tests {
                 bottom: None,
             }],
             cubes: vec![],
+            hypers: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("self-loop"), "got: {err}");
@@ -2297,6 +2534,7 @@ mod tests {
                 bottom: None,
             }],
             cubes: vec![],
+            hypers: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("quantified"), "got: {err}");
@@ -2340,6 +2578,7 @@ mod tests {
             paths: vec![],
             surfaces: vec![],
             cubes: vec![CubCubeSpec::s3("S3g.cube", 0)],
+            hypers: vec![],
         }
     }
 
@@ -2377,6 +2616,7 @@ mod tests {
             paths: vec![],
             surfaces: vec![],
             cubes: vec![CubCubeSpec::s3("Bad6.cube", 0)],
+            hypers: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("nullary"), "got: {err}");
@@ -2392,6 +2632,7 @@ mod tests {
             paths: vec![],
             surfaces: vec![],
             cubes: vec![CubCubeSpec::s3("Bad7.cube", 5)],
+            hypers: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("out-of-range"), "got: {err}");
@@ -2540,6 +2781,7 @@ mod tests {
             paths: vec![],
             surfaces: vec![],
             cubes: vec![CubCubeSpec::s3("S3a.cube", 0)],
+            hypers: vec![],
         };
         let spec_b = CubHitSpec {
             name: "S3b".to_string(),
@@ -2547,6 +2789,7 @@ mod tests {
             paths: vec![],
             surfaces: vec![],
             cubes: vec![CubCubeSpec::s3("S3b.cube", 0)],
+            hypers: vec![],
         };
         declare_cubical_hit(&mut env, &spec_a).unwrap();
         declare_cubical_hit(&mut env, &spec_b).unwrap();
@@ -2574,10 +2817,301 @@ mod tests {
             paths: vec![CubPathSpec::simple("Combo.loop", 0, 0)],
             surfaces: vec![CubSurfSpec::s2("Combo.surf", 0)],
             cubes: vec![CubCubeSpec::s3("Combo.cube", 0)],
+            hypers: vec![],
         };
         declare_cubical_hit(&mut env, &spec).unwrap();
         let chk = Checker::new(&env);
         for n in ["Combo", "Combo.base", "Combo.loop", "Combo.surf", "Combo.cube", "Combo.rec"] {
+            chk.infer_closed(env.get(n).unwrap().ty()).unwrap_or_else(|e| panic!("{n} ill-formed: {e}"));
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // NEW: a genuine 4-dimensional cubical HIT — `S⁴`, one point (`base`) and
+    // one fully-degenerate 4-path ("hyper") constructor `hyper : Path (Path
+    // (Path (Path S⁴ base base) (refl base) (refl base)) (refl (refl base))
+    // (refl (refl base))) (refl (refl (refl base))) (refl (refl (refl
+    // base)))` — the simplest 4-cell, "S³ one dimension up" (see the module
+    // doc, "4-dimensional (higher) path constructors" and `CubHyperSpec`'s
+    // doc comment). Mirrors `s3_spec`/its tests one dimension deeper,
+    // exercising the new `CubHitRole::Hyper` ι-rule (reducer + NbE) and the
+    // `path_boundary_one` extension to a fourth nested level.
+    // ---------------------------------------------------------------------
+
+    fn s4_spec() -> CubHitSpec {
+        CubHitSpec {
+            name: "S4g".to_string(),
+            points: vec![CubPointSpec::nullary("S4g.base")],
+            paths: vec![],
+            surfaces: vec![],
+            cubes: vec![],
+            hypers: vec![CubHyperSpec::s4("S4g.hyper", 0)],
+        }
+    }
+
+    #[test]
+    fn s4_wellformed_and_hyper_typechecks() {
+        let mut env = base_env();
+        declare_cubical_hit(&mut env, &s4_spec()).unwrap();
+        let chk = Checker::new(&env);
+        for n in ["S4g", "S4g.base", "S4g.hyper", "S4g.rec"] {
+            chk.infer_closed(env.get(n).unwrap().ty()).unwrap_or_else(|e| panic!("{n} ill-formed: {e}"));
+        }
+        // `S4g.hyper` itself checks against the literal 4-fold-nested `Path`
+        // goal — pins the exact declared shape down.
+        let base = cn("S4g.base");
+        let lvl0 = Term::path(cn("S4g"), base.clone(), base.clone());
+        let lvl1 = Term::path(lvl0, crate::cubical::refl(&base), crate::cubical::refl(&base));
+        let lvl2 = Term::path(
+            lvl1,
+            crate::cubical::refl(&crate::cubical::refl(&base)),
+            crate::cubical::refl(&crate::cubical::refl(&base)),
+        );
+        let refl3 = crate::cubical::refl(&crate::cubical::refl(&crate::cubical::refl(&base)));
+        let goal = Term::path(lvl2, refl3.clone(), refl3);
+        chk.check(&mut LocalCtx::new(), &cn("S4g.hyper"), &goal).unwrap();
+    }
+
+    /// SOUNDNESS (adversarial): a 4-path ("hyper") constructor may only be
+    /// based at a NULLARY point constructor (mirrors `rejects_cube_based_at_fielded_point`
+    /// one dimension up).
+    #[test]
+    fn rejects_hyper_based_at_fielded_point() {
+        let mut env = base_env();
+        let spec = CubHitSpec {
+            name: "Bad8".to_string(),
+            points: vec![CubPointSpec { name: "Bad8.mk".to_string(), fields: vec![Field::NonRec(cn("Nat"))] }],
+            paths: vec![],
+            surfaces: vec![],
+            cubes: vec![],
+            hypers: vec![CubHyperSpec::s4("Bad8.hyper", 0)],
+        };
+        let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
+        assert!(err.contains("nullary"), "got: {err}");
+    }
+
+    /// SOUNDNESS (adversarial): an out-of-range `base` index is rejected.
+    #[test]
+    fn rejects_hyper_out_of_range_base() {
+        let mut env = base_env();
+        let spec = CubHitSpec {
+            name: "Bad9".to_string(),
+            points: vec![CubPointSpec::nullary("Bad9.p0")],
+            paths: vec![],
+            surfaces: vec![],
+            cubes: vec![],
+            hypers: vec![CubHyperSpec::s4("Bad9.hyper", 5)],
+        };
+        let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
+        assert!(err.contains("out-of-range"), "got: {err}");
+    }
+
+    /// COMPUTATION RULE: the 4-path ι-rule. `rec .. (hyper @ i @ j @ k @ w)`
+    /// reduces to `(((v @ i) @ j) @ k) @ w` for a CONCRETE (genuinely
+    /// reducing) quadruply-nested `PLam` witness `v = refl (refl (refl (refl
+    /// 7)))` — differential reducer vs. NbE, and (since `v` is concrete)
+    /// exercises the boundary at every one of the 16 corners too (`i0`/`i1` x
+    /// `j0`/`j1` x `k0`/`k1` x `w0`/`w1`, all collapsing to the point rule's
+    /// value) — the module doc's "Boundary coherence" argument, now three
+    /// dimensions up, mirroring `s3_cube_iota_computes_and_boundary_agrees`
+    /// one level deeper.
+    #[test]
+    fn s4_hyper_iota_computes_and_boundary_agrees() {
+        let mut env = base_env();
+        declare_cubical_hit(&mut env, &s4_spec()).unwrap();
+        let uni = Level::of_nat(1);
+        let seven = lit(7);
+        let motive = Term::lam(cn("S4g"), cn("Nat").lift(1, 0));
+        let v_case =
+            crate::cubical::refl(&crate::cubical::refl(&crate::cubical::refl(&crate::cubical::refl(&seven))));
+        let rec = |scrut: Term| {
+            Term::apps(
+                Term::cnst(name("S4g.rec"), vec![uni.clone()]),
+                [motive.clone(), seven.clone(), v_case.clone(), scrut],
+            )
+        };
+        let chk = Checker::new(&env);
+        let red = Reducer::new(&env);
+        let nbe = Nbe::new(&env);
+
+        // Point rule: `rec base = 7`.
+        let rb = rec(cn("S4g.base"));
+        chk.check(&mut LocalCtx::new(), &rb, &cn("Nat")).unwrap();
+        assert!(red.is_def_eq(&rb, &seven));
+        assert_eq!(nbe.normalize(&rb), nbe.normalize(&seven));
+
+        // 4-path rule: `rec (hyper @ i @ j @ k @ w) = (((v @ i) @ j) @ k) @ w
+        // = 7`, for symbolic `i`/`j`/`k`/`w` (four nested `plam`s).
+        let scrut = Term::papp(
+            Term::papp(Term::papp(Term::papp(cn("S4g.hyper"), Term::Var(3)), Term::Var(2)), Term::Var(1)),
+            Term::Var(0),
+        );
+        let whole = Term::plam(Term::plam(Term::plam(Term::plam(rec(scrut)))));
+        let ty = chk.infer_closed(&whole).unwrap();
+        let inner0 = Term::path(cn("Nat"), seven.clone(), seven.clone());
+        let inner1 = Term::path(inner0, crate::cubical::refl(&seven), crate::cubical::refl(&seven));
+        let inner2 = Term::path(
+            inner1,
+            crate::cubical::refl(&crate::cubical::refl(&seven)),
+            crate::cubical::refl(&crate::cubical::refl(&seven)),
+        );
+        let expected_ty = Term::path(
+            inner2,
+            crate::cubical::refl(&crate::cubical::refl(&crate::cubical::refl(&seven))),
+            crate::cubical::refl(&crate::cubical::refl(&crate::cubical::refl(&seven))),
+        );
+        assert!(red.is_def_eq(&ty, &expected_ty));
+        let expected = Term::plam(Term::plam(Term::plam(Term::plam(seven.lift(4, 0)))));
+        assert!(red.is_def_eq(&whole, &expected));
+        assert_eq!(nbe.normalize(&whole), nbe.normalize(&expected));
+
+        // Boundary coherence at every one of the 16 corners.
+        for i_end in [Term::IZero, Term::IOne] {
+            for j_end in [Term::IZero, Term::IOne] {
+                for k_end in [Term::IZero, Term::IOne] {
+                    for w_end in [Term::IZero, Term::IOne] {
+                        let corner = rec(Term::papp(
+                            Term::papp(
+                                Term::papp(Term::papp(cn("S4g.hyper"), i_end.clone()), j_end.clone()),
+                                k_end.clone(),
+                            ),
+                            w_end.clone(),
+                        ));
+                        chk.check(&mut LocalCtx::new(), &corner, &cn("Nat")).unwrap();
+                        assert!(
+                            red.is_def_eq(&corner, &rb),
+                            "reducer: corner {i_end:?}/{j_end:?}/{k_end:?}/{w_end:?} agrees with rec base"
+                        );
+                        assert_eq!(
+                            nbe.normalize(&corner),
+                            nbe.normalize(&rb),
+                            "nbe: corner {i_end:?}/{j_end:?}/{k_end:?}/{w_end:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// `H.rec` stays stuck on a partially-applied ("under-dimensioned") hyper
+    /// — a TRIPLE `@`-application `hyper @ i @ j @ k` (not the required
+    /// quadruple `hyper @ i @ j @ k @ w`) must not misfire the 4-path
+    /// ι-rule (mirrors `rec_stuck_on_underapplied_cube` one dimension up).
+    #[test]
+    fn rec_stuck_on_underapplied_hyper() {
+        let mut env = base_env();
+        declare_cubical_hit(&mut env, &s4_spec()).unwrap();
+        let uni = Level::of_nat(1);
+        let motive = Term::lam(cn("S4g"), cn("Nat").lift(1, 0));
+        let v_case = crate::cubical::refl(&crate::cubical::refl(&crate::cubical::refl(&crate::cubical::refl(
+            &lit(7),
+        ))));
+        let partial = Term::papp(
+            Term::papp(Term::papp(cn("S4g.hyper"), Term::Var(2)), Term::Var(1)),
+            Term::Var(0),
+        ); // only THREE `@`
+        let rec = Term::plam(Term::plam(Term::plam(Term::apps(
+            Term::cnst(name("S4g.rec"), vec![uni]),
+            [motive, lit(7), v_case, partial],
+        ))));
+        let red = Reducer::new(&env);
+        let result = red.whnf(&rec);
+        match &result {
+            Term::PLam(b1) => match &**b1 {
+                Term::PLam(b2) => match &**b2 {
+                    Term::PLam(inner) => {
+                        let (h, _) = inner.unfold_apps();
+                        assert!(matches!(h, Term::Const(n, _) if n == name("S4g.rec")));
+                    }
+                    other => panic!("expected a nested stuck PLam, got {other:?}"),
+                },
+                other => panic!("expected a nested stuck PLam, got {other:?}"),
+            },
+            other => panic!("expected a stuck PLam, got {other:?}"),
+        }
+    }
+
+    /// ANTI-`False`: cannot derive `Path Nat 0 1` via the 4-path schema
+    /// either.
+    #[test]
+    fn cannot_prove_false_via_hyper_schema() {
+        let mut env = base_env();
+        declare_cubical_hit(&mut env, &s4_spec()).unwrap();
+        let chk = Checker::new(&env);
+        let inner0 = Term::path(cn("Nat"), lit(3), lit(3));
+        let inner1 = Term::path(inner0, crate::cubical::refl(&lit(3)), crate::cubical::refl(&lit(3)));
+        let inner2 = Term::path(
+            inner1,
+            crate::cubical::refl(&crate::cubical::refl(&lit(3))),
+            crate::cubical::refl(&crate::cubical::refl(&lit(3))),
+        );
+        let bogus_goal = Term::path(
+            inner2,
+            crate::cubical::refl(&crate::cubical::refl(&crate::cubical::refl(&lit(3)))),
+            crate::cubical::refl(&crate::cubical::refl(&crate::cubical::refl(&lit(3)))),
+        );
+        assert!(chk.check(&mut LocalCtx::new(), &cn("S4g.hyper"), &bogus_goal).is_err());
+        let red = Reducer::new(&env);
+        assert!(!red.is_def_eq(&lit(0), &lit(1)));
+    }
+
+    /// Adversarial: per-`id` no cross-fire between two independently declared
+    /// `S⁴`-shaped HITs (even structurally identical ones) — mirrors
+    /// `no_cross_fire_between_two_distinct_s3_hits` one dimension up.
+    #[test]
+    fn no_cross_fire_between_two_distinct_s4_hits() {
+        let mut env = base_env();
+        let spec_a = CubHitSpec {
+            name: "S4a".to_string(),
+            points: vec![CubPointSpec::nullary("S4a.base")],
+            paths: vec![],
+            surfaces: vec![],
+            cubes: vec![],
+            hypers: vec![CubHyperSpec::s4("S4a.hyper", 0)],
+        };
+        let spec_b = CubHitSpec {
+            name: "S4b".to_string(),
+            points: vec![CubPointSpec::nullary("S4b.base")],
+            paths: vec![],
+            surfaces: vec![],
+            cubes: vec![],
+            hypers: vec![CubHyperSpec::s4("S4b.hyper", 0)],
+        };
+        declare_cubical_hit(&mut env, &spec_a).unwrap();
+        declare_cubical_hit(&mut env, &spec_b).unwrap();
+        let chk = Checker::new(&env);
+        let motive = Term::lam(cn("S4a"), cn("Nat").lift(1, 0));
+        let v_case = crate::cubical::refl(&crate::cubical::refl(&crate::cubical::refl(&crate::cubical::refl(
+            &lit(0),
+        ))));
+        let bogus = Term::apps(
+            Term::cnst(name("S4a.rec"), vec![Level::of_nat(1)]),
+            [motive, lit(0), v_case, cn("S4b.base")],
+        );
+        assert!(chk.infer_closed(&bogus).is_err(), "S4a.rec must reject an S4b-typed scrutinee");
+    }
+
+    /// Combined declaration: a HIT with a point, a self-loop path, an S²
+    /// surface, an S³ cube, AND an S⁴ hyper all together — confirms all FIVE
+    /// constructor kinds' recursor telescopes compose correctly (binder-level
+    /// arithmetic `x_level = 1 + n + m + p + q + hh` and the `v_o` loop's own
+    /// depth bookkeeping) rather than only being exercised in isolation.
+    #[test]
+    fn combined_point_path_surf_cube_hyper_wellformed() {
+        let mut env = base_env();
+        let spec = CubHitSpec {
+            name: "Combo2".to_string(),
+            points: vec![CubPointSpec::nullary("Combo2.base")],
+            paths: vec![CubPathSpec::simple("Combo2.loop", 0, 0)],
+            surfaces: vec![CubSurfSpec::s2("Combo2.surf", 0)],
+            cubes: vec![CubCubeSpec::s3("Combo2.cube", 0)],
+            hypers: vec![CubHyperSpec::s4("Combo2.hyper", 0)],
+        };
+        declare_cubical_hit(&mut env, &spec).unwrap();
+        let chk = Checker::new(&env);
+        for n in
+            ["Combo2", "Combo2.base", "Combo2.loop", "Combo2.surf", "Combo2.cube", "Combo2.hyper", "Combo2.rec"]
+        {
             chk.infer_closed(env.get(n).unwrap().ty()).unwrap_or_else(|e| panic!("{n} ill-formed: {e}"));
         }
     }

@@ -1356,10 +1356,15 @@ impl<'a> Nbe<'a> {
     fn try_cubical_hit_rec(&self, h: Head, spine: Vec<Rc<Value>>) -> Rc<Value> {
         if let Head::Const(rname, ls) = &h {
             if let Some(Decl::CubHit(rc)) = self.env.get(rname) {
-                if let CubHitRole::Rec { num_points, num_paths, num_surfaces, num_cubes } = rc.role {
-                    let (num_points, num_paths, num_surfaces, num_cubes) =
-                        (num_points as usize, num_paths as usize, num_surfaces as usize, num_cubes as usize);
-                    let scrut_pos = 1 + num_points + num_paths + num_surfaces + num_cubes;
+                if let CubHitRole::Rec { num_points, num_paths, num_surfaces, num_cubes, num_hypers } = rc.role {
+                    let (num_points, num_paths, num_surfaces, num_cubes, num_hypers) = (
+                        num_points as usize,
+                        num_paths as usize,
+                        num_surfaces as usize,
+                        num_cubes as usize,
+                        num_hypers as usize,
+                    );
+                    let scrut_pos = 1 + num_points + num_paths + num_surfaces + num_cubes + num_hypers;
                     if spine.len() > scrut_pos {
                         match &*spine[scrut_pos] {
                             // Point rule: fully applied to its declared fields
@@ -1461,6 +1466,60 @@ impl<'a> Nbe<'a> {
                                                                         v = self.vapp(v, extra.clone());
                                                                     }
                                                                     return v;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                // Hyper rule (4-path / "S⁴"): `p_inner2`
+                                                // itself is ANOTHER `PathApp`
+                                                // (`(H.hyper_l @ ri3') @ ri2)`), so the
+                                                // cube check above (which requires
+                                                // `p_inner2` to be a bare `Const`) silently
+                                                // fails to match and falls through to here
+                                                // — mirrors
+                                                // [`crate::reduce::Reducer::try_cubical_hit_rec`]'s
+                                                // equivalent structural disjointness
+                                                // argument one level deeper still (see that
+                                                // function's doc comment).
+                                                if let Value::Stuck(Head::PathApp(p_inner3, ri3), iargs3) =
+                                                    &**p_inner2
+                                                {
+                                                    if iargs3.is_empty() {
+                                                        if let Value::Stuck(Head::Const(hyper_name, _), hargs) =
+                                                            &**p_inner3
+                                                        {
+                                                            if hargs.is_empty() {
+                                                                if let Some(Decl::CubHit(c)) =
+                                                                    self.env.get(hyper_name)
+                                                                {
+                                                                    if c.id == rc.id {
+                                                                        if let CubHitRole::Hyper { idx, .. } =
+                                                                            &c.role
+                                                                        {
+                                                                            let pos = 1
+                                                                                + num_points
+                                                                                + num_paths
+                                                                                + num_surfaces
+                                                                                + num_cubes
+                                                                                + *idx as usize;
+                                                                            let w = spine[pos].clone();
+                                                                            let w_i =
+                                                                                self.vpapp(w, ri3.clone());
+                                                                            let w_ij =
+                                                                                self.vpapp(w_i, ri2.clone());
+                                                                            let w_ijk =
+                                                                                self.vpapp(w_ij, ri.clone());
+                                                                            let mut v =
+                                                                                self.vpapp(w_ijk, r.clone());
+                                                                            for extra in
+                                                                                &spine[scrut_pos + 1..]
+                                                                            {
+                                                                                v = self.vapp(v, extra.clone());
+                                                                            }
+                                                                            return v;
+                                                                        }
+                                                                    }
                                                                 }
                                                             }
                                                         }
