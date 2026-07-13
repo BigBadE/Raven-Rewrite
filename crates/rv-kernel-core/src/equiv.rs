@@ -1067,17 +1067,18 @@ pub fn sym_equiv_inv(level: Level, a: &Term, b: &Term, e: &Term) -> Term {
 }
 
 // ----------------------------------------------------------------------------
-// Attempted and **not closed**: full-record `compEquiv` unit laws via
-// `equiv_mk_cong`.
+// Attempted further: full-record `compEquiv` unit laws via `equiv_mk_cong` —
+// still **not closed**, but the obstruction is now precisely relocated.
 //
 // The natural next step after `equiv_mk_cong` (above) is the full-record
 // `compEquivIdL A B e : Path (Equiv A B) (compEquiv A A B (idEquiv A) e) e`,
 // via the same "`Equiv.rec`-eliminate `e` down to a literal `Equiv.mk A B f g
 // sec ret`, then close `mk_case` field-by-field" move [`sym_equiv_inv`]
-// already uses successfully. This was tried and **does not close** — a
-// genuine, adversarially-confirmed finding, not a simplification of
-// convenience, and worth recording precisely so a future pass doesn't
-// re-discover it the hard way:
+// already uses successfully. A first attempt (using `refl` for all four
+// fields) got stuck on the `ret` field (`compEquivIdR`: the `sec` field,
+// symmetrically) — see the diagnosis below, still valid and unchanged.
+//
+// # Diagnosis (unchanged): three fields are `refl`, one needs real proof work
 //
 // At the literal `mk_case` instance (`e' := Equiv.mk A B f g sec ret`), the
 // **`f`/`g` fields** collapse to plain `refl` exactly as
@@ -1089,39 +1090,79 @@ pub fn sym_equiv_inv(level: Level, a: &Term, b: &Term, e: &Term) -> Term {
 // [`crate::cubical::trans_left_unit`]'s own doc confirms is definitional
 // (plain `refl`, no `J`).
 //
-// The **`ret` field does not**, and this breaks the symmetry the module doc
-// above (incorrectly) predicted: `compEquiv`'s pasted `ret := λx. trans A
-// (…) x (ap g1 (ret2 (f1 x))) (ret1 x)` puts the *opaque* leg (`ret2`, `e'`s
-// own abstract `ret`) under `ap g1` (`g1 := Equiv.g (idEquiv A) ≡ id_fn`) as
-// `trans`'s **first** argument, and the *constant* leg (`ret1 x = refl x`,
-// from `idEquiv`) as `trans`'s **second**. That is exactly `trans p (refl
-// b)` — [`crate::cubical::trans_right_unit`]'s shape, which its own doc is
-// explicit is **not** definitional (`trans` only eliminates its first
-// argument; the right-unit law needs an actual `J`-elimination on `p`,
-// i.e. a genuine proof term, not a reduction). Confirmed directly:
+// The **`ret` field does not** collapse to `refl`: `compEquiv`'s pasted `ret
+// := λx. trans A (…) x (ap g1 (ret2 (f1 x))) (ret1 x)` puts the *opaque* leg
+// (`ret2`, `e'`s own abstract `ret`) under `ap g1` (`g1 := Equiv.g (idEquiv
+// A) ≡ id_fn`) as `trans`'s **first** argument, and the *constant* leg
+// (`ret1 x = refl x`, from `idEquiv`) as `trans`'s **second**. That is
+// exactly `trans p (refl b)` — [`crate::cubical::trans_right_unit`]'s shape,
+// which its own doc is explicit is **not** definitional. Confirmed directly:
 // `Checker::is_def_eq(Equiv.ret (compEquiv (idEquiv A) e'), ret)` returns
 // `false`. (`compEquivIdR`'s mirror-image `sec` field hits the identical
-// obstruction on the other leg, by symmetry — not separately re-derived
-// here.)
+// obstruction on the *other* leg, by symmetry.)
 //
-// So this full-record unit law needs `pret` built from a genuine
-// **propositional** witness — `trans_right_unit` composed with `ap_id`
-// (`ap g1 p ≡ p` for `g1 ≡ id`, itself only propositional per [`ap_id`]'s own
-// doc, since `ap id p` and `p` are path-η-equal, not the same normal form,
-// and `trans`'s `J` only fires on its *own* literal-`refl` first argument,
-// not on something merely η-convertible to one) — assembled into an actual
-// `PathP` (not `refl`) matching [`equiv_mk_cong_ret_ty`]'s stated type. That
-// is real, buildable proof work (compose `ap_id`/`trans_right_unit` into a
-// 2-path square over `pf`/`pg`), but it is a further, separate construction
-// beyond what this pass closes — recorded here, not asserted false, per
-// this module's own soundness discipline: **no unverified `comp_equiv_id_l`/
-// `comp_equiv_id_r` is shipped** (an earlier draft of this section did
-// exactly that, using `refl` for `pret` too, and it failed to type-check —
-// caught by this module's own tests, not silently accepted). What *is*
-// closed and shipped from this investigation: [`equiv_mk_cong`] itself (the
-// congruence principle, genuinely general — see its own tests), and this
-// precise diagnosis of where the full-record unit laws get stuck.
+// # New finding this pass: the blocked field IS individually provable — but
+// assembling it via `equiv_mk_cong` still doesn't close the record
+//
+// The blocked field's own goal — a `PathP` (not `Path`, since [`pf`]/[`pg`]
+// are `refl` and so, up to conversion, `i`-independent — see
+// [`equiv_mk_cong_ret_ty`]/[`equiv_mk_cong_sec_ty`]'s own family) — genuinely
+// **is** closable pointwise: `trans_right_unit` identifies the blocked
+// field's value at `x` with `ap id (target_field x)`, and [`ap_id`]
+// identifies *that* with `target_field x` itself; chaining those two via one
+// more [`trans`] (at the "path of paths" type — no nesting of `trans` as a
+// `J`-*subject*, so `trans_assoc`'s obstruction never comes up) gives a
+// genuine pointwise witness, and [`crate::cubical::funext`] packages
+// `λx. pointwise(x)` into the needed `Path (Π x. …) blocked_field
+// target_field`. Checked **in isolation** (own `Env`, own `LocalCtx`, no
+// enclosing `Equiv.rec`/`equiv_mk_cong` scaffolding), this construction's
+// own `Checker::infer`-computed type has both endpoints (`i0`/`i1`)
+// definitionally equal (`Checker::is_def_eq`, confirmed both directions) to
+// exactly what's needed — including after re-deriving the *same* witness
+// under a `LocalCtx` with `f`/`g`/`sec`/`ret` as genuine bound variables
+// (not top-level axioms), matching the shape [`equiv_mk_cong`]'s own
+// `mk_case` argument needs it in.
+//
+// Despite every one of the four field-level witnesses (`pf`/`pg`/`psec`/
+// `pret`, each individually re-derived at this instance) independently
+// checking out — own `Checker::infer` succeeds, and each one's `i1`
+// (respectively `i0`/`i1` as appropriate) endpoint is confirmed
+// `Checker::is_def_eq` to the literal target field it's supposed to reach —
+// **assembling all four via [`equiv_mk_cong`] and then checking the whole
+// `Equiv.mk`-headed `PathP` against the motive-substituted goal still fails**:
+// `Checker::is_def_eq` on the two *aggregate* `PathP` types returns `false`,
+// even though every individual field comparison that goes into it returns
+// `true`. Narrowing further (comparing the two aggregate `PathP`s' own `i0`/
+// `i1` endpoints separately) shows the `i1` endpoint *does* match once the
+// four field-witnesses are pre-normalized before being handed to
+// `equiv_mk_cong`, but the `i0` endpoint still does not — a discrepancy that,
+// on inspection, looks like a de Bruijn re-indexing subtlety in how
+// `Checker::infer`'s `PLam`-boundary computation (or the `Nbe` normalizer)
+// discharges the *outer* interval binder `equiv_mk_cong` itself introduces
+// when the four arguments are themselves already-`PLam`-headed combinators
+// built from nested `Transp`/`J` (as `ap_id`/`trans_right_unit`/`funext`
+// compose to produce) — not something this pass's scope covers isolating
+// further (it would mean auditing `Checker::infer`'s `Term::PLam`/`PApp`
+// arms and/or `crate::nbe`'s handling of nested `Transp` under a fresh
+// binder, outside `crate::equiv`).
+//
+// So — per this module's own soundness discipline — **no unverified
+// `comp_equiv_id_l`/`comp_equiv_id_r` is shipped**: an actual attempt at
+// both was built (`Equiv.rec`-elimination + `equiv_mk_cong` assembly,
+// exactly as sketched above) and demonstrably **fails to type-check** at
+// its stated goal (confirmed by direct `Checker::check`/`is_def_eq` probes,
+// not just "wasn't tried") — so it is deliberately *not* included as a
+// public function here, only diagnosed. What *is* closed and shipped from
+// this investigation: [`equiv_mk_cong`] itself (unchanged, genuinely
+// general — see its own tests), and this precise (now deeper) diagnosis of
+// where the full-record unit laws get stuck — including the concrete,
+// reproducible fact that the obstruction is no longer "we don't have a
+// pointwise witness" (we do, and it individually checks out) but "assembling
+// four independently-verified field witnesses via `equiv_mk_cong` does not
+// itself check", worth recording precisely for a future pass with
+// `Nbe`/`Checker::infer` debugging tools this pass didn't reach for.
 // ----------------------------------------------------------------------------
+
 
 /// Type-check every `Equiv`-related declaration's stated *type* (a well-formedness
 /// sanity pass, mirroring [`crate::inductive::check_env_types`] — this does **not**
@@ -1840,13 +1881,13 @@ mod tests {
             let mut ctx = crate::check::LocalCtx::new();
             assert!(chk.check(&mut ctx, &term, &wrong).is_err());
         }
+
     }
 
     /// [`equiv_mk_cong`] — the `Equiv.mk` congruence principle — plus the
-    /// full-record `compEquiv` unit laws ([`comp_equiv_id_l`]/
-    /// [`comp_equiv_id_r`]) it unblocks. See this module's "`Equiv` groupoid
-    /// coherences" doc and [`comp_equiv_id_l`]'s own doc for the
-    /// constructions under test.
+    /// diagnosis of the full-record `compEquiv` unit laws it (so far) doesn't
+    /// unblock. See this module's "Attempted further: full-record `compEquiv`
+    /// unit laws … still not closed" doc for the details.
     mod equiv_mk_cong_tests {
         use super::*;
 
