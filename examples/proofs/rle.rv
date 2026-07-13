@@ -1,0 +1,209 @@
+// A VERIFIED RUN-LENGTH CODEC, in Rust-like Raven (`rvc --verify`).
+//
+// Self-contained: own `Nat`/`Bool`/`List<A>`/`Pair<A,B>`, a 2-constructor element type `Sym`
+// with decidable equality `eqb_sym`, and a run-length encoder/decoder over `List<Sym>`. A run
+// is `Pair<Nat, Sym>` where the `Nat` is the *extra* count beyond one (so `Pair(c, s)` always
+// denotes `Succ(c)` — i.e. at least one — consecutive copies of `s`), matching the header
+// requirement that every run have length >= 1 by construction. HEADLINE:
+//
+//     decode(encode(xs)) == xs                              (rle_roundtrip — CLOSED)
+//
+// i.e. decoding a run-length encoding recovers the original list exactly. The crux is
+// `decode_cons_sym`, relating `decode` to the encoder's `cons_sym` grouping helper by pushing a
+// symbol through the grouping decision (bump the leading run vs. start a fresh one).
+//
+// Kept in the inductive-`Eq`/`Prop` proof style used throughout this corpus (NOT cubical).
+// Every proof step is a small named `fn`; no `trans`/`congr_arg`/`symm` call is ever handed
+// another combinator call as an inline sub-argument, and multi-fact reasoning about a matched
+// `Bool` comparison result is split into single-match helper `fn`s taking the comparison as a
+// plain `Bool` parameter (`cons_sym_hyp`/`decode_cons_sym_hyp`) with the reflection hypothesis
+// curried in afterwards, refined per-branch by the match — the "convoy" idiom used throughout
+// `alg_sorting.rv` (`insert_hyp`/`leb_true_le`/`leb_false_le`) and `bst.rv`
+// (`insert_hyp`/`member_hyp`).
+
+enum Nat { Zero, Succ(Nat) }
+enum Bool { True, False }
+enum Sym { A, B }
+enum List<X: Type> { Nil, Cons(X, List<X>) }
+enum Pair<A: Type, B: Type> { mk(A, B) }
+
+// A run is `Pair<Nat, Sym>`: `Pair::mk(c, s)` denotes `Succ(c)` (>= 1) consecutive copies of `s`.
+
+// ----- generic `List` plumbing (restated locally, matching `stdlib_list.rv`'s convention) -----
+
+fn append(X: Type, xs: List<X>, ys: List<X>) -> List<X> {
+    match xs {
+      | List::Nil           => ys
+      | List::Cons(x, rest) => List::Cons(X, x, append(X, rest, ys))
+    }
+}
+
+// ----- `Bool` no-confusion (needed for `eqb_sym`'s reflection lemma) --------------------------
+
+fn is_false(b: Bool) -> Prop {
+    match b { | Bool::True => False | Bool::False => True }
+}
+fn bool_false_ne_true(h: Bool::False == Bool::True) -> False {
+    subst(Bool, is_false, Bool::False, Bool::True, h, True::intro)
+}
+
+// ----- `Sym` and its decidable equality ---------------------------------------------------------
+
+fn eqb_sym(a: Sym, b: Sym) -> Bool {
+    match a {
+      | Sym::A => match b { | Sym::A => Bool::True  | Sym::B => Bool::False }
+      | Sym::B => match b { | Sym::A => Bool::False | Sym::B => Bool::True  }
+    }
+}
+
+// `eqb_sym a b == True -> a == b`, by cases on `a` then `b` (mirroring `eqb_sym`'s own
+// recursion), exactly `alg_sorting.rv`'s `leb_true_le` shape.
+fn eqb_sym_true_eq(a: Sym) -> (b: Sym) -> (eqb_sym(a, b) == Bool::True) -> (a == b) {
+    match a {
+      | Sym::A => fun (b: Sym) => match b {
+          | Sym::A => fun (h: Bool::True == Bool::True) => Eq::refl(Sym, Sym::A)
+          | Sym::B => fun (h: Bool::False == Bool::True) =>
+              False::rec(fun (z: False) => Sym::A == Sym::B, bool_false_ne_true(h))
+        }
+      | Sym::B => fun (b: Sym) => match b {
+          | Sym::A => fun (h: Bool::False == Bool::True) =>
+              False::rec(fun (z: False) => Sym::B == Sym::A, bool_false_ne_true(h))
+          | Sym::B => fun (h: Bool::True == Bool::True) => Eq::refl(Sym, Sym::B)
+        }
+    }
+}
+
+// ----- `expand` : `Succ(c)` copies of `s` ------------------------------------------------------
+
+fn expand(c: Nat, s: Sym) -> List<Sym> {
+    match c {
+      | Nat::Zero    => List::Cons(Sym, s, List::Nil(Sym))
+      | Nat::Succ(k) => List::Cons(Sym, s, expand(k, s))
+    }
+}
+
+// ----- `decode` : expand every run and concatenate ---------------------------------------------
+
+fn decode(rs: List<Pair<Nat, Sym>>) -> List<Sym> {
+    match rs {
+      | List::Nil           => List::Nil(Sym)
+      | List::Cons(r, rest) => match r {
+          | Pair::mk(c, s) => append(Sym, expand(c, s), decode(rest))
+        }
+    }
+}
+
+// ----- `encode` : group consecutive equal symbols via `cons_sym` --------------------------------
+
+// `cons_sym`'s body abstracted over the comparison `b := eqb_sym(s, s2)`: bump the leading run
+// (`b == True`, `s` matches the run's symbol `s2`) or prepend a fresh count-`1` run (`b ==
+// False`). Mirrors `alg_sorting.rv`'s `insert_hyp` / `bst.rv`'s `insert_hyp`.
+fn cons_sym_hyp(s: Sym, c: Nat, s2: Sym, rest: List<Pair<Nat, Sym>>, b: Bool) -> List<Pair<Nat, Sym>> {
+    match b {
+      | Bool::True  => List::Cons(Pair<Nat, Sym>, Pair::mk(Nat, Sym, Nat::Succ(c), s2), rest)
+      | Bool::False => List::Cons(Pair<Nat, Sym>, Pair::mk(Nat, Sym, Nat::Zero, s),
+                                   List::Cons(Pair<Nat, Sym>, Pair::mk(Nat, Sym, c, s2), rest))
+    }
+}
+fn cons_sym(s: Sym, rs: List<Pair<Nat, Sym>>) -> List<Pair<Nat, Sym>> {
+    match rs {
+      | List::Nil           => List::Cons(Pair<Nat, Sym>, Pair::mk(Nat, Sym, Nat::Zero, s), List::Nil(Pair<Nat, Sym>))
+      | List::Cons(r, rest) => match r {
+          | Pair::mk(c, s2) => cons_sym_hyp(s, c, s2, rest, eqb_sym(s, s2))
+        }
+    }
+}
+
+fn encode(xs: List<Sym>) -> List<Pair<Nat, Sym>> {
+    match xs {
+      | List::Nil           => List::Nil(Pair<Nat, Sym>)
+      | List::Cons(x, rest) => cons_sym(x, encode(rest))
+    }
+}
+
+// ----- `decode_cons_sym` : the crux lemma --------------------------------------------------------
+//
+// `decode(cons_sym(s, rs)) == Cons(s, decode(rs))` — pushing a symbol through the grouping
+// decision recovers a plain `Cons` on the decoded side, regardless of which way the grouping
+// went. Split into the two `b`-branches of `cons_sym_hyp` as separate small `fn`s (a pure
+// computation step + a `congr_arg` rewrite, combined by `trans`), per this corpus's rule against
+// inline-nested combinator calls.
+
+// `b == True` branch: computation reduces `decode(cons_sym_hyp(...,True))` to
+// `Cons(s2, decode(Cons(Pair::mk(c,s2),rest)))` — a pure `Eq::refl`.
+fn dcs_true_compute(s: Sym, c: Nat, s2: Sym, rest: List<Pair<Nat, Sym>>)
+    -> decode(cons_sym_hyp(s, c, s2, rest, Bool::True))
+       == List::Cons(Sym, s2, decode(List::Cons(Pair<Nat, Sym>, Pair::mk(Nat, Sym, c, s2), rest)))
+{
+    Eq::refl(List<Sym>, List::Cons(Sym, s2, decode(List::Cons(Pair<Nat, Sym>, Pair::mk(Nat, Sym, c, s2), rest))))
+}
+// Rewriting the leading symbol `s2` down to `s`, given `s2 == s` (from `eqb_sym(s,s2) == True`).
+fn dcs_true_rewrite(s: Sym, c: Nat, s2: Sym, rest: List<Pair<Nat, Sym>>, e: s2 == s)
+    -> List::Cons(Sym, s2, decode(List::Cons(Pair<Nat, Sym>, Pair::mk(Nat, Sym, c, s2), rest)))
+       == List::Cons(Sym, s, decode(List::Cons(Pair<Nat, Sym>, Pair::mk(Nat, Sym, c, s2), rest)))
+{
+    congr_arg(Sym, List<Sym>,
+              fun (x: Sym) => List::Cons(Sym, x, decode(List::Cons(Pair<Nat, Sym>, Pair::mk(Nat, Sym, c, s2), rest))),
+              s2, s, e)
+}
+fn dcs_true(s: Sym, c: Nat, s2: Sym, rest: List<Pair<Nat, Sym>>, e: s2 == s)
+    -> decode(cons_sym_hyp(s, c, s2, rest, Bool::True))
+       == List::Cons(Sym, s, decode(List::Cons(Pair<Nat, Sym>, Pair::mk(Nat, Sym, c, s2), rest)))
+{
+    trans(List<Sym>,
+          decode(cons_sym_hyp(s, c, s2, rest, Bool::True)),
+          List::Cons(Sym, s2, decode(List::Cons(Pair<Nat, Sym>, Pair::mk(Nat, Sym, c, s2), rest))),
+          List::Cons(Sym, s, decode(List::Cons(Pair<Nat, Sym>, Pair::mk(Nat, Sym, c, s2), rest))),
+          dcs_true_compute(s, c, s2, rest), dcs_true_rewrite(s, c, s2, rest, e))
+}
+
+// `b == False` branch: a fresh count-`1` run of `s` is prepended, so `decode` produces exactly
+// `Cons(s, decode(rs))` by pure computation — a single `Eq::refl`.
+fn dcs_false(s: Sym, c: Nat, s2: Sym, rest: List<Pair<Nat, Sym>>)
+    -> decode(cons_sym_hyp(s, c, s2, rest, Bool::False))
+       == List::Cons(Sym, s, decode(List::Cons(Pair<Nat, Sym>, Pair::mk(Nat, Sym, c, s2), rest)))
+{
+    Eq::refl(List<Sym>, List::Cons(Sym, s, decode(List::Cons(Pair<Nat, Sym>, Pair::mk(Nat, Sym, c, s2), rest))))
+}
+
+// The convoy: match `b` first, then curry in the reflection hypothesis, refined per branch.
+fn decode_cons_sym_hyp(s: Sym, c: Nat, s2: Sym, rest: List<Pair<Nat, Sym>>, b: Bool)
+    -> ((b == Bool::True) -> (s == s2))
+    -> decode(cons_sym_hyp(s, c, s2, rest, b))
+       == List::Cons(Sym, s, decode(List::Cons(Pair<Nat, Sym>, Pair::mk(Nat, Sym, c, s2), rest)))
+{
+    match b {
+      | Bool::True  => fun (ht: (Bool::True == Bool::True) -> (s == s2)) =>
+          dcs_true(s, c, s2, rest, symm(Sym, s, s2, ht(Eq::refl(Bool, Bool::True))))
+      | Bool::False => fun (ht: (Bool::False == Bool::True) -> (s == s2)) =>
+          dcs_false(s, c, s2, rest)
+    }
+}
+
+// THEOREM (crux lemma): `decode(cons_sym(s, rs)) == Cons(s, decode(rs))`, by cases on `rs`,
+// instantiating `decode_cons_sym_hyp` at `b := eqb_sym(s, s2)` with `eqb_sym_true_eq` supplying
+// the reflection hypothesis directly.
+fn decode_cons_sym(s: Sym, rs: List<Pair<Nat, Sym>>) -> decode(cons_sym(s, rs)) == List::Cons(Sym, s, decode(rs)) {
+    match rs {
+      | List::Nil           => Eq::refl(List<Sym>, List::Cons(Sym, s, List::Nil(Sym)))
+      | List::Cons(r, rest) => match r {
+          | Pair::mk(c, s2) => decode_cons_sym_hyp(s, c, s2, rest, eqb_sym(s, s2))(eqb_sym_true_eq(s)(s2))
+        }
+    }
+}
+
+// ----- HEADLINE: decode(encode(xs)) == xs --------------------------------------------------------
+
+fn rle_roundtrip(xs: List<Sym>) -> decode(encode(xs)) == xs {
+    match xs {
+      | List::Nil           => Eq::refl(List<Sym>, List::Nil(Sym))
+      | List::Cons(x, rest) =>
+          trans(List<Sym>,
+                decode(encode(List::Cons(Sym, x, rest))),
+                List::Cons(Sym, x, decode(encode(rest))),
+                List::Cons(Sym, x, rest),
+                decode_cons_sym(x, encode(rest)),
+                congr_arg(List<Sym>, List<Sym>, fun (l: List<Sym>) => List::Cons(Sym, x, l),
+                          decode(encode(rest)), rest, rle_roundtrip(rest)))
+    }
+}
