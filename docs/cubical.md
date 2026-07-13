@@ -10,8 +10,8 @@ computational.
 
 Everything described here is exercised end-to-end by
 `examples/proofs/cubical.rv` (the base `Path`/`I2` layer) and
-`examples/proofs/cubical_showcase.rv` (the newer `S1c`/`S2`/`Equiv`/`ua`
-pieces), both checked by `crates/rv-driver/tests/rv_proofs.rs`.
+`examples/proofs/cubical_showcase.rv` (the `S1c`/`S2`/`T2`/`S3`/`SetQ`/
+`Equiv`/`ua` pieces), both checked by `crates/rv-driver/tests/rv_proofs.rs`.
 
 ## 1. The interval and paths (`crates/rv-kernel-core/src/cubical.rs`)
 
@@ -56,23 +56,43 @@ Two independent HIT presentations exist:
     `S1c.loop : Path S1c base base`), a genuine **self**-loop: `S1c.rec C b l
     S1c.base ↝ b` and `S1c.rec C b l (S1c.loop @ r) ↝ l @ r`.
   - `crates/rv-kernel-core/src/cubical_hit.rs` — `declare_cubical_hit`, a
-    **general schema**: an arbitrary number of (possibly fielded, possibly
-    self-referential) point constructors, quantified 1-path constructors
-    between any two points (the field-arity/positivity side conditions are
-    checked), and 2-path ("surface") constructors restricted to the "S²"
-    shape (a square based at a single nullary point, all four sides `refl`).
-    `S1c` and `I2` are re-derivable through this general schema (see that
-    module's tests); `S²` — one point `base`, one 2-cell `surf : Path (Path S²
-    base base) (refl base) (refl base)` — is its flagship example, with a
-    computing `S2.rec` whose 2-path ι-rule is `S2.rec C b t (S2.surf @ i @ j)
-    ↝ (t @ i) @ j`.
+    **general schema** with a full points → 1-paths → 2-cells → 3-cells →
+    set-quotients ladder:
+    - an arbitrary number of (possibly fielded, possibly self-referential)
+      **point** constructors;
+    - **1-path** constructors — quantified paths between any two points (the
+      field-arity/positivity side conditions are checked), including
+      self-loops;
+    - **2-path ("surface")** constructors (`CubSurfSpec`): a square based at a
+      single nullary point, each of whose four sides is either `refl` or a
+      previously-declared unquantified self-loop. All-`refl` recovers the
+      **"S²"** shape — one point `base`, one 2-cell `surf : Path (Path S²
+      base base) (refl base) (refl base)`, with a computing `S2.rec` whose
+      2-path ι-rule is `S2.rec C b t (S2.surf @ i @ j) ↝ (t @ i) @ j`.
+      Setting `left = right` to one self-loop and `top = bottom` to a
+      *distinct* self-loop gives the **torus `T²`**: one point `base`, two
+      self-loops `loopP`/`loopQ`, and a square `surf : PathP (λi. Path T²
+      (loopP@i) (loopP@i)) loopQ loopQ` — the textbook `l = r`,
+      `top = bottom` cubical presentation, with `T2.rec` reducing on
+      `loopP@i`/`loopQ@i`/`surf@i@j` alike.
+    - **3-path ("cube")** constructors (`CubCubeSpec`): a fully-degenerate
+      3-cell one dimension up from "S²" — the **3-sphere `S³`**: one point
+      `base`, one 3-cell `cube : Path (Path (Path S³ base base) (refl base)
+      (refl base)) (refl (refl base)) (refl (refl base))`, with `S3.rec`
+      reducing on `cube@i@j@k` to `((u@i)@j)@k`.
+    - `S1c` and `I2` are re-derivable through this general schema (see that
+      module's tests).
 
 `declare_cubical_hit` is also the mechanism for declaring a
 **set-quotient-style HIT** without going through the propositional `Quot`: a
 single fielded point constructor `mk : A → Q` plus a quantified path
 constructor `eq : Π (a b : A) (h : R a b). Path Q (mk a) (mk b)` is exactly one
 `CubHitSpec`, giving a genuinely-computing quotient path in place of
-`Quot.sound`'s propositional one.
+`Quot.sound`'s propositional one — surfaced as the worked example `SetQ`
+(`SetQ.mk`/`SetQ.glue`/`SetQ.rec`, quotienting a two-point domain `SQDom` by
+the "collapse everything" relation `SQDom.R`, mirroring
+`examples/proofs/quotient_demo.rv`'s `AlwaysR`/`Quot` example but with a
+genuinely-reducing `glue` path in place of `Quot.sound`).
 
 ## 3. Equivalences (`equiv.rs`, `contr.rs`, `equiv_hae.rs`)
 
@@ -133,10 +153,18 @@ PApp,PathTy,PathPTy}` arms, since `I` can never be an ordinary `Π`-domain).
     (`S1c`/`S1c.base`/`S1c.loop`/`S1c.rec`).
   - `install_s2` → `declare_cubical_hit` with a fixed `S2` spec (`S2`/
     `S2.base`/`S2.surf`/`S2.rec`).
+  - `install_torus` → `declare_cubical_hit` with a fixed `T2` spec (`T2`/
+    `T2.base`/`T2.loopP`/`T2.loopQ`/`T2.surf`/`T2.rec`).
+  - `install_s3` → `declare_cubical_hit` with a fixed `S3` spec (`S3`/
+    `S3.base`/`S3.cube`/`S3.rec`).
+  - `install_set_quotient` → declares the demo domain `SQDom`
+    (`SQDom.a`/`SQDom.b`) and relation `SQDom.R` (a plain `Decl::Def`), then
+    `declare_cubical_hit` with a fielded-point/quantified-path `SetQ` spec
+    (`SetQ`/`SetQ.mk`/`SetQ.glue`/`SetQ.rec`).
   - `declare_cubical_hit` → the general escape hatch, exposing
     `rv_kernel_core::cubical_hit::declare_cubical_hit`/`CubHitSpec` directly
-    (used by `install_s2`; also how a set-quotient-style HIT is declared, per
-    §2 above).
+    (used by `install_s2`/`install_torus`/`install_s3`/`install_set_quotient`;
+    also how any other set-quotient-style HIT can be declared, per §2 above).
   - `install_equiv` → `Equiv`/`idEquiv` (`rv_kernel_core::equiv`).
   - `install_contr` → `IsContr`/`Fiber`/`IsEquiv`/`idIsEquiv`
     (`rv_kernel_core::contr`).
@@ -202,10 +230,17 @@ record in `kan.rs`'s own comments for the next pass to pick up.
 
 ## 7. What's not covered
 
-- The fully general square-with-arbitrary-1-path-sides 2-path schema (only the
-  restricted "S²" shape — a square based at one nullary point, all four sides
-  `refl` — is supported by `declare_cubical_hit`).
+- The *fully* general square schema: `CubSurfSpec`'s four sides are each
+  restricted to `refl` or a single previously-declared, **unquantified
+  self-loop** path (covers "S²" and the torus `T²`'s `l = r`/`top = bottom`
+  shape, but not e.g. Eckmann–Hilton-style composite-path sides, quantified
+  surfaces, or a surface based at a fielded point). Symmetrically, `CubCubeSpec`
+  only supports the fully-degenerate ("S³") 3-cell boundary, not a general cube
+  with independently-chosen faces.
 - A `glue` (introduction) form for `Glue` general enough to inhabit an
   *undecided* `Glue` type is deliberately absent (a load-bearing soundness
   choice — see `glue.rs`'s `glue_type_is_uninhabited_without_real_data`).
-- Computational univalence (§6).
+- Computational univalence (§6) — `transport (ua e) a` still does not reduce
+  to `e.f a`; nothing in this pass touched `kan.rs`'s Phase 3.12–3.14
+  obstruction (needs `IsHAE`'s coherence field threaded into a generic
+  `hcomp_glue_rule`, not just `Equiv`'s bi-invertibility).
