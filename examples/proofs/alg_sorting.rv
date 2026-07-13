@@ -1,0 +1,284 @@
+// A verified insertion-sort library over `List<Nat>` in Rust-like Raven, extending the `Le`
+// ordering machinery from `stdlib_order.rv`/`stdlib_list2.rv` with a boolean comparator
+// `leb : Nat -> Nat -> Bool` reflecting both ways into `Le` (`leb_true_le`/`leb_false_le`),
+// `insert`/`isort` built on top of it, their length-preservation lemmas, and the headline
+// correctness result: insertion sort produces a sorted list (`sorted_isort`), built from
+// `insert` preserving sortedness on an already-sorted list. Kept in the inductive-`Eq`/`Prop`
+// proof style used throughout this corpus (NOT cubical). (`rvc --verify`.)
+
+enum Nat { Zero, Succ(Nat) }
+enum Bool { True, False }
+enum List<A: Type> { Nil, Cons(A, List<A>) }
+
+// ----- `<=` on Nat (reproved locally, exactly as in `stdlib_order.rv`/`stdlib_list2.rv`) ------
+
+enum Le(n: Nat, m: Nat) -> Prop {
+    LeZero(x: Nat)                       where n == Nat::Zero,    m == x;
+    LeSucc(a: Nat, b: Nat, h: Le(a, b))  where n == Nat::Succ(a), m == Nat::Succ(b);
+}
+fn le_refl(n: Nat) -> Le(n, n) {
+    match n { | Nat::Zero => Le::LeZero(Nat::Zero) | Nat::Succ(k) => Le::LeSucc(k, k, le_refl(k)) }
+}
+fn le_zero(n: Nat) -> Le(Nat::Zero, n) { Le::LeZero(n) }
+
+// No-confusion + injectivity for Nat (needed for the `LeSuccInv`/`le_inv` convoy machinery).
+fn is_zero(n: Nat) -> Prop {
+    match n { | Nat::Zero => True | Nat::Succ(k) => False }
+}
+fn zero_ne_succ(b: Nat, h: Nat::Zero == Nat::Succ(b)) -> False {
+    subst(Nat, is_zero, Nat::Zero, Nat::Succ(b), h, True::intro)
+}
+fn pred(n: Nat) -> Nat {
+    match n { | Nat::Zero => Nat::Zero | Nat::Succ(k) => k }
+}
+fn succ_inj(a: Nat, b: Nat, h: Nat::Succ(a) == Nat::Succ(b)) -> a == b {
+    congr_arg(Nat, Nat, pred, Nat::Succ(a), Nat::Succ(b), h)
+}
+enum LeSuccInv(b: Nat, c: Nat) -> Prop {
+    MkLSI(cc: Nat, h: Le(b, cc)) where c == Nat::Succ(cc);
+}
+fn le_inv(n: Nat, c: Nat, h: Le(n, c)) -> (b: Nat) -> (n == Nat::Succ(b)) -> LeSuccInv(b, c) {
+    match h {
+      | Le::LeZero(x) => fun (b: Nat) (en: Nat::Zero == Nat::Succ(b)) =>
+          False::rec(fun (z: False) => LeSuccInv(b, x), zero_ne_succ(b, en))
+      | Le::LeSucc(a, bb, hab) => fun (b: Nat) (en: Nat::Succ(a) == Nat::Succ(b)) =>
+          subst(Nat, fun (x: Nat) => LeSuccInv(x, Nat::Succ(bb)), a, b, succ_inj(a, b, en),
+                LeSuccInv::MkLSI(a, bb, hab))
+    }
+}
+fn le_trans(a: Nat, b: Nat, h1: Le(a, b)) -> (c: Nat) -> Le(b, c) -> Le(a, c) {
+    match h1 {
+      | Le::LeZero(x) => fun (c: Nat) (h2: Le(x, c)) => le_zero(c)
+      | Le::LeSucc(a2, b2, hab) => fun (c: Nat) (h2: Le(Nat::Succ(b2), c)) =>
+          let cvy : (ih2: (c3: Nat) -> Le(b2, c3) -> Le(a2, c3)) -> Le(Nat::Succ(a2), c) :=
+            match le_inv(Nat::Succ(b2), c, h2)(b2, Eq::refl(Nat, Nat::Succ(b2))) {
+              | LeSuccInv::MkLSI(bx, cc, hbc) =>
+                  fun (ih2: (c3: Nat) -> Le(bx, c3) -> Le(a2, c3)) =>
+                    Le::LeSucc(a2, cc, ih2(cc)(hbc))
+            }
+          in cvy(hab.rec)
+    }
+}
+
+// ----- decidable comparison, reflected into `Le` -------------------------------------------
+
+// No-confusion for `Bool` (needed for the impossible cases in the reflection lemmas below).
+fn is_true(b: Bool) -> Prop {
+    match b { | Bool::True => True | Bool::False => False }
+}
+fn is_false(b: Bool) -> Prop {
+    match b { | Bool::True => False | Bool::False => True }
+}
+fn bool_false_ne_true(h: Bool::False == Bool::True) -> False {
+    subst(Bool, is_false, Bool::False, Bool::True, h, True::intro)
+}
+fn bool_true_ne_false(h: Bool::True == Bool::False) -> False {
+    subst(Bool, is_true, Bool::True, Bool::False, h, True::intro)
+}
+
+// `leb n m` computes whether `n <= m`, recursing on both parameters at once (the natural
+// two-parameter self-recursive form, auto-curried by the elaborator — see `stdlib_order.rv`'s
+// `max`/`min`).
+fn leb(n: Nat, m: Nat) -> Bool {
+    match n {
+      | Nat::Zero    => Bool::True
+      | Nat::Succ(a) => match m {
+          | Nat::Zero    => Bool::False
+          | Nat::Succ(b) => leb(a, b)
+        }
+    }
+}
+
+// `leb n m == True -> Le n m`, by induction on `n` (mirroring `leb`'s own recursion). The
+// hypothesis `h` is an ordinary function parameter throughout, so it is never matched on
+// directly — only `n`/`m` are, which refines the goal safely.
+fn leb_true_le(n: Nat) -> (m: Nat) -> (leb(n, m) == Bool::True) -> Le(n, m) {
+    match n {
+      | Nat::Zero    => fun (m: Nat) (h: Bool::True == Bool::True) => le_zero(m)
+      | Nat::Succ(a) => fun (m: Nat) => match m {
+          | Nat::Zero    => fun (h: Bool::False == Bool::True) =>
+              False::rec(fun (z: False) => Le(Nat::Succ(a), Nat::Zero), bool_false_ne_true(h))
+          | Nat::Succ(b) => fun (h: leb(a, b) == Bool::True) => Le::LeSucc(a, b, leb_true_le(a)(b)(h))
+        }
+    }
+}
+
+// `leb n m == False -> Le m n`, by induction on `n` (the complementary totality direction —
+// `leb` decides a total order, so failing `n <= m` means `m <= n`).
+fn leb_false_le(n: Nat) -> (m: Nat) -> (leb(n, m) == Bool::False) -> Le(m, n) {
+    match n {
+      | Nat::Zero    => fun (m: Nat) (h: Bool::True == Bool::False) =>
+          False::rec(fun (z: False) => Le(m, Nat::Zero), bool_true_ne_false(h))
+      | Nat::Succ(a) => fun (m: Nat) => match m {
+          | Nat::Zero    => fun (h: Bool::False == Bool::False) => le_zero(Nat::Succ(a))
+          | Nat::Succ(b) => fun (h: leb(a, b) == Bool::False) => Le::LeSucc(b, a, leb_false_le(a)(b)(h))
+        }
+    }
+}
+
+// ----- `insert` / `isort` -------------------------------------------------------------------
+
+fn length(A: Type, xs: List<A>) -> Nat {
+    match xs { | List::Nil => Nat::Zero | List::Cons(x, rest) => Nat::Succ(length(A, rest)) }
+}
+
+// `insert`'s `Cons`-case body, with the comparison result abstracted to a plain `Bool`
+// parameter `b`, and the recursive call's result abstracted to a plain `insertedRest`
+// parameter, instead of the opaque applications `leb(x, y)`/`insert(x, rest)` — the same trick
+// as `stdlib_list2.rv`'s `filter_hyp`, needed so matching on `b` reduces normally, and so that
+// this helper never forward-references `insert` (defined right after, calling back into this
+// helper — this elaborator's auto-bundling of contiguous `fn`s only fires for functions over
+// an explicitly `mutual`-declared enum group, so plain forward references between `fn`s fail).
+fn insert_hyp(x: Nat, y: Nat, rest: List<Nat>, insertedRest: List<Nat>, b: Bool) -> List<Nat> {
+    match b {
+      | Bool::True  => List::Cons(Nat, x, List::Cons(Nat, y, rest))
+      | Bool::False => List::Cons(Nat, y, insertedRest)
+    }
+}
+// `insert` itself is defined as `insert_hyp(x, y, rest, insert(x, rest), leb(x, y))`, so this
+// application is definitionally exactly `insert`'s own `Cons` branch — the key fact every proof
+// below relies on to relate `insert` to `insert_hyp` purely by unfolding (no reduction of the
+// neutral `leb(x, y)` itself is ever required).
+fn insert(x: Nat, xs: List<Nat>) -> List<Nat> {
+    match xs {
+      | List::Nil           => List::Cons(Nat, x, List::Nil(Nat))
+      | List::Cons(y, rest) => insert_hyp(x, y, rest, insert(x, rest), leb(x, y))
+    }
+}
+
+fn isort(xs: List<Nat>) -> List<Nat> {
+    match xs { | List::Nil => List::Nil(Nat) | List::Cons(x, rest) => insert(x, isort(rest)) }
+}
+
+// `length_insert_hyp` generalizes `length_insert`'s `Cons` case over `insert_hyp`'s own two
+// abstracted parameters (`insertedRest`, `b`), taking the recursive length fact `ih` as an
+// explicit precomputed argument (rather than calling `length_insert` here) so it never
+// forward-references its caller.
+fn length_insert_hyp(x: Nat, y: Nat, rest: List<Nat>, insertedRest: List<Nat>,
+                      ih: length(Nat, insertedRest) == Nat::Succ(length(Nat, rest)), b: Bool)
+    -> length(Nat, insert_hyp(x, y, rest, insertedRest, b)) == Nat::Succ(Nat::Succ(length(Nat, rest)))
+{
+    match b {
+      | Bool::True  => Eq::refl(Nat, Nat::Succ(Nat::Succ(length(Nat, rest))))
+      | Bool::False => congr_arg(Nat, Nat, Nat::Succ, length(Nat, insertedRest), Nat::Succ(length(Nat, rest)), ih)
+    }
+}
+
+// THEOREM: `insert` grows the list by exactly one element, by induction on `xs`, instantiating
+// `length_insert_hyp` at `insertedRest := insert(x, rest)`, `b := leb(x, y)`.
+fn length_insert(x: Nat, xs: List<Nat>) -> length(Nat, insert(x, xs)) == Nat::Succ(length(Nat, xs)) {
+    match xs {
+      | List::Nil           => Eq::refl(Nat, Nat::Succ(Nat::Zero))
+      | List::Cons(y, rest) => length_insert_hyp(x, y, rest, insert(x, rest), length_insert(x, rest), leb(x, y))
+    }
+}
+
+// THEOREM: `isort` preserves length, by induction on `xs` using `length_insert`.
+fn length_isort(xs: List<Nat>) -> length(Nat, isort(xs)) == length(Nat, xs) {
+    match xs {
+      | List::Nil           => Eq::refl(Nat, Nat::Zero)
+      | List::Cons(x, rest) =>
+          trans(Nat,
+                length(Nat, insert(x, isort(rest))), Nat::Succ(length(Nat, isort(rest))),
+                Nat::Succ(length(Nat, rest)),
+                length_insert(x, isort(rest)),
+                congr_arg(Nat, Nat, Nat::Succ, length(Nat, isort(rest)), length(Nat, rest), length_isort(rest)))
+    }
+}
+
+// ----- sortedness ----------------------------------------------------------------------------
+
+// `x <= the head of ys` (vacuously true if `ys` is empty). A plain *function* into `Prop`
+// (matching on the ordinary `List<Nat>` value `ys`, not an indexed `Prop` enum), which sidesteps
+// a real limitation of this elaborator: matching a hypothesis of a two-index recursive `Prop`
+// and reconstructing a value of a two-index recursive `Prop` inside that same match does not
+// elaborate (confirmed with several minimized repros; `Le`/`Sorted` avoid the issue because
+// they are always matched by *this* corpus in ways that never both retake and rebuild a
+// two-index family inside one match — e.g. `le_trans`'s convoy nests the rebuild inside a
+// `LeSuccInv` match instead). `HdLe` has only one index (`ys`) worth of *matching* structure
+// since `x` never varies across the recursion, and it is consumed only by unfolding, never
+// re-matched, so it is safe.
+fn HdLe(x: Nat, ys: List<Nat>) -> Prop {
+    match ys { | List::Nil => True | List::Cons(y, tl) => Le(x, y) }
+}
+
+// `Sorted xs`: each head is `<=` its immediate successor (`HdLe`), and the tail is itself
+// sorted. Single-index (`xs` only), so matching/reconstructing it is safe.
+enum Sorted(xs: List<Nat>) -> Prop {
+    SNil()                                                          where xs == List::Nil(Nat);
+    SCons(x: Nat, rest: List<Nat>, hhd: HdLe(x, rest), hs: Sorted(rest)) where xs == List::Cons(Nat, x, rest);
+}
+
+// `insert`'s `Cons`-case body again, abstracted over the comparison `Bool` `b` (mirrors
+// `insert_hyp` above): `HdLe(y, insert_hyp(x, z, rest, insertedRest, b))` reduces to `Le(y, x)`
+// in the `True` case (the new head is `x`) and to `Le(y, z)` in the `False` case (the new head
+// is `z`, already known via `hy`) — no further recursion needed, since `HdLe` only cares about
+// the immediate head.
+fn hdle_insert_hyp(y: Nat, x: Nat, hyx: Le(y, x), z: Nat, rest: List<Nat>, hy: Le(y, z),
+                    insertedRest: List<Nat>, b: Bool)
+    -> HdLe(y, insert_hyp(x, z, rest, insertedRest, b))
+{
+    match b {
+      | Bool::True  => hyx
+      | Bool::False => hy
+    }
+}
+// `Le y x -> HdLe y rest -> HdLe y (insert x rest)`, by cases on `rest` (an ordinary `List`
+// match — safe), instantiating `hdle_insert_hyp` at `b := leb(x, z)` in the `Cons` case. Needed
+// for the `SCons`/`False` case of `insert` preserving sortedness: after `insert` places `x`
+// behind `y`, `y`'s new immediate successor is still either `x` itself or `y`'s old successor.
+// `hy` is curried in *after* the match on `rest` (its type written out per branch using the
+// branch's own refined `rest`, exactly the convoy idiom `le_trans` uses for `h2`), rather than
+// taken as a plain leading parameter — needed so its type actually reduces to the concrete
+// `HdLe(y, Nil)`/`HdLe(y, Cons(z, rest2))` per branch instead of staying stuck as `HdLe(y,
+// rest)` for an unrefined `rest`.
+fn hdle_insert(y: Nat, x: Nat, hyx: Le(y, x), rest: List<Nat>) -> HdLe(y, rest) -> HdLe(y, insert(x, rest)) {
+    match rest {
+      | List::Nil             => fun (hy: HdLe(y, List::Nil(Nat))) => hyx
+      | List::Cons(z, rest2)  => fun (hy: HdLe(y, List::Cons(Nat, z, rest2))) =>
+          hdle_insert_hyp(y, x, hyx, z, rest2, hy, insert(x, rest2), leb(x, z))
+    }
+}
+
+// `insert`'s `Cons`-case body a third time, abstracted over the comparison `Bool` `b`, but now
+// *also* carrying the two reflection facts about `b` as explicit hypotheses (`htrue`/`hfalse`)
+// — since `b` is a genuine bound parameter here (not the neutral application `leb(x, y)`),
+// matching on it refines these hypothesis *types* too, so each branch gets a real `Le` witness
+// out of `leb_true_le`/`leb_false_le` applied at the call site. The `False` branch's recursive
+// obligation is threaded in as a precomputed argument `ih` (supplied via `.rec` at the call
+// site in `sorted_insert`, matching this corpus's convention that induction on a `Prop`
+// hypothesis goes through `.rec`, not a named self-recursive call).
+fn sorted_insert_hyp(x: Nat, y: Nat, rest: List<Nat>, hhd: HdLe(y, rest), ht: Sorted(rest),
+                      ih: Sorted(insert(x, rest)), b: Bool)
+    -> ((b == Bool::True) -> Le(x, y)) -> ((b == Bool::False) -> Le(y, x)) -> Sorted(insert_hyp(x, y, rest, insert(x, rest), b))
+{
+    match b {
+      | Bool::True  => fun (htrue: (Bool::True == Bool::True) -> Le(x, y))
+                           (hfalse: (Bool::True == Bool::False) -> Le(y, x)) =>
+          Sorted::SCons(x, List::Cons(Nat, y, rest), htrue(Eq::refl(Bool, Bool::True)),
+                        Sorted::SCons(y, rest, hhd, ht))
+      | Bool::False => fun (htrue: (Bool::False == Bool::True) -> Le(x, y))
+                           (hfalse: (Bool::False == Bool::False) -> Le(y, x)) =>
+          Sorted::SCons(y, insert(x, rest),
+                        hdle_insert(y, x, hfalse(Eq::refl(Bool, Bool::False)), rest)(hhd),
+                        ih)
+    }
+}
+// THEOREM: `insert` preserves sortedness, by induction on the `Sorted` derivation (via `.rec`),
+// instantiating `sorted_insert_hyp` at `b := leb(x, y)` together with the two reflection lemmas.
+fn sorted_insert(x: Nat, xs: List<Nat>, hs: Sorted(xs)) -> Sorted(insert(x, xs)) {
+    match hs {
+      | Sorted::SNil                    => Sorted::SCons(x, List::Nil(Nat), True::intro, Sorted::SNil())
+      | Sorted::SCons(y, rest, hhd, ht) =>
+          sorted_insert_hyp(x, y, rest, hhd, ht, ht.rec, leb(x, y))(leb_true_le(x)(y))(leb_false_le(x)(y))
+    }
+}
+
+// THEOREM (headline result): insertion sort produces a sorted list, by induction on `xs` using
+// `sorted_insert`.
+fn sorted_isort(xs: List<Nat>) -> Sorted(isort(xs)) {
+    match xs {
+      | List::Nil           => Sorted::SNil()
+      | List::Cons(x, rest) => sorted_insert(x, isort(rest), sorted_isort(rest))
+    }
+}
