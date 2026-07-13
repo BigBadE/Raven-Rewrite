@@ -1038,35 +1038,65 @@ impl<'a> Nbe<'a> {
     /// guarded per-HIT `id` (see that method's doc comment for the exact rule and
     /// the cross-fire guard).
     fn try_cubical_hit_rec(&self, h: Head, spine: Vec<Rc<Value>>) -> Rc<Value> {
-        if let Head::Const(rname, _) = &h {
+        if let Head::Const(rname, ls) = &h {
             if let Some(Decl::CubHit(rc)) = self.env.get(rname) {
                 if let CubHitRole::Rec { num_points, num_paths } = rc.role {
                     let (num_points, num_paths) = (num_points as usize, num_paths as usize);
                     let scrut_pos = 1 + num_points + num_paths;
                     if spine.len() > scrut_pos {
                         match &*spine[scrut_pos] {
-                            Value::Stuck(Head::Const(ptn, _), pargs) if pargs.is_empty() => {
+                            // Point rule: fully applied to its declared fields
+                            // (arity match), same HIT `id` — mirrors
+                            // `try_hit_rec`'s fielded/recursive substitution.
+                            Value::Stuck(Head::Const(ptn, _), pargs) => {
                                 if let Some(Decl::CubHit(c)) = self.env.get(ptn) {
                                     if c.id == rc.id {
-                                        if let CubHitRole::Point(idx) = c.role {
-                                            let pos = 1 + idx as usize;
-                                            let mut v = spine[pos].clone();
-                                            for extra in &spine[scrut_pos + 1..] {
-                                                v = self.vapp(v, extra.clone());
+                                        if let CubHitRole::Point { idx, fields } = &c.role {
+                                            if pargs.len() == fields.len() {
+                                                let pos = 1 + *idx as usize;
+                                                let mut v = spine[pos].clone();
+                                                for (a, is_rec) in pargs.iter().zip(fields.iter()) {
+                                                    // Keep the original field
+                                                    // value (dependent case; see
+                                                    // `point_case_ty`'s doc
+                                                    // comment), then, for a
+                                                    // recursive field, follow it
+                                                    // with its IH.
+                                                    v = self.vapp(v, a.clone());
+                                                    if *is_rec {
+                                                        let mut recur = Rc::new(Value::Stuck(
+                                                            Head::Const(rname.clone(), ls.clone()),
+                                                            Vec::new(),
+                                                        ));
+                                                        for pre in &spine[..scrut_pos] {
+                                                            recur = self.vapp(recur, pre.clone());
+                                                        }
+                                                        let ih = self.vapp(recur, a.clone());
+                                                        v = self.vapp(v, ih);
+                                                    }
+                                                }
+                                                for extra in &spine[scrut_pos + 1..] {
+                                                    v = self.vapp(v, extra.clone());
+                                                }
+                                                return v;
                                             }
-                                            return v;
                                         }
                                     }
                                 }
                             }
+                            // Path rule: fully applied to its declared quantifier
+                            // arity, same HIT `id`.
                             Value::Stuck(Head::PathApp(p, r), pargs) if pargs.is_empty() => {
                                 if let Value::Stuck(Head::Const(pathn, _), pathargs) = &**p {
-                                    if pathargs.is_empty() {
-                                        if let Some(Decl::CubHit(c)) = self.env.get(pathn) {
-                                            if c.id == rc.id {
-                                                if let CubHitRole::Path { idx, .. } = c.role {
-                                                    let pos = 1 + num_points + idx as usize;
-                                                    let s = spine[pos].clone();
+                                    if let Some(Decl::CubHit(c)) = self.env.get(pathn) {
+                                        if c.id == rc.id {
+                                            if let CubHitRole::Path { idx, num_quant, .. } = &c.role {
+                                                if pathargs.len() == *num_quant as usize {
+                                                    let pos = 1 + num_points + *idx as usize;
+                                                    let mut s = spine[pos].clone();
+                                                    for q in pathargs {
+                                                        s = self.vapp(s, q.clone());
+                                                    }
                                                     let mut v = self.vpapp(s, r.clone());
                                                     for extra in &spine[scrut_pos + 1..] {
                                                         v = self.vapp(v, extra.clone());

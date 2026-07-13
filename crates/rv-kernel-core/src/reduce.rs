@@ -146,7 +146,7 @@ impl<'e> Reducer<'e> {
                     // point/`m` path constructors and guarded per-HIT `id` so two
                     // independently declared cubical HITs never cross-fire.
                     Some(Decl::CubHit(c)) if matches!(c.role, CubHitRole::Rec { .. }) => {
-                        match self.try_cubical_hit_rec(c, &args) {
+                        match self.try_cubical_hit_rec(n, ls, c, &args) {
                             Some(reduced) => {
                                 let (h, a) = reduced.unfold_apps();
                                 head = h;
@@ -838,7 +838,19 @@ impl<'e> Reducer<'e> {
     /// [`crate::cubical_hit::declare_cubical_hit`]-declared HITs (even
     /// structurally identical ones) from ever cross-firing each other's ι-rules
     /// (see `crate::cubical_hit::tests::no_cross_fire_between_two_distinct_declared_hits`).
-    fn try_cubical_hit_rec(&self, rc: &crate::env::CubHit, args: &[Term]) -> Option<Term> {
+    /// `rname`/`ls` are the `H.rec` constant's own name/level-args (needed to
+    /// rebuild a recursive `H.rec ...` call for a `Field::Rec` point-constructor
+    /// field — see [`Self::try_hit_rec`]'s doc comment, whose fielded-point ι-rule
+    /// this generalizes to the cubical schema's motive-**dependent** case telescope
+    /// (each recursive field contributes both itself *and* a trailing IH slot — see
+    /// [`crate::cubical_hit`]'s "fielded point recursor" section).
+    fn try_cubical_hit_rec(
+        &self,
+        rname: &Name,
+        ls: &[crate::level::Level],
+        rc: &crate::env::CubHit,
+        args: &[Term],
+    ) -> Option<Term> {
         let (num_points, num_paths) = match rc.role {
             CubHitRole::Rec { num_points, num_paths } => (num_points as usize, num_paths as usize),
             _ => return None,
@@ -848,15 +860,35 @@ impl<'e> Reducer<'e> {
             return None; // not yet applied to the H value
         }
         let scrut = self.whnf(&args[scrut_pos]);
-        // Point rule.
+        // Point rule: scrutinee's weak-head is a point constructor of the SAME HIT
+        // `id`, fully applied to its declared fields (arity match) — never fires on
+        // an under-applied point constructor (stays stuck) or a different HIT's
+        // point constructor (guarded by `id`).
         let (pt_head, pt_args) = scrut.unfold_apps();
         if let Term::Const(pt_name, _) = &pt_head {
-            if pt_args.is_empty() {
-                if let Some(Decl::CubHit(c)) = self.env.get(pt_name) {
-                    if c.id == rc.id {
-                        if let CubHitRole::Point(idx) = c.role {
-                            let pos = 1 + idx as usize;
+            if let Some(Decl::CubHit(c)) = self.env.get(pt_name) {
+                if c.id == rc.id {
+                    if let CubHitRole::Point { idx, fields } = &c.role {
+                        if pt_args.len() == fields.len() {
+                            let pos = 1 + *idx as usize;
                             let mut applied = args[pos].clone();
+                            for (a, is_rec) in pt_args.iter().zip(fields.iter()) {
+                                // The dependent case keeps the ORIGINAL field value
+                                // (unlike `try_hit_rec`'s non-dependent schema,
+                                // which collapses a `Field::Rec` slot straight to
+                                // the result) — see `point_case_ty`'s doc comment.
+                                applied = Term::app(applied, a.clone());
+                                if *is_rec {
+                                    // .. immediately followed by its induction
+                                    // hypothesis: a recursive
+                                    // `H.rec.{v} <same C/case/resp args> a` call.
+                                    let mut recur = Term::cnst(rname.clone(), ls.to_vec());
+                                    for pre in &args[..scrut_pos] {
+                                        recur = Term::app(recur, pre.clone());
+                                    }
+                                    applied = Term::app(applied, Term::app(recur, a.clone()));
+                                }
+                            }
                             for extra in &args[scrut_pos + 1..] {
                                 applied = Term::app(applied, extra.clone());
                             }
@@ -867,18 +899,22 @@ impl<'e> Reducer<'e> {
             }
         }
         // Path rule: scrutinee is (weak-head) `PApp(p, r)` with `p`'s own weak-head
-        // form the literal, nullary `H.path_j` of the same HIT `id`.
+        // form the literal `H.path_j` of the same HIT `id`, applied to exactly its
+        // declared quantifier arity.
         if let Term::PApp(p, r) = &scrut {
             let p_whnf = self.whnf(p);
             let (path_head, path_args) = p_whnf.unfold_apps();
             if let Term::Const(path_name, _) = &path_head {
-                if path_args.is_empty() {
-                    if let Some(Decl::CubHit(c)) = self.env.get(path_name) {
-                        if c.id == rc.id {
-                            if let CubHitRole::Path { idx, .. } = c.role {
-                                let pos = 1 + num_points + idx as usize;
-                                let s = &args[pos];
-                                let mut applied = Term::papp(s.clone(), (**r).clone());
+                if let Some(Decl::CubHit(c)) = self.env.get(path_name) {
+                    if c.id == rc.id {
+                        if let CubHitRole::Path { idx, num_quant, .. } = &c.role {
+                            if path_args.len() == *num_quant as usize {
+                                let pos = 1 + num_points + *idx as usize;
+                                let mut s = args[pos].clone();
+                                for q in &path_args {
+                                    s = Term::app(s, q.clone());
+                                }
+                                let mut applied = Term::papp(s, (**r).clone());
                                 for extra in &args[scrut_pos + 1..] {
                                     applied = Term::app(applied, extra.clone());
                                 }
