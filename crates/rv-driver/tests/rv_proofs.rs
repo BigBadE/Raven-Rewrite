@@ -207,6 +207,14 @@ fn typed_arith() {
     check("typed_arith.rv");
 }
 
+/// Big-step ⟹ multi-step small-step equivalence (`eval_to_steps`) for a bool/`if` + Peano-`Suc`
+/// object language, complementing `typed_arith.rv`'s progress/preservation development with the
+/// other classic operational-semantics correspondence.
+#[test]
+fn bigstep_smallstep() {
+    check("bigstep_smallstep.rv");
+}
+
 #[test]
 fn stlc() {
     check("stlc.rv");
