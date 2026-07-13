@@ -268,6 +268,50 @@ impl VEnv {
     fn cons(self: &Rc<Self>, v: Rc<Value>) -> Rc<VEnv> {
         Rc::new(VEnv::Cons(v, self.clone()))
     }
+
+    /// The number of bindings currently in scope (0 for `Nil`) — i.e. the de
+    /// Bruijn *level* the next `cons`ed value would occupy. Used by
+    /// [`Nbe::family_whnf_pi`] to push a fresh marker at the correct, honest
+    /// level (so [`Nbe::quote`]'s level-to-index translation round-trips
+    /// exactly) rather than an artificially huge one — see that method's doc
+    /// for why the two probes (this one and
+    /// [`Nbe::family_is_constant_value`]'s [`PROBE_BASE`]-offset one) need
+    /// different freshness disciplines despite both pushing "one fresh marker
+    /// onto `venv`".
+    fn depth(&self) -> usize {
+        let mut env = self;
+        let mut n = 0;
+        while let VEnv::Cons(_, rest) = env {
+            n += 1;
+            env = rest;
+        }
+        n
+    }
+
+    /// Does any binding already in `self` carry one of
+    /// [`Nbe::family_is_constant_value`]'s out-of-band [`PROBE_BASE`]-offset
+    /// markers? Used by [`Nbe::family_whnf_pi`] as a safety guard: that
+    /// method's own position-indexed quoting (see [`Self::depth`]'s doc) is
+    /// only sound when *every* binding in `venv` is a genuine, position-
+    /// indexed value — which a `PROBE_BASE` marker (deliberately *not*
+    /// position-indexed, by [`Nbe::family_is_constant_value`]'s own design) is
+    /// not. This only ever arises when [`Nbe::family_whnf_pi`] is reached
+    /// while already nested inside a `family_is_constant_value` regularity
+    /// probe's own recursive evaluation (that probe pushes exactly such a
+    /// marker before evaluating), so it's cheap to check for directly rather
+    /// than threading extra state through every `eval` call.
+    fn contains_probe_marker(&self) -> bool {
+        let mut env = self;
+        while let VEnv::Cons(v, rest) = env {
+            if let Value::Stuck(Head::Var(k), spine) = &**v {
+                if spine.is_empty() && *k as u64 >= PROBE_BASE {
+                    return true;
+                }
+            }
+            env = rest;
+        }
+        false
+    }
 }
 
 /// The evaluator, bound to an environment (and optionally a metacontext, for
@@ -379,6 +423,17 @@ impl<'a> Nbe<'a> {
                     // fresh binder it creates is bound within it), so it's evaluated
                     // against the very same `venv`.
                     let built = crate::kan::transp_pi_rule(dom, cod, a);
+                    self.eval(venv, &built)
+                } else if let Some((wdom, wcod)) = self.family_whnf_pi(venv, fam) {
+                    // The completeness fix (see `Self::family_whnf_pi`'s doc): `fam`
+                    // is not *syntactically* a `Π`, but genuinely computes to one
+                    // against the real `venv` (e.g. a `J`-motive application that
+                    // only beta-reduces to an arrow type). Same builder, same
+                    // "introduces no new free variable" argument as the syntactic
+                    // branch immediately above — `wdom`/`wcod` are `fam`'s own
+                    // evaluated-then-quoted dom/cod, in the identical calling
+                    // convention.
+                    let built = crate::kan::transp_pi_rule(&wdom, &wcod, a);
                     self.eval(venv, &built)
                 } else if let Some(built) = crate::kan::transp_inductive_rule(self.env, fam, a) {
                     // Parametrized-inductive filling (see `crate::kan`'s "Phase
@@ -812,6 +867,124 @@ impl<'a> Nbe<'a> {
         // back as some other index instead, so it can't be mistaken for the probe.
         let quoted = self.quote(id as usize + 1, &v);
         !crate::term::mentions_var(&quoted, 0)
+    }
+
+    /// **The completeness fix (nested-`trans`-as-`J`-subject gap)**: a `venv`-aware
+    /// WHNF probe deciding whether `fam` — a family under one (not-yet-introduced)
+    /// interval binder, exactly [`Term::Transp`]'s own `fam` field — computes,
+    /// once genuinely evaluated against the *real* environment `venv`, to a `Π`
+    /// type, even when `fam`'s own raw syntax is not literally a `Term::Pi` node
+    /// (e.g. it's a beta-redex `App(App(motive, ..), ..)` that only *reduces* to
+    /// one). On a hit, returns `(dom, cod)` in exactly the calling convention
+    /// [`crate::kan::transp_pi_rule`] already expects from the syntactic-match call
+    /// site right above it in [`Self::eval`]'s `Term::Transp` arm — i.e. both
+    /// still living in the same "one interval binder" frame `fam` itself lives in
+    /// (`dom` unchanged, `cod` one binder deeper) — so the two call sites can share
+    /// that one, already-trusted Kan-filling builder verbatim.
+    ///
+    /// # The gap this closes
+    ///
+    /// [`Self::eval`]'s existing `Term::Transp` arm decides whether the Π-case
+    /// filling rule applies by matching `fam.as_ref()` **syntactically** against
+    /// `Term::Pi(..)` — no reduction first. That is exactly right for a *directly*
+    /// Π-headed family (the overwhelmingly common case, and the one every existing
+    /// `transp_pi_rule` test exercises), but it misses a family that is only a `Π`
+    /// *up to computation* — concretely, `crate::cubical::j`'s own `family` field,
+    /// built as `App(App(motive, p_at_i), connect)` (`motive` a literal two-`Lam`
+    /// term whose body, once both arguments are substituted in, beta-reduces to a
+    /// `Π`/arrow type). Every `J`-derived combinator (`crate::cubical::trans`
+    /// included) builds its `Transp` this way, so this gap is latent in *all* of
+    /// them — it stays invisible only because a single top-level `Transp` node is
+    /// usually consumed by `is_def_eq`'s full `normalize_open`, which reaches the
+    /// same Π shape via ordinary β-reduction *around* the (still literally stuck)
+    /// `Value::Transp`, without ever needing this arm to fire. It stops being
+    /// invisible exactly when a `Transp`-headed term's *value* — not just its type
+    /// — is needed to drive a *further* computation, e.g. `crate::cubical::trans`'s
+    /// own output (`App(Transp(..), q)`, a path) used as the *subject* `p` of an
+    /// *outer* `J`/`trans` call (`crate::cubical::trans3`'s documented "nesting
+    /// `trans`" obstruction, `equiv_hae::tests::
+    /// debug_nested_trans_hits_the_documented_completeness_gap`): the outer `J`'s
+    /// own `family_is_constant_value` regularity probe (and the boundary check in
+    /// `Checker::check`'s `Term::Transp` arm) need the *inner* `Transp` to actually
+    /// reduce — via this very Π-case rule — so that e.g. `pq @ i0` genuinely
+    /// computes down to `pq`'s known left endpoint `w`. Without this fix the inner
+    /// `Transp` stays permanently `Value::Stuck`-adjacent (wrapped in `Value::Transp`,
+    /// never unfolding to the `Lam` the Π-rule would have built), so `pq @ i0`
+    /// normalizes only as far as the *symbolic* application `(Transp(..) q) @ i0`
+    /// — never reaching `w` — exactly the "expected"/"inferred" mismatch the
+    /// diagnostic test records (`pq @ (#0 ∧ i0)` staying stuck instead of folding
+    /// to `w`).
+    ///
+    /// This method closes that gap the same way [`Self::family_is_constant_value`]
+    /// closed the sibling regularity gap: by asking the question against the
+    /// **real** `venv` (with real values for every free variable `fam` mentions
+    /// besides its own interval binder) instead of `fam`'s undecorated syntax.
+    ///
+    /// # Soundness
+    ///
+    /// Introduces **no new reduction rule and no new equation**. The only thing
+    /// that fires here is [`crate::kan::transp_pi_rule`] — the exact same,
+    /// pre-existing, independently soundness-argued Kan-filling construction the
+    /// syntactic branch already calls (see that function's own doc and
+    /// `crate::kan`'s "Phase 3.6" section) — applied to a `(dom, cod)` pair that is
+    /// *provably* what `fam` denotes: `v = eval(venv.cons(probe), fam)` is the
+    /// evaluator's own, already-trusted judgement of what `fam` computes to, and
+    /// `quote` is its exact, sound left-inverse (re-reading a value back to a
+    /// normal-form term valid in the same context) — so `(dom, cod)` are not a
+    /// guess or an approximation, they are `fam`'s *actual* dom/cod once the
+    /// probe's own level-bookkeeping (see below) is right. This is a strictly
+    /// **completeness**-only extension of an already-sound rule to a syntactically
+    /// larger, semantically identical set of `fam` shapes — it changes which
+    /// `Transp` nodes *reduce*, never which *types* something is accepted at
+    /// (`Checker::infer`/`check` are untouched by this module).
+    ///
+    /// # Why the probe must use the *real* depth, not [`PROBE_BASE`]
+    ///
+    /// [`Self::family_is_constant_value`] can safely push its fresh marker at an
+    /// astronomically large, globally-unique level (`PROBE_BASE + counter`)
+    /// because it only ever asks a yes/no *mention* question of the quoted result
+    /// — the huge level never needs to correctly round-trip back through `venv`.
+    /// This method is different: the `(dom, cod)` it returns get handed to
+    /// [`crate::kan::transp_pi_rule`] and then *re-evaluated against this same
+    /// `venv`* by the caller, so every *other* free variable `fam` mentions (i.e.
+    /// every `Head::Var(k)` already present in `venv`, not the freshly pushed
+    /// marker) must quote back to the **same** `Term::Var` index that correctly
+    /// re-resolves through `venv.get` — which only holds when the quoting level
+    /// matches `venv`'s *actual* depth (see [`VEnv::depth`]'s doc). Using
+    /// `PROBE_BASE` here would silently produce `(dom, cod)` with wildly wrong,
+    /// out-of-range de Bruijn indices for every variable already bound in `venv` —
+    /// not a soundness hole (the re-`eval` would simply panic on the out-of-range
+    /// index, or in the worst case pick up an unrelated binding, on genuinely
+    /// well-typed input), so this method deliberately does **not** reuse that
+    /// probe's freshness discipline.
+    ///
+    /// # Termination
+    ///
+    /// One `self.eval` call plus one `self.quote` call over the result — the exact
+    /// same shape (and cost) as [`Self::family_is_constant_value`]'s own probe,
+    /// against a `venv` no larger than the enclosing computation's. No new
+    /// recursion scheme.
+    fn family_whnf_pi(&self, venv: &Rc<VEnv>, fam: &Term) -> Option<(Term, Term)> {
+        // Safety guard (see `VEnv::contains_probe_marker`'s doc): if `venv`
+        // already carries a `family_is_constant_value` `PROBE_BASE` marker
+        // (i.e. we're nested inside that probe's own recursive evaluation),
+        // this method's `venv.depth()`-based quoting is not sound — bail out
+        // to the pre-existing stuck behaviour rather than risk quoting a
+        // value that still mentions the out-of-band marker at the wrong
+        // level. Purely a *completeness* trade-off (a missed reduction in an
+        // already-rare, deeply-nested case), never a soundness one.
+        if venv.contains_probe_marker() {
+            return None;
+        }
+        let level = venv.depth();
+        let probe = Rc::new(Value::Stuck(Head::Var(level), Vec::new()));
+        let v = self.eval(&venv.cons(probe), fam);
+        if let Value::Pi(..) = &*v {
+            if let Term::Pi(_g, dom, cod) = self.quote(level + 1, &v) {
+                return Some(((*dom).clone(), (*cod).clone()));
+            }
+        }
+        None
     }
 
     /// If `h spine` is a recursor saturated on a constructor major premise, fire its
@@ -1893,6 +2066,65 @@ mod completeness_fix_soundness_tests {
         let ty = k.infer(&t).expect("transp is well-typed even when its family is genuinely non-constant");
         assert!(k.def_eq(&ty, &cn("B")));
         assert!(!k.def_eq(&t, &cn("a")), "a genuinely type-changing transp must not collapse to its own argument");
+    }
+
+    /// **Absolute anti-`False`, #4** (this pass's own fix —
+    /// [`Nbe::family_whnf_pi`], the nested-`trans`-as-`J`-subject completeness
+    /// fix): a nested `trans(trans(p,q),r)` now type-checks and its *value*
+    /// reduces (see [`Nbe::family_whnf_pi`]'s doc), but it still only ever
+    /// proves `Path A w z` — the *actual* composite of `p:w=x`, `q:x=y`,
+    /// `r:y=z` — never an unrelated endpoint. `family_whnf_pi` only recognizes
+    /// a family as `Π`-shaped by *actually evaluating* it against the real
+    /// `venv` and reading back exactly what it denotes (never fabricating or
+    /// guessing a `Π`), so a bogus target must still be rejected by
+    /// `Checker::check`.
+    #[test]
+    fn nested_trans_still_rejects_a_wrong_endpoint() {
+        let mut k = Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        for n in ["w", "x", "y", "z", "other"] {
+            k.add_axiom(n, 0, cn("A")).unwrap();
+        }
+        k.add_axiom("p", 0, Term::path(cn("A"), cn("w"), cn("x"))).unwrap();
+        k.add_axiom("q", 0, Term::path(cn("A"), cn("x"), cn("y"))).unwrap();
+        k.add_axiom("r", 0, Term::path(cn("A"), cn("y"), cn("z"))).unwrap();
+        let pq = crate::cubical::trans(&cn("A"), &cn("w"), &cn("y"), &cn("p"), &cn("q"));
+        let pqr = crate::cubical::trans(&cn("A"), &cn("w"), &cn("z"), &pq, &cn("r"));
+        let ty = k.infer(&pqr).expect("nested trans now typechecks");
+        assert!(k.def_eq(&ty, &Term::path(cn("A"), cn("w"), cn("z"))));
+        assert!(
+            !k.def_eq(&ty, &Term::path(cn("A"), cn("w"), cn("other"))),
+            "nested trans must not smuggle a path to an unrelated endpoint"
+        );
+        assert!(k.check(&pqr, &Term::path(cn("A"), cn("w"), cn("other"))).is_err());
+        // And the genuine composite still doesn't degenerate into `refl`-at-`w`:
+        // `w`/`z` are distinct opaque axioms, so `Path A w z` is not `Path A w w`.
+        assert!(!k.def_eq(&ty, &Term::path(cn("A"), cn("w"), cn("w"))));
+    }
+
+    /// **Termination adversarial check**: [`Nbe::family_whnf_pi`]'s safety guard
+    /// ([`VEnv::contains_probe_marker`]) must not itself cause the fix to silently
+    /// stop firing on the ordinary (non-nested-probe) path — re-run the same
+    /// nested-`trans` term through a plain top-level `Nbe::normalize` (no
+    /// enclosing `family_is_constant_value` probe in scope) and confirm it
+    /// terminates and reaches the same normal form both times.
+    #[test]
+    fn family_whnf_pi_guard_does_not_disable_the_ordinary_path() {
+        let mut k = Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        for n in ["w", "x", "y", "z"] {
+            k.add_axiom(n, 0, cn("A")).unwrap();
+        }
+        k.add_axiom("p", 0, Term::path(cn("A"), cn("w"), cn("x"))).unwrap();
+        k.add_axiom("q", 0, Term::path(cn("A"), cn("x"), cn("y"))).unwrap();
+        k.add_axiom("r", 0, Term::path(cn("A"), cn("y"), cn("z"))).unwrap();
+        let pq = crate::cubical::trans(&cn("A"), &cn("w"), &cn("y"), &cn("p"), &cn("q"));
+        let pqr = crate::cubical::trans(&cn("A"), &cn("w"), &cn("z"), &pq, &cn("r"));
+        let nbe = Nbe::new(k.env());
+        let n1 = nbe.normalize(&pqr);
+        let n2 = nbe.normalize(&pqr);
+        assert_eq!(n1, n2, "normalization must be deterministic/terminating on repeat calls");
+        k.check(&pqr, &Term::path(cn("A"), cn("w"), cn("z"))).unwrap();
     }
 
     /// **Termination**: the previously-stuck nested `trans`-under-`J` redex

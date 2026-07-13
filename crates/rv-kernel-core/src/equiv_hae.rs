@@ -844,15 +844,28 @@ mod tests {
         assert!(k.infer(&term).is_err(), "expected the documented gap to still reproduce");
     }
 
-    /// KNOWN LIMITATION (documented, not a soundness issue — see [`trans3`]'s own
-    /// doc, "Phase 3.12"): nesting [`crate::cubical::trans`] — feeding one
-    /// `trans`-built term back in as the *subject* of a further `J`-elimination —
-    /// does not type-check in this kernel, even for three fully abstract
-    /// (axiomatized) paths with no `sym`/`ap` involved. This is exactly the
-    /// obstruction `sec_prime` above works around by using
-    /// [`crate::cubical::trans3`] (a single `J`-elimination) instead of two nested
-    /// `trans` calls. Kept as a permanent regression/documentation test (asserting
-    /// the failure, not silently skipping it).
+    /// **CLOSED** (was: KNOWN LIMITATION — see [`trans3`]'s own doc, "Phase
+    /// 3.12", and `crate::nbe::Nbe::family_whnf_pi`'s doc for the fix):
+    /// nesting [`crate::cubical::trans`] — feeding one `trans`-built term back
+    /// in as the *subject* of a further `J`-elimination — used to fail to
+    /// type-check in this kernel, even for three fully abstract (axiomatized)
+    /// paths with no `sym`/`ap` involved. Root cause (see
+    /// `crate::nbe::Nbe::family_whnf_pi`'s doc for the full account): the
+    /// *outer* `trans`'s own `Transp` needs the *inner* `trans`'s value (not
+    /// just its type) to reduce — specifically, `pq @ i0` needs to fold down
+    /// to `pq`'s own left endpoint `w` — but the inner `Transp`'s family,
+    /// `crate::cubical::j`'s `App(App(motive, ..), ..)`, is only a `Π` *up to
+    /// computation*, not *syntactically*, so the (deliberately syntax-only)
+    /// `Π`-case Kan-filling rule never fired for it. Fixed by
+    /// `Nbe::family_whnf_pi`, a `venv`-aware WHNF probe (sibling to the
+    /// pre-existing `Nbe::family_is_constant_value` regularity probe) that
+    /// recognizes a family as `Π`-shaped once genuinely *evaluated*, not just
+    /// by raw syntax — a pure completeness extension of the existing, already
+    /// -trusted `crate::kan::transp_pi_rule` Kan filling, no new reduction
+    /// rule or equation. This was one of the documented blockers for
+    /// `biInvToHAE`'s `τ'` (see the module doc's "Deferred: biInvToHAE"
+    /// section for the remaining status). Kept as a permanent regression test
+    /// (now asserting success, not failure).
     #[test]
     fn debug_nested_trans_hits_the_documented_completeness_gap() {
         let mut k = crate::kernel::Kernel::new();
@@ -867,9 +880,11 @@ mod tests {
         // The *first* `trans` call alone type-checks fine, at exactly `Path A w y`.
         let ty = k.infer(&pq).expect("p;q should typecheck");
         assert!(k.def_eq(&ty, &Term::path(cn("A"), cn("w"), cn("y"))));
-        // But using its output as the *subject* of a second `trans`/`J` fails.
+        // Using its output as the *subject* of a second `trans`/`J` now also
+        // type-checks, at exactly `Path A w z`.
         let pqr = crate::cubical::trans(&cn("A"), &cn("w"), &cn("z"), &pq, &cn("r"));
-        assert!(k.infer(&pqr).is_err(), "expected the documented nested-trans gap to still reproduce");
+        let ty2 = k.infer(&pqr).expect("nested trans should now typecheck (the completeness gap is closed)");
+        assert!(k.def_eq(&ty2, &Term::path(cn("A"), cn("w"), cn("z"))));
     }
 
     /// Adversarial: `sec_prime`'s output is not accidentally checkable against an
