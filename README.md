@@ -54,7 +54,8 @@ cargo test --workspace                                                # ~960 tes
 types, inductives, **indexed-mutual inductives**, **quotient types** (`Quot`/`mk`/`sound`/
 `lift`/`ind`), **propositional truncation** (`Trunc`, a 1-HIT), **coinductives**
 (`declare_coinductive`/`CoindSpec` — greatest fixpoints with generated corecursors;
-present and kernel-tested, not yet surfaced by name into `.rv` examples), and **graded
+surfaced by name into `.rv` via the `Stream`/`Stream.head`/`Stream.tail`/`Stream.corec`
+dotted names installed into every session, see `examples/proofs/coinductive.rv`), and **graded
 QTT usage contexts** (`(x :1 T)` linear / `(x :0 T)` erased / unannotated unrestricted
 binders, checked by a dedicated usage pass — a linear binder used twice is a hard
 verification error, `examples/proofs/graded_demo_linear_violation.rv`).
