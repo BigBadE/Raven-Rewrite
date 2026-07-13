@@ -1,0 +1,38 @@
+// Demonstrates free `fn`-to-`fn` composition in the PROOF fragment: a proof `fn` calling
+// several helper `fn`s declared *after* it (forward references), and a longer forward
+// chain, all resolved without a `mutual` block and without threading precomputed results
+// in as extra parameters (the workaround used throughout the rest of this corpus before
+// `Session::run_commands` gained whole-module name visibility — see its module doc and
+// `verify.rs`'s `deferred`/`forward_ref_name` machinery).
+//
+// Previously: a proof `fn` could only call an *earlier*-defined sibling `fn`; a plain
+// forward reference (`f` calling `g` where `g` is written below `f`) failed to resolve
+// with "unknown name", unless both lived in an explicit `mutual` block over an inductive
+// group. This file exercises exactly the case that used to fail: `theorem` calls `helper1`
+// and `helper2` (both defined afterwards), and `helper1` itself forward-references
+// `helper3` (a three-deep forward chain), proving each hand-off is discharged purely by
+// unfolding once every callee is elaborated — no reordering, no result-threading, no
+// `mutual`.
+
+enum Nat { Zero, Succ(Nat) }
+
+// `theorem` forward-references `helper1` and `helper2`, both declared below it.
+fn theorem(n: Nat) -> Nat::Succ(Nat::Succ(n)) == helper1(n) {
+    Eq::refl(Nat, helper2(n))
+}
+
+// `helper1` itself forward-references `helper3`, declared below *it* — a two-hop forward
+// chain from `theorem`'s point of view, resolved by the fixpoint retry in `run_commands`.
+fn helper1(n: Nat) -> Nat {
+    helper3(n)
+}
+
+// `helper2` is an ordinary (non-forward) call to the already-defined `helper1` — the
+// direction that always worked — included to show both directions compose freely.
+fn helper2(n: Nat) -> Nat {
+    helper1(n)
+}
+
+fn helper3(n: Nat) -> Nat {
+    Nat::Succ(Nat::Succ(n))
+}
