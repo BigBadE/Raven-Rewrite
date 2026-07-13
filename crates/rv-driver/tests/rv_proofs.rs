@@ -96,6 +96,15 @@ fn bst() {
     check("bst.rv");
 }
 
+/// The BST ORDERING invariant (bounded-tree predicates `all_lt`/`all_gt`/`is_bst`) and its
+/// preservation under `insert`: the headline `insert_preserves_bst` (`is_bst(t) == True ->
+/// is_bst(insert(x, t)) == True`), built from the two bound-propagation crux lemmas
+/// `all_lt_insert`/`all_gt_insert`.
+#[test]
+fn bst_ordered() {
+    check("bst_ordered.rv");
+}
+
 #[test]
 fn decide_reflection() {
     check("decide_demo.rv");

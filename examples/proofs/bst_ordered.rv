@@ -1,0 +1,398 @@
+// A VERIFIED BST ORDERING INVARIANT, in Rust-like Raven (`rvc --verify`).
+//
+// Self-contained (own `Nat`/`Bool`/`leb`/`Tree`/`insert`, copied from `bst.rv`). Beyond
+// `bst.rv`'s membership headlines, this file models the actual binary-search-tree ORDERING
+// invariant with bounded-tree predicates (`all_lt`/`all_gt`/`is_bst`) and proves that `insert`
+// preserves it:
+//
+//     is_bst(t) == True -> is_bst(insert(x, t)) == True      (insert_preserves_bst — CLOSED)
+//
+// built from the two bound-propagation crux lemmas:
+//
+//     all_lt(b, t) == True -> lt(x, b) == True -> all_lt(b, insert(x, t)) == True
+//     all_gt(b, t) == True -> lt(b, x) == True -> all_gt(b, insert(x, t)) == True
+//
+// Kept in the inductive-`Eq`/`Prop` proof style used throughout this corpus (NOT cubical), and
+// following `bst.rv`'s convoy idiom: a `match`'s body is abstracted into a small named
+// `..._hyp` `fn` over the raw `Bool` comparison results (`b1 := leb(x, k)`, `b2 := leb(k, x)`),
+// which is then instantiated at the real call site by currying in continuation parameters whose
+// *declared* types mention the matched variable (so they refine per-branch once the match
+// forces `b1`/`b2` to `True`/`False`). Every proof step is its own small named `fn`; no
+// `trans`/`congr_arg`/`symm` call is ever handed another combinator call as an inline
+// sub-argument (per `compile_stack.rv`'s header / `bst.rv`'s header: the kernel's defeq checker
+// can fail with "cannot unify interval expressions" on such inline nesting).
+
+enum Nat { Zero, Succ(Nat) }
+enum Bool { True, False }
+enum Tree { Leaf, Node(Tree, Nat, Tree) }
+
+// ----- Bool no-confusion (needed for vacuous branches below) ----------------------------------
+
+fn is_true(b: Bool) -> Prop {
+    match b { | Bool::True => True | Bool::False => False }
+}
+fn is_false(b: Bool) -> Prop {
+    match b { | Bool::True => False | Bool::False => True }
+}
+fn bool_false_ne_true(h: Bool::False == Bool::True) -> False {
+    subst(Bool, is_false, Bool::False, Bool::True, h, True::intro)
+}
+fn bool_true_ne_false(h: Bool::True == Bool::False) -> False {
+    subst(Bool, is_true, Bool::True, Bool::False, h, True::intro)
+}
+
+// ----- `&&` on `Bool`, and its introduction / elimination lemmas ------------------------------
+
+fn band(a: Bool, b: Bool) -> Bool {
+    match a {
+      | Bool::True  => b
+      | Bool::False => Bool::False
+    }
+}
+
+// `a == True -> band(a, b) == band(True, b)`, a single `congr_arg` rewrite.
+fn band_step_a(a: Bool, b: Bool, ea: a == Bool::True) -> band(a, b) == band(Bool::True, b) {
+    congr_arg(Bool, Bool, fun (aa: Bool) => band(aa, b), a, Bool::True, ea)
+}
+
+// `a == True -> b == True -> band(a, b) == True` (`band(True, b)` is definitionally `b`).
+fn band_intro(a: Bool, b: Bool, ea: a == Bool::True, eb: b == Bool::True) -> band(a, b) == Bool::True {
+    trans(Bool, band(a, b), band(Bool::True, b), Bool::True, band_step_a(a, b, ea), eb)
+}
+
+// `band(a, b) == True -> a == True`, by case-splitting on `a` (the vacuous `False` case is
+// discharged the same way `bst.rv`'s `bool_false_ne_true` discharges impossible branches).
+// Matched via the convoy idiom (curry the hypothesis in *after* the match, so its declared
+// type gets refined per-branch instead of needing the kernel to re-substitute a pre-existing
+// context hypothesis's type through the match — see the file header).
+fn band_elim_l(a: Bool, b: Bool) -> (band(a, b) == Bool::True) -> a == Bool::True {
+    match a {
+      | Bool::True  => fun (h: band(Bool::True, b) == Bool::True) => Eq::refl(Bool, Bool::True)
+      | Bool::False => fun (h: band(Bool::False, b) == Bool::True) =>
+          False::rec(fun (z: False) => Bool::False == Bool::True, bool_false_ne_true(h))
+    }
+}
+// `band(a, b) == True -> b == True`, by case-splitting on `a` (`band(True, b)` is `b`
+// definitionally; the `False` case is vacuous). Same convoy idiom.
+fn band_elim_r(a: Bool, b: Bool) -> (band(a, b) == Bool::True) -> b == Bool::True {
+    match a {
+      | Bool::True  => fun (h: band(Bool::True, b) == Bool::True) => h
+      | Bool::False => fun (h: band(Bool::False, b) == Bool::True) =>
+          False::rec(fun (z: False) => b == Bool::True, bool_false_ne_true(h))
+    }
+}
+
+// ----- decidable `<=`/`<` on `Nat` (exactly `bst.rv`'s `leb`, plus a strict `lt`) --------------
+
+fn leb(n: Nat, m: Nat) -> Bool {
+    match n {
+      | Nat::Zero    => Bool::True
+      | Nat::Succ(a) => match m {
+          | Nat::Zero    => Bool::False
+          | Nat::Succ(b) => leb(a, b)
+        }
+    }
+}
+fn lt(n: Nat, m: Nat) -> Bool { leb(Nat::Succ(n), m) }
+
+// `leb(a, b) == True -> leb(b, a) == False -> lt(a, b) == True` — the crux arithmetic fact
+// turning "not `b <= a`" plus "`a <= b`" into strict `a < b`, by induction on `a` (with `b`
+// generalized, recursing on both together exactly as `leb` itself does).
+// (Both hypotheses are curried in *after* the `match`, again per the convoy idiom, so their
+// declared types get refined per-branch instead of requiring the kernel to re-substitute
+// pre-existing context hypotheses' types through the match.)
+fn leb_lt(a: Nat, b: Nat) -> (leb(a, b) == Bool::True) -> (leb(b, a) == Bool::False) -> lt(a, b) == Bool::True {
+    match a {
+      | Nat::Zero    =>
+          match b {
+            | Nat::Zero    =>
+                fun (h1: leb(Nat::Zero, Nat::Zero) == Bool::True) (h2: leb(Nat::Zero, Nat::Zero) == Bool::False) =>
+                  False::rec(fun (z: False) => lt(Nat::Zero, Nat::Zero) == Bool::True, bool_true_ne_false(h2))
+            | Nat::Succ(c) =>
+                fun (h1: leb(Nat::Zero, Nat::Succ(c)) == Bool::True) (h2: leb(Nat::Succ(c), Nat::Zero) == Bool::False) =>
+                  Eq::refl(Bool, Bool::True)
+          }
+      | Nat::Succ(a2) =>
+          match b {
+            | Nat::Zero    =>
+                fun (h1: leb(Nat::Succ(a2), Nat::Zero) == Bool::True) (h2: leb(Nat::Zero, Nat::Succ(a2)) == Bool::False) =>
+                  False::rec(fun (z: False) => lt(Nat::Succ(a2), Nat::Zero) == Bool::True, bool_false_ne_true(h1))
+            | Nat::Succ(b2) =>
+                fun (h1: leb(Nat::Succ(a2), Nat::Succ(b2)) == Bool::True) (h2: leb(Nat::Succ(b2), Nat::Succ(a2)) == Bool::False) =>
+                  leb_lt(a2, b2)(h1)(h2)
+          }
+    }
+}
+
+// `leb(a, b) == False -> lt(b, a) == True` — the simpler mirror fact ("not `a <= b`" already
+// means `b < a`), by the same induction shape (and the same convoy idiom).
+fn leb_false_lt(a: Nat, b: Nat) -> (leb(a, b) == Bool::False) -> lt(b, a) == Bool::True {
+    match a {
+      | Nat::Zero    =>
+          fun (h: leb(Nat::Zero, b) == Bool::False) =>
+            False::rec(fun (z: False) => lt(b, Nat::Zero) == Bool::True, bool_true_ne_false(h))
+      | Nat::Succ(a2) =>
+          match b {
+            | Nat::Zero    => fun (h: leb(Nat::Succ(a2), Nat::Zero) == Bool::False) => Eq::refl(Bool, Bool::True)
+            | Nat::Succ(b2) => fun (h: leb(Nat::Succ(a2), Nat::Succ(b2)) == Bool::False) => leb_false_lt(a2, b2)(h)
+          }
+    }
+}
+
+// ----- bounded-tree predicates and the BST invariant -------------------------------------------
+
+// `all_lt(bound, t)`: every key in `t` is `< bound`.
+fn all_lt(bound: Nat, t: Tree) -> Bool {
+    match t {
+      | Tree::Leaf          => Bool::True
+      | Tree::Node(l, k, r) => band(band(lt(k, bound), all_lt(bound, l)), all_lt(bound, r))
+    }
+}
+// `all_gt(bound, t)`: every key in `t` is `> bound`.
+fn all_gt(bound: Nat, t: Tree) -> Bool {
+    match t {
+      | Tree::Leaf          => Bool::True
+      | Tree::Node(l, k, r) => band(band(lt(bound, k), all_gt(bound, l)), all_gt(bound, r))
+    }
+}
+// `is_bst(t)`: the BST ordering invariant.
+fn is_bst(t: Tree) -> Bool {
+    match t {
+      | Tree::Leaf          => Bool::True
+      | Tree::Node(l, k, r) => band(band(all_lt(k, l), all_gt(k, r)), band(is_bst(l), is_bst(r)))
+    }
+}
+
+// ----- `insert` (exactly `bst.rv`'s) ------------------------------------------------------------
+
+fn insert_hyp(x: Nat, l: Tree, k: Nat, r: Tree, insL: Tree, insR: Tree, b1: Bool, b2: Bool) -> Tree {
+    match b1 {
+      | Bool::True  => match b2 {
+          | Bool::True  => Tree::Node(l, k, r)
+          | Bool::False => Tree::Node(insL, k, r)
+        }
+      | Bool::False => Tree::Node(l, k, insR)
+    }
+}
+fn insert(x: Nat, t: Tree) -> Tree {
+    match t {
+      | Tree::Leaf           => Tree::Node(Tree::Leaf, x, Tree::Leaf)
+      | Tree::Node(l, k, r)  => insert_hyp(x, l, k, r, insert(x, l), insert(x, r), leb(x, k), leb(k, x))
+    }
+}
+
+// ----- crux lemma #1: `all_lt` bound-propagation through `insert` -----------------------------
+//
+// The `Node`-case convoy, abstracted over `b1 := leb(x, k)` / `b2 := leb(k, x)` exactly as
+// `insert_hyp` itself is built, so it can be matched directly and then reflected back against
+// the real comparisons at the call site.
+fn all_lt_insert_hyp(bound: Nat, x: Nat, l: Tree, k: Nat, r: Tree,
+                      hk: lt(k, bound) == Bool::True, hl: all_lt(bound, l) == Bool::True, hr: all_lt(bound, r) == Bool::True,
+                      ihl: all_lt(bound, insert(x, l)) == Bool::True,
+                      ihr: all_lt(bound, insert(x, r)) == Bool::True,
+                      hx: lt(x, bound) == Bool::True,
+                      b1: Bool, b2: Bool)
+    -> ((b1 == Bool::True) -> (leb(x, k) == Bool::True))
+    -> ((b1 == Bool::False) -> (leb(x, k) == Bool::False))
+    -> ((b2 == Bool::True) -> (leb(k, x) == Bool::True))
+    -> ((b2 == Bool::False) -> (leb(k, x) == Bool::False))
+    -> all_lt(bound, insert_hyp(x, l, k, r, insert(x, l), insert(x, r), b1, b2)) == Bool::True
+{
+    match b1 {
+      | Bool::True  =>
+          fun (e1t: (Bool::True == Bool::True) -> (leb(x, k) == Bool::True))
+              (e1f: (Bool::True == Bool::False) -> (leb(x, k) == Bool::False)) =>
+          match b2 {
+            | Bool::True  =>
+                fun (e2t: (Bool::True == Bool::True) -> (leb(k, x) == Bool::True))
+                    (e2f: (Bool::True == Bool::False) -> (leb(k, x) == Bool::False)) =>
+                band_intro(band(lt(k, bound), all_lt(bound, l)), all_lt(bound, r),
+                           band_intro(lt(k, bound), all_lt(bound, l), hk, hl), hr)
+            | Bool::False =>
+                fun (e2t: (Bool::False == Bool::True) -> (leb(k, x) == Bool::True))
+                    (e2f: (Bool::False == Bool::False) -> (leb(k, x) == Bool::False)) =>
+                band_intro(band(lt(k, bound), all_lt(bound, insert(x, l))), all_lt(bound, r),
+                           band_intro(lt(k, bound), all_lt(bound, insert(x, l)), hk, ihl), hr)
+          }
+      | Bool::False =>
+          fun (e1t: (Bool::False == Bool::True) -> (leb(x, k) == Bool::True))
+              (e1f: (Bool::False == Bool::False) -> (leb(x, k) == Bool::False)) =>
+          fun (e2t: (b2 == Bool::True) -> (leb(k, x) == Bool::True))
+              (e2f: (b2 == Bool::False) -> (leb(k, x) == Bool::False)) =>
+          band_intro(band(lt(k, bound), all_lt(bound, l)), all_lt(bound, insert(x, r)),
+                     band_intro(lt(k, bound), all_lt(bound, l), hk, hl), ihr)
+    }
+}
+
+// `all_lt(bound, Leaf's fresh Node(Leaf, x, Leaf))`, by direct computation off `hx`.
+fn all_lt_insert_leaf(bound: Nat, x: Nat, hx: lt(x, bound) == Bool::True)
+    -> all_lt(bound, Tree::Node(Tree::Leaf, x, Tree::Leaf)) == Bool::True
+{
+    band_intro(band(lt(x, bound), all_lt(bound, Tree::Leaf)), all_lt(bound, Tree::Leaf),
+               band_intro(lt(x, bound), all_lt(bound, Tree::Leaf), hx, Eq::refl(Bool, Bool::True)),
+               Eq::refl(Bool, Bool::True))
+}
+
+// Matched via the convoy idiom, exactly like `band_elim_l`/`leb_lt` above: `t` is matched
+// first, and the hypotheses `h`/`hx` (whose declared types mention `t`/`x`/`bound`) are curried
+// in afterwards so they get refined per-branch, rather than living in the context across the
+// `match` on `t`.
+fn all_lt_insert(bound: Nat, x: Nat, t: Tree) -> (all_lt(bound, t) == Bool::True) -> (lt(x, bound) == Bool::True) -> all_lt(bound, insert(x, t)) == Bool::True {
+    match t {
+      | Tree::Leaf          =>
+          fun (h: all_lt(bound, Tree::Leaf) == Bool::True) (hx: lt(x, bound) == Bool::True) =>
+            all_lt_insert_leaf(bound, x, hx)
+      | Tree::Node(l, k, r) =>
+          fun (h: all_lt(bound, Tree::Node(l, k, r)) == Bool::True) (hx: lt(x, bound) == Bool::True) =>
+            all_lt_insert_hyp(bound, x, l, k, r,
+                               band_elim_l(lt(k, bound), all_lt(bound, l))(band_elim_l(band(lt(k, bound), all_lt(bound, l)), all_lt(bound, r))(h)),
+                               band_elim_r(lt(k, bound), all_lt(bound, l))(band_elim_l(band(lt(k, bound), all_lt(bound, l)), all_lt(bound, r))(h)),
+                               band_elim_r(band(lt(k, bound), all_lt(bound, l)), all_lt(bound, r))(h),
+                               all_lt_insert(bound, x, l)(band_elim_r(lt(k, bound), all_lt(bound, l))(band_elim_l(band(lt(k, bound), all_lt(bound, l)), all_lt(bound, r))(h)))(hx),
+                               all_lt_insert(bound, x, r)(band_elim_r(band(lt(k, bound), all_lt(bound, l)), all_lt(bound, r))(h))(hx),
+                               hx, leb(x, k), leb(k, x))
+              (fun (e: leb(x, k) == Bool::True) => e)
+              (fun (e: leb(x, k) == Bool::False) => e)
+              (fun (e: leb(k, x) == Bool::True) => e)
+              (fun (e: leb(k, x) == Bool::False) => e)
+    }
+}
+
+// ----- crux lemma #2: `all_gt` bound-propagation through `insert` (mirror of the above) --------
+
+fn all_gt_insert_hyp(bound: Nat, x: Nat, l: Tree, k: Nat, r: Tree,
+                      hk: lt(bound, k) == Bool::True, hl: all_gt(bound, l) == Bool::True, hr: all_gt(bound, r) == Bool::True,
+                      ihl: all_gt(bound, insert(x, l)) == Bool::True,
+                      ihr: all_gt(bound, insert(x, r)) == Bool::True,
+                      hx: lt(bound, x) == Bool::True,
+                      b1: Bool, b2: Bool)
+    -> ((b1 == Bool::True) -> (leb(x, k) == Bool::True))
+    -> ((b1 == Bool::False) -> (leb(x, k) == Bool::False))
+    -> ((b2 == Bool::True) -> (leb(k, x) == Bool::True))
+    -> ((b2 == Bool::False) -> (leb(k, x) == Bool::False))
+    -> all_gt(bound, insert_hyp(x, l, k, r, insert(x, l), insert(x, r), b1, b2)) == Bool::True
+{
+    match b1 {
+      | Bool::True  =>
+          fun (e1t: (Bool::True == Bool::True) -> (leb(x, k) == Bool::True))
+              (e1f: (Bool::True == Bool::False) -> (leb(x, k) == Bool::False)) =>
+          match b2 {
+            | Bool::True  =>
+                fun (e2t: (Bool::True == Bool::True) -> (leb(k, x) == Bool::True))
+                    (e2f: (Bool::True == Bool::False) -> (leb(k, x) == Bool::False)) =>
+                band_intro(band(lt(bound, k), all_gt(bound, l)), all_gt(bound, r),
+                           band_intro(lt(bound, k), all_gt(bound, l), hk, hl), hr)
+            | Bool::False =>
+                fun (e2t: (Bool::False == Bool::True) -> (leb(k, x) == Bool::True))
+                    (e2f: (Bool::False == Bool::False) -> (leb(k, x) == Bool::False)) =>
+                band_intro(band(lt(bound, k), all_gt(bound, insert(x, l))), all_gt(bound, r),
+                           band_intro(lt(bound, k), all_gt(bound, insert(x, l)), hk, ihl), hr)
+          }
+      | Bool::False =>
+          fun (e1t: (Bool::False == Bool::True) -> (leb(x, k) == Bool::True))
+              (e1f: (Bool::False == Bool::False) -> (leb(x, k) == Bool::False)) =>
+          fun (e2t: (b2 == Bool::True) -> (leb(k, x) == Bool::True))
+              (e2f: (b2 == Bool::False) -> (leb(k, x) == Bool::False)) =>
+          band_intro(band(lt(bound, k), all_gt(bound, l)), all_gt(bound, insert(x, r)),
+                     band_intro(lt(bound, k), all_gt(bound, l), hk, hl), ihr)
+    }
+}
+
+fn all_gt_insert_leaf(bound: Nat, x: Nat, hx: lt(bound, x) == Bool::True)
+    -> all_gt(bound, Tree::Node(Tree::Leaf, x, Tree::Leaf)) == Bool::True
+{
+    band_intro(band(lt(bound, x), all_gt(bound, Tree::Leaf)), all_gt(bound, Tree::Leaf),
+               band_intro(lt(bound, x), all_gt(bound, Tree::Leaf), hx, Eq::refl(Bool, Bool::True)),
+               Eq::refl(Bool, Bool::True))
+}
+
+// Same convoy idiom as `all_lt_insert` above.
+fn all_gt_insert(bound: Nat, x: Nat, t: Tree) -> (all_gt(bound, t) == Bool::True) -> (lt(bound, x) == Bool::True) -> all_gt(bound, insert(x, t)) == Bool::True {
+    match t {
+      | Tree::Leaf          =>
+          fun (h: all_gt(bound, Tree::Leaf) == Bool::True) (hx: lt(bound, x) == Bool::True) =>
+            all_gt_insert_leaf(bound, x, hx)
+      | Tree::Node(l, k, r) =>
+          fun (h: all_gt(bound, Tree::Node(l, k, r)) == Bool::True) (hx: lt(bound, x) == Bool::True) =>
+            all_gt_insert_hyp(bound, x, l, k, r,
+                               band_elim_l(lt(bound, k), all_gt(bound, l))(band_elim_l(band(lt(bound, k), all_gt(bound, l)), all_gt(bound, r))(h)),
+                               band_elim_r(lt(bound, k), all_gt(bound, l))(band_elim_l(band(lt(bound, k), all_gt(bound, l)), all_gt(bound, r))(h)),
+                               band_elim_r(band(lt(bound, k), all_gt(bound, l)), all_gt(bound, r))(h),
+                               all_gt_insert(bound, x, l)(band_elim_r(lt(bound, k), all_gt(bound, l))(band_elim_l(band(lt(bound, k), all_gt(bound, l)), all_gt(bound, r))(h)))(hx),
+                               all_gt_insert(bound, x, r)(band_elim_r(band(lt(bound, k), all_gt(bound, l)), all_gt(bound, r))(h))(hx),
+                               hx, leb(x, k), leb(k, x))
+              (fun (e: leb(x, k) == Bool::True) => e)
+              (fun (e: leb(x, k) == Bool::False) => e)
+              (fun (e: leb(k, x) == Bool::True) => e)
+              (fun (e: leb(k, x) == Bool::False) => e)
+    }
+}
+
+// ----- HEADLINE: `insert` preserves the BST invariant -------------------------------------------
+
+// The `Node`-case convoy, abstracted over `b1 := leb(x, k)` / `b2 := leb(k, x)` exactly as
+// `insert_hyp` itself.
+fn insert_preserves_bst_hyp(x: Nat, l: Tree, k: Nat, r: Tree,
+                             halt: all_lt(k, l) == Bool::True, hagt: all_gt(k, r) == Bool::True,
+                             hbl: is_bst(l) == Bool::True, hbr: is_bst(r) == Bool::True,
+                             ihl: is_bst(insert(x, l)) == Bool::True,
+                             ihr: is_bst(insert(x, r)) == Bool::True,
+                             b1: Bool, b2: Bool)
+    -> ((b1 == Bool::True) -> (leb(x, k) == Bool::True))
+    -> ((b1 == Bool::False) -> (leb(x, k) == Bool::False))
+    -> ((b2 == Bool::True) -> (leb(k, x) == Bool::True))
+    -> ((b2 == Bool::False) -> (leb(k, x) == Bool::False))
+    -> is_bst(insert_hyp(x, l, k, r, insert(x, l), insert(x, r), b1, b2)) == Bool::True
+{
+    match b1 {
+      | Bool::True  =>
+          fun (e1t: (Bool::True == Bool::True) -> (leb(x, k) == Bool::True))
+              (e1f: (Bool::True == Bool::False) -> (leb(x, k) == Bool::False)) =>
+          match b2 {
+            | Bool::True  =>
+                fun (e2t: (Bool::True == Bool::True) -> (leb(k, x) == Bool::True))
+                    (e2f: (Bool::True == Bool::False) -> (leb(k, x) == Bool::False)) =>
+                band_intro(band(all_lt(k, l), all_gt(k, r)), band(is_bst(l), is_bst(r)),
+                           band_intro(all_lt(k, l), all_gt(k, r), halt, hagt),
+                           band_intro(is_bst(l), is_bst(r), hbl, hbr))
+            | Bool::False =>
+                fun (e2t: (Bool::False == Bool::True) -> (leb(k, x) == Bool::True))
+                    (e2f: (Bool::False == Bool::False) -> (leb(k, x) == Bool::False)) =>
+                band_intro(band(all_lt(k, insert(x, l)), all_gt(k, r)), band(is_bst(insert(x, l)), is_bst(r)),
+                           band_intro(all_lt(k, insert(x, l)), all_gt(k, r),
+                                      all_lt_insert(k, x, l)(halt)(leb_lt(x, k)(e1t(Eq::refl(Bool, Bool::True)))(e2f(Eq::refl(Bool, Bool::False)))),
+                                      hagt),
+                           band_intro(is_bst(insert(x, l)), is_bst(r), ihl, hbr))
+          }
+      | Bool::False =>
+          fun (e1t: (Bool::False == Bool::True) -> (leb(x, k) == Bool::True))
+              (e1f: (Bool::False == Bool::False) -> (leb(x, k) == Bool::False)) =>
+          fun (e2t: (b2 == Bool::True) -> (leb(k, x) == Bool::True))
+              (e2f: (b2 == Bool::False) -> (leb(k, x) == Bool::False)) =>
+          band_intro(band(all_lt(k, l), all_gt(k, insert(x, r))), band(is_bst(l), is_bst(insert(x, r))),
+                     band_intro(all_lt(k, l), all_gt(k, insert(x, r)),
+                                halt,
+                                all_gt_insert(k, x, r)(hagt)(leb_false_lt(x, k)(e1f(Eq::refl(Bool, Bool::False))))),
+                     band_intro(is_bst(l), is_bst(insert(x, r)), hbl, ihr))
+    }
+}
+
+fn insert_preserves_bst(x: Nat, t: Tree) -> is_bst(t) == Bool::True -> is_bst(insert(x, t)) == Bool::True {
+    match t {
+      | Tree::Leaf          => fun (h: is_bst(Tree::Leaf) == Bool::True) => Eq::refl(Bool, Bool::True)
+      | Tree::Node(l, k, r) =>
+          fun (h: is_bst(Tree::Node(l, k, r)) == Bool::True) =>
+            insert_preserves_bst_hyp(x, l, k, r,
+                band_elim_l(all_lt(k, l), all_gt(k, r))(band_elim_l(band(all_lt(k, l), all_gt(k, r)), band(is_bst(l), is_bst(r)))(h)),
+                band_elim_r(all_lt(k, l), all_gt(k, r))(band_elim_l(band(all_lt(k, l), all_gt(k, r)), band(is_bst(l), is_bst(r)))(h)),
+                band_elim_l(is_bst(l), is_bst(r))(band_elim_r(band(all_lt(k, l), all_gt(k, r)), band(is_bst(l), is_bst(r)))(h)),
+                band_elim_r(is_bst(l), is_bst(r))(band_elim_r(band(all_lt(k, l), all_gt(k, r)), band(is_bst(l), is_bst(r)))(h)),
+                insert_preserves_bst(x, l)(band_elim_l(is_bst(l), is_bst(r))(band_elim_r(band(all_lt(k, l), all_gt(k, r)), band(is_bst(l), is_bst(r)))(h))),
+                insert_preserves_bst(x, r)(band_elim_r(is_bst(l), is_bst(r))(band_elim_r(band(all_lt(k, l), all_gt(k, r)), band(is_bst(l), is_bst(r)))(h))),
+                leb(x, k), leb(k, x))
+              (fun (e: leb(x, k) == Bool::True) => e)
+              (fun (e: leb(x, k) == Bool::False) => e)
+              (fun (e: leb(k, x) == Bool::True) => e)
+              (fun (e: leb(k, x) == Bool::False) => e)
+    }
+}
