@@ -325,3 +325,53 @@ fn test(f: Nat -> Nat, g: Nat -> Nat, h: (x: Nat) -> f(x) == g(x)) -> f == g {
     let r = verify_rv(src, None).expect("funext usable from surface .rv");
     assert!(r.all_verified(), "open: {:?}", r.open);
 }
+
+/// A self-recursive call from inside a *second*, nested `match` — recursing on both of a
+/// `fn`'s parameters at once (`max`'s natural, non-curried form) used to reject with "unknown
+/// name" because a plain non-dependent recursor IH can't represent a call that varies a
+/// second parameter. The elaborator now auto-curries this internally (see
+/// `rv_kernel::verify::Session::run_solo_fn`), so the natural two-parameter source verifies
+/// without the manual `Nat -> (Nat -> Nat)` currying workaround.
+#[test]
+fn nested_match_self_recursion_on_two_params() {
+    let src = r#"
+enum Nat { Zero, Succ(Nat) }
+fn max(n: Nat, m: Nat) -> Nat {
+    match n {
+      | Nat::Zero    => m
+      | Nat::Succ(a) => match m {
+          | Nat::Zero    => Nat::Succ(a)
+          | Nat::Succ(b) => Nat::Succ(max(a, b))
+        }
+    }
+}
+fn max_two_one(u: Nat) -> Nat
+    ensures result == Nat::Succ(Nat::Succ(Nat::Zero));
+{
+    max(Nat::Succ(Nat::Succ(Nat::Zero)), Nat::Succ(Nat::Zero))
+}
+"#;
+    let r = verify_rv(src, None).expect("nested-match self-recursion on two params should elaborate");
+    assert!(r.all_verified(), "open: {:?}", r.open);
+}
+
+/// The auto-currying rewrite must not over-broaden name scope: a call to a name that is
+/// genuinely undefined inside the nested match arm still fails with "unknown name", not
+/// silently resolve to something in the recursion machinery.
+#[test]
+fn nested_match_undefined_name_still_rejected() {
+    let src = r#"
+enum Nat { Zero, Succ(Nat) }
+fn max(n: Nat, m: Nat) -> Nat {
+    match n {
+      | Nat::Zero    => m
+      | Nat::Succ(a) => match m {
+          | Nat::Zero    => Nat::Succ(a)
+          | Nat::Succ(b) => Nat::Succ(bogus(a, b))
+        }
+    }
+}
+"#;
+    let err = verify_rv(src, None).unwrap_err();
+    assert!(err.contains("unknown name"), "expected an unknown-name error, got: {err}");
+}
