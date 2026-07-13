@@ -407,3 +407,34 @@ pub fn install_cubical(env: &mut Env) -> Result<(), String> {
 
     Ok(())
 }
+
+/// Install `ua.{u} : Π (A B : Sort u) (e : Equiv A B). Path (Sort u) A B` — see
+/// [`rv_kernel_core::glue::ua`]/`ua_ty`. This states univalence: `ua e` really is
+/// a `Path` between `A` and `B`, and it type-checks by the ordinary `Checker` like
+/// every other installed constant here. What it does **not** give is the
+/// *computation rule* `transport (ua e) a ↝ e.f a` — `ua`'s underlying `Glue`
+/// term is soundly *stuck* under `transport`/`hcomp` (no Kan-correction term for
+/// it exists yet; see `docs/cubical.md`'s "Known limitation" and
+/// `rv_kernel_core::kan`'s Phase 3.12–3.14 notes). Requires `Equiv`/`idEquiv`
+/// ([`rv_kernel_core::equiv::declare_equiv`]) to already be installed.
+pub fn install_ua(env: &mut Env) -> Result<(), String> {
+    if !env.contains("Equiv") || !env.contains("idEquiv") {
+        return Err("'ua' requires 'Equiv'/'idEquiv' to already be installed".to_string());
+    }
+    let root = Ctx(vec![]);
+    let u = Level::param(0);
+    let equiv_ab = |c: &Ctx| Term::apps(Term::cnst(name("Equiv"), vec![u.clone()]), [c.v("A"), c.v("B")]);
+    let ty = pi(&root, Term::Sort(u.clone()), "A", |c1| {
+        pi(c1, Term::Sort(u.clone()), "B", |c2| {
+            let ety = equiv_ab(c2);
+            pi(c2, ety, "e", |c3| rv_kernel_core::glue::ua_ty(u.clone(), c3.v("A"), c3.v("B")))
+        })
+    });
+    let value = lam(&root, Term::Sort(u.clone()), "A", |c1| {
+        lam(c1, Term::Sort(u.clone()), "B", |c2| {
+            let ety = equiv_ab(c2);
+            lam(c2, ety, "e", |c3| rv_kernel_core::glue::ua(u.clone(), c3.v("A"), c3.v("B"), c3.v("e")))
+        })
+    });
+    install(env, "ua", 1, ty, value)
+}

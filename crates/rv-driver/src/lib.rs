@@ -295,6 +295,12 @@ pub fn verify_rv_session(src: &str) -> Result<rv_kernel::verify::Session, String
     session.k.install_funext()?;
     session.k.install_interval_hit()?;
     session.k.install_cubical()?;
+    session.k.install_s1c()?;
+    session.k.install_s2()?;
+    session.k.install_equiv()?;
+    session.k.install_contr()?;
+    session.k.install_hae()?;
+    session.k.install_ua()?;
     run_unified(&mut session, RAVEN_PRELUDE).map_err(|e| format!("in the standard prelude: {e}"))?;
     run_unified(&mut session, src)?;
     check_graded_usage(&session, src)?;
@@ -366,6 +372,12 @@ pub fn vm_eval(src: &str, entry: &str) -> Result<Value, String> {
     session.k.install_funext()?;
     session.k.install_interval_hit()?;
     session.k.install_cubical()?;
+    session.k.install_s1c()?;
+    session.k.install_s2()?;
+    session.k.install_equiv()?;
+    session.k.install_contr()?;
+    session.k.install_hae()?;
+    session.k.install_ua()?;
     run_unified(&mut session, RAVEN_PRELUDE).map_err(|e| format!("in the standard prelude: {e}"))?;
     run_unified(&mut session, src)?;
     erased_vm::run_entry_on_vm(session.k.env(), entry)
@@ -382,6 +394,12 @@ pub fn nbe_eval(src: &str, entry: &str) -> Result<Value, String> {
     session.k.install_funext()?;
     session.k.install_interval_hit()?;
     session.k.install_cubical()?;
+    session.k.install_s1c()?;
+    session.k.install_s2()?;
+    session.k.install_equiv()?;
+    session.k.install_contr()?;
+    session.k.install_hae()?;
+    session.k.install_ua()?;
     run_unified(&mut session, RAVEN_PRELUDE).map_err(|e| format!("in the standard prelude: {e}"))?;
     run_unified(&mut session, src)?;
     let t = session.eval(entry)?;

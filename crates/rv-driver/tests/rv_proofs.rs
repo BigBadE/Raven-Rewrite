@@ -222,6 +222,17 @@ fn cubical() {
     check("cubical.rv");
 }
 
+/// The consolidated cubical layer's showcase: `S1c`/`S2` (the genuinely-computing
+/// cubical circle/sphere HITs), `Equiv`/`idEquiv` (bi-invertible equivalences),
+/// and `ua` (univalence, stated) — on top of the base `Path`/`I2` layer `cubical()`
+/// above already covers. See `crates/rv-kernel/src/kernel_ext.rs`'s
+/// `install_s1c`/`install_s2`/`install_equiv`/`install_contr`/`install_hae`/
+/// `install_ua`, and `docs/cubical.md`.
+#[test]
+fn cubical_showcase() {
+    check("cubical_showcase.rv");
+}
+
 #[test]
 fn graded_demo() {
     check("graded_demo.rv");
