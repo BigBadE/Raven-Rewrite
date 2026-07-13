@@ -209,6 +209,11 @@ fn quotient_demo() {
 }
 
 #[test]
+fn coinductive_demo() {
+    check("coinductive.rv");
+}
+
+#[test]
 fn trunc_demo() {
     check("trunc_demo.rv");
 }
