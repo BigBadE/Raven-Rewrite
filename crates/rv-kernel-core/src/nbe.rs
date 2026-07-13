@@ -14,7 +14,7 @@
 //! be adopted as the performance path with confidence, while the proven reducer
 //! remains the reference.
 
-use crate::env::{CircleRole, Decl, Env, HitRole, I2Role, QuotRole, S1cRole, TruncRole};
+use crate::env::{CircleRole, CubHitRole, Decl, Env, HitRole, I2Role, QuotRole, S1cRole, TruncRole};
 use crate::face::{Atom, Cof};
 use crate::level::{self, Level};
 use crate::term::{Grade, Name, Term};
@@ -630,7 +630,13 @@ impl<'a> Nbe<'a> {
                                         if let Value::Stuck(h8, spine8) = &*stuck {
                                             let stuck = self.try_s1c_rec(h8.clone(), spine8.clone());
                                             if let Value::Stuck(h9, spine9) = &*stuck {
-                                                self.try_hit_rec(h9.clone(), spine9.clone())
+                                                let stuck =
+                                                    self.try_cubical_hit_rec(h9.clone(), spine9.clone());
+                                                if let Value::Stuck(h10, spine10) = &*stuck {
+                                                    self.try_hit_rec(h10.clone(), spine10.clone())
+                                                } else {
+                                                    stuck
+                                                }
                                             } else {
                                                 stuck
                                             }
@@ -1019,6 +1025,62 @@ impl<'a> Nbe<'a> {
                         }
                     }
                     _ => {}
+                }
+            }
+        }
+        Rc::new(Value::Stuck(h, spine))
+    }
+
+    /// The **general, user-declared cubical HIT** computation rule (see
+    /// [`crate::cubical_hit`]), NbE counterpart of
+    /// [`crate::reduce::Reducer::try_cubical_hit_rec`]. Generalizes
+    /// [`Self::try_i2_rec`]/[`Self::try_s1c_rec`] over `num_points`/`num_paths`,
+    /// guarded per-HIT `id` (see that method's doc comment for the exact rule and
+    /// the cross-fire guard).
+    fn try_cubical_hit_rec(&self, h: Head, spine: Vec<Rc<Value>>) -> Rc<Value> {
+        if let Head::Const(rname, _) = &h {
+            if let Some(Decl::CubHit(rc)) = self.env.get(rname) {
+                if let CubHitRole::Rec { num_points, num_paths } = rc.role {
+                    let (num_points, num_paths) = (num_points as usize, num_paths as usize);
+                    let scrut_pos = 1 + num_points + num_paths;
+                    if spine.len() > scrut_pos {
+                        match &*spine[scrut_pos] {
+                            Value::Stuck(Head::Const(ptn, _), pargs) if pargs.is_empty() => {
+                                if let Some(Decl::CubHit(c)) = self.env.get(ptn) {
+                                    if c.id == rc.id {
+                                        if let CubHitRole::Point(idx) = c.role {
+                                            let pos = 1 + idx as usize;
+                                            let mut v = spine[pos].clone();
+                                            for extra in &spine[scrut_pos + 1..] {
+                                                v = self.vapp(v, extra.clone());
+                                            }
+                                            return v;
+                                        }
+                                    }
+                                }
+                            }
+                            Value::Stuck(Head::PathApp(p, r), pargs) if pargs.is_empty() => {
+                                if let Value::Stuck(Head::Const(pathn, _), pathargs) = &**p {
+                                    if pathargs.is_empty() {
+                                        if let Some(Decl::CubHit(c)) = self.env.get(pathn) {
+                                            if c.id == rc.id {
+                                                if let CubHitRole::Path { idx, .. } = c.role {
+                                                    let pos = 1 + num_points + idx as usize;
+                                                    let s = spine[pos].clone();
+                                                    let mut v = self.vpapp(s, r.clone());
+                                                    for extra in &spine[scrut_pos + 1..] {
+                                                        v = self.vapp(v, extra.clone());
+                                                    }
+                                                    return v;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             }
         }

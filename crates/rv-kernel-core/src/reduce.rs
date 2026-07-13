@@ -15,7 +15,8 @@
 //! rules are the standard ones; we keep them total and structural.
 
 use crate::env::{
-    CircleRole, Decl, Destructor, Env, HitRole, I2Role, QuotRole, Recursor, S1cRole, TruncRole,
+    CircleRole, CubHitRole, Decl, Destructor, Env, HitRole, I2Role, QuotRole, Recursor, S1cRole,
+    TruncRole,
 };
 use crate::level::{self, Level};
 use crate::term::{Name, Term};
@@ -131,6 +132,21 @@ impl<'e> Reducer<'e> {
                     // literal `S1c.loop @ r` (a genuine SELF-loop) scrutinee.
                     Some(Decl::S1c(c)) if c.role == S1cRole::Rec => {
                         match self.try_s1c_rec(&args) {
+                            Some(reduced) => {
+                                let (h, a) = reduced.unfold_apps();
+                                head = h;
+                                args = a;
+                            }
+                            None => break,
+                        }
+                    }
+                    // General, user-declarable cubical HIT computation (see
+                    // `crate::cubical_hit`) -- the generic counterpart of the two
+                    // hand-coded schemas just above, parameterized over `n`
+                    // point/`m` path constructors and guarded per-HIT `id` so two
+                    // independently declared cubical HITs never cross-fire.
+                    Some(Decl::CubHit(c)) if matches!(c.role, CubHitRole::Rec { .. }) => {
+                        match self.try_cubical_hit_rec(c, &args) {
                             Some(reduced) => {
                                 let (h, a) = reduced.unfold_apps();
                                 head = h;
@@ -798,6 +814,78 @@ impl<'e> Reducer<'e> {
                         applied = Term::app(applied, extra.clone());
                     }
                     return Some(applied);
+                }
+            }
+        }
+        None
+    }
+
+    /// The **general, user-declared cubical HIT** computation rule (see
+    /// [`crate::cubical_hit`]) — the generic counterpart of [`Self::try_i2_rec`]/
+    /// [`Self::try_s1c_rec`], parameterized over `num_points`/`num_paths` instead
+    /// of hand-written per HIT. For `H.rec.{v} C c_0 .. c_{n-1} s_0 .. s_{m-1} x`
+    /// (spine positions: `C`@0, `c_i`@`1+i`, `s_j`@`1+n+j`, scrutinee `x`@`1+n+m`):
+    ///
+    /// ```text
+    ///   H.rec C c_.. s_.. H.point_i        ↦  c_i
+    ///   H.rec C c_.. s_.. (H.path_j @ r)   ↦  s_j @ r
+    /// ```
+    ///
+    /// Point rule fires only when the scrutinee weak-head-reduces to a literal,
+    /// nullary `H.point_i` **of the same HIT `id`** as `rc` (`rc.id`); path rule
+    /// fires only on a literal `H.path_j @ r`, again matching `rc.id` — this `id`
+    /// guard is exactly what prevents two independently
+    /// [`crate::cubical_hit::declare_cubical_hit`]-declared HITs (even
+    /// structurally identical ones) from ever cross-firing each other's ι-rules
+    /// (see `crate::cubical_hit::tests::no_cross_fire_between_two_distinct_declared_hits`).
+    fn try_cubical_hit_rec(&self, rc: &crate::env::CubHit, args: &[Term]) -> Option<Term> {
+        let (num_points, num_paths) = match rc.role {
+            CubHitRole::Rec { num_points, num_paths } => (num_points as usize, num_paths as usize),
+            _ => return None,
+        };
+        let scrut_pos = 1 + num_points + num_paths;
+        if args.len() <= scrut_pos {
+            return None; // not yet applied to the H value
+        }
+        let scrut = self.whnf(&args[scrut_pos]);
+        // Point rule.
+        let (pt_head, pt_args) = scrut.unfold_apps();
+        if let Term::Const(pt_name, _) = &pt_head {
+            if pt_args.is_empty() {
+                if let Some(Decl::CubHit(c)) = self.env.get(pt_name) {
+                    if c.id == rc.id {
+                        if let CubHitRole::Point(idx) = c.role {
+                            let pos = 1 + idx as usize;
+                            let mut applied = args[pos].clone();
+                            for extra in &args[scrut_pos + 1..] {
+                                applied = Term::app(applied, extra.clone());
+                            }
+                            return Some(applied);
+                        }
+                    }
+                }
+            }
+        }
+        // Path rule: scrutinee is (weak-head) `PApp(p, r)` with `p`'s own weak-head
+        // form the literal, nullary `H.path_j` of the same HIT `id`.
+        if let Term::PApp(p, r) = &scrut {
+            let p_whnf = self.whnf(p);
+            let (path_head, path_args) = p_whnf.unfold_apps();
+            if let Term::Const(path_name, _) = &path_head {
+                if path_args.is_empty() {
+                    if let Some(Decl::CubHit(c)) = self.env.get(path_name) {
+                        if c.id == rc.id {
+                            if let CubHitRole::Path { idx, .. } = c.role {
+                                let pos = 1 + num_points + idx as usize;
+                                let s = &args[pos];
+                                let mut applied = Term::papp(s.clone(), (**r).clone());
+                                for extra in &args[scrut_pos + 1..] {
+                                    applied = Term::app(applied, extra.clone());
+                                }
+                                return Some(applied);
+                            }
+                        }
+                    }
                 }
             }
         }
