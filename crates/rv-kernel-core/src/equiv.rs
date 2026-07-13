@@ -788,6 +788,183 @@ pub fn ap_trans(ty: &Term, b_ty: &Term, f: &Term, a: &Term, c: &Term, p: &Term, 
     Term::app(j(&motive, &d, p), q.clone())
 }
 
+// ============================================================================
+// `Equiv` groupoid coherences: `compEquiv`'s unit laws and `symEquiv`'s
+// involution — completing the "`Equiv` is a groupoid" picture (HoTT book
+// §2.4/§4.1: for a fixed universe, `≃` is reflexive (`idEquiv`), symmetric
+// (`symEquiv`) and transitive (`compEquiv`); this section adds the coherence
+// data making that a genuine groupoid structure — unit and inverse laws — on
+// top of the raw operations from the "Equivalence algebra" section above.
+// `trans_assoc` (`crate::cubical`) is still open, so `compEquiv`'s
+// *associativity* is out of scope here (see [`ap_trans`]'s doc: single-
+// opaque-`J` only) — this section covers unit laws and involution, both of
+// which are structurally simpler (no `J` needed at all: they reduce to plain
+// `refl`/ι-computation, see each function's own doc).
+//
+// # `compEquiv` unit laws — underlying-map level, not full record equality
+//
+// `compEquivIdL`/`compEquivIdR` (HoTT book Lemma 2.4.2's "left/right identity"
+// specialized to bi-invertible maps) would ideally give `Path (Equiv A B)
+// (compEquiv (idEquiv A) e) e`. That full record equality is **not attempted**
+// here: proving it needs a congruence principle for `Equiv.mk` (showing all
+// four fields — including the two `trans`/`ap`-built coherence fields, which
+// are only *propositionally*, not definitionally, equal to `e`'s own `sec`/
+// `ret`, since `compEquiv`'s `sec`/`ret` are literally different `Transp`-
+// headed terms) — genuinely more than a single opaque `J`, and out of scope
+// per this pass's brief. What **is** closed: the underlying *map* equalities
+// `Path (A→B) (compEquiv (idEquiv A) e).f e.f` and the `.g` analogue (and the
+// mirror `compEquivIdR` pair) — these hold by **plain `refl`**, not `J`: e.g.
+// `compEquiv A A B (idEquiv A) e`'s `f`-field is, by [`comp_equiv`]'s own
+// definition, `λx:A. e.f (id x)`, which β-reduces (`id x ↦ x`) to `λx:A. e.f
+// x`, itself η-equal to `e.f` — and this kernel's `Checker::compare` (see
+// `crate::check`) implements Π-η directly, so `refl (compEquiv…).f` type-
+// checks on the nose against the goal `Path (A→B) (compEquiv…).f e.f` (the
+// checker's `compare`/`def_eq` chase β then η across the two sides). The `.g`
+// fields and the `IdR` mirror (where the `id` sits on the *other* leg of the
+// composition) are the same argument with the β-redex on the opposite side.
+//
+// # `symEquiv` involution — full record equality, via `Equiv.rec`
+//
+// `symEquivInv` (HoTT book: `≃` is symmetric, and its own inverse operation is
+// an involution) gives the **full** record path `Path (Equiv A B) (symEquiv
+// (symEquiv e)) e`, unlike `compEquiv`'s unit laws above — this is reachable
+// here specifically because `symEquiv` needs no `J`/`trans` at all (it is
+// *pure field permutation*, see the "Equivalence algebra" module doc above),
+// so `Equiv.rec`'s own ι-rule, not a propositional coherence argument, does
+// all the work. Eliminating the (otherwise fully abstract) `e : Equiv A B`
+// itself via `Equiv.rec` at the motive `λe. Path (Equiv A B) (symEquiv
+// (symEquiv e)) e` reduces the goal, at the single `mk_case`, to the concrete
+// instance `e := Equiv.mk A B f g sec ret` — and *there*, `symEquiv (symEquiv
+// (Equiv.mk A B f g sec ret))` unfolds by two nested ι-computations (each
+// `symEquiv` application built directly from `Equiv.f`/`Equiv.g`/`Equiv.sec`/
+// `Equiv.ret` of a *literal* `Equiv.mk` application, so each of the four
+// projections fires its ι-rule immediately, with no β/η needed) straight back
+// to the syntactically identical `Equiv.mk A B f g sec ret` — so `mk_case`'s
+// witness is simply `refl (Equiv.mk A B f g sec ret)`. This "elimination
+// reduces the problem to the constructor case, where it becomes `refl`" move
+// is exactly what makes this closable at the *record* level where
+// `compEquiv`'s unit laws above are not: `symEquiv` never invokes `trans`, so
+// no propositional (non-definitional) coherence step is ever in the way.
+//
+// # Soundness
+//
+// Every function below is either a plain `refl` applied to an already-typed
+// subterm built from `comp_equiv`/`equiv_f`/`equiv_g` (all proven sound
+// above/earlier in this module) — no new machinery, the checker's ordinary
+// β/η conversion does the rest — or an application of the pre-existing,
+// unmodified `Equiv.rec` (proven sound alongside `Equiv`/`Equiv.mk` at the top
+// of this module) to a hand-built motive/`mk_case`, mirroring exactly how
+// `Equiv.f`/`Equiv.g`/`Equiv.sec`/`Equiv.ret` themselves are record
+// projections built the same way. No new checking or reduction rule is added
+// anywhere in this section; adversarial coverage (wrong-goal rejection) lives
+// in [`tests::equiv_groupoid`] below, in the same spirit as
+// `tests::equiv_algebra`'s own wrong-goal tests.
+// ============================================================================
+
+fn id_equiv_of(level: &Level, a: &Term) -> Term {
+    Term::app(Term::cnst(name("idEquiv"), vec![level.clone()]), a.clone())
+}
+
+/// `compEquivIdL_f A B e : Path (A→B) (Equiv.f (compEquiv A A B (idEquiv A) e))
+/// (Equiv.f e)` — the `f`-field half of `compEquiv`'s left-unit law (see this
+/// section's module doc). Closed by plain `refl` + the checker's Π-η.
+pub fn comp_equiv_id_l_f(level: Level, a: &Term, b: &Term, e: &Term) -> Term {
+    let id_a = id_equiv_of(&level, a);
+    let comp = comp_equiv(level.clone(), a, a, b, &id_a, e);
+    refl(&equiv_f(&level, a, b, &comp))
+}
+
+/// `compEquivIdL_g A B e : Path (B→A) (Equiv.g (compEquiv A A B (idEquiv A) e))
+/// (Equiv.g e)` — the `g`-field half of `compEquiv`'s left-unit law. Mirrors
+/// [`comp_equiv_id_l_f`] exactly (β then η on the `g` leg instead of `f`).
+pub fn comp_equiv_id_l_g(level: Level, a: &Term, b: &Term, e: &Term) -> Term {
+    let id_a = id_equiv_of(&level, a);
+    let comp = comp_equiv(level.clone(), a, a, b, &id_a, e);
+    refl(&equiv_g(&level, a, b, &comp))
+}
+
+/// `compEquivIdR_f A B e : Path (A→B) (Equiv.f (compEquiv A B B e (idEquiv B)))
+/// (Equiv.f e)` — the `f`-field half of `compEquiv`'s right-unit law: here the
+/// `id` sits on the *second* leg (`e2 := idEquiv B`), so `f`'s β-redex is `id
+/// (e.f x) ↦ e.f x`, the mirror image of [`comp_equiv_id_l_f`]'s `e.f (id x)`.
+pub fn comp_equiv_id_r_f(level: Level, a: &Term, b: &Term, e: &Term) -> Term {
+    let id_b = id_equiv_of(&level, b);
+    let comp = comp_equiv(level.clone(), a, b, b, e, &id_b);
+    refl(&equiv_f(&level, a, b, &comp))
+}
+
+/// `compEquivIdR_g A B e : Path (B→A) (Equiv.g (compEquiv A B B e (idEquiv B)))
+/// (Equiv.g e)` — the `g`-field half of `compEquiv`'s right-unit law. Mirrors
+/// [`comp_equiv_id_r_f`] (β then η on the `g` leg).
+pub fn comp_equiv_id_r_g(level: Level, a: &Term, b: &Term, e: &Term) -> Term {
+    let id_b = id_equiv_of(&level, b);
+    let comp = comp_equiv(level.clone(), a, b, b, e, &id_b);
+    refl(&equiv_g(&level, a, b, &comp))
+}
+
+/// The four field types `(f_ty, g_ty, sec_ty, ret_ty)` of an `Equiv.mk A B …`
+/// telescope, exactly [`field_tys`]`(0)`'s shape, but parameterized by
+/// **concrete** (already-elaborated) `a`/`b` terms rather than assuming `A`/
+/// `B` are bound at fixed `Var` offsets in some enclosing telescope — needed
+/// here because [`sym_equiv_inv`] (unlike `declare_equiv`'s own internals)
+/// builds a proof term for already-given `a`/`b`/`e`, not a fresh
+/// universally-quantified declaration abstracted over `A`/`B` themselves (the
+/// same distinction [`comp_equiv`]/[`sym_equiv`] above already draw with
+/// `equiv_f`/`equiv_g`/etc, vs. `declare_equiv_projections`'s own internals).
+fn field_tys_concrete(a: &Term, b: &Term) -> (Term, Term, Term, Term) {
+    let f_ty = Term::arrow(a.clone(), b.clone()); // ctx []
+    let (a1, b1) = (a.lift(1, 0), b.lift(1, 0)); // ctx [f]
+    let g_ty = Term::arrow(b1, a1); // ctx [f]
+    let (_a2, b2) = (a.lift(2, 0), b.lift(2, 0)); // ctx [f,g]
+    let sec_ty = Term::pi(b2, {
+        // ctx [f,g,x]: f=Var(2), g=Var(1), x=Var(0)
+        let b3 = b.lift(3, 0);
+        Term::path(b3, Term::app(Term::Var(2), Term::app(Term::Var(1), Term::Var(0))), Term::Var(0))
+    });
+    let a3 = a.lift(3, 0); // ctx [f,g,sec]
+    let ret_ty = Term::pi(a3, {
+        // ctx [f,g,sec,x]: f=Var(3), g=Var(2), sec=Var(1), x=Var(0)
+        let a4 = a.lift(4, 0);
+        Term::path(a4, Term::app(Term::Var(2), Term::app(Term::Var(3), Term::Var(0))), Term::Var(0))
+    });
+    (f_ty, g_ty, sec_ty, ret_ty)
+}
+
+/// `symEquivInv A B e : Path (Equiv A B) (symEquiv B A (symEquiv A B e)) e` —
+/// the double-inverse/involution law, given `e : Equiv A B`. See this
+/// section's module doc, "`symEquiv` involution — full record equality, via
+/// `Equiv.rec`", for the construction: `Equiv.rec`-eliminate `e` at motive
+/// `λe. Path (Equiv A B) (symEquiv (symEquiv e)) e`, with `mk_case` (the
+/// literal-`Equiv.mk` instance) closed by plain `refl` after two nested
+/// ι-computations collapse `symEquiv (symEquiv (Equiv.mk A B f g sec ret))`
+/// straight back to `Equiv.mk A B f g sec ret`.
+pub fn sym_equiv_inv(level: Level, a: &Term, b: &Term, e: &Term) -> Term {
+    let equiv_ty = |x: Term, y: Term| Term::apps(Term::cnst(name("Equiv"), vec![level.clone()]), [x, y]);
+    let mk = |args: [Term; 6]| Term::apps(Term::cnst(name("Equiv.mk"), vec![level.clone()]), args);
+
+    // motive, ctx []: λ (e':Equiv A B). Path (Equiv A B) (symEquiv B A (symEquiv A B e')) e'
+    let motive = {
+        let (a1, b1) = (a.lift(1, 0), b.lift(1, 0)); // ctx [e']
+        let e1 = Term::Var(0);
+        let sym1 = sym_equiv(level.clone(), &a1, &b1, &e1); // : Equiv B A
+        let sym2 = sym_equiv(level.clone(), &b1, &a1, &sym1); // : Equiv A B
+        let stmt = Term::path(equiv_ty(a1, b1), sym2, e1);
+        Term::lam(equiv_ty(a.clone(), b.clone()), stmt)
+    };
+    // mk_case, ctx []: λ (f:A→B)(g:B→A)(sec:…)(ret:…). refl (Equiv.mk A B f g sec ret)
+    let mk_case = {
+        let (f_ty, g_ty, sec_ty, ret_ty) = field_tys_concrete(a, b);
+        // ctx [f,g,sec,ret]: A/B lifted by 4; f=Var(3),g=Var(2),sec=Var(1),ret=Var(0)
+        let (a4, b4) = (a.lift(4, 0), b.lift(4, 0));
+        let body = refl(&mk([a4, b4, Term::Var(3), Term::Var(2), Term::Var(1), Term::Var(0)]));
+        Term::lam(f_ty, Term::lam(g_ty, Term::lam(sec_ty, Term::lam(ret_ty, body))))
+    };
+    Term::apps(
+        Term::cnst(name("Equiv.rec"), vec![level.clone(), level]),
+        [a.clone(), b.clone(), motive, mk_case, e.clone()],
+    )
+}
+
 /// Type-check every `Equiv`-related declaration's stated *type* (a well-formedness
 /// sanity pass, mirroring [`crate::inductive::check_env_types`] — this does **not**
 /// check that a `Decl::Def`'s *value* has its declared type; see this module's
@@ -1334,6 +1511,174 @@ mod tests {
                 ap(&id_fn, &cn("p")),
                 cn("p"),
             );
+            let mut ctx = crate::check::LocalCtx::new();
+            assert!(chk.check(&mut ctx, &term, &wrong).is_err());
+        }
+    }
+
+    /// `compEquivIdL`/`compEquivIdR`'s underlying-map equalities and
+    /// `symEquivInv`'s full record involution law — see this module's
+    /// "`Equiv` groupoid coherences" section doc for the constructions under
+    /// test. Reuses `equiv_algebra`'s `ab_env`/`equiv_env` fixtures.
+    mod equiv_groupoid {
+        use super::*;
+
+        fn cn(s: &str) -> Term {
+            Term::cnst(name(s), vec![])
+        }
+
+        fn axiom(env: &mut Env, n: &str, ty: Term) {
+            env.insert(name(n), Decl::Axiom { num_levels: 0, ty }).unwrap();
+        }
+
+        fn ab_env() -> Env {
+            let mut env = Env::new();
+            declare_equiv(&mut env).unwrap();
+            axiom(&mut env, "A", Term::typ(0));
+            axiom(&mut env, "B", Term::typ(0));
+            let equiv_ab = Term::apps(Term::cnst(name("Equiv"), vec![Level::of_nat(1)]), [cn("A"), cn("B")]);
+            axiom(&mut env, "e", equiv_ab);
+            env
+        }
+
+        fn equiv_ty(a: Term, b: Term) -> Term {
+            Term::apps(Term::cnst(name("Equiv"), vec![Level::of_nat(1)]), [a, b])
+        }
+
+        // ------------------------------------------------------------------
+        // compEquiv unit laws (underlying-map level)
+        // ------------------------------------------------------------------
+
+        #[test]
+        fn comp_equiv_id_l_f_typechecks_at_its_stated_type() {
+            let env = ab_env();
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let term = comp_equiv_id_l_f(lvl.clone(), &cn("A"), &cn("B"), &cn("e"));
+            let expected = Term::path(
+                Term::arrow(cn("A"), cn("B")),
+                equiv_f(&lvl, &cn("A"), &cn("B"), &cn("e")),
+                equiv_f(&lvl, &cn("A"), &cn("B"), &cn("e")),
+            );
+            let mut ctx = crate::check::LocalCtx::new();
+            chk.check(&mut ctx, &term, &expected).expect("compEquivIdL_f should typecheck");
+        }
+
+        #[test]
+        fn comp_equiv_id_l_g_typechecks_at_its_stated_type() {
+            let env = ab_env();
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let term = comp_equiv_id_l_g(lvl.clone(), &cn("A"), &cn("B"), &cn("e"));
+            let expected = Term::path(
+                Term::arrow(cn("B"), cn("A")),
+                equiv_g(&lvl, &cn("A"), &cn("B"), &cn("e")),
+                equiv_g(&lvl, &cn("A"), &cn("B"), &cn("e")),
+            );
+            let mut ctx = crate::check::LocalCtx::new();
+            chk.check(&mut ctx, &term, &expected).expect("compEquivIdL_g should typecheck");
+        }
+
+        #[test]
+        fn comp_equiv_id_r_f_typechecks_at_its_stated_type() {
+            let env = ab_env();
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let term = comp_equiv_id_r_f(lvl.clone(), &cn("A"), &cn("B"), &cn("e"));
+            let expected = Term::path(
+                Term::arrow(cn("A"), cn("B")),
+                equiv_f(&lvl, &cn("A"), &cn("B"), &cn("e")),
+                equiv_f(&lvl, &cn("A"), &cn("B"), &cn("e")),
+            );
+            let mut ctx = crate::check::LocalCtx::new();
+            chk.check(&mut ctx, &term, &expected).expect("compEquivIdR_f should typecheck");
+        }
+
+        #[test]
+        fn comp_equiv_id_r_g_typechecks_at_its_stated_type() {
+            let env = ab_env();
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let term = comp_equiv_id_r_g(lvl.clone(), &cn("A"), &cn("B"), &cn("e"));
+            let expected = Term::path(
+                Term::arrow(cn("B"), cn("A")),
+                equiv_g(&lvl, &cn("A"), &cn("B"), &cn("e")),
+                equiv_g(&lvl, &cn("A"), &cn("B"), &cn("e")),
+            );
+            let mut ctx = crate::check::LocalCtx::new();
+            chk.check(&mut ctx, &term, &expected).expect("compEquivIdR_g should typecheck");
+        }
+
+        /// Adversarial: `compEquivIdL_f`'s witness does not check against an
+        /// unrelated (swapped-endpoint) goal.
+        #[test]
+        fn comp_equiv_id_l_f_does_not_check_against_a_wrong_goal() {
+            let env = ab_env();
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let term = comp_equiv_id_l_f(lvl.clone(), &cn("A"), &cn("B"), &cn("e"));
+            let wrong = Term::path(
+                Term::arrow(cn("B"), cn("A")),
+                equiv_g(&lvl, &cn("A"), &cn("B"), &cn("e")),
+                equiv_g(&lvl, &cn("A"), &cn("B"), &cn("e")),
+            );
+            let mut ctx = crate::check::LocalCtx::new();
+            assert!(chk.check(&mut ctx, &term, &wrong).is_err());
+        }
+
+        // ------------------------------------------------------------------
+        // symEquiv involution
+        // ------------------------------------------------------------------
+
+        #[test]
+        fn sym_equiv_inv_typechecks_at_its_stated_type() {
+            let env = ab_env();
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let term = sym_equiv_inv(lvl.clone(), &cn("A"), &cn("B"), &cn("e"));
+            // The honest goal: `Path (Equiv A B) (symEquiv (symEquiv e)) e`
+            // (`symEquiv (symEquiv e)` is not *syntactically* `e` for an
+            // opaque `e` — only propositionally, via the `Equiv.rec`
+            // elimination `sym_equiv_inv` performs).
+            let sym1 = sym_equiv(lvl.clone(), &cn("A"), &cn("B"), &cn("e"));
+            let sym2 = sym_equiv(lvl.clone(), &cn("B"), &cn("A"), &sym1);
+            let expected = Term::path(equiv_ty(cn("A"), cn("B")), sym2, cn("e"));
+            let mut ctx = crate::check::LocalCtx::new();
+            chk.check(&mut ctx, &term, &expected).expect("symEquivInv should typecheck");
+        }
+
+        /// `symEquivInv (idEquiv A) A A` reduces to a witness of `Path (Equiv
+        /// A A) (symEquiv (symEquiv (idEquiv A))) (idEquiv A)`, and since
+        /// `symEquiv (idEquiv A) ≡ idEquiv A` on the nose (this module's own
+        /// `sym_equiv_of_id_equiv_is_id_equiv` fact), the whole statement
+        /// specializes to `Path (Equiv A A) (idEquiv A) (idEquiv A)` — a
+        /// sanity instance of the general involution law on a concrete
+        /// equivalence, not just an abstract one.
+        #[test]
+        fn sym_equiv_inv_on_id_equiv_typechecks() {
+            let mut env = Env::new();
+            declare_equiv(&mut env).unwrap();
+            axiom(&mut env, "A", Term::typ(0));
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let id_a = Term::app(Term::cnst(name("idEquiv"), vec![lvl.clone()]), cn("A"));
+            let term = sym_equiv_inv(lvl.clone(), &cn("A"), &cn("A"), &id_a);
+            let expected = Term::path(equiv_ty(cn("A"), cn("A")), id_a.clone(), id_a);
+            let mut ctx = crate::check::LocalCtx::new();
+            chk.check(&mut ctx, &term, &expected).expect("symEquivInv (idEquiv A) should typecheck");
+        }
+
+        /// Adversarial: `symEquivInv`'s witness does not check against a
+        /// mismatched goal (wrong equivalence entirely).
+        #[test]
+        fn sym_equiv_inv_does_not_check_against_a_wrong_goal() {
+            let env = ab_env();
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let term = sym_equiv_inv(lvl.clone(), &cn("A"), &cn("B"), &cn("e"));
+            // Wrong: claims the result is `symEquiv e` itself, not `e`.
+            let sym1 = sym_equiv(lvl.clone(), &cn("A"), &cn("B"), &cn("e"));
+            let wrong = Term::path(equiv_ty(cn("B"), cn("A")), sym1.clone(), sym1);
             let mut ctx = crate::check::LocalCtx::new();
             assert!(chk.check(&mut ctx, &term, &wrong).is_err());
         }
