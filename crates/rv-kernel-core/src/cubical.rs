@@ -1148,6 +1148,179 @@ pub fn trans_inv_left(ty: &Term, a: &Term, b: &Term, p: &Term) -> Term {
     j(&motive, &d, p)
 }
 
+// ============================================================================
+// Phase 4.6: `trans_assoc` — STILL OPEN, but with a substantially more precise
+// diagnosis than any prior pass reached. Four strategies were tried in total:
+//
+// 1. (Three *prior* passes) composing the closed `trans_right_unit`/`ap` lemmas
+//    through a *third*, outer `trans`, in the `J`-on-`r` base case — always hit a
+//    connect-square boundary misalignment (see the "Associativity" section
+//    immediately below).
+// 2. (*This* pass, first attempt) a **single** `J`-elimination on `p` alone, with
+//    a motive whose base case needs *two* independent trans-of-`refl` collapses
+//    (one on each side of the goal `Path`) simultaneously, both reached through
+//    an *outer* `App(App(motive, y), p'))` beta-redex (`family(i0)`, `j`'s own
+//    construction). This type-checked as a *term*, but **failed to check** —
+//    even with `p'` substituted by a *literal* `refl a` (no `connect`-square
+//    indirection at all), `check`/`def_eq` could not see through *two* nested
+//    `Transp` collapses reached via that beta-redex, although the *exact same*
+//    pair of terms, built by direct substitution (`.lift`, no `App`/`Lam` redex)
+//    rather than through `j`'s own motive-application, compared equal instantly.
+//    This is a **new, more precise diagnosis** than strategies 1-3's
+//    "connect-square misalignment": a genuine `nbe`-level completeness gap in
+//    reducing *two* nested `Transp` regularity collapses when reached through an
+//    *ordinary* (non-`J`) beta application rather than directly through the
+//    enclosing `J`'s own substitution — a strictly deeper case than
+//    `crate::nbe::Nbe::family_is_constant_value`'s existing fix handles (that
+//    fix's precedent, `right_unit_closes`, only ever needs *one* side of the
+//    goal `Path` to reduce; this naive motive needs *both* sides to reduce
+//    simultaneously). Fixing this needs an `nbe.rs` edit, off-limits for this
+//    pass — so strategy 2 was abandoned in favor of:
+// 4. **(Furthest reached, but ALSO does not close)** `J`-eliminate `q` instead
+//    of `p`. The key asymmetry: of `trans_assoc`'s two `trans` applications,
+//    `trans (trans p q) r`'s *outer* `trans` eliminates the compound `trans p q`
+//    (not `q` directly), while `trans p (trans q r)`'s *inner* `trans q r`
+//    eliminates `q` directly. So `J`-eliminating `q` (generalizing its own
+//    target, reproving the statement for every abstract `r'`) puts a literal
+//    `refl b` in `trans q r`'s eliminated slot at the base case, giving the
+//    *inner* side a **free, single-layer** definitional collapse — `trans
+//    (refl b) r' ≡ r'` — exactly `right_unit_closes`'s already-working depth
+//    (only *one* side of the goal `Path` needs to reduce this way, not both, so
+//    strategy 2's obstruction does not apply here). The *other* side, `trans
+//    (trans p q) r`, still needs the already-closed, propositional
+//    [`trans_right_unit`] lemma, whiskered through a single `ap` (`ap (λx. trans
+//    ty a dd x r') (trans_right_unit ty a b p)`) rather than composed through a
+//    further `J` (the shape that sank strategies 1-3). This construction *does*
+//    avoid both the connect-square misalignment (1-3) and the
+//    double-simultaneous-collapse gap (2) — but hits a **third, independently
+//    isolated** `nbe` completeness gap instead: `ap`'s own output has the shape
+//    `PLam(App(f, PApp(subject, i)))`, and when `subject` is itself a
+//    `Transp`-built term (as `trans_right_unit`'s output always is, not a
+//    literal `PLam`), comparing the resulting `App(f, PApp(subject, i0/i1))`
+//    against an independently-already-reduced target *fails* — even though
+//    `PApp(subject, i0)` *alone* (outside the enclosing `App`) is confirmed,
+//    standalone, to reduce correctly to its declared boundary endpoint via the
+//    type-directed `path_boundary` rule, and even though substituting that
+//    *already-reduced* endpoint in *by hand* before wrapping in `App(f, ·)` also
+//    compares correctly. So the gap is specifically: `path_boundary` resolution
+//    of a `Transp` subject, nested *inside* an enclosing `App`'s argument
+//    position, is not being forced before comparison. This, too, needs an
+//    `nbe.rs` edit — off-limits for this pass.
+//
+// **Net result**: `trans_assoc` is *stated* correctly (see [`trans_assoc`]'s own
+// doc for the exact target type) and *constructed* via strategy 4 (the
+// furthest-reached, most surgical approach — avoiding two of the three
+// previously/newly diagnosed obstructions), but does not yet `check`. Landed as
+// documentation of the precise remaining boundary plus a real (if
+// non-typechecking-to-completion) construction, per this task's own explicit
+// fallback instruction — see `groupoid_law_tests::trans_assoc_closes` (kept
+// `#[ignore]`d, with the exact diagnosis in its own doc) and
+// `trans_assoc_does_not_yet_typecheck_confirming_the_documented_gap` (a
+// standing, *positive* assertion that the gap still reproduces, so a future
+// `nbe.rs` fix closing it will be caught immediately by this test flipping to a
+// spurious "gap closed, `#[ignore]`d test now passes" signal).
+//
+// # Associativity: earlier diagnosis (kept as history; refined above)
+//
+// The literal statement `Path (trans (trans p q) r) (trans p (trans q r))`
+// cannot even be *written* as a well-typed `Term` in this kernel: its LHS
+// requires applying [`trans`] to `trans ty a b p q` as the *subject* path being
+// `J`-eliminated, and doing that is exactly the obstruction [`trans3`]'s own
+// module doc records ("nesting `trans`... does not type-check in this kernel"
+// — confirmed for three fully abstract axiomatized paths with no `sym`/`ap`
+// involved, see `tests::debug_nested_trans_hits_the_documented_completeness_gap`
+// in `crate::equiv_hae`, still reproducing after this pass's fix above).
+// **UPDATE (this pass): this specific claim is now STALE** — re-running that
+// exact test (`crate::equiv_hae::tests::
+// debug_nested_trans_hits_the_documented_completeness_gap`) confirms nested
+// `trans` (using one `trans`-built term as the *subject* of a further `trans`)
+// now type-checks fine (the test's own docstring already says so: "the
+// completeness gap is closed"). What *remains* hard is not that basic
+// nesting-as-subject shape, but the *harder* shapes diagnosed under strategies
+// 2 and 4 above — three genuinely distinct `nbe`-level completeness gaps have
+// now been isolated across this module's history, all requiring `nbe.rs` edits
+// this pass is not permitted to make.
+// ============================================================================
+
+/// `trans_assoc ty a b target_d p q r : Path (Path ty a target_d) (trans ty a
+/// target_d (trans ty a b p q) r) (trans ty a target_d p (trans ty b target_d q
+/// r))` — see the doc block above this function for the exact
+/// strategy/diagnosis (strategy 4: `J`-eliminate `q`, combine the inner side's
+/// free definitional left-unit collapse with the outer side's *single*
+/// `ap`-whiskered [`trans_right_unit`] composition). `b` is `p`'s own target
+/// (needed explicitly here, unlike [`trans`]'s own elimination subject, because
+/// it is *not* itself being eliminated — it is [`trans_right_unit`]'s own
+/// fixed endpoint); `target_d` is `r`'s final target, exactly like [`trans`]'s
+/// own trailing target argument. `q`'s own target (`c`, `r`'s source) is
+/// inferred by `j`, exactly like [`trans`]'s own elimination subject.
+pub fn trans_assoc(ty: &Term, a: &Term, b: &Term, target_d: &Term, p: &Term, q: &Term, r: &Term) -> Term {
+    // motive, ctx []: λ (z:ty) (q':Path ty b z).
+    //   Π (dd:ty) (r':Path ty z dd). Path (...) lhs rhs
+    let motive = Term::lam(
+        ty.clone(),
+        Term::lam(
+            // ctx [z]: Path ty b z
+            Term::path(ty.lift(1, 0), b.lift(1, 0), Term::Var(0)),
+            {
+                // ctx [z,q']: z=Var(1), q'=Var(0)
+                let pi_dd = ty.lift(2, 0);
+                let pi_r = {
+                    // ctx [z,q',dd]: z=Var(2), dd=Var(0)
+                    Term::path(ty.lift(3, 0), Term::Var(2), Term::Var(0))
+                };
+                let body = {
+                    // ctx [z,q',dd,r']: z=Var(3), q'=Var(2), dd=Var(1), r'=Var(0)
+                    let ty4 = ty.lift(4, 0);
+                    let a4 = a.lift(4, 0);
+                    let b4 = b.lift(4, 0);
+                    let p4 = p.lift(4, 0);
+                    let z = Term::Var(3);
+                    let q_ = Term::Var(2);
+                    let dd = Term::Var(1);
+                    let r_ = Term::Var(0);
+                    let trans_pq = trans(&ty4, &a4, &z, &p4, &q_); // Path ty a z
+                    let lhs = trans(&ty4, &a4, &dd, &trans_pq, &r_);
+                    let trans_qr = trans(&ty4, &b4, &dd, &q_, &r_); // Path ty b dd
+                    let rhs = trans(&ty4, &a4, &dd, &p4, &trans_qr);
+                    Term::path(Term::path(ty4, a4, dd), lhs, rhs)
+                };
+                Term::pi(pi_dd, Term::pi(pi_r, body))
+            },
+        ),
+    );
+    // d, ctx []: λ dd r'. ap (λx. trans ty a dd x r') (trans_right_unit ty a b p)
+    //   : Path (Path ty a dd) (trans ty a dd (trans ty a b p (refl b)) r')
+    //          (trans ty a dd p r')
+    // — exactly `C b (refl b)`'s LHS-vs-(collapsed)-RHS statement: the checker
+    // only needs the goal's *other* side (`trans p (trans (refl b) r')`) to
+    // collapse via the free, single-layer left-unit rule to `trans p r'`,
+    // matching `right_unit_closes`'s already-working depth.
+    let d = Term::lam(
+        ty.clone(),
+        Term::lam(
+            // ctx [dd]: Path ty b dd
+            Term::path(ty.lift(1, 0), b.lift(1, 0), Term::Var(0)),
+            {
+                // ctx [dd,r']: dd=Var(1), r'=Var(0)
+                let ty2 = ty.lift(2, 0);
+                let a2 = a.lift(2, 0);
+                let b2 = b.lift(2, 0);
+                let p2 = p.lift(2, 0);
+                let dd = Term::Var(1);
+                let r_ = Term::Var(0);
+                // f := λ (x:Path ty a b). trans ty a dd x r'
+                let f = Term::lam(
+                    Term::path(ty2.clone(), a2.clone(), b2.clone()),
+                    trans(&ty2.lift(1, 0), &a2.lift(1, 0), &dd.lift(1, 0), &Term::Var(0), &r_.lift(1, 0)),
+                );
+                ap(&f, &trans_right_unit(&ty2, &a2, &b2, &p2))
+            },
+        ),
+    );
+    let elim = j(&motive, &d, q);
+    Term::apps(elim, [target_d.clone(), r.clone()])
+}
+
 #[cfg(test)]
 mod groupoid_law_tests {
     use super::*;
@@ -1257,6 +1430,102 @@ mod groupoid_law_tests {
             ),
             other => panic!("expected PathP, got {other:?}"),
         }
+    }
+
+    /// `A B C D : Type 0`; `a b c d0 : A`; `p : Path A a b`; `q : Path A b c`;
+    /// `r : Path A c d0` — the general (fully abstract, opaque) setting
+    /// `trans_assoc` is stated over.
+    fn assoc_env() -> Kernel {
+        let mut k = Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("a", 0, cn("A")).unwrap();
+        k.add_axiom("b", 0, cn("A")).unwrap();
+        k.add_axiom("c", 0, cn("A")).unwrap();
+        k.add_axiom("d0", 0, cn("A")).unwrap();
+        k.add_axiom("p", 0, Term::path(cn("A"), cn("a"), cn("b"))).unwrap();
+        k.add_axiom("q", 0, Term::path(cn("A"), cn("b"), cn("c"))).unwrap();
+        k.add_axiom("r", 0, Term::path(cn("A"), cn("c"), cn("d0"))).unwrap();
+        k
+    }
+
+    /// **Known gap, not yet closed** (documented, not silently swept under the
+    /// rug — see `trans_assoc`'s own module doc, "Phase 4.6", strategy 4, for the
+    /// full diagnosis): `trans_assoc`'s witness type-checks as a `Term` (no panic,
+    /// well-scoped, `j`-derived) but does **not** yet `check`/`def_eq` against the
+    /// full associativity statement. Isolated root cause (confirmed via a
+    /// standalone repro kept out of this file per the pass's own scoping
+    /// discipline — see the doc's strategy-4 paragraph): `ap`'s own construction
+    /// produces an endpoint of the shape `App(f, PApp(subject, i0/i1))`; when
+    /// `subject` is itself a `Transp`-built (not literal-`PLam`) term — exactly
+    /// [`trans_right_unit`]'s own shape — comparing that `App(f, PApp(...))` node
+    /// against an independently-*already-reduced* target fails, even though the
+    /// **same** two terms compare equal instantly when the `PApp`'s own boundary
+    /// is resolved *first*, outside the enclosing application. This is a
+    /// *different*, more precisely isolated `nbe`-level completeness gap than the
+    /// double-nested-`Transp`-collapse gap the naive (superseded) single-`J`-on-`p`
+    /// attempt hit — see the module doc for both. Fixing either requires editing
+    /// `nbe.rs`, off-limits for this pass. Kept `#[ignore]`d as a precise,
+    /// reproducing record rather than deleted, matching this module's
+    /// "known gap" convention elsewhere (see `crate::equiv_hae::tests::
+    /// sec_prime_on_literal_plam_identity_data_is_a_known_gap_not_yet_closed`).
+    #[test]
+    #[ignore = "known gap: ap-of-a-Transp-subject inside a beta-redex does not reduce far enough to compare — needs an nbe.rs fix, off-limits for this pass; see trans_assoc's module doc"]
+    fn trans_assoc_closes() {
+        let k = assoc_env();
+        let term = trans_assoc(&cn("A"), &cn("a"), &cn("b"), &cn("d0"), &cn("p"), &cn("q"), &cn("r"));
+        let trans_pq = trans(&cn("A"), &cn("a"), &cn("c"), &cn("p"), &cn("q"));
+        let lhs = trans(&cn("A"), &cn("a"), &cn("d0"), &trans_pq, &cn("r"));
+        let trans_qr = trans(&cn("A"), &cn("b"), &cn("d0"), &cn("q"), &cn("r"));
+        let rhs = trans(&cn("A"), &cn("a"), &cn("d0"), &cn("p"), &trans_qr);
+        let expected = Term::path(Term::path(cn("A"), cn("a"), cn("d0")), lhs, rhs);
+        let ty = k.infer(&term).expect("trans_assoc should typecheck");
+        assert!(k.def_eq(&ty, &expected), "trans_assoc has type {ty:?}, expected {expected:?}");
+        k.check(&term, &expected).unwrap();
+    }
+
+    /// Confirms the gap [`trans_assoc_closes`] documents is real and precisely
+    /// where claimed: `trans_assoc`'s own witness genuinely fails `k.infer`
+    /// (the base-case check inside its own `J`-elimination does not go through),
+    /// so this is not a downstream/adversarial-test artifact.
+    #[test]
+    fn trans_assoc_does_not_yet_typecheck_confirming_the_documented_gap() {
+        let k = assoc_env();
+        let term = trans_assoc(&cn("A"), &cn("a"), &cn("b"), &cn("d0"), &cn("p"), &cn("q"), &cn("r"));
+        assert!(k.infer(&term).is_err(), "expected the documented gap to still reproduce");
+    }
+
+    /// Adversarial: `trans_assoc`'s witness does not check against an unrelated
+    /// (swapped-endpoint) 2-path goal — same discipline as
+    /// [`groupoid_laws_do_not_check_against_a_wrong_goal`], now for associativity.
+    #[test]
+    fn trans_assoc_does_not_check_against_a_wrong_goal() {
+        let mut k = assoc_env();
+        k.add_axiom("e", 0, cn("A")).unwrap();
+        let term = trans_assoc(&cn("A"), &cn("a"), &cn("b"), &cn("d0"), &cn("p"), &cn("q"), &cn("r"));
+        let trans_pq = trans(&cn("A"), &cn("a"), &cn("c"), &cn("p"), &cn("q"));
+        let lhs = trans(&cn("A"), &cn("a"), &cn("d0"), &trans_pq, &cn("r"));
+        // Swap the RHS's target endpoint to an unrelated point `e` instead of `d0`.
+        let wrong = Term::path(Term::path(cn("A"), cn("a"), cn("d0")), lhs, cn("e"));
+        assert!(k.check(&term, &wrong).is_err());
+    }
+
+    /// Adversarial: `trans_assoc` cannot manufacture a proof for a *non*-anti-`False`
+    /// instance either — swapping in a wrong middle point on the RHS's inner `trans
+    /// q r` (using an unrelated `q2 : Path A b e` instead of the real `q`) is a
+    /// distinct, non-defeq statement that the same witness must not satisfy.
+    #[test]
+    fn trans_assoc_does_not_check_with_a_mismatched_middle_path() {
+        let mut k = assoc_env();
+        k.add_axiom("e", 0, cn("A")).unwrap();
+        k.add_axiom("q2", 0, Term::path(cn("A"), cn("b"), cn("e"))).unwrap();
+        let term = trans_assoc(&cn("A"), &cn("a"), &cn("b"), &cn("d0"), &cn("p"), &cn("q"), &cn("r"));
+        let trans_pq = trans(&cn("A"), &cn("a"), &cn("c"), &cn("p"), &cn("q"));
+        let lhs = trans(&cn("A"), &cn("a"), &cn("d0"), &trans_pq, &cn("r"));
+        // rhs built from q2 instead of q — ill-typed to even compose with r (target
+        // mismatch: q2 lands at e, r starts at c), so this must fail to check.
+        let bogus_rhs = trans(&cn("A"), &cn("a"), &cn("d0"), &cn("p"), &cn("q2"));
+        let wrong = Term::path(Term::path(cn("A"), cn("a"), cn("d0")), lhs, bogus_rhs);
+        assert!(k.check(&term, &wrong).is_err());
     }
 
     /// Adversarial: none of the four laws' witnesses check against an unrelated
