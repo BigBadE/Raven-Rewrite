@@ -1040,9 +1040,10 @@ impl<'a> Nbe<'a> {
     fn try_cubical_hit_rec(&self, h: Head, spine: Vec<Rc<Value>>) -> Rc<Value> {
         if let Head::Const(rname, ls) = &h {
             if let Some(Decl::CubHit(rc)) = self.env.get(rname) {
-                if let CubHitRole::Rec { num_points, num_paths } = rc.role {
-                    let (num_points, num_paths) = (num_points as usize, num_paths as usize);
-                    let scrut_pos = 1 + num_points + num_paths;
+                if let CubHitRole::Rec { num_points, num_paths, num_surfaces } = rc.role {
+                    let (num_points, num_paths, num_surfaces) =
+                        (num_points as usize, num_paths as usize, num_surfaces as usize);
+                    let scrut_pos = 1 + num_points + num_paths + num_surfaces;
                     if spine.len() > scrut_pos {
                         match &*spine[scrut_pos] {
                             // Point rule: fully applied to its declared fields
@@ -1084,9 +1085,40 @@ impl<'a> Nbe<'a> {
                                     }
                                 }
                             }
-                            // Path rule: fully applied to its declared quantifier
-                            // arity, same HIT `id`.
+                            // Path rule (1-path) AND Surface rule (2-path, "S²") —
+                            // both scrutinees weak-head as `PathApp`, so they share
+                            // one arm and are disambiguated by whether `p` (the
+                            // thing being `@`-applied to `r`) is itself, in turn,
+                            // ANOTHER `PathApp` (surface: `(H.surf_k @ ri) @ rj`) or
+                            // directly a `Const` (ordinary path: `H.path_j .. @ r`).
+                            // The surface check is tried FIRST — mirrors
+                            // [`crate::reduce::Reducer::try_cubical_hit_rec`]'s
+                            // equivalent structural disjointness argument (see that
+                            // function's doc comment).
                             Value::Stuck(Head::PathApp(p, r), pargs) if pargs.is_empty() => {
+                                if let Value::Stuck(Head::PathApp(p_inner, ri), iargs) = &**p {
+                                    if iargs.is_empty() {
+                                        if let Value::Stuck(Head::Const(surf_name, _), sargs) = &**p_inner {
+                                            if sargs.is_empty() {
+                                                if let Some(Decl::CubHit(c)) = self.env.get(surf_name) {
+                                                    if c.id == rc.id {
+                                                        if let CubHitRole::Surf { idx, .. } = &c.role {
+                                                            let pos =
+                                                                1 + num_points + num_paths + *idx as usize;
+                                                            let t = spine[pos].clone();
+                                                            let t_i = self.vpapp(t, ri.clone());
+                                                            let mut v = self.vpapp(t_i, r.clone());
+                                                            for extra in &spine[scrut_pos + 1..] {
+                                                                v = self.vapp(v, extra.clone());
+                                                            }
+                                                            return v;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 if let Value::Stuck(Head::Const(pathn, _), pathargs) = &**p {
                                     if let Some(Decl::CubHit(c)) = self.env.get(pathn) {
                                         if c.id == rc.id {

@@ -851,11 +851,13 @@ impl<'e> Reducer<'e> {
         rc: &crate::env::CubHit,
         args: &[Term],
     ) -> Option<Term> {
-        let (num_points, num_paths) = match rc.role {
-            CubHitRole::Rec { num_points, num_paths } => (num_points as usize, num_paths as usize),
+        let (num_points, num_paths, num_surfaces) = match rc.role {
+            CubHitRole::Rec { num_points, num_paths, num_surfaces } => {
+                (num_points as usize, num_paths as usize, num_surfaces as usize)
+            }
             _ => return None,
         };
-        let scrut_pos = 1 + num_points + num_paths;
+        let scrut_pos = 1 + num_points + num_paths + num_surfaces;
         if args.len() <= scrut_pos {
             return None; // not yet applied to the H value
         }
@@ -919,6 +921,40 @@ impl<'e> Reducer<'e> {
                                     applied = Term::app(applied, extra.clone());
                                 }
                                 return Some(applied);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Surface (2-path / "S²") rule: scrutinee is (weak-head)
+        // `PApp(PApp(p, ri), rj)` with `p`'s own weak-head literally `H.surf_k`
+        // of the same HIT `id`, applied to no extra arguments (surfaces are
+        // always nullary — see `CubSurfSpec`'s doc comment). Never confused
+        // with the path rule above: a bare `PApp(H.path_j .., r)` has a
+        // `Const` head directly under the single `PApp`, whereas a surface's
+        // outer `PApp` has *another* `PApp` under it, so the path rule's own
+        // `Term::Const` match fails and falls through here instead — the two
+        // rules are structurally disjoint, not merely guarded by `id`.
+        if let Term::PApp(p_outer, rj) = &scrut {
+            let p_outer_w = self.whnf(p_outer);
+            if let Term::PApp(p_inner, ri) = &p_outer_w {
+                let p_inner_w = self.whnf(p_inner);
+                let (surf_head, surf_args) = p_inner_w.unfold_apps();
+                if surf_args.is_empty() {
+                    if let Term::Const(surf_name, _) = &surf_head {
+                        if let Some(Decl::CubHit(c)) = self.env.get(surf_name) {
+                            if c.id == rc.id {
+                                if let CubHitRole::Surf { idx, .. } = &c.role {
+                                    let pos = 1 + num_points + num_paths + *idx as usize;
+                                    let t = args[pos].clone();
+                                    let applied_i = Term::papp(t, (**ri).clone());
+                                    let mut applied = Term::papp(applied_i, (**rj).clone());
+                                    for extra in &args[scrut_pos + 1..] {
+                                        applied = Term::app(applied, extra.clone());
+                                    }
+                                    return Some(applied);
+                                }
                             }
                         }
                     }

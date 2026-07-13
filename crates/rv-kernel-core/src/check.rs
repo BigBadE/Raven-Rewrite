@@ -839,13 +839,51 @@ impl<'e> Checker<'e> {
         let rn = crate::cubical::normalize_interval(r);
         let at_zero = rn == Term::IZero;
         let at_one = rn == Term::IOne;
-        if !at_zero && !at_one {
-            return false;
+        if at_zero || at_one {
+            if let Ok(tp) = self.infer(ctx, p) {
+                if let Term::PathP(_, a0, a1) = self.reducer().whnf(&tp) {
+                    let endpoint = if at_zero { a0 } else { a1 };
+                    if self.compare(ctx, &endpoint, other) {
+                        return true;
+                    }
+                }
+            }
         }
-        let Ok(tp) = self.infer(ctx, p) else { return false };
-        let Term::PathP(_, a0, a1) = self.reducer().whnf(&tp) else { return false };
-        let endpoint = if at_zero { a0 } else { a1 };
-        self.compare(ctx, &endpoint, other)
+        // NESTED boundary, one level down (needed by
+        // [`crate::cubical_hit`]'s 2-dimensional/"S²" 2-path recursor case:
+        // its well-formedness check compares the motive at a fixed OUTER
+        // boundary `i0`/`i1` but a still-GENERIC inner interval variable —
+        // e.g. `(H.surf_k @ i0) @ j` against a `j`-independent term. `p`
+        // itself may be `p2 @ r2` for a literal `r2` one level down (`surf @
+        // i0`) — even though `p` isn't *syntactically* a `PLam` (so ordinary
+        // β/whnf can't fire on it), it's still DEFINITIONALLY `p2`'s own
+        // declared `a0`/`a1` endpoint (`refl base`, here) by this SAME
+        // boundary rule applied one level inward; once substituted in, that
+        // endpoint is typically a concrete `PLam` (as it always is for the
+        // `CubHitSpec` schema's declared surfaces/paths), so `@ r` on it
+        // reduces normally via ordinary `whnf`. Bounded to exactly one extra
+        // level (mirrors the schema's own "at most 2-dimensional" scope) —
+        // `p2` is strictly smaller than `p`, so this cannot loop. Adds no new
+        // equation beyond what `p2`'s own (already-checked) `PathP` typing
+        // judgement forces, for the identical soundness reason given in this
+        // function's own doc comment above.
+        if let Term::PApp(p2, r2) = p.as_ref() {
+            let rn2 = crate::cubical::normalize_interval(r2);
+            let at_zero2 = rn2 == Term::IZero;
+            let at_one2 = rn2 == Term::IOne;
+            if at_zero2 || at_one2 {
+                if let Ok(tp2) = self.infer(ctx, p2) {
+                    if let Term::PathP(_, a0, a1) = self.reducer().whnf(&tp2) {
+                        let endpoint2 = if at_zero2 { a0 } else { a1 };
+                        let simplified = self.reducer().whnf(&Term::papp((*endpoint2).clone(), (**r).clone()));
+                        if self.compare(ctx, &simplified, other) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Convenience: definitional equality of two **closed** terms.
