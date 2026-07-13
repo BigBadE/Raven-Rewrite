@@ -627,8 +627,9 @@ impl<'a> Parser<'a> {
             }
             let inner = self.parse_type()?;
             self.expect(&Tok::RParen, "to close a parenthesized type")?;
-            // A `->`/`==`/application after the closing paren continues a type-expression.
-            return if matches!(self.peek(), Tok::Arrow | Tok::EqEq | Tok::LParen) {
+            // A `->`/`==`/application/`.`-projection after the closing paren continues a
+            // type-expression.
+            return if matches!(self.peek(), Tok::Arrow | Tok::EqEq | Tok::LParen | Tok::Dot) {
                 let e = self.ty_to_expr(inner)?;
                 self.type_expr_tail(e)
             } else {
@@ -701,9 +702,12 @@ impl<'a> Parser<'a> {
                 ))
             }
         };
-        // Proof continuation: a `(`/`==`/`->` or a juxtaposed atom (`native_add a b`) turns
-        // the base into a type-expression.
-        if matches!(self.peek(), Tok::LParen | Tok::EqEq | Tok::Arrow) || self.is_juxt_atom_start()
+        // Proof continuation: a `(`/`==`/`->`/`.` or a juxtaposed atom (`native_add a b`)
+        // turns the base into a type-expression. The `.` case allows a dotted
+        // projection/method-call head (`Stream.head(s)`) to appear in type position, matching
+        // what the value-expression parser (`Self::parse_postfix`) already accepts.
+        if matches!(self.peek(), Tok::LParen | Tok::EqEq | Tok::Arrow | Tok::Dot)
+            || self.is_juxt_atom_start()
         {
             let e = self.ty_to_expr(base)?;
             return self.type_expr_tail(e);
@@ -764,7 +768,20 @@ impl<'a> Parser<'a> {
     /// type `native_add a b == plus a b`).
     fn parse_app_spine(&mut self, mut head: Expr) -> Result<Expr, String> {
         loop {
-            if self.peek() == &Tok::LParen {
+            if self.eat(&Tok::Dot) {
+                // Field access or method call `recv.field` / `recv.method(args)` used as (part
+                // of) a type-expression head, e.g. `Stream.head(s)`. Lowers to the same
+                // `Expr::Field`/`Expr::MethodCall` the value-expression parser
+                // (`Self::parse_postfix`) produces, so elaboration handles it identically.
+                let name = self.ident("as field or method name after `.` in a type-expression")?;
+                if self.eat(&Tok::LParen) {
+                    let args = self.parse_args()?;
+                    self.expect(&Tok::RParen, "after method-call arguments in a type-expression")?;
+                    head = Expr::MethodCall { recv: Box::new(head), method: name, args };
+                } else {
+                    head = Expr::Field { base: Box::new(head), field: name };
+                }
+            } else if self.peek() == &Tok::LParen {
                 self.bump();
                 let args = self.parse_args()?;
                 self.expect(&Tok::RParen, "after type-level application arguments")?;

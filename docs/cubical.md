@@ -367,11 +367,14 @@ Stream.tail A (Stream.corec A X h t s)  ↝  Stream.corec A X h t (t s)         
 See `examples/proofs/coinductive.rv` for a worked example: `repeat`/`nats`
 built via `Stream.corec`, with `Stream.head`/`Stream.tail` observations
 checked to compute definitionally (`Eq::refl`) through several layers of
-`Stream.tail`. One surface-grammar gap was found and *routed around* rather
-than fixed in `rv-syntax`: a dotted call (`Stream.head(...)`) is not yet
-accepted as the head of a `fn`'s return-type expression (only in value
-position), so the example names each observation with a `def` first and
-compares those names in the `fn` signature.
+`Stream.tail`. A surface-grammar gap that was previously found here — a
+dotted call (`Stream.head(...)`) not being accepted as the head of a `fn`'s
+return-type expression (only in value position) — is now **closed**:
+`rv-syntax`'s `parse_type` accepts the same `.field`/`.method(args)`
+continuation the value-expression parser does, lowering to the identical
+`Expr::Field`/`Expr::MethodCall` representation, so the example writes each
+`Stream.head(...)`/`Stream.tail(...)` observation directly in the `fn`
+signature with no `def`-wrapper.
 
 A general `codata` **declaration** form (letting `.rv` source define its own
 coinductive families, mirroring `enum` on the inductive side) is not present —

@@ -381,4 +381,81 @@ fn g(x: i64) {
         };
         assert!(matches!(cond, Expr::Var(_)));
     }
+
+    #[test]
+    fn dotted_call_in_type_position_matches_value_position() {
+        // A dotted method-call head (`recv.method(args)`) used as (part of) a `fn`'s
+        // return-type expression must lower to the same `Expr::MethodCall` the
+        // value-expression parser produces for the identical text.
+        let mut syms = Symbols::new();
+        let value_src = "fn f() -> i64 { let v = Foo.bar(x, y); return v; }";
+        let vm = parse(value_src, &mut syms).unwrap();
+        let Item::Fn(vf) = &vm.items[0] else { panic!("expected a function item") };
+        let Stmt::Let { init: value_expr, .. } = &vf.body.stmts[0] else {
+            panic!("expected a let binding");
+        };
+        assert!(matches!(value_expr, Expr::MethodCall { .. }));
+
+        let mut syms2 = Symbols::new();
+        let type_src = "fn g() -> Foo.bar(x, y) == z { Eq::refl(i64, z) }";
+        let tm = parse(type_src, &mut syms2).unwrap();
+        let Item::Fn(tf) = &tm.items[0] else { panic!("expected a function item") };
+        let Some(Ty::Term(ret_expr)) = &tf.ret else {
+            panic!("expected a proof-fragment return type, got {:?}", tf.ret)
+        };
+        // `Foo.bar(x, y) == z` parses as `Bin(Eq, MethodCall{..}, Var(z))`.
+        let Expr::Bin(BinOp::Eq, lhs, _rhs) = ret_expr.as_ref() else {
+            panic!("expected an equality proposition, got {ret_expr:?}")
+        };
+        let Expr::MethodCall { method: lmethod, args: largs, .. } = lhs.as_ref() else {
+            panic!("expected a MethodCall head in type position, got {lhs:?}")
+        };
+        let Expr::MethodCall { method: vmethod, args: vargs, .. } = value_expr else {
+            unreachable!()
+        };
+        assert_eq!(syms2.resolve(*lmethod), syms.resolve(*vmethod));
+        assert_eq!(largs.len(), vargs.len());
+    }
+
+    #[test]
+    fn dotted_field_in_type_position() {
+        // A dotted *field* access (no call parens) also continues a type-expression.
+        let mut syms = Symbols::new();
+        let m = parse("fn f() -> Foo.bar == z { Eq::refl(i64, z) }", &mut syms).unwrap();
+        let Item::Fn(f) = &m.items[0] else { panic!("expected a function item") };
+        let Some(Ty::Term(ret_expr)) = &f.ret else {
+            panic!("expected a proof-fragment return type, got {:?}", f.ret)
+        };
+        let Expr::Bin(BinOp::Eq, lhs, _rhs) = ret_expr.as_ref() else {
+            panic!("expected an equality proposition, got {ret_expr:?}")
+        };
+        assert!(matches!(lhs.as_ref(), Expr::Field { .. }));
+    }
+
+    #[test]
+    fn parses_coinductive_style_dotted_return_type() {
+        // A realistic snippet in the shape of `examples/proofs/coinductive.rv`: a `fn`
+        // whose return type directly mentions a dotted call (`Stream.head(...)`) without
+        // a `def`-wrapper naming the observation first.
+        let mut syms = Symbols::new();
+        let src = "\
+            enum Nat { Zero, Succ(Nat) }\n\
+            def repeat(n: Nat) : Stream(Nat) :=\n\
+                Stream.corec(Nat, Nat, fun (x: Nat) => x, fun (x: Nat) => x, n)\n\
+            fn repeat_head() -> Stream.head(Nat, repeat(Nat::Zero)) == Nat::Zero {\n\
+                Eq::refl(Nat, Nat::Zero)\n\
+            }\n\
+        ";
+        let m = parse(src, &mut syms).unwrap();
+        let Some(Item::Fn(f)) = m.items.iter().find(|it| matches!(it, Item::Fn(_))) else {
+            panic!("expected a function item")
+        };
+        let Some(Ty::Term(ret_expr)) = &f.ret else {
+            panic!("expected a proof-fragment return type, got {:?}", f.ret)
+        };
+        let Expr::Bin(BinOp::Eq, lhs, _rhs) = ret_expr.as_ref() else {
+            panic!("expected an equality proposition, got {ret_expr:?}")
+        };
+        assert!(matches!(lhs.as_ref(), Expr::MethodCall { .. }));
+    }
 }
