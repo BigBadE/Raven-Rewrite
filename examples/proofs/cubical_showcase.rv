@@ -157,3 +157,73 @@ def setq_glue_at_i1 : Nat :=
 // `Quot.sound`, which is only ever propositionally equal).
 def setq_glue_boundary_i0 : setq_glue_at_i0 == setq_at_mk_a := Eq::refl(Nat, Nat::Zero)
 def setq_glue_boundary_i1 : setq_glue_at_i1 == setq_at_mk_a := Eq::refl(Nat, Nat::Zero)
+
+// ---- idToEquiv / symEquiv / compEquiv: the equivalence algebra -------------
+// See `crates/rv-kernel/src/cubical_surface.rs`'s `install_equiv_algebra` for
+// how each of these is surfaced as an ordinary by-name-callable constant on
+// top of `rv_kernel_core::equiv`'s derived terms.
+
+// `idToEquiv A B p : Equiv A B`, the canonical `Path Type A B -> Equiv A B` map
+// (`J`-derived, see `rv_kernel_core::equiv::id_to_equiv`'s doc). On `refl`, it
+// reduces genuinely — not merely propositionally — back to `idEquiv`.
+def id_to_equiv_nat : Equiv(Nat, Nat) := idToEquiv(Nat, Nat, refl(Type, Nat))
+def id_to_equiv_on_refl_is_id_equiv : id_to_equiv_nat == id_equiv_nat := Eq::refl(Equiv(Nat, Nat), id_equiv_nat)
+
+// `symEquiv A B e : Equiv B A` — bi-invertibility is symmetric by construction
+// (a field permutation, no `J`/case analysis needed).
+def sym_equiv_nat : Equiv(Nat, Nat) := symEquiv(Nat, Nat, id_equiv_nat)
+def sym_equiv_nat_f_zero : Nat := Equiv.f(Nat, Nat, sym_equiv_nat, Nat::Zero)
+
+// `compEquiv A B C e1 e2 : Equiv A C` — composing bi-invertible maps, `sec`/`ret`
+// pasted via `ap`/`trans`.
+def comp_equiv_nat : Equiv(Nat, Nat) := compEquiv(Nat, Nat, Nat, id_equiv_nat, id_equiv_nat)
+def comp_equiv_nat_f_zero : Nat := Equiv.f(Nat, Nat, comp_equiv_nat, Nat::Zero)
+
+// ---- The Equiv groupoid coherences: unit laws + involution -----------------
+// `compEquivIdL_f`/`_g` — `compEquiv`'s LEFT-unit law (an `idEquiv` on the
+// first leg), at the underlying `f`/`g` field level, closed by plain `refl` +
+// the checker's Π-η (see `rv_kernel_core::equiv`'s "Equiv groupoid coherences"
+// module doc for why the FULL record-equality unit law is not attempted yet).
+def comp_id_l_f : Path(forall (_: Nat), Nat, Equiv.f(Nat, Nat, comp_equiv_nat), Equiv.f(Nat, Nat, id_equiv_nat)) :=
+    compEquivIdL_f(Nat, Nat, id_equiv_nat)
+def comp_id_l_g : Path(forall (_: Nat), Nat, Equiv.g(Nat, Nat, comp_equiv_nat), Equiv.g(Nat, Nat, id_equiv_nat)) :=
+    compEquivIdL_g(Nat, Nat, id_equiv_nat)
+
+// `compEquivIdR_f`/`_g` — the mirror-image RIGHT-unit law (`idEquiv` on the
+// second leg).
+def comp_id_r_f : Path(forall (_: Nat), Nat, Equiv.f(Nat, Nat, comp_equiv_nat), Equiv.f(Nat, Nat, id_equiv_nat)) :=
+    compEquivIdR_f(Nat, Nat, id_equiv_nat)
+def comp_id_r_g : Path(forall (_: Nat), Nat, Equiv.g(Nat, Nat, comp_equiv_nat), Equiv.g(Nat, Nat, id_equiv_nat)) :=
+    compEquivIdR_g(Nat, Nat, id_equiv_nat)
+
+// `symEquivInv` — `symEquiv` is its own inverse, as a FULL record equality
+// (unlike `compEquiv`'s unit laws above): `symEquiv B A (symEquiv A B e) = e`.
+def sym_equiv_inv_nat : Path(Equiv(Nat, Nat), symEquiv(Nat, Nat, sym_equiv_nat), id_equiv_nat) :=
+    symEquivInv(Nat, Nat, id_equiv_nat)
+
+// ---- ap-functoriality: identity, composition -------------------------------
+// `apId`: `ap id p == p` (HoTT book Lemma 2.2.1's `id` case).
+def ap_id_demo : Path(Path(Nat, Nat::Zero, Nat::Zero),
+                       ap(Nat, Nat, Nat::Zero, Nat::Zero, fun (x: Nat) => x, refl(Nat, Nat::Zero)),
+                       refl(Nat, Nat::Zero)) :=
+    apId(Nat, Nat::Zero, Nat::Zero, refl(Nat, Nat::Zero))
+
+// `apComp`: `ap (g . f) p == ap g (ap f p)` (HoTT book Lemma 2.2.2(iv)), both
+// legs specialized to `id` here so both sides of the goal are spelled out
+// concretely.
+def ap_comp_demo :
+    Path(Path(Nat, (fun (z: Nat) => z)((fun (z: Nat) => z)(Nat::Zero)), (fun (z: Nat) => z)((fun (z: Nat) => z)(Nat::Zero))),
+         ap(Nat, Nat, Nat::Zero, Nat::Zero, fun (z: Nat) => (fun (w: Nat) => w)((fun (w: Nat) => w)(z)), refl(Nat, Nat::Zero)),
+         ap(Nat, Nat, Nat::Zero, Nat::Zero, fun (w: Nat) => w, ap(Nat, Nat, Nat::Zero, Nat::Zero, fun (w: Nat) => w, refl(Nat, Nat::Zero)))) :=
+    apComp(Nat, Nat, Nat, fun (w: Nat) => w, fun (w: Nat) => w, Nat::Zero, Nat::Zero, refl(Nat, Nat::Zero))
+
+// ---- Univalence: STATED (Type-valued name, not proved) ---------------------
+// `Univalence : Type1` is the contractible-fibers statement "`idToEquiv`'s
+// fiber over every `e : Equiv A B` is contractible" (HoTT book Axiom 2.10.3),
+// fixed at the base universe since `rv-syntax` has no explicit universe-level-
+// argument surface syntax (see `install_equiv_algebra`'s doc). Assumed here as
+// an `axiom` purely to exercise that the *type itself* is well-formed and
+// by-name-callable from `.rv` — it is NOT proved (see `docs/cubical.md`'s
+// "Univalence" section for exactly what's open: computational `ua`/`transport`
+// interaction, blocked on `trans_assoc`).
+axiom univalence_axiom : Univalence

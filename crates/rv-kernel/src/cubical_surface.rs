@@ -438,3 +438,293 @@ pub fn install_ua(env: &mut Env) -> Result<(), String> {
     });
     install(env, "ua", 1, ty, value)
 }
+
+/// Install the by-name-callable **equivalence-algebra** constants from
+/// [`rv_kernel_core::equiv`]: `idToEquiv` (the canonical `Path Type A B → Equiv A
+/// B` map, [`rv_kernel_core::equiv::id_to_equiv`]), `symEquiv`
+/// ([`rv_kernel_core::equiv::sym_equiv`]), `compEquiv`
+/// ([`rv_kernel_core::equiv::comp_equiv`]), and the `Univalence` statement itself
+/// ([`rv_kernel_core::equiv::univalence_ty`]) — installed as a `Type`-valued
+/// constant (its *value* is the stated `Type`, not a proof inhabiting it; see
+/// that function's doc for exactly what's open). Requires `Equiv`/`idEquiv`
+/// ([`rv_kernel_core::equiv::declare_equiv`]), `IsContr`
+/// ([`rv_kernel_core::contr::declare_is_contr`]), and `Fiber2`
+/// ([`rv_kernel_core::contr::declare_fiber2`]) to already be installed.
+pub fn install_equiv_algebra(env: &mut Env) -> Result<(), String> {
+    for n in ["Equiv", "idEquiv", "IsContr", "Fiber2"] {
+        if !env.contains(n) {
+            return Err(format!("'idToEquiv'/'symEquiv'/'compEquiv'/'Univalence' require '{n}' to already be installed"));
+        }
+    }
+    let root = Ctx(vec![]);
+    let u = Level::param(0);
+    let equiv_ty = |c: &Ctx, a: &str, b: &str| Term::apps(Term::cnst(name("Equiv"), vec![u.clone()]), [c.v(a), c.v(b)]);
+
+    // ---- idToEquiv.{u} : Pi (A B:Sort u)(p:Path (Sort u) A B). Equiv A B ----
+    {
+        let ty = pi(&root, Term::Sort(u.clone()), "A", |c1| {
+            pi(c1, Term::Sort(u.clone()), "B", |c2| {
+                let path_ab = Term::path(Term::Sort(u.clone()), c2.v("A"), c2.v("B"));
+                pi(c2, path_ab, "p", |c3| equiv_ty(c3, "A", "B"))
+            })
+        });
+        let value = lam(&root, Term::Sort(u.clone()), "A", |c1| {
+            lam(c1, Term::Sort(u.clone()), "B", |c2| {
+                let path_ab = Term::path(Term::Sort(u.clone()), c2.v("A"), c2.v("B"));
+                lam(c2, path_ab, "p", |c3| {
+                    rv_kernel_core::equiv::id_to_equiv(u.clone(), &c3.v("A"), &c3.v("B"), &c3.v("p"))
+                })
+            })
+        });
+        install(env, "idToEquiv", 1, ty, value)?;
+    }
+
+    // ---- symEquiv.{u} : Pi (A B:Sort u)(e:Equiv A B). Equiv B A ----
+    {
+        let ty = pi(&root, Term::Sort(u.clone()), "A", |c1| {
+            pi(c1, Term::Sort(u.clone()), "B", |c2| {
+                let eab = equiv_ty(c2, "A", "B");
+                pi(c2, eab, "e", |c3| Term::apps(Term::cnst(name("Equiv"), vec![u.clone()]), [c3.v("B"), c3.v("A")]))
+            })
+        });
+        let value = lam(&root, Term::Sort(u.clone()), "A", |c1| {
+            lam(c1, Term::Sort(u.clone()), "B", |c2| {
+                let eab = equiv_ty(c2, "A", "B");
+                lam(c2, eab, "e", |c3| {
+                    rv_kernel_core::equiv::sym_equiv(u.clone(), &c3.v("A"), &c3.v("B"), &c3.v("e"))
+                })
+            })
+        });
+        install(env, "symEquiv", 1, ty, value)?;
+    }
+
+    // ---- compEquiv.{u} : Pi (A B C:Sort u)(e1:Equiv A B)(e2:Equiv B C). Equiv A C ----
+    {
+        let ty = pi(&root, Term::Sort(u.clone()), "A", |c1| {
+            pi(c1, Term::Sort(u.clone()), "B", |c2| {
+                pi(c2, Term::Sort(u.clone()), "C", |c3| {
+                    let eab = equiv_ty(c3, "A", "B");
+                    pi(c3, eab, "e1", |c4| {
+                        let ebc = equiv_ty(c4, "B", "C");
+                        pi(c4, ebc, "e2", |c5| {
+                            Term::apps(Term::cnst(name("Equiv"), vec![u.clone()]), [c5.v("A"), c5.v("C")])
+                        })
+                    })
+                })
+            })
+        });
+        let value = lam(&root, Term::Sort(u.clone()), "A", |c1| {
+            lam(c1, Term::Sort(u.clone()), "B", |c2| {
+                lam(c2, Term::Sort(u.clone()), "C", |c3| {
+                    let eab = equiv_ty(c3, "A", "B");
+                    lam(c3, eab, "e1", |c4| {
+                        let ebc = equiv_ty(c4, "B", "C");
+                        lam(c4, ebc, "e2", |c5| {
+                            rv_kernel_core::equiv::comp_equiv(
+                                u.clone(),
+                                &c5.v("A"),
+                                &c5.v("B"),
+                                &c5.v("C"),
+                                &c5.v("e1"),
+                                &c5.v("e2"),
+                            )
+                        })
+                    })
+                })
+            })
+        });
+        install(env, "compEquiv", 1, ty, value)?;
+    }
+
+    // ---- Univalence : Type1 := the univalence statement, fixed at level 0 ------
+    //
+    // `rv_kernel_core::equiv::univalence_ty` is level-polymorphic (`Univalence.{u}`),
+    // but `rv-syntax`'s surface grammar has no explicit universe-level-argument
+    // syntax (`Name.{u}`) — only levels *inferable* from an applied argument's own
+    // checked sort (e.g. `Equiv(A, B)`'s level comes from `A`/`B`'s sort). `Univalence`
+    // has no term argument to infer a level from, so a universe-polymorphic
+    // installation would be permanently unreachable by name from `.rv` (the
+    // elaborator's own error is literally "supply N level argument(s) as N.{…}",
+    // syntax `rv-syntax` does not parse). Installed monomorphically at level 0
+    // instead — `Univalence : Type1`, the base-universe instance — so it is usable
+    // as an ordinary bare name (e.g. `axiom u : Univalence`), at the cost of the
+    // (Rust-side-only) polymorphism `univalence_ty` itself still offers.
+    {
+        let lvl0 = Level::of_nat(0);
+        let succ0 = Level::succ(lvl0.clone());
+        let ty = Term::Sort(succ0);
+        let value = rv_kernel_core::equiv::univalence_ty(lvl0);
+        install(env, "Univalence", 0, ty, value)?;
+    }
+
+    // ---- apId.{u} : Pi (ty:Sort u)(a b:ty)(p:Path ty a b). Path (Path ty a b) (ap id p) p
+    {
+        let ty = pi(&root, Term::Sort(u.clone()), "ty", |c1| {
+            pi(c1, c1.v("ty"), "a", |c2| {
+                pi(c2, c2.v("ty"), "b", |c3| {
+                    let path_ab = Term::path(c3.v("ty"), c3.v("a"), c3.v("b"));
+                    pi(c3, path_ab, "p", |c4| {
+                        let path_ab4 = Term::path(c4.v("ty"), c4.v("a"), c4.v("b"));
+                        let id_ty = Term::lam(c4.v("ty"), Term::Var(0));
+                        let ap_id_p = rv_kernel_core::cubical::ap(&id_ty, &c4.v("p"));
+                        Term::path(path_ab4, ap_id_p, c4.v("p"))
+                    })
+                })
+            })
+        });
+        let value = lam(&root, Term::Sort(u.clone()), "ty", |c1| {
+            lam(c1, c1.v("ty"), "a", |c2| {
+                lam(c2, c2.v("ty"), "b", |c3| {
+                    let path_ab = Term::path(c3.v("ty"), c3.v("a"), c3.v("b"));
+                    lam(c3, path_ab, "p", |c4| {
+                        rv_kernel_core::equiv::ap_id(&c4.v("ty"), &c4.v("a"), &c4.v("b"), &c4.v("p"))
+                    })
+                })
+            })
+        });
+        install(env, "apId", 1, ty, value)?;
+    }
+
+    // ---- apComp.{u} : Pi (A B C:Sort u)(f:A->B)(g:B->C)(x y:A)(p:Path A x y).
+    //        Path (Path C (g (f x)) (g (f y))) (ap (g.f) p) (ap g (ap f p))
+    {
+        // Built entirely via `Ctx::v` name lookups (which compute the correct
+        // de Bruijn index for the context depth they're called at on their own)
+        // rather than manual `.lift(..)` arithmetic — matches this module's other
+        // deeply-nested constants (e.g. `ptrans` above) and avoids exactly the
+        // off-by-N lift bugs manual index-juggling invites.
+        let ty = pi(&root, Term::Sort(u.clone()), "A", |c1| {
+            pi(c1, Term::Sort(u.clone()), "B", |c2| {
+                pi(c2, Term::Sort(u.clone()), "C", |c3| {
+                    let fty = Term::arrow(c3.v("A"), c3.v("B"));
+                    pi(c3, fty, "f", |c4| {
+                        let gty = Term::arrow(c4.v("B"), c4.v("C"));
+                        pi(c4, gty, "g", |c5| {
+                            pi(c5, c5.v("A"), "x", |c6| {
+                                pi(c6, c6.v("A"), "y", |c7| {
+                                    let path_xy = Term::path(c7.v("A"), c7.v("x"), c7.v("y"));
+                                    pi(c7, path_xy, "p", |c8| {
+                                        let fx = Term::app(c8.v("f"), c8.v("x"));
+                                        let fy = Term::app(c8.v("f"), c8.v("y"));
+                                        let gfx = Term::app(c8.v("g"), fx);
+                                        let gfy = Term::app(c8.v("g"), fy);
+                                        let inner = Term::path(c8.v("C"), gfx, gfy);
+                                        // gof := λ (z:A). g (f z), built inside a fresh binder
+                                        // one level under c8, so `f`/`g` are looked up via
+                                        // `c9.v(..)` at THAT depth.
+                                        let gof = lam(c8, c8.v("A"), "z", |c9| {
+                                            Term::app(c9.v("g"), Term::app(c9.v("f"), c9.v("z")))
+                                        });
+                                        let ap_gof_p = rv_kernel_core::cubical::ap(&gof, &c8.v("p"));
+                                        let ap_f_p = rv_kernel_core::cubical::ap(&c8.v("f"), &c8.v("p"));
+                                        let ap_g_ap_f_p = rv_kernel_core::cubical::ap(&c8.v("g"), &ap_f_p);
+                                        Term::path(inner, ap_gof_p, ap_g_ap_f_p)
+                                    })
+                                })
+                            })
+                        })
+                    })
+                })
+            })
+        });
+        let value = lam(&root, Term::Sort(u.clone()), "A", |c1| {
+            lam(c1, Term::Sort(u.clone()), "B", |c2| {
+                lam(c2, Term::Sort(u.clone()), "C", |c3| {
+                    let fty = Term::arrow(c3.v("A"), c3.v("B"));
+                    lam(c3, fty, "f", |c4| {
+                        let gty = Term::arrow(c4.v("B"), c4.v("C"));
+                        lam(c4, gty, "g", |c5| {
+                            lam(c5, c5.v("A"), "x", |c6| {
+                                lam(c6, c6.v("A"), "y", |c7| {
+                                    let path_xy = Term::path(c7.v("A"), c7.v("x"), c7.v("y"));
+                                    lam(c7, path_xy, "p", |c8| {
+                                        rv_kernel_core::equiv::ap_comp(
+                                            &c8.v("A"),
+                                            &c8.v("B"),
+                                            &c8.v("C"),
+                                            &c8.v("f"),
+                                            &c8.v("g"),
+                                            &c8.v("x"),
+                                            &c8.v("y"),
+                                            &c8.v("p"),
+                                        )
+                                    })
+                                })
+                            })
+                        })
+                    })
+                })
+            })
+        });
+        install(env, "apComp", 1, ty, value)?;
+    }
+
+    // ---- symEquivInv.{u} : Pi (A B:Sort u)(e:Equiv A B). Path (Equiv A B) (symEquiv B A (symEquiv A B e)) e
+    {
+        let ty = pi(&root, Term::Sort(u.clone()), "A", |c1| {
+            pi(c1, Term::Sort(u.clone()), "B", |c2| {
+                let eab = equiv_ty(c2, "A", "B");
+                pi(c2, eab, "e", |c3| {
+                    let sym1 = rv_kernel_core::equiv::sym_equiv(u.clone(), &c3.v("A"), &c3.v("B"), &c3.v("e"));
+                    let sym2 = rv_kernel_core::equiv::sym_equiv(u.clone(), &c3.v("B"), &c3.v("A"), &sym1);
+                    Term::path(equiv_ty(c3, "A", "B"), sym2, c3.v("e"))
+                })
+            })
+        });
+        let value = lam(&root, Term::Sort(u.clone()), "A", |c1| {
+            lam(c1, Term::Sort(u.clone()), "B", |c2| {
+                let eab = equiv_ty(c2, "A", "B");
+                lam(c2, eab, "e", |c3| {
+                    rv_kernel_core::equiv::sym_equiv_inv(u.clone(), &c3.v("A"), &c3.v("B"), &c3.v("e"))
+                })
+            })
+        });
+        install(env, "symEquivInv", 1, ty, value)?;
+    }
+
+    // ---- compEquivIdL_f/_g, compEquivIdR_f/_g : compEquiv's unit laws (field-level) ----
+    {
+        // Shared shape: Pi (A B:Sort u)(e:Equiv A B). Path (<field ty>) (<field
+        // of compEquiv .. e>) (<field of e>) — `mk_ty` picks `A->B` for the `f`
+        // field, `B->A` for the `g` field; `mk_lhs_l`/`mk_lhs_r` pick the left-unit
+        // (`idEquiv A` on the left leg) vs right-unit (`idEquiv B` on the right leg)
+        // shape via `equiv::comp_equiv_id_{l,r}_{f,g}` directly.
+        type Builder = fn(Level, &Term, &Term, &Term) -> Term;
+        let laws: [(&str, Builder, bool); 4] = [
+            ("compEquivIdL_f", rv_kernel_core::equiv::comp_equiv_id_l_f as Builder, true),
+            ("compEquivIdL_g", rv_kernel_core::equiv::comp_equiv_id_l_g as Builder, false),
+            ("compEquivIdR_f", rv_kernel_core::equiv::comp_equiv_id_r_f as Builder, true),
+            ("compEquivIdR_g", rv_kernel_core::equiv::comp_equiv_id_r_g as Builder, false),
+        ];
+        for (nm, build, is_f) in laws {
+            // The stated type's endpoints use the *plain field projection*
+            // `Equiv.f e`/`Equiv.g e` on both sides — `build(..)` itself returns
+            // `refl X` where `X` is the (defeq-but-not-syntactically-equal)
+            // `compEquiv`-projected field (see e.g. `comp_equiv_id_l_f`'s doc:
+            // "closed by plain `refl` + the checker's Π-η"), so `install`'s
+            // `Checker::check` accepts this stated type by reducing both to the
+            // same normal form.
+            let ty = pi(&root, Term::Sort(u.clone()), "A", |c1| {
+                pi(c1, Term::Sort(u.clone()), "B", |c2| {
+                    let eab = equiv_ty(c2, "A", "B");
+                    pi(c2, eab, "e", |c3| {
+                        let field_ty =
+                            if is_f { Term::arrow(c3.v("A"), c3.v("B")) } else { Term::arrow(c3.v("B"), c3.v("A")) };
+                        let field = if is_f { "Equiv.f" } else { "Equiv.g" };
+                        let ef = Term::apps(Term::cnst(name(field), vec![u.clone()]), [c3.v("A"), c3.v("B"), c3.v("e")]);
+                        Term::path(field_ty, ef.clone(), ef)
+                    })
+                })
+            });
+            let value = lam(&root, Term::Sort(u.clone()), "A", |c1| {
+                lam(c1, Term::Sort(u.clone()), "B", |c2| {
+                    let eab = equiv_ty(c2, "A", "B");
+                    lam(c2, eab, "e", |c3| build(u.clone(), &c3.v("A"), &c3.v("B"), &c3.v("e")))
+                })
+            });
+            install(env, nm, 1, ty, value)?;
+        }
+    }
+
+    Ok(())
+}
