@@ -242,8 +242,28 @@ impl Session {
         let Command::Fn { name: nm, levels, params, ret, requires, ensures, body } = cmd else {
             unreachable!()
         };
+        // The recursion machinery below (currying trailing params into the return type /
+        // arm bodies, and rewriting self-calls to `.rec` hypotheses) is only sound —  and
+        // only needed — for a `fn` that is *actually* self-recursive. A `fn` merely shaped
+        // `match <param> { .. }` with no self-call (the ordinary non-recursive "proof by
+        // cases" idiom) must NOT be curried: currying moves any trailing parameter whose
+        // *declared type* mentions the matched parameter (e.g. `h : P(a)` after `match a`)
+        // into each arm as a `λ`, but that annotation is elaborated against the
+        // *un-narrowed* outer `a`, while the arm's expected type comes from the motive
+        // narrowed to that arm's constructor — a mismatch the kernel's defeq checker
+        // reports as a stray "λ binder type mismatch" deep inside `Bool.rec`/`<I>.rec`.
+        // Gating on an actual self-call keeps every genuine recursive `fn` on the fast
+        // currying path unchanged, while routing non-recursive matches through the plain
+        // `declare_fn` path (last arm below), where `h`'s type is left untouched in
+        // context exactly as the surface program wrote it.
+        let is_self_recursive = expr_mentions_name(&body, &nm);
         match match_recursion(&params, &body) {
-            Some((spos, pnames, _)) if spos + 1 < pnames.len() && requires.is_empty() && ensures.is_empty() => {
+            Some((spos, pnames, _))
+                if is_self_recursive
+                    && spos + 1 < pnames.len()
+                    && requires.is_empty()
+                    && ensures.is_empty() =>
+            {
                 let Expr::Match(scrut, arms) = body.peel().clone() else { unreachable!() };
                 let trailing: Vec<Binder> = params[spos + 1..].to_vec();
                 let new_params: Vec<Binder> = params[..=spos].to_vec();
@@ -897,6 +917,39 @@ fn match_recursion(params: &[Binder], body: &Expr) -> Option<(usize, Vec<String>
 /// The declared type expression of parameter `name`, if present.
 fn param_type<'a>(params: &'a [Binder], name: &str) -> Option<&'a Expr> {
     params.iter().find(|b| b.names.iter().any(|n| n == name)).map(|b| &b.ty)
+}
+
+/// Does `e` contain a reference to the (surface) name `nm` anywhere — a call, a bare
+/// mention, anything? Used to tell a genuinely self-recursive `fn` (whose body calls
+/// itself by name) from a `fn` that merely happens to be shaped `match <param> { .. }`
+/// with no self-call at all (the classic non-recursive "proof by cases" / convoy shape).
+/// Conservative by design: a false positive (says "recursive" when it isn't) only costs
+/// the currying transform being applied harmlessly-but-unnecessarily; the fix this backs
+/// is about the false-negative direction (never claim non-recursive when it is), so this
+/// scans every subterm rather than trying to be clever about call position.
+fn expr_mentions_name(e: &Expr, nm: &str) -> bool {
+    match e {
+        Expr::Var(n, _) => n == nm,
+        Expr::Spanned(_, inner) => expr_mentions_name(inner, nm),
+        Expr::App(f, a) => expr_mentions_name(f, nm) || expr_mentions_name(a, nm),
+        Expr::Lam(_, b) | Expr::Pi(_, b) => expr_mentions_name(b, nm),
+        Expr::Arrow(a, b) | Expr::EqOp(a, b) => {
+            expr_mentions_name(a, nm) || expr_mentions_name(b, nm)
+        }
+        Expr::Let(_, ty, v, b) => {
+            ty.as_ref().is_some_and(|t| expr_mentions_name(t, nm))
+                || expr_mentions_name(v, nm)
+                || expr_mentions_name(b, nm)
+        }
+        Expr::Match(scrut, arms) => {
+            expr_mentions_name(scrut, nm) || arms.iter().any(|a| expr_mentions_name(&a.body, nm))
+        }
+        Expr::Rewrite(h, body) => expr_mentions_name(h, nm) || expr_mentions_name(body, nm),
+        Expr::ByCases(s, t, f) => {
+            expr_mentions_name(s, nm) || expr_mentions_name(t, nm) || expr_mentions_name(f, nm)
+        }
+        _ => false,
+    }
 }
 
 /// Render a **normal-form** term as a readable value: a `Nat` succ/zero chain as a

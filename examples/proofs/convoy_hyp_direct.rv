@@ -1,0 +1,80 @@
+// REGRESSION for the "match under a context hypothesis" elaborator crash documented in
+// `bst_ordered.rv`'s/`bst.rv`'s headers: previously, a `fn` shaped `match a { .. }` whose
+// parameter LIST also declared a LATER hypothesis `h` whose type mentions `a` (e.g.
+// `h : band(a, b) == True`, declared before the match, exactly the convoy shape those files
+// document) crashed the elaborator with a confusing internal
+// "λ binder type mismatch: cannot unify Bool.rec(...) with ..." — even when `h` went
+// COMPLETELY UNUSED in every branch, and even when the match's own result type didn't depend
+// on the scrutinee at all.
+//
+// Root cause: `fn`s shaped `match <param> { .. }` are auto-curried by the elaborator
+// (`run_solo_fn` in `crates/rv-kernel/src/verify.rs`): every parameter *after* the matched one
+// is moved out of the parameter list, into the return type as a `Π` and into each arm's body as
+// a `λ` — this is how a genuinely self-recursive `fn`'s induction hypothesis is made able to
+// vary a second parameter (`max(a, b)` needs the IH to accept any `b`, not just the outer one).
+// That transform was applied **unconditionally** to ANY `fn` shaped `match <param> { .. }`,
+// including ones with no self-call at all — the ordinary non-recursive "proof by cases" shape
+// used throughout this corpus. Currying re-declared `h`'s type as a `λ` binder *inside* each
+// arm, still written against the un-narrowed outer `a`, while the arm's *expected* type (from
+// the motive) was narrowed to that arm's constructor: a genuine mismatch, but one the kernel's
+// defeq checker reported as a stray internal binder crash instead of an honest error — and one
+// that fired even when `h` was never used, since the currying itself (not any use of `h`) is
+// what produced the ill-typed arm.
+//
+// Fixed by gating the auto-curry transform on the `fn` actually containing a self-call (see
+// `expr_mentions_name` next to `run_solo_fn`). A non-recursive `match <param> { .. }` now takes
+// the plain (non-curried) path, where `h` is left exactly as the surface program declared it —
+// so this file's `fn`s below (a hypothesis parameter whose type mentions the match's scrutinee,
+// unused inside the match) now compile directly, with no workaround.
+//
+// NOTE ON SCOPE: this does NOT make the full convoy pattern unnecessary. `bst_ordered.rv`'s
+// `band_elim_l`/`band_elim_r` still need the manual convoy (curry `h` in *after* the match) to
+// USE `h` at a type genuinely narrowed per-branch — that's a real dependent-motive-
+// generalization feature this change doesn't attempt (see this file's header discussion in the
+// task write-up). What's fixed here is the crash itself: a hypothesis parameter mentioning the
+// scrutinee no longer corrupts elaboration of an unrelated match, whether or not that
+// hypothesis is ever used.
+
+enum Bool { True, False }
+enum Nat { Zero, Succ(Nat) }
+
+fn band(a: Bool, b: Bool) -> Bool {
+    match a {
+      | Bool::True  => b
+      | Bool::False => Bool::False
+    }
+}
+
+fn bnot(a: Bool) -> Bool {
+    match a { | Bool::True => Bool::False | Bool::False => Bool::True }
+}
+
+// `h : band(a, b) == True` sits in the parameter list — declared *before* this `match a`,
+// exactly the shape that used to crash — but is never inspected inside any arm: the match's
+// own result (`bnot(a)`, recomputed here structurally rather than by calling `bnot`, to keep
+// the scrutinee `a` actually matched) doesn't need `h` narrowed at all. Previously: crash.
+// Now: compiles directly, no convoy currying required.
+fn band_holds_not(a: Bool, b: Bool, h: band(a, b) == Bool::True) -> Bool {
+    match a {
+      | Bool::True  => Bool::False
+      | Bool::False => Bool::True
+    }
+}
+
+// Same shape with a *second* trailing hypothesis after the matched parameter (so what used to
+// be curried is a 2-deep telescope, not just one binder) — `h1`/`h2` both mention the scrutinee
+// `a` and both go unused.
+fn band_holds_zero(a: Bool, b: Bool, h1: band(a, b) == Bool::True, h2: band(b, a) == Bool::True)
+    -> Nat
+{
+    match a {
+      | Bool::True  => Nat::Zero
+      | Bool::False => Nat::Succ(Nat::Zero)
+    }
+}
+
+// Sanity: `band_holds_not` really does compute `bnot` on its first argument, for a witness
+// where the hypothesis is genuinely satisfiable (`band(True, True) == True`).
+fn band_holds_not_check(u: Nat) -> Bool::False == Bool::False {
+    Eq::refl(Bool, band_holds_not(Bool::True, Bool::True, Eq::refl(Bool, Bool::True)))
+}

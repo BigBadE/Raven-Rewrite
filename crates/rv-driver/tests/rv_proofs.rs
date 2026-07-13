@@ -114,6 +114,15 @@ fn bst_ordered() {
     check("bst_ordered.rv");
 }
 
+/// Regression for the `run_solo_fn` auto-curry elaborator crash (see the file's own header):
+/// a `match <param> { .. }` whose parameter list also declares a later hypothesis mentioning
+/// the scrutinee (the convoy shape from `bst.rv`/`bst_ordered.rv`) used to crash even when
+/// that hypothesis went unused, because the non-recursive `fn` was wrongly auto-curried.
+#[test]
+fn convoy_hyp_direct() {
+    check("convoy_hyp_direct.rv");
+}
+
 #[test]
 fn decide_reflection() {
     check("decide_demo.rv");
