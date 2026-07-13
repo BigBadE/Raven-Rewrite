@@ -126,34 +126,36 @@
 //! no `hcomp`); the remaining work is bookkeeping-heavy 2-path algebra, not a
 //! new primitive.
 //!
-//! **Update -- the groupoid-law library (left-unit closed; right-unit/inverse
-//! laws stated but blocked)**: `crate::cubical`'s "Phase 4.5 (groupoid laws)"
-//! section now supplies `trans_left_unit`/`trans_right_unit`/`trans_inv_right`/
+//! **Update -- all four groupoid laws now CLOSE** (a later, targeted
+//! conversion-completeness pass): `crate::cubical`'s "Phase 4.5 (groupoid laws)"
+//! section supplies `trans_left_unit`/`trans_right_unit`/`trans_inv_right`/
 //! `trans_inv_left`, the standard `J`-derived ∞-groupoid coherences for `trans`
-//! (HoTT book §2.1, Lemma 2.1.4) that `τ'` would compose through. Of these,
-//! **`trans_left_unit` closes and is kernel-checked** — it turns out to hold by
-//! plain `refl` (`trans ty a b (refl a) q` reduces *definitionally* to `q` via
-//! `j`'s own "computation on `refl`" rule, so no `J`-elimination is even needed
-//! for that one law). The other three (`trans_right_unit`/the two inverse
-//! laws) are correctly *stated* and *built* (each a single, well-typed
-//! `J`-elimination, mirroring `nat_sq`'s own pattern) but their base-case check
-//! does not go through: it needs a nested `trans`/`transp` reduction one layer
-//! deeper than `nat_sq`'s own "computation on `refl`" section confirms works —
-//! the same *class* of completeness gap as `trans3`'s documented nested-`trans`
-//! obstruction and `sec_prime`'s literal-`PLam`-data gap above, not a soundness
-//! issue (see `crate::cubical`'s "Phase 4.5" module doc for the full diagnosis,
-//! and `crate::cubical::groupoid_law_tests::right_unit_hits_a_documented_
-//! nested_reduction_gap`/its two siblings for the pinned-down regression
-//! tests). Net effect: `τ'`/`biInvToHAE` remain open past this pass too —
-//! closing them needs either a fix to this nested-reduction gap (which, like
-//! the others, sits in `reduce.rs`/`nbe.rs`/`check.rs`, out of scope here) or a
-//! proof strategy for the unit/inverse laws that avoids the problematic
-//! nesting shape (analogous to how `trans3` itself sidesteps the nested-`trans`
-//! gap by only ever `J`-eliminating one, first-position path). The one closed
-//! law (`trans_left_unit`) is real, useful, additive progress toward `τ'`
-//! regardless: any future combination of `nat_sq` instances that only ever
-//! needs a left-unit rewrite (rather than right-unit/inverse) can already use
-//! it as-is.
+//! (HoTT book §2.1, Lemma 2.1.4) that `τ'` would compose through. `trans_left_unit`
+//! always held by plain `refl` (no `J`-elimination needed). The other three used
+//! to get stuck one layer of nested `trans`/`transp` reduction deeper than
+//! `nat_sq`'s "computation on `refl`" section alone accounted for — root-caused
+//! and fixed in `crate::nbe::Nbe::family_is_constant_value` (the `Transp`
+//! regularity probe now reuses the *real* evaluation environment instead of
+//! fabricating disconnected fresh neutrals for a nested `Transp`'s free
+//! variables) plus eager De Morgan interval-lattice folding
+//! ([`crate::nbe::Value::INeg`]'s doc). All three now type-check — see
+//! `crate::cubical::groupoid_law_tests::right_unit_closes`/`inv_right_closes`/
+//! `inv_left_closes`.
+//!
+//! **`τ'`/`biInvToHAE` themselves remain open**, however: that fix closes the
+//! unit/inverse laws (a *base-case-depth* obstruction) but does **not** touch the
+//! *different* obstruction `trans3`'s doc and
+//! `tests::debug_nested_trans_hits_the_documented_completeness_gap` record —
+//! feeding an already-`trans`-built term back in as the *subject* of a further
+//! `J`-elimination — which still fails to type-check after this pass (re-run and
+//! reconfirmed, see that test). Combining two `nat_sq` instances into `τ'` (per
+//! this section's derivation above) needs exactly that nested-composition shape
+//! (associativity/unit rewrites chained *through* already-`trans`-built 2-paths,
+//! not just the base-case unit/inverse laws now closed), so it is still blocked.
+//! A future pass closing *that* obstruction (a genuinely different root cause —
+//! see `trans3`'s doc for why path-η doesn't extend to a `trans`-built subject)
+//! would let `τ'` finally compose from the now-complete pieces landed here plus
+//! `nat_sq`.
 //!
 //! ## Encoding
 //!

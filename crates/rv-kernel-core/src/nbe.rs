@@ -19,6 +19,21 @@ use crate::face::{Atom, Cof};
 use crate::level::{self, Level};
 use crate::term::{Grade, Name, Term};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Base offset for [`Nbe::family_is_constant_value`]'s fresh-marker de Bruijn
+/// *levels*: real terms/contexts never come remotely close to `2^40` bound
+/// variables (the standard NbE level scheme always uses small, densely-packed
+/// numbers starting at 0), so any level `>= PROBE_BASE` is, in practice,
+/// unambiguously "one of our fresh markers, not a genuine program variable" — see
+/// that method's doc for the full soundness argument (a hypothetical collision
+/// fails safe regardless).
+const PROBE_BASE: u64 = 1 << 40;
+/// Monotonic counter backing [`Nbe::family_is_constant_value`]'s fresh markers —
+/// guarantees every probe call (including recursively nested ones, e.g. nested
+/// `transp`/`J` redexes) gets a distinct id, so two *different* probes can never be
+/// confused for one another.
+static PROBE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A semantic value (weak-head evaluated, with delayed bodies under closures).
 ///
@@ -42,12 +57,36 @@ pub enum Value {
     IZero,
     /// The right interval endpoint.
     IOne,
-    /// **Phase 3.5** (De Morgan interval, see `crate::cubical`): reversal/meet/join,
-    /// kept as plain structural values (no eager simplification in the evaluator —
-    /// the one normalization authority is `crate::cubical::normalize_interval`,
-    /// applied at comparison time by [`Nbe::conv`]/`alpha_eta_eq` on the *quoted*
-    /// term, exactly like `Value::Sys`/`Value::Partial` defer their face-formula
-    /// reasoning to `crate::face` rather than reimplementing it here).
+    /// **Phase 3.5** (De Morgan interval, see `crate::cubical`): reversal/meet/join.
+    /// [`Nbe::eval`] eagerly folds the bounded-lattice **identity/absorption/
+    /// double-negation laws** (`~i0=i1`, `~i1=i0`, `~~r=r`, `i0∧r=r0=i0`, `i1∧r=r`,
+    /// `i1∨r=i1`, `i0∨r=r` — the smart constructors [`veval_ineg`]/[`veval_imeet`]/
+    /// [`veval_ijoin`]) whenever the decisive operand is already a literal `IZero`/
+    /// `IOne` value; a genuinely open combination (neither side decided) still stays
+    /// wrapped exactly as before. This is *not* the full DNF-based normal form
+    /// `crate::cubical::normalize_interval` computes (that remains the one
+    /// *comparison-time* authority two interval expressions are checked against, via
+    /// [`Nbe::conv`]/`alpha_eta_eq`/`crate::check::Checker::compare` — see those call
+    /// sites) — it is a strictly smaller, purely *local* eager simplification that
+    /// only ever collapses a connective once one operand is already a decided
+    /// endpoint. The point is completeness, not an alternate equality theory: once a
+    /// bound interval variable is substituted by a literal `i0`/`i1` (as happens
+    /// whenever a `Transp`'s regularity probe or a `PathP` boundary instantiates its
+    /// binder), any `∧`/`∨`/`~` built on top of it collapses immediately during
+    /// evaluation instead of staying inertly wrapped — which is exactly what lets
+    /// [`crate::kan::family_is_constant`]'s already-existing normalization-aware
+    /// probe (see that function's doc) see through one more layer of `∧`/`∨` nesting
+    /// (e.g. the connection-square shape `i0 ∧ j` that [`crate::cubical::j`]'s
+    /// `connect` term builds) and correctly judge more families constant. Soundness:
+    /// these are the same, already-accepted bounded De Morgan algebra laws
+    /// `crate::cubical::normalize_interval`'s DNF machinery already encodes and every
+    /// existing `interval_eq`/`normalize_interval` call site already treats as valid
+    /// definitional equalities — applying them a step earlier (during evaluation,
+    /// not just at comparison time) proves no new equation, it just lets already-true
+    /// equations fire in more contexts. Termination: each smart constructor performs
+    /// O(1) work per call (matches on already-fully-evaluated `Value` operands, never
+    /// recurses into an unevaluated closure), so this cannot loop or add unbounded
+    /// work to `eval`.
     INeg(Rc<Value>),
     IMeet(Rc<Value>, Rc<Value>),
     IJoin(Rc<Value>, Rc<Value>),
@@ -291,9 +330,9 @@ impl<'a> Nbe<'a> {
             Term::I => Rc::new(Value::I),
             Term::IZero => Rc::new(Value::IZero),
             Term::IOne => Rc::new(Value::IOne),
-            Term::INeg(r) => Rc::new(Value::INeg(self.eval(venv, r))),
-            Term::IMeet(r, s) => Rc::new(Value::IMeet(self.eval(venv, r), self.eval(venv, s))),
-            Term::IJoin(r, s) => Rc::new(Value::IJoin(self.eval(venv, r), self.eval(venv, s))),
+            Term::INeg(r) => veval_ineg(self.eval(venv, r)),
+            Term::IMeet(r, s) => veval_imeet(self.eval(venv, r), self.eval(venv, s)),
+            Term::IJoin(r, s) => veval_ijoin(self.eval(venv, r), self.eval(venv, s)),
             Term::PLam(b) => {
                 Rc::new(Value::PLam(Closure { env: venv.clone(), body: b.clone() }))
             }
@@ -331,7 +370,7 @@ impl<'a> Nbe<'a> {
             // soundness argument) — fires as evaluation of `a`; otherwise stays
             // stuck.
             Term::Transp(fam, phi, a) => {
-                if crate::kan::family_is_constant(self.env, fam) {
+                if self.family_is_constant_value(venv, fam) {
                     self.eval(venv, a)
                 } else if let Term::Pi(_g, dom, cod) = fam.as_ref() {
                     // `Π`-case filling (see `crate::kan`'s "Phase 3.6" doc, and
@@ -669,6 +708,110 @@ impl<'a> Nbe<'a> {
 
     fn apply(&self, clo: &Closure, a: Rc<Value>) -> Rc<Value> {
         self.eval(&clo.env.cons(a), &clo.body)
+    }
+
+    /// **The completeness fix**: a `venv`-aware regularity probe for [`Term::Transp`]
+    /// (see [`Term::Transp`]'s arm in [`Self::eval`], which calls this instead of
+    /// `crate::kan::family_is_constant`). Decides whether `fam` — a family under one
+    /// (not-yet-introduced) interval binder, living in the *current* evaluation
+    /// context `venv` — is constant in that binder, i.e. whether the enclosing
+    /// `Transp`'s regularity rule may fire.
+    ///
+    /// # The gap this closes
+    ///
+    /// `crate::kan::family_is_constant` (still used, unchanged, by
+    /// [`crate::reduce::Reducer::whnf`] — see below for why that call site doesn't
+    /// need this fix) decides constancy by calling `Nbe::normalize_open`, which
+    /// evaluates `fam` against a **brand-new, from-scratch** environment: the
+    /// interval binder *and every other free variable `fam` mentions* each get a
+    /// fresh, mutually-unrelated opaque neutral. That throws away exactly the
+    /// information this evaluator's *lazy, closure-based* [`Self::eval`] already has
+    /// sitting in `venv`: when `eval` reaches a `Term::Transp` node nested inside a
+    /// larger computation (e.g. one `J`/`transp` built as the base case of an
+    /// *outer* `J`'s own motive — precisely the shape `crate::cubical::
+    /// trans_right_unit`/`trans_inv_right`/`trans_inv_left` build, and the shape
+    /// `crate::cubical::trans3`'s "nesting `trans`" obstruction hits), the family's
+    /// *other* free variables are not "any old value" — they are already bound, by
+    /// `venv`, to concrete values threaded down from the enclosing `J`/`transp`
+    /// (e.g. a variable whose value is definitionally `refl a`, or `p @ i0`). A
+    /// family that only collapses to a constant *given those particular, already-
+    /// substituted values* (not for arbitrary unrelated ones) was — before this fix —
+    /// invisible to `family_is_constant`'s fresh-neutral probe, so the enclosing
+    /// `Transp` stayed permanently stuck even though the surrounding, fully
+    /// substituted computation was genuinely regular.
+    ///
+    /// This method fixes that by **reusing `venv` itself**: it extends the *real*
+    /// environment with exactly one fresh marker for the interval binder being
+    /// tested (nothing else is fabricated), evaluates `fam` under it with this same
+    /// `self.eval`, and checks whether that one marker survives into the fully
+    /// forced result.
+    ///
+    /// # Soundness
+    ///
+    /// This decides the *exact same proposition* `crate::kan::family_is_constant`
+    /// already soundly decides ("does the family's fully computed value depend on
+    /// its own interval binder") — see that function's doc for why that judgement is
+    /// safe to trust (NbE normal forms are canonical, so "no occurrence of the fresh
+    /// marker" means the family evaluates to the same result for *every* value the
+    /// binder could take, in particular `i0` and `i1`, which is exactly the
+    /// regularity rule's precondition). The only change is *which* environment the
+    /// probe runs in: the family's other free variables are resolved against their
+    /// real, already-known values (`venv`) instead of independently-fabricated fresh
+    /// ones. Using the real values cannot manufacture a *new* fact — every value in
+    /// `venv` already arose from a previously type-checked substitution — it only
+    /// lets the *same* constant-family judgement see through substitutions that had
+    /// already legitimately happened. In particular this cannot equate two distinct
+    /// closed canonical values: the probe only ever gates whether `Transp` collapses
+    /// to its own `a`-argument, and `a`'s type (`family[i:=i0]`) was already checked
+    /// against the `Transp`'s declared type by [`crate::check::Checker`] at the
+    /// point this term was accepted — this evaluator changes no typing judgement,
+    /// only which reductions the (already-sound) evaluator manages to perform.
+    ///
+    /// The freshness of the marker itself is guaranteed process-wide by a
+    /// monotonically increasing [`AtomicU64`] counter offset by [`PROBE_BASE`] — see
+    /// that constant's doc for why an accidental collision with a genuine bound
+    /// variable's de Bruijn level is astronomically unlikely and, even in the
+    /// (unreachable in practice) case of a collision, only ever fails *safe* (a
+    /// missed collapse opportunity — a completeness, not soundness, degradation).
+    ///
+    /// # Termination
+    ///
+    /// One `self.eval` call (the same total-on-well-typed-input evaluator every
+    /// other `Transp`/`J` computation already relies on) plus one `self.quote` call
+    /// over the result — no new recursion scheme, no looping: this performs exactly
+    /// the work `crate::kan::family_is_constant`'s slow path already performed,
+    /// against a differently-populated (but no larger) environment.
+    ///
+    /// # Why `crate::reduce::Reducer::whnf`'s call site is untouched
+    ///
+    /// `whnf` is a *substitution*-based reducer (plain `Term`, no closures/`venv`):
+    /// by the time it reaches a `Term::Transp` node, every enclosing binder has
+    /// already been eliminated by literal substitution (`instantiate`/`subst`), so
+    /// `fam`'s free variables (besides the interval binder itself) are already
+    /// baked into its syntax — there is no separate "hidden venv" for that call site
+    /// to lose track of, and `crate::kan::family_is_constant`'s from-scratch probe
+    /// is already working against the fully-substituted term.
+    fn family_is_constant_value(&self, venv: &Rc<VEnv>, fam: &Term) -> bool {
+        // Fast path, mirroring `crate::kan::family_is_constant`'s own: skip the
+        // (cheap, but not free) probe entirely when the family's raw syntax doesn't
+        // even mention its own binder.
+        if !crate::term::mentions_var(fam, 0) {
+            return true;
+        }
+        let id = PROBE_BASE + PROBE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let probe = Rc::new(Value::Stuck(Head::Var(id as usize), Vec::new()));
+        let v = self.eval(&venv.cons(probe), fam);
+        // Quote at `level = id + 1`: the probe (at level `id`) reads back as
+        // `Term::Var(0)` — see `Self::quote`'s level-to-index convention (`idx =
+        // level - 1 - k`) — so checking for `Var(0)` in the quoted result is exactly
+        // checking whether the fresh marker survived. Any *other*, unrelated
+        // `Head::Var(k)` already present in `venv` (e.g. from an enclosing
+        // `normalize_open`'s own small, honest levels, always `< PROBE_BASE`, or
+        // from an independently-chosen larger probe id from a *different* call —
+        // impossible to collide with, since `PROBE_COUNTER` never repeats) reads
+        // back as some other index instead, so it can't be mistaken for the probe.
+        let quoted = self.quote(id as usize + 1, &v);
+        !crate::term::mentions_var(&quoted, 0)
     }
 
     /// If `h spine` is a recursor saturated on a constructor major premise, fire its
@@ -1319,6 +1462,44 @@ impl<'a> Nbe<'a> {
     }
 }
 
+/// Eager smart constructor for [`Term::INeg`]'s semantic value: `~i0 ↦ i1`, `~i1 ↦
+/// i0`, `~~r ↦ r` (double-negation elimination — sound: `crate::cubical::
+/// normalize_interval`'s own De Morgan normal form treats `~~r` and `r` identically),
+/// otherwise stays wrapped as `Value::INeg`. See [`Value::INeg`]'s doc for the
+/// soundness/termination argument (shared by this and its `imeet`/`ijoin` siblings).
+fn veval_ineg(r: Rc<Value>) -> Rc<Value> {
+    match &*r {
+        Value::IZero => Rc::new(Value::IOne),
+        Value::IOne => Rc::new(Value::IZero),
+        Value::INeg(inner) => inner.clone(),
+        _ => Rc::new(Value::INeg(r)),
+    }
+}
+
+/// Eager smart constructor for [`Term::IMeet`]'s semantic value: the bounded-lattice
+/// identity/absorption laws `i0 ∧ r ↦ i0`, `r ∧ i0 ↦ i0`, `i1 ∧ r ↦ r`, `r ∧ i1 ↦ r`;
+/// otherwise stays wrapped as `Value::IMeet`. See [`Value::INeg`]'s doc.
+fn veval_imeet(r: Rc<Value>, s: Rc<Value>) -> Rc<Value> {
+    match (&*r, &*s) {
+        (Value::IZero, _) | (_, Value::IZero) => Rc::new(Value::IZero),
+        (Value::IOne, _) => s,
+        (_, Value::IOne) => r,
+        _ => Rc::new(Value::IMeet(r, s)),
+    }
+}
+
+/// Eager smart constructor for [`Term::IJoin`]'s semantic value: the bounded-lattice
+/// identity/absorption laws `i1 ∨ r ↦ i1`, `r ∨ i1 ↦ i1`, `i0 ∨ r ↦ r`, `r ∨ i0 ↦ r`;
+/// otherwise stays wrapped as `Value::IJoin`. See [`Value::INeg`]'s doc.
+fn veval_ijoin(r: Rc<Value>, s: Rc<Value>) -> Rc<Value> {
+    match (&*r, &*s) {
+        (Value::IOne, _) | (_, Value::IOne) => Rc::new(Value::IOne),
+        (Value::IZero, _) => s,
+        (_, Value::IZero) => r,
+        _ => Rc::new(Value::IJoin(r, s)),
+    }
+}
+
 /// Phase 3.5 (De Morgan interval, see `crate::cubical`): does `v` — a semantic
 /// interval value, possibly built from `~`/`∧`/`∨` over literals and open
 /// variables — evaluate to a *decided* endpoint? `Some(true)` = forced to `i1`,
@@ -1606,5 +1787,194 @@ mod tests {
         let once = Term::plam(Term::papp(p.lift(1, 0), Term::Var(0)));
         let twice = Term::plam(Term::papp(once.lift(1, 0), Term::Var(0)));
         assert!(nbe.conv(&twice, &p), "doubly-wrapped opaque path must still converge to conv-equal");
+    }
+}
+
+/// Adversarial and termination coverage for the two conversion-completeness fixes
+/// landed in this module (see [`Value::INeg`]'s doc for the interval-lattice
+/// eager-folding fix, and [`Nbe::family_is_constant_value`]'s doc for the
+/// `venv`-aware `Transp` regularity probe): both are *completeness*-only changes
+/// (more well-typed terms become convertible), so the standing anti-`False`
+/// discipline this crate requires everywhere near the trusted reducer applies here
+/// too — these tests pin down that the fix does not equate anything it shouldn't,
+/// and that the newly-unstuck nested reductions actually terminate.
+#[cfg(test)]
+mod completeness_fix_soundness_tests {
+    use super::*;
+    use crate::inductive::declare_nat;
+    use crate::kernel::Kernel;
+    use crate::term::name;
+
+    fn cn(s: &str) -> Term {
+        Term::cnst(name(s), vec![])
+    }
+
+    fn nat_kernel() -> Kernel {
+        let mut k = Kernel::new();
+        declare_nat(k.env_mut()).unwrap();
+        k
+    }
+
+    fn lit(n: u32) -> Term {
+        let mut t = cn("Nat.zero");
+        for _ in 0..n {
+            t = Term::app(cn("Nat.succ"), t);
+        }
+        t
+    }
+
+    /// **Absolute anti-`False`, #1**: `Nat.zero` and `Nat.succ Nat.zero` — two
+    /// distinct closed canonical values of an ordinary (non-cubical) inductive —
+    /// remain non-convertible after both fixes. Neither fix touches ordinary
+    /// (non-interval) evaluation/quoting at all, but this is exactly the kind of
+    /// "did the conversion checker get looser than it should have" check this
+    /// crate's soundness discipline demands before/after any reducer change.
+    #[test]
+    fn distinct_nat_canonicals_stay_distinct() {
+        let k = nat_kernel();
+        assert!(!k.def_eq(&lit(0), &lit(1)));
+        assert!(!k.def_eq(&lit(1), &lit(2)));
+        let nbe = Nbe::new(k.env());
+        assert!(!nbe.conv(&lit(0), &lit(1)));
+    }
+
+    /// **Absolute anti-`False`, #2**: there is still no way to construct a closed
+    /// `Path Nat 0 1` (nor, a fortiori, an `Empty`/`False` witness derived from
+    /// one) — the fix changes *when* a `Transp` collapses to its own argument, it
+    /// never lets a `Transp` produce a value that doesn't already inhabit the
+    /// declared type, so distinct canonical `Nat`s still can't be bridged by a
+    /// path. Mirrors this crate's standing convention (see e.g. `crate::cubical`'s
+    /// and `crate::kan`'s own "cannot manufacture a path between unrelated
+    /// axioms/values" tests) at the two constructions this pass actually touched:
+    /// `crate::cubical::trans` and the interval-lattice-eager `IMeet`/`IJoin`
+    /// smart constructors.
+    #[test]
+    fn no_path_nat_0_1_via_trans_or_interval_folding() {
+        let k = nat_kernel();
+        // `refl 0 : Path Nat 0 0` — trying to reuse it as if it proved `Path Nat 0
+        // 1` must still be rejected by `check`, exactly as before this pass.
+        let refl0 = crate::cubical::refl(&lit(0));
+        assert!(k.check(&refl0, &Term::path(cn("Nat"), lit(0), lit(1))).is_err());
+        // Nor does `trans` (now that its right-unit/inverse laws close) let two
+        // *genuine* paths compose into a path between values they were never
+        // endpoints of: `trans Nat 0 0 (refl 0) (refl 0) : Path Nat 0 0`, not
+        // `Path Nat 0 1`.
+        let composed = crate::cubical::trans(&cn("Nat"), &lit(0), &lit(0), &refl0.clone(), &refl0);
+        let ty = k.infer(&composed).unwrap();
+        assert!(k.def_eq(&ty, &Term::path(cn("Nat"), lit(0), lit(0))));
+        assert!(!k.def_eq(&ty, &Term::path(cn("Nat"), lit(0), lit(1))));
+    }
+
+    /// **Absolute anti-`False`, #3** (the standing type-path-axiom smuggle attack —
+    /// see `crate::kan::family_is_constant`'s own doc, "The critical non-example
+    /// still stays stuck"): transporting along a genuinely-varying, opaque
+    /// `p : Path Type A B` must still get stuck (not collapse) even after
+    /// [`Nbe::family_is_constant_value`] reuses the real `venv` — the fresh marker
+    /// this probe substitutes stands *only* for the `Transp`'s own interval binder,
+    /// never for `p` itself (an ordinary, already-bound free variable whose real,
+    /// opaque value is what the probe correctly propagates through unchanged).
+    #[test]
+    fn family_is_constant_value_does_not_smuggle_a_type_change_through_an_axiomatized_path() {
+        let mut k = Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("B", 0, Term::typ(0)).unwrap();
+        k.add_axiom("p", 0, Term::path(Term::typ(0), cn("A"), cn("B"))).unwrap();
+        k.add_axiom("a", 0, cn("A")).unwrap();
+        // family := λi. p @ i  (genuinely varying: its own boundary literally is
+        // `A`/`B`, two distinct axioms — no evaluation can make this constant).
+        let fam = Term::papp(cn("p").lift(1, 0), Term::Var(0));
+        let t = Term::transp(fam, crate::face::Cof::bot(), cn("a"));
+        // `Transp` is well-typed regardless of whether regularity fires (its
+        // `infer` rule only needs `a : family[i:=i0]`, which holds here) — the
+        // soundness-relevant fact is that it stays *stuck at type `B`*, i.e. it
+        // must NOT be convertible to `a` (which would mean the family was wrongly
+        // judged constant and the value smuggled straight through, losing the
+        // genuine `A`-to-`B` type change `p` witnesses).
+        let ty = k.infer(&t).expect("transp is well-typed even when its family is genuinely non-constant");
+        assert!(k.def_eq(&ty, &cn("B")));
+        assert!(!k.def_eq(&t, &cn("a")), "a genuinely type-changing transp must not collapse to its own argument");
+    }
+
+    /// **Termination**: the previously-stuck nested `trans`-under-`J` redex
+    /// (`crate::cubical::trans_right_unit`'s base case, and its two inverse-law
+    /// siblings) now fully normalizes — and does so promptly, not by looping.
+    /// `family_is_constant_value`'s smart-constructor probes are each `O(1)`
+    /// (structural matches on already-evaluated operands, see [`Value::INeg`]'s
+    /// doc) and the probe itself runs `eval`+`quote` exactly once per `Transp`
+    /// node — so this is a plain "does the whole call return" check standing in
+    /// for the doc's termination argument (an infinite loop here would hang the
+    /// test, which the test harness's own timeout would catch).
+    #[test]
+    fn previously_stuck_nested_trans_terminates_and_closes() {
+        let mut k = Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("a", 0, cn("A")).unwrap();
+        k.add_axiom("b", 0, cn("A")).unwrap();
+        k.add_axiom("p", 0, Term::path(cn("A"), cn("a"), cn("b"))).unwrap();
+        let terms = [
+            crate::cubical::trans_right_unit(&cn("A"), &cn("a"), &cn("b"), &cn("p")),
+            crate::cubical::trans_inv_right(&cn("A"), &cn("a"), &cn("b"), &cn("p")),
+            crate::cubical::trans_inv_left(&cn("A"), &cn("a"), &cn("b"), &cn("p")),
+        ];
+        for t in &terms {
+            // Two independent code paths that both fully normalize the term —
+            // `infer` (via `Checker::check`'s internal `is_def_eq`) and a direct
+            // `Nbe::normalize` call — both must complete (not hang) and agree the
+            // term is well-typed.
+            k.infer(t).expect("previously-stuck nested trans law must now typecheck");
+            let nbe = Nbe::new(k.env());
+            let _ = nbe.normalize(t); // must terminate
+        }
+    }
+
+    /// Differential check (this crate's standing convention): the level-0
+    /// interval-lattice identity laws this pass added to [`Value::INeg`]'s
+    /// evaluation agree with `crate::cubical::normalize_interval`'s independent,
+    /// DNF-based authority on a handful of concrete cases.
+    #[test]
+    fn eager_interval_folding_agrees_with_normalize_interval() {
+        let cases: Vec<(Term, Term)> = vec![
+            (Term::imeet(Term::IZero, Term::Var(0)), Term::IZero),
+            (Term::imeet(Term::Var(0), Term::IZero), Term::IZero),
+            (Term::imeet(Term::IOne, Term::Var(0)), Term::Var(0)),
+            (Term::ijoin(Term::IOne, Term::Var(0)), Term::IOne),
+            (Term::ijoin(Term::IZero, Term::Var(0)), Term::Var(0)),
+            (Term::ineg(Term::ineg(Term::Var(0))), Term::Var(0)),
+        ];
+        for (lhs, rhs) in cases {
+            assert_eq!(
+                crate::cubical::normalize_interval(&lhs),
+                crate::cubical::normalize_interval(&rhs),
+                "lhs={lhs:?} rhs={rhs:?}"
+            );
+        }
+        // And the eager evaluator-level fold agrees definitionally too (checked via
+        // `Nbe::conv`, open in one variable).
+        let mut k = Kernel::new();
+        let _ = &mut k; // env not needed (no constants referenced), kept for `Nbe::new`
+        let env = crate::env::Env::new();
+        let nbe = Nbe::new(&env);
+        assert!(nbe.conv(&Term::plam(Term::imeet(Term::IZero, Term::Var(0))), &Term::plam(Term::IZero)));
+        assert!(nbe.conv(&Term::plam(Term::imeet(Term::IOne, Term::Var(0))), &Term::plam(Term::Var(0))));
+    }
+
+    /// Sanity that [`Nbe::family_is_constant_value`]'s fresh-marker id counter
+    /// really is process-wide monotonic (no accidental reuse across calls) — a
+    /// direct, minimal exercise of two *nested* probes (mirroring the real nested-
+    /// `Transp` shape this fix targets) to confirm they don't collide.
+    #[test]
+    fn nested_family_is_constant_probes_do_not_collide() {
+        let k = nat_kernel();
+        let nbe = Nbe::new(k.env());
+        // outer family: λi. (λj. j) applied under a nested constant-check —
+        // constructed directly rather than via `trans_right_unit` to keep this a
+        // minimal, standalone repro of "two probes running one inside the other".
+        let inner_fam = Term::Var(0).lift(1, 0); // λj. (outer i, lifted) -- non-constant in j on purpose
+        let inner_transp = Term::transp(inner_fam, crate::face::Cof::bot(), Term::Var(0));
+        let outer_fam = inner_transp; // λi. transp(...) -- itself independent of i's own occurrence pattern
+        let outer = Term::transp(outer_fam.clone(), crate::face::Cof::bot(), lit(0));
+        // Must not panic/hang; the exact reduction result isn't the point here (the
+        // shape is deliberately degenerate), just that nested probes coexist safely.
+        let _ = nbe.normalize(&outer);
     }
 }

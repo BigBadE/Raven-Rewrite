@@ -977,8 +977,8 @@ pub fn nat_sq(a_ty: &Term, b_ty: &Term, f: &Term, g: &Term, h: &Term, x: &Term, 
 // nose, to `(λr. r) q ≡ q` — meaning [`trans_left_unit`]'s statement holds by
 // plain `refl`, no `J`-elimination needed at all.
 //
-// # Right unit, and the two inverse laws: stated, built, but hit a nested-
-// reduction gap (not landed as passing — see honest status below)
+// # Right unit, and the two inverse laws: CLOSED (a later pass fixed the
+// underlying conversion-completeness gap)
 //
 // `trans` only ever eliminates its *first* path argument (`p`, not `q`), so
 // `trans ty a b p (refl b)` does **not** reduce definitionally for opaque `p` —
@@ -988,26 +988,47 @@ pub fn nat_sq(a_ty: &Term, b_ty: &Term, f: &Term, g: &Term, h: &Term, x: &Term, 
 // the hypothesis path, let the *target* type vary with it" pattern. At the base
 // case (`y = a`, `p = refl a`), the goal *should* collapse — by the
 // *definitional* left-unit law above — to `Path (Path ty a a) (refl a) (refl
-// a)`, provable by `refl (refl a)`. In practice, [`trans_right_unit`]'s (and
-// the two inverse laws') base-case check does **not** go through: the required
-// reduction needs the *outer* `j`-call's own `connect` term (see [`j`]'s
-// doc) to reduce to `refl a` *underneath* the additional `trans`/`transp`
+// a)`, provable by `refl (refl a)`. This used to get stuck: the required
+// reduction needed the *outer* `j`-call's own `connect` term (see [`j`]'s doc)
+// to reduce to `refl a` *underneath* an additional layer of `trans`/`transp`
 // nesting these motives introduce, one layer deeper than [`nat_sq`]'s own
-// "computation on `refl`" section confirms works. This pass could not get the
-// existing (unmodified) conversion checker to chase that far — see
-// `tests::right_unit_hits_a_documented_nested_reduction_gap` and its two
-// siblings, which assert the failure as a permanent, precise regression marker
-// rather than silently dropping the attempt. This is the *same class* of
-// completeness gap as [`trans3`]'s documented nested-`trans` obstruction and
-// `crate::equiv_hae`'s `sec_prime`-on-literal-`PLam`-data gap — not a
-// soundness issue (nothing wrong is accepted; the honest, correctly-typed goal
-// simply doesn't yet reduce far enough to be *proved* by this construction),
-// and not something fixable without touching `reduce.rs`/`nbe.rs`/`check.rs`,
-// which this pass is not permitted to do. The three functions are kept
-// (rather than deleted) because their *statement* is correct and useful for a
-// future pass with a different proof strategy or a conversion-depth fix.
+// "computation on `refl`" section alone accounts for. The root cause (see
+// `crate::nbe::Nbe::family_is_constant_value`'s doc for the full diagnosis and
+// fix): the *inner* nested `Transp`'s own regularity probe (`crate::kan::
+// family_is_constant`, as invoked from `crate::nbe::Nbe::eval`) decided
+// constancy by re-deriving its family from scratch against brand-new, mutually
+// unrelated fresh neutrals for *every* free variable it mentioned — discarding
+// the fact that, in the surrounding (lazy, closure-based) evaluation, those
+// free variables were already bound by the *real* environment to concrete,
+// related values (e.g. `y := p @ i0`, `q := refl y`) threaded down from the
+// *outer* `J`. A family that only collapses given *those* particular
+// substitutions — not for arbitrary unrelated ones — was invisible to the old,
+// disconnected probe. `Nbe::family_is_constant_value` fixes this by reusing the
+// real environment (`venv`) itself, adding only one fresh marker for the
+// binder actually being tested. Once that fires, the nested `Transp` collapses,
+// and (together with the De Morgan interval lattice's identity/absorption laws
+// — `i0 ∧ r ≡ i0`, `i1 ∧ r ≡ r`, etc. — now also folded eagerly during
+// evaluation, see [`crate::nbe::Value::INeg`]'s doc) the whole base case
+// reduces to `refl (refl a)` on the nose, exactly as this doc always claimed it
+// *should*. [`trans_right_unit`]/[`trans_inv_right`]/[`trans_inv_left`] all now
+// type-check — see `tests::right_unit_closes`/`inv_right_closes`/
+// `inv_left_closes`.
 //
-// # Associativity: known, precisely-diagnosed gap
+// This is a *completeness*-only fix: no new equation is introduced (see
+// `Nbe::family_is_constant_value`'s own soundness argument), it only lets the
+// pre-existing, already-sound regularity/interval-lattice judgements fire in
+// more (legitimate) contexts. This is the *same class* of completeness gap as
+// [`trans3`]'s documented nested-`trans` obstruction and `crate::equiv_hae`'s
+// `sec_prime`-on-literal-`PLam`-data gap — both of those remain OPEN after this
+// fix (confirmed by re-running `crate::equiv_hae::tests::
+// debug_nested_trans_hits_the_documented_completeness_gap`/
+// `sec_prime_on_literal_plam_identity_data_is_a_known_gap_not_yet_closed`,
+// still asserting failure): they hit a *different* obstruction (feeding a
+// `trans`-built — as opposed to a bound-variable — term back in as a further
+// `J` *subject*, not a base-case reduction depth issue), which this pass's
+// fix does not address.
+//
+// # Associativity: known, precisely-diagnosed gap (still open)
 //
 // The literal statement `Path (trans (trans p q) r) (trans p (trans q r))`
 // cannot even be *written* as a well-typed `Term` in this kernel: its LHS
@@ -1016,19 +1037,14 @@ pub fn nat_sq(a_ty: &Term, b_ty: &Term, f: &Term, g: &Term, h: &Term, x: &Term, 
 // module doc records ("nesting `trans`... does not type-check in this kernel"
 // — confirmed for three fully abstract axiomatized paths with no `sym`/`ap`
 // involved, see `tests::debug_nested_trans_hits_the_documented_completeness_gap`
-// in `crate::equiv_hae`). [`trans3`] itself sidesteps this by only ever
-// `J`-eliminating the *first*, genuinely opaque path (`p`), applying the other
-// two (`q`, `r`) as ordinary function arguments — which fixes *one* particular
-// association (`p ; (q ; r)`) but gives no way to *also* build the other
-// association (`(p ; q) ; r`) as a further `J`-subject without hitting the same
-// wall. A full associativity 2-path therefore needs either (a) a genuine
-// alternative construction of `(p;q);r` that never uses a `trans`-built term as
-// a further `J` subject (a real but nontrivial reformulation, not attempted in
-// this pass), or (b) fixing the underlying nested-`trans` conversion gap itself
-// — which is exactly the kind of `reduce.rs`/`nbe.rs`/`check.rs` change this
-// pass is not permitted to make. Not landed here; see [`trans3`]'s doc for the
-// isolated repro and `crate::equiv_hae`'s module doc for how this bears on
-// `τ'`.
+// in `crate::equiv_hae`, still reproducing after this pass's fix above).
+// [`trans3`] itself sidesteps this by only ever `J`-eliminating the *first*,
+// genuinely opaque path (`p`), applying the other two (`q`, `r`) as ordinary
+// function arguments — which fixes *one* particular association (`p ; (q ;
+// r)`) but gives no way to *also* build the other association (`(p ; q) ; r`)
+// as a further `J`-subject without hitting the same wall. Not landed here; see
+// [`trans3`]'s doc for the isolated repro and `crate::equiv_hae`'s module doc
+// for how this bears on `τ'`.
 // ============================================================================
 
 /// `trans_left_unit ty a b q : Path (Path ty a b) (trans ty a b (refl a) q) q`
@@ -1166,44 +1182,62 @@ mod groupoid_law_tests {
         k.check(&term, &expected).unwrap();
     }
 
-    /// KNOWN LIMITATION (documented, not a soundness issue — same class as
-    /// [`trans3`]'s "Phase 3.12" nested-`trans` gap and `crate::equiv_hae::
-    /// tests::sec_prime_on_literal_plam_identity_data_is_a_known_gap_not_yet_closed`):
-    /// [`trans_right_unit`]'s base case relies on `trans ty a a (refl a) (refl
-    /// a)` reducing (via the *definitional* left-unit fact, see
-    /// [`trans_left_unit`]'s doc) once the *inner* `J`'s own `connect` term
-    /// (itself built by the *outer* `j` call inside [`trans_right_unit`])
-    /// reduces to `refl a` at `i0`. That reduction needs to fire *underneath*
-    /// an additional layer of `transp`/`J` nesting beyond what
-    /// [`nat_sq`]/[`j`]'s own "computation on `refl`" sections confirm — this
-    /// pass could not get the kernel's conversion checker to chase it that far
-    /// (asserting the failure here, not silently skipping it, so a future pass
-    /// has a precise, reproducible starting point — see this section's module
-    /// doc for the honest diagnosis).
+    /// **Closed** (previously a documented nested-reduction gap — see
+    /// `crate::nbe::Nbe::family_is_constant_value`'s doc for the conversion-
+    /// completeness fix that closes it): [`trans_right_unit`]'s base case relies on
+    /// `trans ty a a (refl a) (refl a)` reducing (via the *definitional* left-unit
+    /// fact, see [`trans_left_unit`]'s doc) once the *inner* `J`'s own `connect`
+    /// term (itself built by the *outer* `j` call inside [`trans_right_unit`])
+    /// reduces to `refl a` at `i0`. That reduction needs to fire *underneath* an
+    /// additional layer of `transp`/`J` nesting beyond what [`nat_sq`]/[`j`]'s own
+    /// "computation on `refl`" sections confirm alone — closed by making
+    /// `crate::kan::family_is_constant`'s NbE-side regularity probe reuse the
+    /// *real* evaluation environment (rather than fabricating unrelated fresh
+    /// neutrals for the family's other free variables), so the inner `Transp`
+    /// collapses using the values its enclosing `J` already substituted in.
     #[test]
-    fn right_unit_hits_a_documented_nested_reduction_gap() {
+    fn right_unit_closes() {
         let k = groupoid_env();
         let term = trans_right_unit(&cn("A"), &cn("a"), &cn("b"), &cn("p"));
-        assert!(k.infer(&term).is_err(), "expected the documented nested-reduction gap to still reproduce");
+        let expected = Term::path(
+            Term::path(cn("A"), cn("a"), cn("b")),
+            trans(&cn("A"), &cn("a"), &cn("b"), &cn("p"), &refl(&cn("b"))),
+            cn("p"),
+        );
+        let ty = k.infer(&term).expect("trans_right_unit should now typecheck");
+        assert!(k.def_eq(&ty, &expected), "trans_right_unit has type {ty:?}, expected {expected:?}");
+        k.check(&term, &expected).unwrap();
     }
 
-    /// KNOWN LIMITATION: same obstruction as
-    /// [`right_unit_hits_a_documented_nested_reduction_gap`], for the right
-    /// inverse law (`trans p (sym p) ≡ refl`).
+    /// **Closed**, same fix as [`right_unit_closes`] — the right inverse law
+    /// (`trans p (sym p) ≡ refl`).
     #[test]
-    fn inv_right_hits_a_documented_nested_reduction_gap() {
+    fn inv_right_closes() {
         let k = groupoid_env();
         let term = trans_inv_right(&cn("A"), &cn("a"), &cn("b"), &cn("p"));
-        assert!(k.infer(&term).is_err(), "expected the documented nested-reduction gap to still reproduce");
+        let expected = Term::path(
+            Term::path(cn("A"), cn("a"), cn("a")),
+            trans(&cn("A"), &cn("a"), &cn("a"), &cn("p"), &crate::contr::sym(&cn("p"))),
+            refl(&cn("a")),
+        );
+        let ty = k.infer(&term).expect("trans_inv_right should now typecheck");
+        assert!(k.def_eq(&ty, &expected), "trans_inv_right has type {ty:?}, expected {expected:?}");
+        k.check(&term, &expected).unwrap();
     }
 
-    /// KNOWN LIMITATION: same obstruction, for the left inverse law (`trans
-    /// (sym p) p ≡ refl`).
+    /// **Closed**, same fix — the left inverse law (`trans (sym p) p ≡ refl`).
     #[test]
-    fn inv_left_hits_a_documented_nested_reduction_gap() {
+    fn inv_left_closes() {
         let k = groupoid_env();
         let term = trans_inv_left(&cn("A"), &cn("a"), &cn("b"), &cn("p"));
-        assert!(k.infer(&term).is_err(), "expected the documented nested-reduction gap to still reproduce");
+        let expected = Term::path(
+            Term::path(cn("A"), cn("b"), cn("b")),
+            trans(&cn("A"), &cn("b"), &cn("b"), &crate::contr::sym(&cn("p")), &cn("p")),
+            refl(&cn("b")),
+        );
+        let ty = k.infer(&term).expect("trans_inv_left should now typecheck");
+        assert!(k.def_eq(&ty, &expected), "trans_inv_left has type {ty:?}, expected {expected:?}");
+        k.check(&term, &expected).unwrap();
     }
 
     /// Dimensionality guard (mirrors `crate::equiv_hae::tests::
