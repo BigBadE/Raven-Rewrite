@@ -509,12 +509,23 @@ pub enum CubHitRole {
     /// doubly-applied spine shape (independent of the sides' shape, which only
     /// affects *typing*, not this structural reduction rule).
     Surf { idx: u32, base: u32, left: Option<u32>, right: Option<u32>, top: Option<u32>, bottom: Option<u32> },
+    /// The `l`-th (0-based) **3-dimensional ("cube"/higher) path constructor**
+    /// `H.cube_l : PathP (λi. PathP (λj. Path H p p) (refl p) (refl p))
+    /// (refl (refl p)) (refl (refl p))` — a fully-degenerate 3-cell based at a
+    /// single **nullary** point constructor `base` (the "S³" shape — see
+    /// [`crate::cubical_hit::CubCubeSpec`]'s doc comment; unlike [`Self::Surf`],
+    /// no `left`/`right`/`top`/`bottom` sides — every side is `refl` at this
+    /// dimension, generalization to non-degenerate 3-cells is deferred).
+    /// Triply `PApp`-applied (`H.cube_l @ i @ j @ k`), never fewer — the
+    /// ι-rule matches exactly that triply-applied spine shape.
+    Cube { idx: u32, base: u32 },
     /// The **`Type`-valued, computing** dependent recursor `H.rec`, generically
     /// synthesized for `num_points` point constructors, `num_paths` path
-    /// constructors, and `num_surfaces` 2-path ("surface") constructors (see
-    /// [`crate::cubical_hit`] for the exact signature and ι-rules — a direct
-    /// generalization of [`I2Role::Rec`]/[`S1cRole::Rec`]).
-    Rec { num_points: u32, num_paths: u32, num_surfaces: u32 },
+    /// constructors, `num_surfaces` 2-path ("surface") constructors, and
+    /// `num_cubes` 3-path ("cube") constructors (see [`crate::cubical_hit`] for
+    /// the exact signature and ι-rules — a direct generalization of
+    /// [`I2Role::Rec`]/[`S1cRole::Rec`]).
+    Rec { num_points: u32, num_paths: u32, num_surfaces: u32, num_cubes: u32 },
 }
 
 /// A member of a **general, user-declared cubical HIT**, installed by

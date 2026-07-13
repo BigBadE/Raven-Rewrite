@@ -1356,10 +1356,10 @@ impl<'a> Nbe<'a> {
     fn try_cubical_hit_rec(&self, h: Head, spine: Vec<Rc<Value>>) -> Rc<Value> {
         if let Head::Const(rname, ls) = &h {
             if let Some(Decl::CubHit(rc)) = self.env.get(rname) {
-                if let CubHitRole::Rec { num_points, num_paths, num_surfaces } = rc.role {
-                    let (num_points, num_paths, num_surfaces) =
-                        (num_points as usize, num_paths as usize, num_surfaces as usize);
-                    let scrut_pos = 1 + num_points + num_paths + num_surfaces;
+                if let CubHitRole::Rec { num_points, num_paths, num_surfaces, num_cubes } = rc.role {
+                    let (num_points, num_paths, num_surfaces, num_cubes) =
+                        (num_points as usize, num_paths as usize, num_surfaces as usize, num_cubes as usize);
+                    let scrut_pos = 1 + num_points + num_paths + num_surfaces + num_cubes;
                     if spine.len() > scrut_pos {
                         match &*spine[scrut_pos] {
                             // Point rule: fully applied to its declared fields
@@ -1428,6 +1428,41 @@ impl<'a> Nbe<'a> {
                                                                 v = self.vapp(v, extra.clone());
                                                             }
                                                             return v;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        // Cube rule (3-path / "S³"): `p_inner` itself is
+                                        // ANOTHER `PathApp` (`(H.cube_l @ ri') @ rj`), so
+                                        // the surface check above (which requires
+                                        // `p_inner` to be a bare `Const`) silently fails
+                                        // to match and falls through to here — mirrors
+                                        // [`crate::reduce::Reducer::try_cubical_hit_rec`]'s
+                                        // equivalent structural disjointness argument one
+                                        // level deeper (see that function's doc comment).
+                                        if let Value::Stuck(Head::PathApp(p_inner2, ri2), iargs2) = &**p_inner {
+                                            if iargs2.is_empty() {
+                                                if let Value::Stuck(Head::Const(cube_name, _), cargs) = &**p_inner2 {
+                                                    if cargs.is_empty() {
+                                                        if let Some(Decl::CubHit(c)) = self.env.get(cube_name) {
+                                                            if c.id == rc.id {
+                                                                if let CubHitRole::Cube { idx, .. } = &c.role {
+                                                                    let pos = 1
+                                                                        + num_points
+                                                                        + num_paths
+                                                                        + num_surfaces
+                                                                        + *idx as usize;
+                                                                    let u = spine[pos].clone();
+                                                                    let u_i = self.vpapp(u, ri2.clone());
+                                                                    let u_ij = self.vpapp(u_i, ri.clone());
+                                                                    let mut v = self.vpapp(u_ij, r.clone());
+                                                                    for extra in &spine[scrut_pos + 1..] {
+                                                                        v = self.vapp(v, extra.clone());
+                                                                    }
+                                                                    return v;
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                 }
