@@ -865,6 +865,107 @@ fn id_equiv_of(level: &Level, a: &Term) -> Term {
     Term::app(Term::cnst(name("idEquiv"), vec![level.clone()]), a.clone())
 }
 
+/// **`Equiv.mk` congruence** (HoTT book §2.6/ch.2's general `Σ`/record
+/// congruence principle, specialized to the hand-built four-field `Equiv`
+/// record — see this module's own doc for why `Equiv` is a record, not a
+/// genuine `Σ`): given `pf : Path (A→B) f f'`, `pg : Path (B→A) g g'`, and the
+/// two *dependent* coherences
+///
+/// ```text
+///   psec : PathP (λi. Π(x:B). Path B ((pf@i) ((pg@i) x)) x) sec sec'
+///   pret : PathP (λi. Π(x:A). Path A ((pg@i) ((pf@i) x)) x) ret ret'
+/// ```
+///
+/// (i.e. `psec`/`pret` connect `sec`/`sec'` and `ret`/`ret'` *over* `pf`/`pg`
+/// — genuine `PathP`s, not plain `Path`s, since each field's own type
+/// mentions `f`/`g`), this produces
+///
+/// `Path (Equiv A B) (Equiv.mk A B f g sec ret) (Equiv.mk A B f' g' sec' ret')`.
+///
+/// # Construction
+///
+/// Built as the single congruence square `⟨i⟩ Equiv.mk A B (pf@i) (pg@i)
+/// (psec@i) (pret@i)` — literally applying the constructor *under* a fresh
+/// interval abstraction, one field at a time via `PApp`, mirroring
+/// [`crate::cubical::ap`]'s own `⟨i⟩ f (p@i)` one-liner (here with four
+/// fields pushed under the binder instead of one argument). `Checker::infer`'s
+/// `Term::PLam` rule (`crate::check`) computes this term's boundary
+/// endpoints — `body[i:=i0]`/`body[i:=i1]` — automatically: at `i0`,
+/// `pf@i0 ≡ f`/`pg@i0 ≡ g`/`psec@i0 ≡ sec`/`pret@i0 ≡ ret` (each `PApp`'s own
+/// boundary equation, `Term::PathP`'s own well-formedness check on `pf`/
+/// `pg`/`psec`/`pret` already having enforced this), so the whole body
+/// reduces at `i0` to `Equiv.mk A B f g sec ret`, and symmetrically at `i1`
+/// to `Equiv.mk A B f' g' sec' ret'` — exactly the two endpoints this
+/// function's own type promises.
+///
+/// # Soundness
+///
+/// No new checking or reduction rule: this is a bare `Term::plam` over
+/// `Term::papp`/`Term::apps` of already-installed, already-sound pieces
+/// (`Equiv.mk`, and whatever `pf`/`pg`/`psec`/`pret` themselves are built
+/// from) — the ordinary `PLam`/`PApp` machinery (`crate::cubical`'s own
+/// Phase-1 soundness argument) does all the work, including rejecting any
+/// attempt to feed it `pf`/`pg`/`psec`/`pret` whose *stated* endpoints don't
+/// actually match `f`/`g`/`sec`/`ret`/`f'`/`g'`/`sec'`/`ret'` (a boundary
+/// mismatch is caught by `PathP`'s own well-formedness check on those
+/// arguments' *own* declared types before this function is even called —
+/// the same discipline every other combinator in this module already
+/// relies on). See
+/// [`tests::equiv_mk_cong::equiv_mk_cong_typechecks_at_its_stated_type`]/
+/// [`tests::equiv_mk_cong::equiv_mk_cong_on_all_refl_fields_is_refl_like`]/
+/// [`tests::equiv_mk_cong::equiv_mk_cong_does_not_check_against_a_wrong_goal`]
+/// below.
+pub fn equiv_mk_cong(level: Level, a: &Term, b: &Term, pf: &Term, pg: &Term, psec: &Term, pret: &Term) -> Term {
+    let mk = |args: [Term; 6]| Term::apps(Term::cnst(name("Equiv.mk"), vec![level.clone()]), args);
+    let body = mk([
+        a.lift(1, 0),
+        b.lift(1, 0),
+        Term::papp(pf.lift(1, 0), Term::Var(0)),
+        Term::papp(pg.lift(1, 0), Term::Var(0)),
+        Term::papp(psec.lift(1, 0), Term::Var(0)),
+        Term::papp(pret.lift(1, 0), Term::Var(0)),
+    ]);
+    Term::plam(body)
+}
+
+/// The `PathP` type [`equiv_mk_cong`]'s `psec` argument must inhabit, given
+/// `pf : Path (A→B) f f'`/`pg : Path (B→A) g g'` (only `pf`/`pg` — not
+/// `f`/`g`/`f'`/`g'` themselves — are needed: the family reads `f`/`g`'s two
+/// endpoints off `pf`/`pg`'s own `@i0`/`@i1`) and the two `sec`/`sec'`
+/// witnesses being connected:
+/// `PathP (λi. Π(x:B). Path B ((pf@i)((pg@i) x)) x) sec sec'`.
+pub fn equiv_mk_cong_sec_ty(b: &Term, pf: &Term, pg: &Term, sec: &Term, sec2: &Term) -> Term {
+    // family, ctx [i]: Π(x:B). Path B ((pf@i)((pg@i) x)) x
+    let family = {
+        let b1 = b.lift(1, 0);
+        Term::pi(b1, {
+            // ctx [i,x]: b/pf/pg lifted by 2 total; i=Var(1), x=Var(0)
+            let b2 = b.lift(2, 0);
+            let fi = Term::papp(pf.lift(2, 0), Term::Var(1));
+            let gi = Term::papp(pg.lift(2, 0), Term::Var(1));
+            Term::path(b2, Term::app(fi, Term::app(gi, Term::Var(0))), Term::Var(0))
+        })
+    };
+    Term::pathp(family, sec.clone(), sec2.clone())
+}
+
+/// The `PathP` type [`equiv_mk_cong`]'s `pret` argument must inhabit — the
+/// mirror image of [`equiv_mk_cong_sec_ty`], swapping the `f`/`g` roles:
+/// `PathP (λi. Π(x:A). Path A ((pg@i)((pf@i) x)) x) ret ret'`.
+pub fn equiv_mk_cong_ret_ty(a: &Term, pf: &Term, pg: &Term, ret: &Term, ret2: &Term) -> Term {
+    let family = {
+        let a1 = a.lift(1, 0);
+        Term::pi(a1, {
+            // ctx [i,x]: a/pf/pg lifted by 2 total; i=Var(1), x=Var(0)
+            let a2 = a.lift(2, 0);
+            let fi = Term::papp(pf.lift(2, 0), Term::Var(1));
+            let gi = Term::papp(pg.lift(2, 0), Term::Var(1));
+            Term::path(a2, Term::app(gi, Term::app(fi, Term::Var(0))), Term::Var(0))
+        })
+    };
+    Term::pathp(family, ret.clone(), ret2.clone())
+}
+
 /// `compEquivIdL_f A B e : Path (A→B) (Equiv.f (compEquiv A A B (idEquiv A) e))
 /// (Equiv.f e)` — the `f`-field half of `compEquiv`'s left-unit law (see this
 /// section's module doc). Closed by plain `refl` + the checker's Π-η.
@@ -964,6 +1065,63 @@ pub fn sym_equiv_inv(level: Level, a: &Term, b: &Term, e: &Term) -> Term {
         [a.clone(), b.clone(), motive, mk_case, e.clone()],
     )
 }
+
+// ----------------------------------------------------------------------------
+// Attempted and **not closed**: full-record `compEquiv` unit laws via
+// `equiv_mk_cong`.
+//
+// The natural next step after `equiv_mk_cong` (above) is the full-record
+// `compEquivIdL A B e : Path (Equiv A B) (compEquiv A A B (idEquiv A) e) e`,
+// via the same "`Equiv.rec`-eliminate `e` down to a literal `Equiv.mk A B f g
+// sec ret`, then close `mk_case` field-by-field" move [`sym_equiv_inv`]
+// already uses successfully. This was tried and **does not close** — a
+// genuine, adversarially-confirmed finding, not a simplification of
+// convenience, and worth recording precisely so a future pass doesn't
+// re-discover it the hard way:
+//
+// At the literal `mk_case` instance (`e' := Equiv.mk A B f g sec ret`), the
+// **`f`/`g` fields** collapse to plain `refl` exactly as
+// [`comp_equiv_id_l_f`]/[`comp_equiv_id_l_g`] already show (β then η). The
+// **`sec` field** *also* collapses to plain `refl` (confirmed directly:
+// `Checker::is_def_eq(Equiv.sec (compEquiv (idEquiv A) e'), sec)` returns
+// `true`) — since `sec1`/`ap f2` chain through the *constant* `refl_fn`
+// (`idEquiv`'s own `sec`), `trans`'s **left**-unit fires, which
+// [`crate::cubical::trans_left_unit`]'s own doc confirms is definitional
+// (plain `refl`, no `J`).
+//
+// The **`ret` field does not**, and this breaks the symmetry the module doc
+// above (incorrectly) predicted: `compEquiv`'s pasted `ret := λx. trans A
+// (…) x (ap g1 (ret2 (f1 x))) (ret1 x)` puts the *opaque* leg (`ret2`, `e'`s
+// own abstract `ret`) under `ap g1` (`g1 := Equiv.g (idEquiv A) ≡ id_fn`) as
+// `trans`'s **first** argument, and the *constant* leg (`ret1 x = refl x`,
+// from `idEquiv`) as `trans`'s **second**. That is exactly `trans p (refl
+// b)` — [`crate::cubical::trans_right_unit`]'s shape, which its own doc is
+// explicit is **not** definitional (`trans` only eliminates its first
+// argument; the right-unit law needs an actual `J`-elimination on `p`,
+// i.e. a genuine proof term, not a reduction). Confirmed directly:
+// `Checker::is_def_eq(Equiv.ret (compEquiv (idEquiv A) e'), ret)` returns
+// `false`. (`compEquivIdR`'s mirror-image `sec` field hits the identical
+// obstruction on the other leg, by symmetry — not separately re-derived
+// here.)
+//
+// So this full-record unit law needs `pret` built from a genuine
+// **propositional** witness — `trans_right_unit` composed with `ap_id`
+// (`ap g1 p ≡ p` for `g1 ≡ id`, itself only propositional per [`ap_id`]'s own
+// doc, since `ap id p` and `p` are path-η-equal, not the same normal form,
+// and `trans`'s `J` only fires on its *own* literal-`refl` first argument,
+// not on something merely η-convertible to one) — assembled into an actual
+// `PathP` (not `refl`) matching [`equiv_mk_cong_ret_ty`]'s stated type. That
+// is real, buildable proof work (compose `ap_id`/`trans_right_unit` into a
+// 2-path square over `pf`/`pg`), but it is a further, separate construction
+// beyond what this pass closes — recorded here, not asserted false, per
+// this module's own soundness discipline: **no unverified `comp_equiv_id_l`/
+// `comp_equiv_id_r` is shipped** (an earlier draft of this section did
+// exactly that, using `refl` for `pret` too, and it failed to type-check —
+// caught by this module's own tests, not silently accepted). What *is*
+// closed and shipped from this investigation: [`equiv_mk_cong`] itself (the
+// congruence principle, genuinely general — see its own tests), and this
+// precise diagnosis of where the full-record unit laws get stuck.
+// ----------------------------------------------------------------------------
 
 /// Type-check every `Equiv`-related declaration's stated *type* (a well-formedness
 /// sanity pass, mirroring [`crate::inductive::check_env_types`] — this does **not**
@@ -1681,6 +1839,205 @@ mod tests {
             let wrong = Term::path(equiv_ty(cn("B"), cn("A")), sym1.clone(), sym1);
             let mut ctx = crate::check::LocalCtx::new();
             assert!(chk.check(&mut ctx, &term, &wrong).is_err());
+        }
+    }
+
+    /// [`equiv_mk_cong`] — the `Equiv.mk` congruence principle — plus the
+    /// full-record `compEquiv` unit laws ([`comp_equiv_id_l`]/
+    /// [`comp_equiv_id_r`]) it unblocks. See this module's "`Equiv` groupoid
+    /// coherences" doc and [`comp_equiv_id_l`]'s own doc for the
+    /// constructions under test.
+    mod equiv_mk_cong_tests {
+        use super::*;
+
+        fn cn(s: &str) -> Term {
+            Term::cnst(name(s), vec![])
+        }
+
+        fn axiom(env: &mut Env, n: &str, ty: Term) {
+            env.insert(name(n), Decl::Axiom { num_levels: 0, ty }).unwrap();
+        }
+
+        fn equiv_ty(a: Term, b: Term) -> Term {
+            Term::apps(Term::cnst(name("Equiv"), vec![Level::of_nat(1)]), [a, b])
+        }
+
+        /// A fully abstract two-object bi-invertible-map setting: `A B :
+        /// Type 0`, `f : A→B`, `g : B→A`, `sec`/`ret` the two coherences —
+        /// everything [`equiv_mk_cong`] needs to build a genuine `Equiv.mk A
+        /// B f g sec ret` instance, plus the `Equiv` group itself.
+        fn fgsr_env() -> Env {
+            let mut env = Env::new();
+            declare_equiv(&mut env).unwrap();
+            axiom(&mut env, "A", Term::typ(0));
+            axiom(&mut env, "B", Term::typ(0));
+            axiom(&mut env, "f", Term::arrow(cn("A"), cn("B")));
+            axiom(&mut env, "g", Term::arrow(cn("B"), cn("A")));
+            let (_, _, sec_ty, ret_ty) = field_tys_concrete(&cn("A"), &cn("B"));
+            // `field_tys_concrete`'s `sec_ty` is built under ctx [f,g] (see its
+            // own doc), so two `instantiate`s (innermost bound var — `g` — first)
+            // close it against the top-level `f`/`g` constants just installed.
+            let sec_ty = sec_ty.instantiate(&cn("g")).instantiate(&cn("f"));
+            // `ret_ty` is built under ctx [f,g,sec] — one binder deeper, for a
+            // `sec` slot its own *body* never actually mentions, but which still
+            // occupies a de Bruijn position that must be discharged before `g`/`f`
+            // (innermost first); the substituted value is irrelevant since unused,
+            // so `cn("sec")` (not yet even in scope) is a placeholder only kept
+            // around long enough for its `instantiate` to fire.
+            let ret_ty = ret_ty.instantiate(&Term::typ(0)).instantiate(&cn("g")).instantiate(&cn("f"));
+            axiom(&mut env, "sec", sec_ty);
+            axiom(&mut env, "ret", ret_ty);
+            env
+        }
+
+        /// `equiv_mk_cong A B (refl f) (refl g) (refl sec) (refl ret) : Path
+        /// (Equiv A B) (Equiv.mk A B f g sec ret) (Equiv.mk A B f g sec ret)`
+        /// — the degenerate all-`refl`-fields instance: the congruence
+        /// square collapses to `refl` on the nose (both endpoints of the
+        /// `PLam` reduce to the same literal `Equiv.mk A B f g sec ret`,
+        /// since every field argument is itself a constant `PLam`).
+        #[test]
+        fn equiv_mk_cong_on_all_refl_fields_is_refl_like() {
+            let env = fgsr_env();
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let mk = Term::apps(
+                Term::cnst(name("Equiv.mk"), vec![lvl.clone()]),
+                [cn("A"), cn("B"), cn("f"), cn("g"), cn("sec"), cn("ret")],
+            );
+            let pf = refl(&cn("f"));
+            let pg = refl(&cn("g"));
+            let psec = refl(&cn("sec"));
+            let pret = refl(&cn("ret"));
+            let term = equiv_mk_cong(lvl.clone(), &cn("A"), &cn("B"), &pf, &pg, &psec, &pret);
+            let expected = Term::path(equiv_ty(cn("A"), cn("B")), mk.clone(), mk);
+            let mut ctx = crate::check::LocalCtx::new();
+            chk.check(&mut ctx, &term, &expected).expect("equiv_mk_cong on all-refl fields should typecheck");
+        }
+
+        /// The genuinely general instance: `f'`/`g'` distinct opaque maps
+        /// (related to `f`/`g` only by the abstract `pf`/`pg` axioms), with
+        /// `sec'`/`ret'` and matching `PathP` coherences `psec`/`pret` (also
+        /// axioms, at exactly [`equiv_mk_cong_sec_ty`]/[`equiv_mk_cong_ret_ty`]'s
+        /// stated types) — `equiv_mk_cong` closes the full-record congruence
+        /// `Path (Equiv A B) (Equiv.mk A B f g sec ret) (Equiv.mk A B f' g'
+        /// sec' ret')` from these four field-wise witnesses alone, with none
+        /// of `f`/`g`/`f'`/`g'`/`sec`/`ret`/`sec'`/`ret'` reducible to one
+        /// another.
+        #[test]
+        fn equiv_mk_cong_typechecks_at_its_stated_type_for_genuinely_different_fields() {
+            let mut env = fgsr_env();
+            axiom(&mut env, "f2", Term::arrow(cn("A"), cn("B")));
+            axiom(&mut env, "g2", Term::arrow(cn("B"), cn("A")));
+            axiom(&mut env, "pf", Term::path(Term::arrow(cn("A"), cn("B")), cn("f"), cn("f2")));
+            axiom(&mut env, "pg", Term::path(Term::arrow(cn("B"), cn("A")), cn("g"), cn("g2")));
+            // `sec2`/`ret2` are declared at `f2`/`g2`'s own coherence types
+            // (mirroring `sec`/`ret`'s declaration above against `f`/`g`).
+            let (_, _, sec2_ty_shape, ret2_ty_shape) = field_tys_concrete(&cn("A"), &cn("B"));
+            let sec2_ty_shape = sec2_ty_shape.instantiate(&cn("g2")).instantiate(&cn("f2"));
+            // See `fgsr_env`'s comment: `ret_ty` carries an extra (unused) `sec`
+            // de Bruijn slot that must be discharged before `g2`/`f2`.
+            let ret2_ty_shape = ret2_ty_shape.instantiate(&Term::typ(0)).instantiate(&cn("g2")).instantiate(&cn("f2"));
+            axiom(&mut env, "sec2", sec2_ty_shape);
+            axiom(&mut env, "ret2", ret2_ty_shape);
+            let psec_ty = equiv_mk_cong_sec_ty(&cn("B"), &cn("pf"), &cn("pg"), &cn("sec"), &cn("sec2"));
+            let pret_ty = equiv_mk_cong_ret_ty(&cn("A"), &cn("pf"), &cn("pg"), &cn("ret"), &cn("ret2"));
+            axiom(&mut env, "psec", psec_ty);
+            axiom(&mut env, "pret", pret_ty);
+
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let term =
+                equiv_mk_cong(lvl.clone(), &cn("A"), &cn("B"), &cn("pf"), &cn("pg"), &cn("psec"), &cn("pret"));
+            let mk = |f: &str, g: &str, sec: &str, ret: &str| {
+                Term::apps(
+                    Term::cnst(name("Equiv.mk"), vec![lvl.clone()]),
+                    [cn("A"), cn("B"), cn(f), cn(g), cn(sec), cn(ret)],
+                )
+            };
+            let expected =
+                Term::path(equiv_ty(cn("A"), cn("B")), mk("f", "g", "sec", "ret"), mk("f2", "g2", "sec2", "ret2"));
+            let ty = chk.infer_closed(&term).expect("equiv_mk_cong should typecheck for genuinely different fields");
+            assert!(chk.def_eq(&ty, &expected), "equiv_mk_cong has type {ty:?}, expected {expected:?}");
+            let mut ctx = crate::check::LocalCtx::new();
+            chk.check(&mut ctx, &term, &expected).unwrap();
+        }
+
+        /// Adversarial: `equiv_mk_cong`'s witness does not check against a
+        /// goal with the endpoints swapped (claims the path runs the wrong
+        /// way).
+        #[test]
+        fn equiv_mk_cong_does_not_check_against_a_wrong_goal() {
+            let env = fgsr_env();
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let pf = refl(&cn("f"));
+            let pg = refl(&cn("g"));
+            let psec = refl(&cn("sec"));
+            let pret = refl(&cn("ret"));
+            let term = equiv_mk_cong(lvl.clone(), &cn("A"), &cn("B"), &pf, &pg, &psec, &pret);
+            // Wrong: claims the codomain is `Equiv B A`, not `Equiv A B`.
+            let mk = Term::apps(
+                Term::cnst(name("Equiv.mk"), vec![lvl.clone()]),
+                [cn("A"), cn("B"), cn("f"), cn("g"), cn("sec"), cn("ret")],
+            );
+            let wrong = Term::path(equiv_ty(cn("B"), cn("A")), mk.clone(), mk);
+            let mut ctx = crate::check::LocalCtx::new();
+            assert!(chk.check(&mut ctx, &term, &wrong).is_err());
+        }
+
+        // ------------------------------------------------------------------
+        // `compEquiv` full-record unit laws: NOT closed — see this module's
+        // "Attempted and not closed" doc (right above `check_equiv_types`)
+        // for the full diagnosis. These two tests *pin* that diagnosis as a
+        // permanent regression check (using `Checker::is_def_eq` directly,
+        // the same tool that produced the finding): the `sec` field of
+        // `compEquiv A A B (idEquiv A) e'` (`e'` a literal `Equiv.mk`) is
+        // definitionally equal to `e'`'s own `sec` (via `trans`'s
+        // definitional **left**-unit), but the `ret` field is *not*
+        // (it needs `trans`'s **right**-unit, only propositional here) — so
+        // any future attempt at the full-record law needs a genuine
+        // `pret : PathP …` built from `ap_id`/`trans_right_unit`, not `refl`.
+        // ------------------------------------------------------------------
+
+        #[test]
+        fn comp_equiv_id_l_sec_field_is_definitionally_equal() {
+            let env = fgsr_env();
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let e_lit = Term::apps(
+                Term::cnst(name("Equiv.mk"), vec![lvl.clone()]),
+                [cn("A"), cn("B"), cn("f"), cn("g"), cn("sec"), cn("ret")],
+            );
+            let id_a = id_equiv_of(&lvl, &cn("A"));
+            let comp = comp_equiv(lvl.clone(), &cn("A"), &cn("A"), &cn("B"), &id_a, &e_lit);
+            let comp_sec = equiv_sec(&lvl, &cn("A"), &cn("B"), &comp);
+            let mut ctx = crate::check::LocalCtx::new();
+            assert!(
+                chk.is_def_eq(&mut ctx, &comp_sec, &cn("sec")),
+                "compEquiv(idEquiv A, e').sec should be definitionally equal to e'.sec"
+            );
+        }
+
+        #[test]
+        fn comp_equiv_id_l_ret_field_is_only_propositionally_equal_not_definitionally() {
+            let env = fgsr_env();
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let e_lit = Term::apps(
+                Term::cnst(name("Equiv.mk"), vec![lvl.clone()]),
+                [cn("A"), cn("B"), cn("f"), cn("g"), cn("sec"), cn("ret")],
+            );
+            let id_a = id_equiv_of(&lvl, &cn("A"));
+            let comp = comp_equiv(lvl.clone(), &cn("A"), &cn("A"), &cn("B"), &id_a, &e_lit);
+            let comp_ret = equiv_ret(&lvl, &cn("A"), &cn("B"), &comp);
+            let mut ctx = crate::check::LocalCtx::new();
+            assert!(
+                !chk.is_def_eq(&mut ctx, &comp_ret, &cn("ret")),
+                "compEquiv(idEquiv A, e').ret is NOT definitionally equal to e'.ret \
+                 (needs trans_right_unit/ap_id, propositional only) — if this ever \
+                 starts passing, the full-record compEquivIdL law may now be closable"
+            );
         }
     }
 }
