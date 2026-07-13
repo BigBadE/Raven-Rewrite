@@ -473,6 +473,48 @@ fn declare_fiber_projections(env: &mut Env) -> Result<(), String> {
     Ok(())
 }
 
+/// `Fiber2.{u,v} : Π (A:Sort u) (B:Sort v) (f:A→B) (b:B), Sort (max u v)` — a
+/// **bi-level** generalization of [`Fiber`]/`declare_fiber` above, needed for
+/// `crate::equiv::univalence_ty` (see that function's doc): stating "`idToEquiv`
+/// is an equivalence" needs the fiber of a map `idToEquivFn A B : Path Type A B →
+/// Equiv A B` whose domain (`Path Type A B`, a path *between elements of the
+/// universe*) lives one universe **above** its codomain (`Equiv A B`) — see
+/// `crate::cubical`'s/`Checker::infer`'s `Term::PathP` rule: `PathP`'s own sort is
+/// the sort *classifying the family's values*, and here the family's values are
+/// literally `Sort level` itself, one level above `level`. `Fiber`/`IsContr`
+/// (this module, above) are deliberately **mono-universe** (`Fiber.{u}`'s single
+/// `u` forces *both* its `A` and `B` parameters into the *same* sort) — exactly
+/// right for `crate::glue`'s `Equiv`-only use, but too weak for a fiber whose two
+/// endpoints genuinely live a universe apart. Rather than generalizing `Fiber`
+/// itself (used throughout `crate::contr`/`crate::glue`/`crate::kan` at a single,
+/// load-bearing level — out of scope to touch here), [`declare_fiber2`] adds a
+/// **parallel**, independently-leveled type former, declared as an opaque
+/// [`Decl::Axiom`] (a bare `Π`-classified constant, *not* a full inductive with
+/// its own constructor/recursor): `crate::equiv::univalence_ty` only needs
+/// `Fiber2`/[`IsContr`] to *state* univalence (`IsContr (Fiber2 …)` as a
+/// well-formed `Type`), not to eliminate/compute with a `Fiber2` value — no
+/// recursor is needed for that, and an axiom adds no new equation or reduction
+/// rule (so it cannot be used, by itself, to derive `False` — see this module's
+/// `Soundness` doc for the general shape of that argument, which applies
+/// verbatim: an uninhabited-unless-genuinely-proved `Axiom`-classified type is
+/// exactly as inert as `Term::I`/an unproved `Path` boundary).
+pub fn declare_fiber2(env: &mut Env) -> Result<(), String> {
+    let u = || Level::param(0);
+    let v = || Level::param(1);
+    // Π (A:Sort u) (B:Sort v) (f:A→B) (b:B), Sort (max u v)
+    let ty = Term::pi(
+        Term::Sort(u()),
+        Term::pi(
+            Term::Sort(v()), // ctx [A]
+            Term::pi(
+                Term::arrow(Term::Var(1), Term::Var(0)), // ctx [A,B]: A→B
+                Term::pi(Term::Var(1), Term::Sort(Level::max(u(), v()))), // ctx [A,B,f]: B → Sort(max u v)
+            ),
+        ),
+    );
+    env.insert(name("Fiber2"), Decl::Axiom { num_levels: 2, ty })
+}
+
 /// `IsEquiv.{u} : Π (A B:Sort u) (f:A→B), Sort u := λ A B f. Π(b:B). IsContr
 /// (Fiber A B f b)` — the contractible-fibers definition of equivalence (HoTT
 /// book Definition 4.4.1). A plain `Decl::Def` computing a `Sort`, no new
@@ -629,6 +671,7 @@ pub fn check_contr_types(env: &Env) -> Result<(), String> {
     for n in [
         "IsContr", "IsContr.mk", "IsContr.rec", "IsContr.center", "IsContr.paths",
         "Fiber", "Fiber.mk", "Fiber.rec", "Fiber.a", "Fiber.p",
+        "Fiber2",
         "IsEquiv", "idIsEquiv",
     ] {
         let decl = env.get(n).ok_or_else(|| format!("missing '{n}'"))?;
@@ -665,6 +708,7 @@ mod tests {
         let mut env = Env::new();
         declare_is_contr(&mut env).unwrap();
         declare_fiber(&mut env).unwrap();
+        declare_fiber2(&mut env).unwrap();
         declare_is_equiv(&mut env).unwrap();
         env
     }
@@ -698,6 +742,30 @@ mod tests {
         let expected = Term::apps(Term::cnst(name("IsEquiv"), vec![Level::of_nat(1)]), [nat.clone(), nat, id_fn]);
         let r = Reducer::new(&env);
         assert!(r.is_def_eq(&ty, &expected), "idIsEquiv Nat has type {ty:?}, expected {expected:?}");
+    }
+
+    /// `Fiber2 A B f b : Sort (max u v)` at genuinely different `u`/`v` (a `Prop`
+    /// domain, `Sort 1` codomain) — confirms `declare_fiber2` really is
+    /// bi-level-polymorphic, unlike mono-level `Fiber`.
+    #[test]
+    fn fiber2_typechecks_at_two_different_levels() {
+        let mut env = Env::new();
+        declare_nat(&mut env).unwrap();
+        declare_fiber2(&mut env).unwrap();
+        let chk = Checker::new(&env);
+        // `A = Nat : Sort(1)` (`u=1`) and `B = Sort(1) : Sort(2)` (`v=2`, "Type
+        // 1", one universe above `Nat`'s own) — genuinely different levels.
+        let nat = Term::cnst(name("Nat"), vec![]); // : Sort(1) (u=1)
+        let type1 = Term::Sort(Level::of_nat(1)); // "Type 1" : Sort(2) (v=2)
+        let f = Term::lam(nat.clone(), nat.clone()); // : Nat → Type 1, constantly `Nat`
+        let b = nat.clone(); // : Type 1
+        let fiber2 = Term::apps(
+            Term::cnst(name("Fiber2"), vec![Level::of_nat(1), Level::of_nat(2)]),
+            [nat, type1, f, b],
+        );
+        let ty = chk.infer_closed(&fiber2).expect("Fiber2 at mixed levels should type-check");
+        let r = Reducer::new(&env);
+        assert!(r.is_def_eq(&ty, &Term::Sort(Level::max(Level::of_nat(1), Level::of_nat(2)))));
     }
 
     /// `sym (refl a) ≡ refl a` — the definitional fact `idIsEquiv`'s construction
