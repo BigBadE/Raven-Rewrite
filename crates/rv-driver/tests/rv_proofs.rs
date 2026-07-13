@@ -395,6 +395,14 @@ fn capstone() {
     check("capstone.rv");
 }
 
+/// A verified run-length codec: `decode(encode(xs)) == xs` (the crux lemma
+/// `decode_cons_sym` pushes a symbol through the encoder's grouping decision). See
+/// `examples/proofs/rle.rv`.
+#[test]
+fn rle_codec() {
+    check("rle.rv");
+}
+
 #[test]
 fn funext_smoke_test() {
     let src = r#"
