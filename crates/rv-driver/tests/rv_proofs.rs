@@ -88,6 +88,14 @@ fn alg_sorting() {
     check("alg_sorting.rv");
 }
 
+/// A verified binary search tree over `Nat`: `insert`/`member`, and the membership headlines
+/// `insert_member` (the inserted key is found) and `member_insert_other` (insert preserves
+/// existing members).
+#[test]
+fn bst() {
+    check("bst.rv");
+}
+
 #[test]
 fn decide_reflection() {
     check("decide_demo.rv");

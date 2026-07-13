@@ -1,0 +1,428 @@
+// A VERIFIED BINARY SEARCH TREE over `Nat`, in Rust-like Raven (`rvc --verify`).
+//
+// Self-contained: own `Nat`, `Bool`, a decidable comparator `leb`, and `Tree { Leaf,
+// Node(Tree, Nat, Tree) }`. Builds `insert`/`member` and proves the classic membership
+// headline:
+//
+//     member(x, insert(x, t)) == True        (insert_member — CLOSED)
+//     member(x, t) == True -> member(x, insert(y, t)) == True
+//                                             (member_insert_other — CLOSED, insert is
+//                                              monotone on membership)
+//
+// Kept in the inductive-`Eq`/`Prop` proof style used throughout this corpus (NOT cubical),
+// and following `alg_sorting.rv`'s idiom of abstracting a `match`'s `Cons`/`Node`-case body
+// over a plain `Bool` parameter (`insert_hyp`/`member_hyp` below, mirroring `insert_hyp` /
+// `sorted_insert_hyp` there) so that the comparison results can be matched on directly inside
+// small named lemmas, and reflected back into the real `leb(_, _)` applications only via
+// explicit equality hypotheses supplied at the call site (the "convoy" idiom from
+// `alg_sorting.rv`'s `sorted_insert_hyp`: match the abstract `Bool` first, then curry in
+// continuation parameters whose *declared* types mention the matched variable, so they get
+// refined per-branch). Every proof step is a small named `fn`; no `trans`/`congr_arg` call is
+// ever handed another combinator call as an inline sub-argument (see `compile_stack.rv`'s
+// header for why: the kernel's defeq checker can fail with "cannot unify interval
+// expressions" on such inline nesting, even though the same composition split into named
+// steps succeeds).
+
+enum Nat { Zero, Succ(Nat) }
+enum Bool { True, False }
+enum Tree { Leaf, Node(Tree, Nat, Tree) }
+
+// ----- decidable `<=` on `Nat` (exactly `alg_sorting.rv`'s `leb`) -----------------------------
+
+fn leb(n: Nat, m: Nat) -> Bool {
+    match n {
+      | Nat::Zero    => Bool::True
+      | Nat::Succ(a) => match m {
+          | Nat::Zero    => Bool::False
+          | Nat::Succ(b) => leb(a, b)
+        }
+    }
+}
+
+// `leb n n == True`, by induction on `n` (reflexivity of `<=`, computationally).
+fn leb_refl(n: Nat) -> leb(n, n) == Bool::True {
+    match n {
+      | Nat::Zero    => Eq::refl(Bool, Bool::True)
+      | Nat::Succ(k) => leb_refl(k)
+    }
+}
+
+// No-confusion for `Bool` (needed for the vacuous `Leaf` case of `member_insert_other`).
+fn is_false(b: Bool) -> Prop {
+    match b { | Bool::True => False | Bool::False => True }
+}
+fn bool_false_ne_true(h: Bool::False == Bool::True) -> False {
+    subst(Bool, is_false, Bool::False, Bool::True, h, True::intro)
+}
+
+// ----- `insert` / `member` ---------------------------------------------------------------------
+
+// `insert`'s `Node`-case body, abstracted over the two comparison results `b1 := leb(x, k)`
+// (is `x <= k`?) and `b2 := leb(k, x)` (is `k <= x`?): `(b1, b2) == (True, True)` means `x ==
+// k` (already present, tree unchanged), `(True, False)` means `x < k` (recurse left), and
+// `False` (either `b2`) means `x > k` (recurse right) — the standard three-way BST comparison
+// built from two `<=` tests, exactly as `alg_sorting.rv` builds strict-vs-equal comparisons
+// from `leb` alone.
+fn insert_hyp(x: Nat, l: Tree, k: Nat, r: Tree, insL: Tree, insR: Tree, b1: Bool, b2: Bool) -> Tree {
+    match b1 {
+      | Bool::True  => match b2 {
+          | Bool::True  => Tree::Node(l, k, r)
+          | Bool::False => Tree::Node(insL, k, r)
+        }
+      | Bool::False => Tree::Node(l, k, insR)
+    }
+}
+fn insert(x: Nat, t: Tree) -> Tree {
+    match t {
+      | Tree::Leaf           => Tree::Node(Tree::Leaf, x, Tree::Leaf)
+      | Tree::Node(l, k, r)  => insert_hyp(x, l, k, r, insert(x, l), insert(x, r), leb(x, k), leb(k, x))
+    }
+}
+
+// `member`'s `Node`-case body, abstracted the same way over `b1`/`b2`.
+fn member_hyp(x: Nat, l: Tree, k: Nat, r: Tree, ml: Bool, mr: Bool, b1: Bool, b2: Bool) -> Bool {
+    match b1 {
+      | Bool::True  => match b2 {
+          | Bool::True  => Bool::True
+          | Bool::False => ml
+        }
+      | Bool::False => mr
+    }
+}
+fn member(x: Nat, t: Tree) -> Bool {
+    match t {
+      | Tree::Leaf           => Bool::False
+      | Tree::Node(l, k, r)  => member_hyp(x, l, k, r, member(x, l), member(x, r), leb(x, k), leb(k, x))
+    }
+}
+
+// ----- `member_hyp` reflection lemmas -----------------------------------------------------------
+//
+// Each rewrites `member_hyp(x, l, k, r, ml, mr, b1, b2)` down to a concrete value once `b1`/`b2`
+// are pinned down by equality hypotheses, by two single-step `congr_arg` rewrites (one per
+// abstracted `Bool` parameter) chained through a genuinely two-level `trans`, with every
+// intermediate step its own named `fn` (never inlined into `trans`/`congr_arg`, per the header
+// note).
+
+fn mh_step_b1(x: Nat, l: Tree, k: Nat, r: Tree, ml: Bool, mr: Bool, b2: Bool, b1: Bool, e1: b1 == Bool::True)
+    -> member_hyp(x, l, k, r, ml, mr, b1, b2) == member_hyp(x, l, k, r, ml, mr, Bool::True, b2)
+{
+    congr_arg(Bool, Bool, fun (bb: Bool) => member_hyp(x, l, k, r, ml, mr, bb, b2), b1, Bool::True, e1)
+}
+fn mh_step_b1_false(x: Nat, l: Tree, k: Nat, r: Tree, ml: Bool, mr: Bool, b2: Bool, b1: Bool, e1: b1 == Bool::False)
+    -> member_hyp(x, l, k, r, ml, mr, b1, b2) == member_hyp(x, l, k, r, ml, mr, Bool::False, b2)
+{
+    congr_arg(Bool, Bool, fun (bb: Bool) => member_hyp(x, l, k, r, ml, mr, bb, b2), b1, Bool::False, e1)
+}
+fn mh_step_b2(x: Nat, l: Tree, k: Nat, r: Tree, ml: Bool, mr: Bool, b2: Bool, e2: b2 == Bool::True)
+    -> member_hyp(x, l, k, r, ml, mr, Bool::True, b2) == member_hyp(x, l, k, r, ml, mr, Bool::True, Bool::True)
+{
+    congr_arg(Bool, Bool, fun (bb: Bool) => member_hyp(x, l, k, r, ml, mr, Bool::True, bb), b2, Bool::True, e2)
+}
+fn mh_step_b2_false(x: Nat, l: Tree, k: Nat, r: Tree, ml: Bool, mr: Bool, b2: Bool, e2: b2 == Bool::False)
+    -> member_hyp(x, l, k, r, ml, mr, Bool::True, b2) == member_hyp(x, l, k, r, ml, mr, Bool::True, Bool::False)
+{
+    congr_arg(Bool, Bool, fun (bb: Bool) => member_hyp(x, l, k, r, ml, mr, Bool::True, bb), b2, Bool::False, e2)
+}
+
+// `member_hyp(x,l,k,r,ml,mr,True,True) == True`, by direct computation.
+fn mh_base_true(x: Nat, l: Tree, k: Nat, r: Tree, ml: Bool, mr: Bool)
+    -> member_hyp(x, l, k, r, ml, mr, Bool::True, Bool::True) == Bool::True
+{
+    Eq::refl(Bool, Bool::True)
+}
+// `member_hyp(x,l,k,r,ml,mr,True,False) == ml`, by direct computation.
+fn mh_base_ml(x: Nat, l: Tree, k: Nat, r: Tree, ml: Bool, mr: Bool)
+    -> member_hyp(x, l, k, r, ml, mr, Bool::True, Bool::False) == ml
+{
+    Eq::refl(Bool, ml)
+}
+
+// `b1 == True -> b2 == True -> member_hyp(...) == True`.
+fn mh_true_true_tail(x: Nat, l: Tree, k: Nat, r: Tree, ml: Bool, mr: Bool, b2: Bool, e2: b2 == Bool::True)
+    -> member_hyp(x, l, k, r, ml, mr, Bool::True, b2) == Bool::True
+{
+    trans(Bool, member_hyp(x, l, k, r, ml, mr, Bool::True, b2), member_hyp(x, l, k, r, ml, mr, Bool::True, Bool::True), Bool::True,
+          mh_step_b2(x, l, k, r, ml, mr, b2, e2), mh_base_true(x, l, k, r, ml, mr))
+}
+fn mh_true_true(x: Nat, l: Tree, k: Nat, r: Tree, ml: Bool, mr: Bool, b1: Bool, b2: Bool,
+                 e1: b1 == Bool::True, e2: b2 == Bool::True)
+    -> member_hyp(x, l, k, r, ml, mr, b1, b2) == Bool::True
+{
+    trans(Bool, member_hyp(x, l, k, r, ml, mr, b1, b2), member_hyp(x, l, k, r, ml, mr, Bool::True, b2), Bool::True,
+          mh_step_b1(x, l, k, r, ml, mr, b2, b1, e1), mh_true_true_tail(x, l, k, r, ml, mr, b2, e2))
+}
+
+// `b1 == True -> b2 == False -> member_hyp(...) == ml`.
+fn mh_select_ml_tail(x: Nat, l: Tree, k: Nat, r: Tree, ml: Bool, mr: Bool, b2: Bool, e2: b2 == Bool::False)
+    -> member_hyp(x, l, k, r, ml, mr, Bool::True, b2) == ml
+{
+    trans(Bool, member_hyp(x, l, k, r, ml, mr, Bool::True, b2), member_hyp(x, l, k, r, ml, mr, Bool::True, Bool::False), ml,
+          mh_step_b2_false(x, l, k, r, ml, mr, b2, e2), mh_base_ml(x, l, k, r, ml, mr))
+}
+fn mh_select_ml(x: Nat, l: Tree, k: Nat, r: Tree, ml: Bool, mr: Bool, b1: Bool, b2: Bool,
+                 e1: b1 == Bool::True, e2: b2 == Bool::False)
+    -> member_hyp(x, l, k, r, ml, mr, b1, b2) == ml
+{
+    trans(Bool, member_hyp(x, l, k, r, ml, mr, b1, b2), member_hyp(x, l, k, r, ml, mr, Bool::True, b2), ml,
+          mh_step_b1(x, l, k, r, ml, mr, b2, b1, e1), mh_select_ml_tail(x, l, k, r, ml, mr, b2, e2))
+}
+
+// `b1 == False -> member_hyp(...) == mr` (a single rewrite: `member_hyp(...,False,b2)` is
+// definitionally `mr` for any `b2`).
+fn mh_select_mr(x: Nat, l: Tree, k: Nat, r: Tree, ml: Bool, mr: Bool, b1: Bool, b2: Bool, e1: b1 == Bool::False)
+    -> member_hyp(x, l, k, r, ml, mr, b1, b2) == mr
+{
+    mh_step_b1_false(x, l, k, r, ml, mr, b2, b1, e1)
+}
+
+// ----- HEADLINE #1: the inserted key is found -------------------------------------------------
+//
+// `member(x, insert(x, t)) == True`, by induction on `t`, instantiating `insert_member_hyp`
+// (the convoy: `b1`/`b2` are matched directly, and the equalities relating them back to the
+// real `leb(x, k)`/`leb(k, x)` are curried in afterwards with types refined per-branch, exactly
+// as `alg_sorting.rv`'s `sorted_insert_hyp` does for `htrue`/`hfalse`).
+
+fn insert_member_hyp(x: Nat, l: Tree, k: Nat, r: Tree,
+                      ihl: member(x, insert(x, l)) == Bool::True,
+                      ihr: member(x, insert(x, r)) == Bool::True,
+                      b1: Bool, b2: Bool)
+    -> ((b1 == Bool::True) -> (leb(x, k) == Bool::True))
+    -> ((b1 == Bool::False) -> (leb(x, k) == Bool::False))
+    -> ((b2 == Bool::True) -> (leb(k, x) == Bool::True))
+    -> ((b2 == Bool::False) -> (leb(k, x) == Bool::False))
+    -> member(x, insert_hyp(x, l, k, r, insert(x, l), insert(x, r), b1, b2)) == Bool::True
+{
+    match b1 {
+      | Bool::True  =>
+          fun (e1t: (Bool::True == Bool::True) -> (leb(x, k) == Bool::True))
+              (e1f: (Bool::True == Bool::False) -> (leb(x, k) == Bool::False)) =>
+          match b2 {
+            | Bool::True  =>
+                fun (e2t: (Bool::True == Bool::True) -> (leb(k, x) == Bool::True))
+                    (e2f: (Bool::True == Bool::False) -> (leb(k, x) == Bool::False)) =>
+                mh_true_true(x, l, k, r, member(x, l), member(x, r), leb(x, k), leb(k, x),
+                             e1t(Eq::refl(Bool, Bool::True)), e2t(Eq::refl(Bool, Bool::True)))
+            | Bool::False =>
+                fun (e2t: (Bool::False == Bool::True) -> (leb(k, x) == Bool::True))
+                    (e2f: (Bool::False == Bool::False) -> (leb(k, x) == Bool::False)) =>
+                trans(Bool, member_hyp(x, insert(x, l), k, r, member(x, insert(x, l)), member(x, r), leb(x, k), leb(k, x)),
+                      member(x, insert(x, l)), Bool::True,
+                      mh_select_ml(x, insert(x, l), k, r, member(x, insert(x, l)), member(x, r), leb(x, k), leb(k, x),
+                                   e1t(Eq::refl(Bool, Bool::True)), e2f(Eq::refl(Bool, Bool::False))),
+                      ihl)
+          }
+      | Bool::False =>
+          fun (e1t: (Bool::False == Bool::True) -> (leb(x, k) == Bool::True))
+              (e1f: (Bool::False == Bool::False) -> (leb(x, k) == Bool::False)) =>
+          fun (e2t: (b2 == Bool::True) -> (leb(k, x) == Bool::True))
+              (e2f: (b2 == Bool::False) -> (leb(k, x) == Bool::False)) =>
+          trans(Bool, member_hyp(x, l, k, insert(x, r), member(x, l), member(x, insert(x, r)), leb(x, k), leb(k, x)),
+                member(x, insert(x, r)), Bool::True,
+                mh_select_mr(x, l, k, insert(x, r), member(x, l), member(x, insert(x, r)), leb(x, k), leb(k, x),
+                             e1f(Eq::refl(Bool, Bool::False))),
+                ihr)
+    }
+}
+
+fn insert_member(x: Nat, t: Tree) -> member(x, insert(x, t)) == Bool::True {
+    match t {
+      | Tree::Leaf          =>
+          mh_true_true(x, Tree::Leaf, x, Tree::Leaf, member(x, Tree::Leaf), member(x, Tree::Leaf),
+                       leb(x, x), leb(x, x), leb_refl(x), leb_refl(x))
+      | Tree::Node(l, k, r) =>
+          insert_member_hyp(x, l, k, r, insert_member(x, l), insert_member(x, r), leb(x, k), leb(k, x))
+            (fun (h: leb(x, k) == Bool::True) => h)
+            (fun (h: leb(x, k) == Bool::False) => h)
+            (fun (h: leb(k, x) == Bool::True) => h)
+            (fun (h: leb(k, x) == Bool::False) => h)
+    }
+}
+
+// ----- HEADLINE #2: insert preserves existing members (monotonicity) --------------------------
+//
+// `member(x, t) == True -> member(x, insert(y, t)) == True`, by induction on `t`. The `Node`
+// case case-splits on `d1 := leb(y, k)` / `d2 := leb(k, y)` (routing `insert(y, _)`), and, in
+// the two branches that actually recurse (`y < k`, `y > k`), a further case-split on
+// `c1 := leb(x, k)` / `c2 := leb(k, x)` extracts the relevant piece of the hypothesis `h`
+// (via `mh_select_ml`/`mh_select_mr`, reversed with `symm`) and reassembles it against the
+// updated subtree.
+
+// The reversed forms of `mh_select_ml`/`mh_select_mr` (`ml == member_hyp(...)` / `mr ==
+// member_hyp(...)`), each a single named `symm` call (not nested inside another combinator).
+fn mh_select_ml_symm(x: Nat, l: Tree, k: Nat, r: Tree, ml: Bool, mr: Bool, b1: Bool, b2: Bool,
+                      e1: b1 == Bool::True, e2: b2 == Bool::False)
+    -> ml == member_hyp(x, l, k, r, ml, mr, b1, b2)
+{
+    symm(Bool, member_hyp(x, l, k, r, ml, mr, b1, b2), ml, mh_select_ml(x, l, k, r, ml, mr, b1, b2, e1, e2))
+}
+fn mh_select_mr_symm(x: Nat, l: Tree, k: Nat, r: Tree, ml: Bool, mr: Bool, b1: Bool, b2: Bool, e1: b1 == Bool::False)
+    -> mr == member_hyp(x, l, k, r, ml, mr, b1, b2)
+{
+    symm(Bool, member_hyp(x, l, k, r, ml, mr, b1, b2), mr, mh_select_mr(x, l, k, r, ml, mr, b1, b2, e1))
+}
+
+// Extract `member(x, l) == True` / `member(x, r) == True` out of `h`, given which branch `h`
+// actually took.
+fn h_to_ml(x: Nat, l: Tree, k: Nat, r: Tree,
+           h: member_hyp(x, l, k, r, member(x, l), member(x, r), leb(x, k), leb(k, x)) == Bool::True,
+           e1: leb(x, k) == Bool::True, e2: leb(k, x) == Bool::False)
+    -> member(x, l) == Bool::True
+{
+    trans(Bool, member(x, l), member_hyp(x, l, k, r, member(x, l), member(x, r), leb(x, k), leb(k, x)), Bool::True,
+          mh_select_ml_symm(x, l, k, r, member(x, l), member(x, r), leb(x, k), leb(k, x), e1, e2), h)
+}
+fn h_to_mr(x: Nat, l: Tree, k: Nat, r: Tree,
+           h: member_hyp(x, l, k, r, member(x, l), member(x, r), leb(x, k), leb(k, x)) == Bool::True,
+           e1: leb(x, k) == Bool::False)
+    -> member(x, r) == Bool::True
+{
+    trans(Bool, member(x, r), member_hyp(x, l, k, r, member(x, l), member(x, r), leb(x, k), leb(k, x)), Bool::True,
+          mh_select_mr_symm(x, l, k, r, member(x, l), member(x, r), leb(x, k), leb(k, x), e1), h)
+}
+
+// `y < k` branch (tree becomes `Node(l2, k, r)` for `l2 := insert(y, l)`): case-split on
+// `c1 := leb(x,k)` / `c2 := leb(k,x)`, the convoy pattern again.
+fn mio_left_hyp(x: Nat, l: Tree, k: Nat, r: Tree, l2: Tree,
+                h: member_hyp(x, l, k, r, member(x, l), member(x, r), leb(x, k), leb(k, x)) == Bool::True,
+                ih2: (member(x, l) == Bool::True) -> (member(x, l2) == Bool::True),
+                c1: Bool, c2: Bool)
+    -> ((c1 == Bool::True) -> (leb(x, k) == Bool::True))
+    -> ((c1 == Bool::False) -> (leb(x, k) == Bool::False))
+    -> ((c2 == Bool::True) -> (leb(k, x) == Bool::True))
+    -> ((c2 == Bool::False) -> (leb(k, x) == Bool::False))
+    -> member_hyp(x, l2, k, r, member(x, l2), member(x, r), leb(x, k), leb(k, x)) == Bool::True
+{
+    match c1 {
+      | Bool::True  =>
+          fun (f1t: (Bool::True == Bool::True) -> (leb(x, k) == Bool::True))
+              (f1f: (Bool::True == Bool::False) -> (leb(x, k) == Bool::False)) =>
+          match c2 {
+            | Bool::True  =>
+                fun (f2t: (Bool::True == Bool::True) -> (leb(k, x) == Bool::True))
+                    (f2f: (Bool::True == Bool::False) -> (leb(k, x) == Bool::False)) =>
+                mh_true_true(x, l2, k, r, member(x, l2), member(x, r), leb(x, k), leb(k, x),
+                             f1t(Eq::refl(Bool, Bool::True)), f2t(Eq::refl(Bool, Bool::True)))
+            | Bool::False =>
+                fun (f2t: (Bool::False == Bool::True) -> (leb(k, x) == Bool::True))
+                    (f2f: (Bool::False == Bool::False) -> (leb(k, x) == Bool::False)) =>
+                trans(Bool, member_hyp(x, l2, k, r, member(x, l2), member(x, r), leb(x, k), leb(k, x)),
+                      member(x, l2), Bool::True,
+                      mh_select_ml(x, l2, k, r, member(x, l2), member(x, r), leb(x, k), leb(k, x),
+                                   f1t(Eq::refl(Bool, Bool::True)), f2f(Eq::refl(Bool, Bool::False))),
+                      ih2(h_to_ml(x, l, k, r, h, f1t(Eq::refl(Bool, Bool::True)), f2f(Eq::refl(Bool, Bool::False)))))
+          }
+      | Bool::False =>
+          fun (f1t: (Bool::False == Bool::True) -> (leb(x, k) == Bool::True))
+              (f1f: (Bool::False == Bool::False) -> (leb(x, k) == Bool::False)) =>
+          fun (f2t: (c2 == Bool::True) -> (leb(k, x) == Bool::True))
+              (f2f: (c2 == Bool::False) -> (leb(k, x) == Bool::False)) =>
+          trans(Bool, member_hyp(x, l2, k, r, member(x, l2), member(x, r), leb(x, k), leb(k, x)),
+                member(x, r), Bool::True,
+                mh_select_mr(x, l2, k, r, member(x, l2), member(x, r), leb(x, k), leb(k, x), f1f(Eq::refl(Bool, Bool::False))),
+                h_to_mr(x, l, k, r, h, f1f(Eq::refl(Bool, Bool::False))))
+    }
+}
+
+// `y > k` branch (tree becomes `Node(l, k, r2)` for `r2 := insert(y, r)`): symmetric to
+// `mio_left_hyp`.
+fn mio_right_hyp(x: Nat, l: Tree, k: Nat, r: Tree, r2: Tree,
+                  h: member_hyp(x, l, k, r, member(x, l), member(x, r), leb(x, k), leb(k, x)) == Bool::True,
+                  ih2: (member(x, r) == Bool::True) -> (member(x, r2) == Bool::True),
+                  c1: Bool, c2: Bool)
+    -> ((c1 == Bool::True) -> (leb(x, k) == Bool::True))
+    -> ((c1 == Bool::False) -> (leb(x, k) == Bool::False))
+    -> ((c2 == Bool::True) -> (leb(k, x) == Bool::True))
+    -> ((c2 == Bool::False) -> (leb(k, x) == Bool::False))
+    -> member_hyp(x, l, k, r2, member(x, l), member(x, r2), leb(x, k), leb(k, x)) == Bool::True
+{
+    match c1 {
+      | Bool::True  =>
+          fun (f1t: (Bool::True == Bool::True) -> (leb(x, k) == Bool::True))
+              (f1f: (Bool::True == Bool::False) -> (leb(x, k) == Bool::False)) =>
+          match c2 {
+            | Bool::True  =>
+                fun (f2t: (Bool::True == Bool::True) -> (leb(k, x) == Bool::True))
+                    (f2f: (Bool::True == Bool::False) -> (leb(k, x) == Bool::False)) =>
+                mh_true_true(x, l, k, r2, member(x, l), member(x, r2), leb(x, k), leb(k, x),
+                             f1t(Eq::refl(Bool, Bool::True)), f2t(Eq::refl(Bool, Bool::True)))
+            | Bool::False =>
+                fun (f2t: (Bool::False == Bool::True) -> (leb(k, x) == Bool::True))
+                    (f2f: (Bool::False == Bool::False) -> (leb(k, x) == Bool::False)) =>
+                trans(Bool, member_hyp(x, l, k, r2, member(x, l), member(x, r2), leb(x, k), leb(k, x)),
+                      member(x, l), Bool::True,
+                      mh_select_ml(x, l, k, r2, member(x, l), member(x, r2), leb(x, k), leb(k, x),
+                                   f1t(Eq::refl(Bool, Bool::True)), f2f(Eq::refl(Bool, Bool::False))),
+                      h_to_ml(x, l, k, r, h, f1t(Eq::refl(Bool, Bool::True)), f2f(Eq::refl(Bool, Bool::False))))
+          }
+      | Bool::False =>
+          fun (f1t: (Bool::False == Bool::True) -> (leb(x, k) == Bool::True))
+              (f1f: (Bool::False == Bool::False) -> (leb(x, k) == Bool::False)) =>
+          fun (f2t: (c2 == Bool::True) -> (leb(k, x) == Bool::True))
+              (f2f: (c2 == Bool::False) -> (leb(k, x) == Bool::False)) =>
+          trans(Bool, member_hyp(x, l, k, r2, member(x, l), member(x, r2), leb(x, k), leb(k, x)),
+                member(x, r2), Bool::True,
+                mh_select_mr(x, l, k, r2, member(x, l), member(x, r2), leb(x, k), leb(k, x), f1f(Eq::refl(Bool, Bool::False))),
+                ih2(h_to_mr(x, l, k, r, h, f1f(Eq::refl(Bool, Bool::False)))))
+    }
+}
+
+// The `Node`-case convoy: matches `d1 := leb(y,k)` / `d2 := leb(k,y)` (routing `insert(y,_)`)
+// and dispatches to the unchanged / `mio_left_hyp` / `mio_right_hyp` cases.
+fn member_insert_other_hyp(x: Nat, y: Nat, l: Tree, k: Nat, r: Tree,
+                            ihl: (member(x, l) == Bool::True) -> (member(x, insert(y, l)) == Bool::True),
+                            ihr: (member(x, r) == Bool::True) -> (member(x, insert(y, r)) == Bool::True),
+                            h: member_hyp(x, l, k, r, member(x, l), member(x, r), leb(x, k), leb(k, x)) == Bool::True,
+                            d1: Bool, d2: Bool)
+    -> ((d1 == Bool::True) -> (leb(y, k) == Bool::True))
+    -> ((d1 == Bool::False) -> (leb(y, k) == Bool::False))
+    -> ((d2 == Bool::True) -> (leb(k, y) == Bool::True))
+    -> ((d2 == Bool::False) -> (leb(k, y) == Bool::False))
+    -> member(x, insert_hyp(y, l, k, r, insert(y, l), insert(y, r), d1, d2)) == Bool::True
+{
+    match d1 {
+      | Bool::True  =>
+          fun (g1t: (Bool::True == Bool::True) -> (leb(y, k) == Bool::True))
+              (g1f: (Bool::True == Bool::False) -> (leb(y, k) == Bool::False)) =>
+          match d2 {
+            | Bool::True  =>
+                fun (g2t: (Bool::True == Bool::True) -> (leb(k, y) == Bool::True))
+                    (g2f: (Bool::True == Bool::False) -> (leb(k, y) == Bool::False)) => h
+            | Bool::False =>
+                fun (g2t: (Bool::False == Bool::True) -> (leb(k, y) == Bool::True))
+                    (g2f: (Bool::False == Bool::False) -> (leb(k, y) == Bool::False)) =>
+                mio_left_hyp(x, l, k, r, insert(y, l), h, ihl, leb(x, k), leb(k, x))
+                  (fun (e: leb(x, k) == Bool::True) => e)
+                  (fun (e: leb(x, k) == Bool::False) => e)
+                  (fun (e: leb(k, x) == Bool::True) => e)
+                  (fun (e: leb(k, x) == Bool::False) => e)
+          }
+      | Bool::False =>
+          fun (g1t: (Bool::False == Bool::True) -> (leb(y, k) == Bool::True))
+              (g1f: (Bool::False == Bool::False) -> (leb(y, k) == Bool::False)) =>
+          fun (g2t: (d2 == Bool::True) -> (leb(k, y) == Bool::True))
+              (g2f: (d2 == Bool::False) -> (leb(k, y) == Bool::False)) =>
+          mio_right_hyp(x, l, k, r, insert(y, r), h, ihr, leb(x, k), leb(k, x))
+            (fun (e: leb(x, k) == Bool::True) => e)
+            (fun (e: leb(x, k) == Bool::False) => e)
+            (fun (e: leb(k, x) == Bool::True) => e)
+            (fun (e: leb(k, x) == Bool::False) => e)
+    }
+}
+
+fn member_insert_other(x: Nat, y: Nat, t: Tree) -> (member(x, t) == Bool::True) -> (member(x, insert(y, t)) == Bool::True) {
+    match t {
+      | Tree::Leaf          =>
+          fun (h: member(x, Tree::Leaf) == Bool::True) =>
+            False::rec(fun (z: False) => member(x, insert(y, Tree::Leaf)) == Bool::True, bool_false_ne_true(h))
+      | Tree::Node(l, k, r) =>
+          fun (h: member(x, Tree::Node(l, k, r)) == Bool::True) =>
+            member_insert_other_hyp(x, y, l, k, r, member_insert_other(x, y, l), member_insert_other(x, y, r),
+                                     h, leb(y, k), leb(k, y))
+              (fun (e: leb(y, k) == Bool::True) => e)
+              (fun (e: leb(y, k) == Bool::False) => e)
+              (fun (e: leb(k, y) == Bool::True) => e)
+              (fun (e: leb(k, y) == Bool::False) => e)
+    }
+}
+
