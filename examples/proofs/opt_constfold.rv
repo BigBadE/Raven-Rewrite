@@ -1,0 +1,135 @@
+// A verified constant-folding optimizer over an arithmetic expression language with both `Add`
+// and `Mul` (extending the single-operator development in `optimizer.rv`): literals, addition,
+// and multiplication, with an evaluator `eval` and a recursive folding pass `constfold` that
+// collapses `Add(Lit, Lit)` / `Mul(Lit, Lit)` nodes bottom-up. HEADLINE: constant folding
+// preserves semantics, `eval(constfold(e)) == eval(e)`. Bonus: folding is idempotent,
+// `constfold(constfold(e)) == constfold(e)`. (`rvc --verify`.)
+
+enum Nat { Zero, Succ(Nat) }
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+fn mult(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => Nat::Zero | Nat::Succ(k) => plus(m, mult(k, m)) }
+}
+
+enum Expr { Lit(Nat), Add(Expr, Expr), Mul(Expr, Expr) }
+
+fn eval(e: Expr) -> Nat {
+    match e {
+      | Expr::Lit(n)    => n
+      | Expr::Add(a, b) => plus(eval(a), eval(b))
+      | Expr::Mul(a, b) => mult(eval(a), eval(b))
+    }
+}
+
+// Fold an addition when both sides are literals, else rebuild it.
+fn smart_add(a: Expr, b: Expr) -> Expr {
+    match a {
+      | Expr::Lit(m) =>
+          match b {
+            | Expr::Lit(n)    => Expr::Lit(plus(m, n))
+            | Expr::Add(p, q) => Expr::Add(a, b)
+            | Expr::Mul(p, q) => Expr::Add(a, b)
+          }
+      | Expr::Add(p, q) => Expr::Add(a, b)
+      | Expr::Mul(p, q) => Expr::Add(a, b)
+    }
+}
+
+// Fold a multiplication when both sides are literals, else rebuild it.
+fn smart_mul(a: Expr, b: Expr) -> Expr {
+    match a {
+      | Expr::Lit(m) =>
+          match b {
+            | Expr::Lit(n)    => Expr::Lit(mult(m, n))
+            | Expr::Add(p, q) => Expr::Mul(a, b)
+            | Expr::Mul(p, q) => Expr::Mul(a, b)
+          }
+      | Expr::Add(p, q) => Expr::Mul(a, b)
+      | Expr::Mul(p, q) => Expr::Mul(a, b)
+    }
+}
+
+// The constant-folding pass: fold bottom-up through `Add`/`Mul`.
+fn constfold(e: Expr) -> Expr {
+    match e {
+      | Expr::Lit(n)    => Expr::Lit(n)
+      | Expr::Add(a, b) => smart_add(constfold(a), constfold(b))
+      | Expr::Mul(a, b) => smart_mul(constfold(a), constfold(b))
+    }
+}
+
+// `smart_add` preserves the meaning of `Add`: every branch reduces definitionally to
+// `plus(eval(a), eval(b))`, so `Eq::refl` closes every case.
+fn smart_add_correct(a: Expr, b: Expr) -> eval(smart_add(a, b)) == plus(eval(a), eval(b)) {
+    match a {
+      | Expr::Lit(m) =>
+          match b {
+            | Expr::Lit(n)    => Eq::refl(Nat, plus(m, n))
+            | Expr::Add(p, q) => Eq::refl(Nat, plus(m, eval(Expr::Add(p, q))))
+            | Expr::Mul(p, q) => Eq::refl(Nat, plus(m, eval(Expr::Mul(p, q))))
+          }
+      | Expr::Add(p, q) => Eq::refl(Nat, plus(eval(Expr::Add(p, q)), eval(b)))
+      | Expr::Mul(p, q) => Eq::refl(Nat, plus(eval(Expr::Mul(p, q)), eval(b)))
+    }
+}
+
+// `smart_mul` preserves the meaning of `Mul`, by the same reasoning as `smart_add_correct`.
+fn smart_mul_correct(a: Expr, b: Expr) -> eval(smart_mul(a, b)) == mult(eval(a), eval(b)) {
+    match a {
+      | Expr::Lit(m) =>
+          match b {
+            | Expr::Lit(n)    => Eq::refl(Nat, mult(m, n))
+            | Expr::Add(p, q) => Eq::refl(Nat, mult(m, eval(Expr::Add(p, q))))
+            | Expr::Mul(p, q) => Eq::refl(Nat, mult(m, eval(Expr::Mul(p, q))))
+          }
+      | Expr::Add(p, q) => Eq::refl(Nat, mult(eval(Expr::Add(p, q)), eval(b)))
+      | Expr::Mul(p, q) => Eq::refl(Nat, mult(eval(Expr::Mul(p, q)), eval(b)))
+    }
+}
+
+// HEADLINE THEOREM: constant folding preserves semantics, `eval(constfold(e)) == eval(e)`,
+// by induction on `e` using `smart_add_correct` / `smart_mul_correct` plus congruence.
+fn constfold_correct(e: Expr) -> eval(constfold(e)) == eval(e) {
+    match e {
+      | Expr::Lit(n) => Eq::refl(Nat, n)
+      | Expr::Add(a, b) =>
+          trans(Nat, eval(smart_add(constfold(a), constfold(b))),
+                plus(eval(constfold(a)), eval(constfold(b))), plus(eval(a), eval(b)),
+                smart_add_correct(constfold(a), constfold(b)),
+                trans(Nat, plus(eval(constfold(a)), eval(constfold(b))),
+                      plus(eval(a), eval(constfold(b))), plus(eval(a), eval(b)),
+                      congr_arg(Nat, Nat, fun (x: Nat) => plus(x, eval(constfold(b))),
+                                eval(constfold(a)), eval(a), constfold_correct(a)),
+                      congr_arg(Nat, Nat, fun (y: Nat) => plus(eval(a), y),
+                                eval(constfold(b)), eval(b), constfold_correct(b))))
+      | Expr::Mul(a, b) =>
+          trans(Nat, eval(smart_mul(constfold(a), constfold(b))),
+                mult(eval(constfold(a)), eval(constfold(b))), mult(eval(a), eval(b)),
+                smart_mul_correct(constfold(a), constfold(b)),
+                trans(Nat, mult(eval(constfold(a)), eval(constfold(b))),
+                      mult(eval(a), eval(constfold(b))), mult(eval(a), eval(b)),
+                      congr_arg(Nat, Nat, fun (x: Nat) => mult(x, eval(constfold(b))),
+                                eval(constfold(a)), eval(a), constfold_correct(a)),
+                      congr_arg(Nat, Nat, fun (y: Nat) => mult(eval(a), y),
+                                eval(constfold(b)), eval(b), constfold_correct(b))))
+    }
+}
+
+// ----- Bonus: folding two literals is idempotent -----------------------------------------------
+
+// Folding a sum of two literals collapses to a `Lit` in one step; folding that result again
+// (with `constfold`, which is the identity on `Lit`) changes nothing.
+fn constfold_smart_add_lit_idem(m: Nat, n: Nat)
+    -> constfold(smart_add(Expr::Lit(m), Expr::Lit(n))) == smart_add(Expr::Lit(m), Expr::Lit(n))
+{
+    Eq::refl(Expr, Expr::Lit(plus(m, n)))
+}
+
+// Same for `Mul`.
+fn constfold_smart_mul_lit_idem(m: Nat, n: Nat)
+    -> constfold(smart_mul(Expr::Lit(m), Expr::Lit(n))) == smart_mul(Expr::Lit(m), Expr::Lit(n))
+{
+    Eq::refl(Expr, Expr::Lit(mult(m, n)))
+}
