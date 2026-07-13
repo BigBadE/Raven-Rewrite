@@ -882,6 +882,38 @@ impl<'e> Checker<'e> {
                     }
                 }
             }
+            // NESTED boundary, TWO levels down (needed by
+            // [`crate::cubical_hit`]'s 3-dimensional/"S³" 3-path recursor
+            // case — the exact same move as the one-level extension above,
+            // applied once more: `p2` may itself be `p3 @ r3` for a literal
+            // `r3` one level further in (`cube @ i0 @ j`), so `p2`'s own
+            // declared `PathP` endpoint (read off `p3`'s type) gives `p2`'s
+            // boundary value definitionally, which is then `@ r2`-then-`@ r`
+            // applied to reach `probe`'s value. Bounded to exactly one extra
+            // level beyond the existing extension (mirrors this schema's own
+            // "at most 3-dimensional" scope) — `p3` is strictly smaller than
+            // `p2`, which is strictly smaller than `p`, so this still cannot
+            // loop. Adds no new equation beyond what `p3`'s own
+            // (already-checked) `PathP` typing judgement forces, for the
+            // identical soundness reason given in this function's own doc
+            // comment above.
+            if let Term::PApp(p3, r3) = p2.as_ref() {
+                let rn3 = crate::cubical::normalize_interval(r3);
+                let at_zero3 = rn3 == Term::IZero;
+                let at_one3 = rn3 == Term::IOne;
+                if at_zero3 || at_one3 {
+                    if let Ok(tp3) = self.infer(ctx, p3) {
+                        if let Term::PathP(_, a0, a1) = self.reducer().whnf(&tp3) {
+                            let endpoint3 = if at_zero3 { a0 } else { a1 };
+                            let step2 = self.reducer().whnf(&Term::papp((*endpoint3).clone(), (**r2).clone()));
+                            let step1 = self.reducer().whnf(&Term::papp(step2, (**r).clone()));
+                            if self.compare(ctx, &step1, other) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
         }
         false
     }

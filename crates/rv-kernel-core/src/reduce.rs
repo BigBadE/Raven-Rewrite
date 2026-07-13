@@ -851,13 +851,13 @@ impl<'e> Reducer<'e> {
         rc: &crate::env::CubHit,
         args: &[Term],
     ) -> Option<Term> {
-        let (num_points, num_paths, num_surfaces) = match rc.role {
-            CubHitRole::Rec { num_points, num_paths, num_surfaces } => {
-                (num_points as usize, num_paths as usize, num_surfaces as usize)
+        let (num_points, num_paths, num_surfaces, num_cubes) = match rc.role {
+            CubHitRole::Rec { num_points, num_paths, num_surfaces, num_cubes } => {
+                (num_points as usize, num_paths as usize, num_surfaces as usize, num_cubes as usize)
             }
             _ => return None,
         };
-        let scrut_pos = 1 + num_points + num_paths + num_surfaces;
+        let scrut_pos = 1 + num_points + num_paths + num_surfaces + num_cubes;
         if args.len() <= scrut_pos {
             return None; // not yet applied to the H value
         }
@@ -954,6 +954,44 @@ impl<'e> Reducer<'e> {
                                         applied = Term::app(applied, extra.clone());
                                     }
                                     return Some(applied);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Cube (3-path / "S³") rule: scrutinee is (weak-head)
+        // `PApp(PApp(PApp(p, ri), rj), rk)` with `p`'s own weak-head literally
+        // `H.cube_l` of the same HIT `id`, applied to no extra arguments
+        // (cubes are always nullary — see `CubCubeSpec`'s doc comment).
+        // Structurally disjoint from the path/surface rules above by the same
+        // argument the surface rule's own doc comment gives one level down: a
+        // triply-nested `PApp` chain whose innermost head is `Const` can never
+        // match the (singly- or doubly-nested) `PApp` shapes those rules look
+        // for, so no cross-firing is possible between any of the three rules.
+        if let Term::PApp(p_outer, rk) = &scrut {
+            let p_outer_w = self.whnf(p_outer);
+            if let Term::PApp(p_mid, rj) = &p_outer_w {
+                let p_mid_w = self.whnf(p_mid);
+                if let Term::PApp(p_inner, ri) = &p_mid_w {
+                    let p_inner_w = self.whnf(p_inner);
+                    let (cube_head, cube_args) = p_inner_w.unfold_apps();
+                    if cube_args.is_empty() {
+                        if let Term::Const(cube_name, _) = &cube_head {
+                            if let Some(Decl::CubHit(c)) = self.env.get(cube_name) {
+                                if c.id == rc.id {
+                                    if let CubHitRole::Cube { idx, .. } = &c.role {
+                                        let pos = 1 + num_points + num_paths + num_surfaces + *idx as usize;
+                                        let u = args[pos].clone();
+                                        let applied_i = Term::papp(u, (**ri).clone());
+                                        let applied_ij = Term::papp(applied_i, (**rj).clone());
+                                        let mut applied = Term::papp(applied_ij, (**rk).clone());
+                                        for extra in &args[scrut_pos + 1..] {
+                                            applied = Term::app(applied, extra.clone());
+                                        }
+                                        return Some(applied);
+                                    }
                                 }
                             }
                         }

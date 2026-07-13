@@ -446,16 +446,52 @@ impl CubSurfSpec {
     }
 }
 
+/// A user's declaration of one **3-dimensional ("cube"/higher) path
+/// constructor** — a 3-cell based at a single **nullary** point constructor
+/// `p = H.point_{base}`, with **all-degenerate (`refl`) boundary**, i.e. type
+///
+/// ```text
+///   H.name : PathP (\i. PathP (\j. Path H p p) (refl p) (refl p))
+///                   (refl (refl p)) (refl (refl p))
+/// ```
+///
+/// — the literal "S²-one-dimension-up" shape: exactly [`CubSurfSpec::s2`]'s
+/// all-`refl` square, generalized by one more `PathP` level (see the module
+/// doc's "3-dimensional (higher) path constructors" section). This is
+/// intentionally the *simplest* 3-cell shape (mirroring the original,
+/// all-`refl`-only "S²" starting point before [`CubSurfSpec`]'s later
+/// composite-side generalization) — a general-cube schema with
+/// non-degenerate sides (mirroring [`CubSurfSpec`]'s `left`/`right`/`top`/
+/// `bottom`) is deferred (see "What's deferred").
+#[derive(Clone, Debug)]
+pub struct CubCubeSpec {
+    pub name: String,
+    /// The (must be **nullary** — arity 0) point constructor this 3-cell is
+    /// based at, all eight corners.
+    pub base: usize,
+}
+
+impl CubCubeSpec {
+    /// The "S³" shape: a 3-cell based at a nullary point with fully
+    /// degenerate (`refl`) boundary — the simplest nontrivial 3-cell, one
+    /// dimension up from [`CubSurfSpec::s2`].
+    pub fn s3(name: impl Into<String>, base: usize) -> Self {
+        CubCubeSpec { name: name.into(), base }
+    }
+}
+
 /// A user-supplied specification of a cubical HIT: its type-former name, its
 /// (possibly fielded) point constructors, its (possibly quantified) path
-/// constructors, and its (S²-shaped) 2-path ("surface") constructors. See the
-/// module doc for the exact supported class.
+/// constructors, its (S²-shaped) 2-path ("surface") constructors, and its
+/// (S³-shaped, all-degenerate) 3-path ("cube") constructors. See the module
+/// doc for the exact supported class.
 #[derive(Clone, Debug)]
 pub struct CubHitSpec {
     pub name: String,
     pub points: Vec<CubPointSpec>,
     pub paths: Vec<CubPathSpec>,
     pub surfaces: Vec<CubSurfSpec>,
+    pub cubes: Vec<CubCubeSpec>,
 }
 
 impl CubHitSpec {
@@ -519,6 +555,10 @@ fn pathc(spec: &CubHitSpec, j: usize) -> Term {
 /// `H.surf_k` (bare constant; `@`-apply twice for the 2-cell).
 fn surfc(spec: &CubHitSpec, k: usize) -> Term {
     Term::cnst(name(&spec.surfaces[k].name), vec![])
+}
+/// `H.cube_l` (bare constant; `@`-apply three times for the 3-cell).
+fn cubec(spec: &CubHitSpec, l: usize) -> Term {
+    Term::cnst(name(&spec.cubes[l].name), vec![])
 }
 
 /// Build a de-Bruijn `Var` referencing the binder assigned **level** `level`
@@ -587,6 +627,7 @@ pub fn declare_cubical_hit(env: &mut Env, spec: &CubHitSpec) -> Result<(), Strin
     let n = spec.points.len();
     let m = spec.paths.len();
     let p = spec.surfaces.len();
+    let q = spec.cubes.len();
     if n == 0 {
         return Err("a cubical HIT needs at least one point constructor".to_string());
     }
@@ -679,10 +720,30 @@ pub fn declare_cubical_hit(env: &mut Env, spec: &CubHitSpec) -> Result<(), Strin
         }
     }
 
+    // 3-path ("cube") constructors: `base` must be in range and NULLARY (see
+    // `CubCubeSpec`'s doc comment — the all-degenerate "S³" shape only, no
+    // sides to validate since every side is `refl`).
+    for cube in &spec.cubes {
+        if cube.base >= n {
+            return Err(format!(
+                "cube constructor '{}' has an out-of-range base point (index {}, but only {n} points)",
+                cube.name, cube.base
+            ));
+        }
+        if !spec.points[cube.base].fields.is_empty() {
+            return Err(format!(
+                "cube constructor '{}' targets point constructor '{}', which is not nullary — 3-path \
+                 constructors may only (yet) be based at a nullary point (see module docs)",
+                cube.name, spec.points[cube.base].name
+            ));
+        }
+    }
+
     let mut all_names: Vec<&str> = vec![spec.name.as_str()];
     all_names.extend(spec.points.iter().map(|p| p.name.as_str()));
     all_names.extend(spec.paths.iter().map(|p| p.name.as_str()));
     all_names.extend(spec.surfaces.iter().map(|s| s.name.as_str()));
+    all_names.extend(spec.cubes.iter().map(|c| c.name.as_str()));
     let rec_name_owned = spec.rec_name();
     all_names.push(&rec_name_owned);
     for nm in &all_names {
@@ -832,17 +893,49 @@ pub fn declare_cubical_hit(env: &mut Env, spec: &CubHitSpec) -> Result<(), Strin
     }
 
     // ------------------------------------------------------------------
+    // H.cube_l : PathP (\i. PathP (\j. Path H p p) (refl p) (refl p))
+    //             (refl (refl p)) (refl (refl p)), where p = H.point_{base}
+    // — the fully-degenerate "S³" 3-cell (see `CubCubeSpec`'s doc comment).
+    // Every side is `refl`-of-`refl` (constant), so — exactly as for the
+    // all-`refl` "S²" case above — none of the nested families/endpoints
+    // depend on the interval variable they're notionally a function of, so
+    // no explicit `Var(0)` reference or lifting is needed anywhere in this
+    // construction; each closed sub-term is reused verbatim at every nesting
+    // level (mirrors the surface loop's `side_at`/`fam` comment above).
+    // ------------------------------------------------------------------
+    for (l, cube) in spec.cubes.iter().enumerate() {
+        let base_pt = point(spec, cube.base); // nullary, so the bare constant IS the point value.
+        let lvl0 = Term::path(hconst(spec), base_pt.clone(), base_pt.clone()); // Path H p p
+        let lvl1 = Term::pathp(lvl0, crate::cubical::refl(&base_pt), crate::cubical::refl(&base_pt));
+        let ty = Term::pathp(
+            lvl1,
+            crate::cubical::refl(&crate::cubical::refl(&base_pt)),
+            crate::cubical::refl(&crate::cubical::refl(&base_pt)),
+        );
+        env.insert(
+            name(&cube.name),
+            Decl::CubHit(Rc::new(CubHit {
+                id: id.clone(),
+                role: CubHitRole::Cube { idx: l as u32, base: cube.base as u32 },
+                num_levels: 0,
+                ty,
+            })),
+        )?;
+    }
+
+    // ------------------------------------------------------------------
     // H.rec.{v} : Π (C : H -> Sort v)
     //               (c_0 : ..) .. (c_{n-1} : ..)
     //               (s_0 : ..) .. (s_{m-1} : ..)
     //               (t_0 : ..) .. (t_{p-1} : ..)
+    //               (u_0 : ..) .. (u_{q-1} : ..)
     //               (x : H), C x
     //
     // Binder levels (0-based, introduction order): C=0, c_i=1+i, s_j=1+n+j,
-    // t_k=1+n+m+k, x=1+n+m+p — see `var_at`'s doc comment for the depth/level
-    // convention.
+    // t_k=1+n+m+k, u_l=1+n+m+p+l, x=1+n+m+p+q — see `var_at`'s doc comment
+    // for the depth/level convention.
     // ------------------------------------------------------------------
-    let x_level = 1 + n + m + p;
+    let x_level = 1 + n + m + p + q;
 
     // Innermost: `C x`, written at depth = x_level + 1.
     let codomain = {
@@ -851,6 +944,55 @@ pub fn declare_cubical_hit(env: &mut Env, spec: &CubHitSpec) -> Result<(), Strin
     };
     // `x : H`, written at depth = x_level.
     let mut acc = Term::pi(hconst(spec), codomain);
+
+    // u_{q-1} .. u_0, each written at depth = 1 + n + m + p + l (before its
+    // own triple-interval telescope is opened). Mirrors `H.cube_l`'s own
+    // declared type exactly, one level up from `t_k` above: `H` -> `C`
+    // (applied), `H.point_base` -> the point recursor case `c_base`, and the
+    // `refl`-of-`refl` boundary structure preserved verbatim (every side of
+    // `H.cube_l` is degenerate, so — exactly as the `t_k` loop's `None`
+    // branch already does for `s2` — each nested endpoint is simply
+    // `c_base` wrapped in the right number of `refl`s, with no side-lookup
+    // needed at all, since `CubCubeSpec` has no `left`/`right`/`top`/
+    // `bottom` fields to dispatch on).
+    for l in (0..q).rev() {
+        let cube = &spec.cubes[l];
+        let depth = 1 + n + m + p + l;
+        let c_base_at = |d: usize| var_at(1 + cube.base, d);
+        // Innermost: the `k`-level family `\k. C (cube@i@j@k)`, written under
+        // all three interval binders (levels `depth`, `depth+1`, `depth+2`).
+        let fam3 = {
+            let fam_depth = depth + 3;
+            let c_ref = var_at(0, fam_depth);
+            let i_ref = var_at(depth, fam_depth);
+            let j_ref = var_at(depth + 1, fam_depth);
+            let k_ref = var_at(depth + 2, fam_depth);
+            let cube_call = Term::papp(Term::papp(Term::papp(cubec(spec, l), i_ref), j_ref), k_ref);
+            Term::app(c_ref, cube_call)
+        };
+        // The `k`-level `PathP` itself (a function of `i`, `j`; the `k`
+        // binder is implicit in `Term::pathp`'s family argument) — its own
+        // endpoints (the base case's boundary in `k`) are the bare `c_base`,
+        // at the depth right after `i`/`j` are opened.
+        let lvl2 = Term::pathp(fam3, c_base_at(depth + 2), c_base_at(depth + 2));
+        // The `j`-level `PathP` (a function of `i` only) — its own endpoints
+        // are `refl c_base` (a constant path in `k`), at the depth right
+        // after `i` alone is opened.
+        let lvl1 = Term::pathp(
+            lvl2,
+            crate::cubical::refl(&c_base_at(depth + 1)),
+            crate::cubical::refl(&c_base_at(depth + 1)),
+        );
+        // The outer (`i`-level) `PathP` — `u_l`'s own type — with endpoints
+        // `refl (refl c_base)` (a constant square), at `depth` (no interval
+        // binder opened yet).
+        let u_ty = Term::pathp(
+            lvl1,
+            crate::cubical::refl(&crate::cubical::refl(&c_base_at(depth))),
+            crate::cubical::refl(&crate::cubical::refl(&c_base_at(depth))),
+        );
+        acc = Term::pi(u_ty, acc);
+    }
 
     // t_{p-1} .. t_0, each written at depth = 1 + n + m + k (before its own
     // double-interval telescope is opened). Mirrors `H.surf_k`'s own declared
@@ -961,7 +1103,12 @@ pub fn declare_cubical_hit(env: &mut Env, spec: &CubHitSpec) -> Result<(), Strin
         name(&rec_name_owned),
         Decl::CubHit(Rc::new(CubHit {
             id,
-            role: CubHitRole::Rec { num_points: n as u32, num_paths: m as u32, num_surfaces: p as u32 },
+            role: CubHitRole::Rec {
+                num_points: n as u32,
+                num_paths: m as u32,
+                num_surfaces: p as u32,
+                num_cubes: q as u32,
+            },
             num_levels: 1,
             ty: rec_ty,
         })),
@@ -1009,6 +1156,7 @@ mod tests {
             points: vec![CubPointSpec::nullary("MyI.zero"), CubPointSpec::nullary("MyI.one")],
             paths: vec![CubPathSpec::simple("MyI.seg", 0, 1)],
             surfaces: vec![],
+            cubes: vec![],
         };
         declare_cubical_hit(&mut env, &spec).unwrap();
         let chk = Checker::new(&env);
@@ -1022,6 +1170,7 @@ mod tests {
         let mut env = base_env();
         let spec = CubHitSpec { name: "Empty2".to_string(), points: vec![], paths: vec![],
             surfaces: vec![],
+            cubes: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("at least one point"), "got: {err}");
@@ -1035,6 +1184,7 @@ mod tests {
             points: vec![CubPointSpec::nullary("Bad.p0")],
             paths: vec![CubPathSpec::simple("Bad.bogus", 0, 5)],
             surfaces: vec![],
+            cubes: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("out-of-range"), "got: {err}");
@@ -1048,6 +1198,7 @@ mod tests {
             points: vec![CubPointSpec::nullary("Dup.p0")],
             paths: vec![],
             surfaces: vec![],
+            cubes: vec![],
         };
         declare_cubical_hit(&mut env, &spec).unwrap();
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
@@ -1067,6 +1218,7 @@ mod tests {
             }],
             paths: vec![],
             surfaces: vec![],
+            cubes: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("strict positivity") || err.contains("mentioning"), "got: {err}");
@@ -1090,6 +1242,7 @@ mod tests {
                 rhs: (1, vec![lit(0), Term::cnst(name("Bad.unit"), vec![])]),
             }],
             surfaces: vec![],
+            cubes: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("recursive field"), "got: {err}");
@@ -1109,6 +1262,7 @@ mod tests {
                 rhs: (0, vec![]), // wrong arity
             }],
             surfaces: vec![],
+            cubes: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("arity"), "got: {err}");
@@ -1124,6 +1278,7 @@ mod tests {
             points: vec![CubPointSpec::nullary("I2g.zero"), CubPointSpec::nullary("I2g.one")],
             paths: vec![CubPathSpec::simple("I2g.seg", 0, 1)],
             surfaces: vec![],
+            cubes: vec![],
         }
     }
 
@@ -1195,6 +1350,7 @@ mod tests {
             points: vec![CubPointSpec::nullary("S1g.base")],
             paths: vec![CubPathSpec::simple("S1g.loop", 0, 0)],
             surfaces: vec![],
+            cubes: vec![],
         }
     }
 
@@ -1262,6 +1418,7 @@ mod tests {
             points: vec![CubPointSpec::nullary("Fig8.base")],
             paths: vec![CubPathSpec::simple("Fig8.loop1", 0, 0), CubPathSpec::simple("Fig8.loop2", 0, 0)],
             surfaces: vec![],
+            cubes: vec![],
         }
     }
 
@@ -1338,12 +1495,14 @@ mod tests {
             points: vec![CubPointSpec::nullary("Ia.zero"), CubPointSpec::nullary("Ia.one")],
             paths: vec![CubPathSpec::simple("Ia.seg", 0, 1)],
             surfaces: vec![],
+            cubes: vec![],
         };
         let spec_b = CubHitSpec {
             name: "Ib".to_string(),
             points: vec![CubPointSpec::nullary("Ib.zero"), CubPointSpec::nullary("Ib.one")],
             paths: vec![CubPathSpec::simple("Ib.seg", 0, 1)],
             surfaces: vec![],
+            cubes: vec![],
         };
         declare_cubical_hit(&mut env, &spec_a).unwrap();
         declare_cubical_hit(&mut env, &spec_b).unwrap();
@@ -1411,6 +1570,7 @@ mod tests {
             ],
             paths: vec![],
             surfaces: vec![],
+            cubes: vec![],
         }
     }
 
@@ -1536,6 +1696,7 @@ mod tests {
                 rhs: (0, vec![Term::Var(1)]),
             }],
             surfaces: vec![],
+            cubes: vec![],
         };
         (env, spec)
     }
@@ -1686,6 +1847,7 @@ mod tests {
                 rhs: (0, vec![Term::Var(1)]),
             }],
             surfaces: vec![],
+            cubes: vec![],
         };
         declare_cubical_hit(&mut env, &spec).unwrap();
 
@@ -1753,6 +1915,7 @@ mod tests {
             points: vec![CubPointSpec::nullary("S2g.base")],
             paths: vec![],
             surfaces: vec![CubSurfSpec::s2("S2g.surf", 0)],
+            cubes: vec![],
         }
     }
 
@@ -1783,6 +1946,7 @@ mod tests {
             points: vec![CubPointSpec { name: "Bad.mk".to_string(), fields: vec![Field::NonRec(cn("Nat"))] }],
             paths: vec![],
             surfaces: vec![CubSurfSpec::s2("Bad.surf", 0)],
+            cubes: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("not nullary") || err.contains("nullary"), "got: {err}");
@@ -1797,6 +1961,7 @@ mod tests {
             points: vec![CubPointSpec::nullary("Bad2.p0")],
             paths: vec![],
             surfaces: vec![CubSurfSpec::s2("Bad2.surf", 5)],
+            cubes: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("out-of-range"), "got: {err}");
@@ -1915,12 +2080,14 @@ mod tests {
             points: vec![CubPointSpec::nullary("S2a.base")],
             paths: vec![],
             surfaces: vec![CubSurfSpec::s2("S2a.surf", 0)],
+            cubes: vec![],
         };
         let spec_b = CubHitSpec {
             name: "S2b".to_string(),
             points: vec![CubPointSpec::nullary("S2b.base")],
             paths: vec![],
             surfaces: vec![CubSurfSpec::s2("S2b.surf", 0)],
+            cubes: vec![],
         };
         declare_cubical_hit(&mut env, &spec_a).unwrap();
         declare_cubical_hit(&mut env, &spec_b).unwrap();
@@ -1959,6 +2126,7 @@ mod tests {
                 top: Some(1),
                 bottom: Some(1),
             }],
+            cubes: vec![],
         }
     }
 
@@ -2075,6 +2243,7 @@ mod tests {
                 top: None,
                 bottom: None,
             }],
+            cubes: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("out-of-range"), "got: {err}");
@@ -2098,6 +2267,7 @@ mod tests {
                 top: None,
                 bottom: None,
             }],
+            cubes: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("self-loop"), "got: {err}");
@@ -2126,6 +2296,7 @@ mod tests {
                 top: None,
                 bottom: None,
             }],
+            cubes: vec![],
         };
         let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
         assert!(err.contains("quantified"), "got: {err}");
@@ -2151,5 +2322,263 @@ mod tests {
             &Term::plam(Term::papp(cn("T2g.loopP"), Term::Var(0))),
             &crate::cubical::refl(&cn("T2g.base"))
         ));
+    }
+
+    // ---------------------------------------------------------------------
+    // NEW: a genuine 3-dimensional cubical HIT — `S³`, one point (`base`) and
+    // one fully-degenerate 3-path ("cube") constructor `cube : Path (Path
+    // (Path S³ base base) (refl base) (refl base)) (refl (refl base)) (refl
+    // (refl base))` — the simplest 3-cell, "S² one dimension up" (see the
+    // module doc, "3-dimensional (higher) path constructors" and
+    // `CubCubeSpec`'s doc comment).
+    // ---------------------------------------------------------------------
+
+    fn s3_spec() -> CubHitSpec {
+        CubHitSpec {
+            name: "S3g".to_string(),
+            points: vec![CubPointSpec::nullary("S3g.base")],
+            paths: vec![],
+            surfaces: vec![],
+            cubes: vec![CubCubeSpec::s3("S3g.cube", 0)],
+        }
+    }
+
+    #[test]
+    fn s3_wellformed_and_cube_typechecks() {
+        let mut env = base_env();
+        declare_cubical_hit(&mut env, &s3_spec()).unwrap();
+        let chk = Checker::new(&env);
+        for n in ["S3g", "S3g.base", "S3g.cube", "S3g.rec"] {
+            chk.infer_closed(env.get(n).unwrap().ty()).unwrap_or_else(|e| panic!("{n} ill-formed: {e}"));
+        }
+        // `S3g.cube` itself checks against the literal `Path (Path (Path S3g
+        // base base) (refl base) (refl base)) (refl (refl base)) (refl (refl
+        // base))` goal — pins the exact declared shape down.
+        let base = cn("S3g.base");
+        let lvl0 = Term::path(cn("S3g"), base.clone(), base.clone());
+        let lvl1 = Term::path(lvl0, crate::cubical::refl(&base), crate::cubical::refl(&base));
+        let goal = Term::path(
+            lvl1,
+            crate::cubical::refl(&crate::cubical::refl(&base)),
+            crate::cubical::refl(&crate::cubical::refl(&base)),
+        );
+        chk.check(&mut LocalCtx::new(), &cn("S3g.cube"), &goal).unwrap();
+    }
+
+    /// SOUNDNESS (adversarial): a 3-path ("cube") constructor may only be
+    /// based at a NULLARY point constructor (mirrors `rejects_surf_based_at_fielded_point`
+    /// one dimension up).
+    #[test]
+    fn rejects_cube_based_at_fielded_point() {
+        let mut env = base_env();
+        let spec = CubHitSpec {
+            name: "Bad6".to_string(),
+            points: vec![CubPointSpec { name: "Bad6.mk".to_string(), fields: vec![Field::NonRec(cn("Nat"))] }],
+            paths: vec![],
+            surfaces: vec![],
+            cubes: vec![CubCubeSpec::s3("Bad6.cube", 0)],
+        };
+        let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
+        assert!(err.contains("nullary"), "got: {err}");
+    }
+
+    /// SOUNDNESS (adversarial): an out-of-range `base` index is rejected.
+    #[test]
+    fn rejects_cube_out_of_range_base() {
+        let mut env = base_env();
+        let spec = CubHitSpec {
+            name: "Bad7".to_string(),
+            points: vec![CubPointSpec::nullary("Bad7.p0")],
+            paths: vec![],
+            surfaces: vec![],
+            cubes: vec![CubCubeSpec::s3("Bad7.cube", 5)],
+        };
+        let err = declare_cubical_hit(&mut env, &spec).unwrap_err();
+        assert!(err.contains("out-of-range"), "got: {err}");
+    }
+
+    /// COMPUTATION RULE: the 3-path ι-rule. `rec .. (cube @ i @ j @ k)`
+    /// reduces to `((u @ i) @ j) @ k` for a CONCRETE (genuinely reducing)
+    /// triply-nested `PLam` witness `u = refl (refl (refl 7))` — differential
+    /// reducer vs. NbE, and (since `u` is concrete) exercises the boundary at
+    /// every one of the 8 corners too (`i0`/`i1` x `j0`/`j1` x `k0`/`k1`, all
+    /// collapsing to the point rule's value) — the module doc's "Boundary
+    /// coherence" argument, now two dimensions up, mirroring
+    /// `s2_surf_iota_computes_and_boundary_agrees` one level deeper.
+    #[test]
+    fn s3_cube_iota_computes_and_boundary_agrees() {
+        let mut env = base_env();
+        declare_cubical_hit(&mut env, &s3_spec()).unwrap();
+        let uni = Level::of_nat(1);
+        let seven = lit(7);
+        let motive = Term::lam(cn("S3g"), cn("Nat").lift(1, 0));
+        let u_case = crate::cubical::refl(&crate::cubical::refl(&crate::cubical::refl(&seven)));
+        let rec = |scrut: Term| {
+            Term::apps(
+                Term::cnst(name("S3g.rec"), vec![uni.clone()]),
+                [motive.clone(), seven.clone(), u_case.clone(), scrut],
+            )
+        };
+        let chk = Checker::new(&env);
+        let red = Reducer::new(&env);
+        let nbe = Nbe::new(&env);
+
+        // Point rule: `rec base = 7`.
+        let rb = rec(cn("S3g.base"));
+        chk.check(&mut LocalCtx::new(), &rb, &cn("Nat")).unwrap();
+        assert!(red.is_def_eq(&rb, &seven));
+        assert_eq!(nbe.normalize(&rb), nbe.normalize(&seven));
+
+        // 3-path rule: `rec (cube @ i @ j @ k) = ((u @ i) @ j) @ k = 7`, for
+        // symbolic `i`/`j`/`k` (three nested `plam`s; `i = Var(2)`, `j =
+        // Var(1)`, `k = Var(0)` inside).
+        let scrut = Term::papp(
+            Term::papp(Term::papp(cn("S3g.cube"), Term::Var(2)), Term::Var(1)),
+            Term::Var(0),
+        );
+        let whole = Term::plam(Term::plam(Term::plam(rec(scrut))));
+        let ty = chk.infer_closed(&whole).unwrap();
+        let inner0 = Term::path(cn("Nat"), seven.clone(), seven.clone());
+        let inner1 = Term::path(inner0, crate::cubical::refl(&seven), crate::cubical::refl(&seven));
+        let expected_ty = Term::path(
+            inner1,
+            crate::cubical::refl(&crate::cubical::refl(&seven)),
+            crate::cubical::refl(&crate::cubical::refl(&seven)),
+        );
+        assert!(red.is_def_eq(&ty, &expected_ty));
+        let expected = Term::plam(Term::plam(Term::plam(seven.lift(3, 0))));
+        assert!(red.is_def_eq(&whole, &expected));
+        assert_eq!(nbe.normalize(&whole), nbe.normalize(&expected));
+
+        // Boundary coherence at every one of the 8 corners: `cube @
+        // i0/i1 @ j0/j1 @ k0/k1` all agree with the point rule (`rec base =
+        // 7`), for the concrete witness `u_case`.
+        for i_end in [Term::IZero, Term::IOne] {
+            for j_end in [Term::IZero, Term::IOne] {
+                for k_end in [Term::IZero, Term::IOne] {
+                    let corner = rec(Term::papp(
+                        Term::papp(Term::papp(cn("S3g.cube"), i_end.clone()), j_end.clone()),
+                        k_end.clone(),
+                    ));
+                    chk.check(&mut LocalCtx::new(), &corner, &cn("Nat")).unwrap();
+                    assert!(
+                        red.is_def_eq(&corner, &rb),
+                        "reducer: corner {i_end:?}/{j_end:?}/{k_end:?} agrees with rec base"
+                    );
+                    assert_eq!(
+                        nbe.normalize(&corner),
+                        nbe.normalize(&rb),
+                        "nbe: corner {i_end:?}/{j_end:?}/{k_end:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `H.rec` stays stuck on a partially-applied ("under-dimensioned") cube
+    /// — a DOUBLE `@`-application `cube @ i @ j` (not the required triple
+    /// `cube @ i @ j @ k`) must not misfire the 3-path ι-rule (mirrors
+    /// `rec_stuck_on_underapplied_surf` one dimension up).
+    #[test]
+    fn rec_stuck_on_underapplied_cube() {
+        let mut env = base_env();
+        declare_cubical_hit(&mut env, &s3_spec()).unwrap();
+        let uni = Level::of_nat(1);
+        let motive = Term::lam(cn("S3g"), cn("Nat").lift(1, 0));
+        let u_case = crate::cubical::refl(&crate::cubical::refl(&crate::cubical::refl(&lit(7))));
+        let partial = Term::papp(Term::papp(cn("S3g.cube"), Term::Var(1)), Term::Var(0)); // only TWO `@`
+        let rec = Term::plam(Term::plam(Term::apps(
+            Term::cnst(name("S3g.rec"), vec![uni]),
+            [motive, lit(7), u_case, partial],
+        )));
+        let red = Reducer::new(&env);
+        let result = red.whnf(&rec);
+        // Stays a stuck `PLam` around the (still-stuck) `H.rec` application —
+        // never collapses to a point-rule/surface-rule/cube-rule result.
+        match &result {
+            Term::PLam(body) => match &**body {
+                Term::PLam(inner) => {
+                    let (h, _) = inner.unfold_apps();
+                    assert!(matches!(h, Term::Const(n, _) if n == name("S3g.rec")));
+                }
+                other => panic!("expected a nested stuck PLam, got {other:?}"),
+            },
+            other => panic!("expected a stuck PLam, got {other:?}"),
+        }
+    }
+
+    /// ANTI-`False`: cannot derive `Path Nat 0 1` via the 3-path schema
+    /// either.
+    #[test]
+    fn cannot_prove_false_via_cube_schema() {
+        let mut env = base_env();
+        declare_cubical_hit(&mut env, &s3_spec()).unwrap();
+        let chk = Checker::new(&env);
+        let inner0 = Term::path(cn("Nat"), lit(3), lit(3));
+        let inner1 = Term::path(inner0, crate::cubical::refl(&lit(3)), crate::cubical::refl(&lit(3)));
+        let bogus_goal = Term::path(
+            inner1,
+            crate::cubical::refl(&crate::cubical::refl(&lit(3))),
+            crate::cubical::refl(&crate::cubical::refl(&lit(3))),
+        );
+        // `S3g.cube`'s own declared type is `Path (Path (Path S3g base base) ..)
+        // ..` — an unrelated `Nat`-typed 3-path goal must not check.
+        assert!(chk.check(&mut LocalCtx::new(), &cn("S3g.cube"), &bogus_goal).is_err());
+        let red = Reducer::new(&env);
+        assert!(!red.is_def_eq(&lit(0), &lit(1)));
+    }
+
+    /// Adversarial: per-`id` no cross-fire between two independently declared
+    /// `S³`-shaped HITs (even structurally identical ones) — mirrors
+    /// `no_cross_fire_between_two_distinct_s2_hits` one dimension up.
+    #[test]
+    fn no_cross_fire_between_two_distinct_s3_hits() {
+        let mut env = base_env();
+        let spec_a = CubHitSpec {
+            name: "S3a".to_string(),
+            points: vec![CubPointSpec::nullary("S3a.base")],
+            paths: vec![],
+            surfaces: vec![],
+            cubes: vec![CubCubeSpec::s3("S3a.cube", 0)],
+        };
+        let spec_b = CubHitSpec {
+            name: "S3b".to_string(),
+            points: vec![CubPointSpec::nullary("S3b.base")],
+            paths: vec![],
+            surfaces: vec![],
+            cubes: vec![CubCubeSpec::s3("S3b.cube", 0)],
+        };
+        declare_cubical_hit(&mut env, &spec_a).unwrap();
+        declare_cubical_hit(&mut env, &spec_b).unwrap();
+        let chk = Checker::new(&env);
+        let motive = Term::lam(cn("S3a"), cn("Nat").lift(1, 0));
+        let u_case = crate::cubical::refl(&crate::cubical::refl(&crate::cubical::refl(&lit(0))));
+        let bogus = Term::apps(
+            Term::cnst(name("S3a.rec"), vec![Level::of_nat(1)]),
+            [motive, lit(0), u_case, cn("S3b.base")],
+        );
+        assert!(chk.infer_closed(&bogus).is_err(), "S3a.rec must reject an S3b-typed scrutinee");
+    }
+
+    /// Combined declaration: a HIT with a point, a self-loop path, an S²
+    /// surface, AND an S³ cube all together — confirms the four constructor
+    /// kinds' recursor telescopes compose correctly (binder-level arithmetic
+    /// `x_level = 1 + n + m + p + q` and the `u_l` loop's own depth
+    /// bookkeeping) rather than only being exercised in isolation.
+    #[test]
+    fn combined_point_path_surf_cube_wellformed() {
+        let mut env = base_env();
+        let spec = CubHitSpec {
+            name: "Combo".to_string(),
+            points: vec![CubPointSpec::nullary("Combo.base")],
+            paths: vec![CubPathSpec::simple("Combo.loop", 0, 0)],
+            surfaces: vec![CubSurfSpec::s2("Combo.surf", 0)],
+            cubes: vec![CubCubeSpec::s3("Combo.cube", 0)],
+        };
+        declare_cubical_hit(&mut env, &spec).unwrap();
+        let chk = Checker::new(&env);
+        for n in ["Combo", "Combo.base", "Combo.loop", "Combo.surf", "Combo.cube", "Combo.rec"] {
+            chk.infer_closed(env.get(n).unwrap().ty()).unwrap_or_else(|e| panic!("{n} ill-formed: {e}"));
+        }
     }
 }
