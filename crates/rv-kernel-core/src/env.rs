@@ -462,6 +462,50 @@ pub struct S1c {
     pub ty: Term,
 }
 
+/// Which of a **general, user-declarable cubical HIT**'s constants a [`CubHit`]
+/// declaration is (see [`crate::cubical_hit`]). This generalizes [`I2Role`]/
+/// [`S1cRole`] into one parameterized schema: `n ≥ 1` nullary point constructors
+/// and `m ≥ 0` genuine cubical `Path` constructors between (possibly equal, i.e.
+/// self-loop) point constructors, plus one `Type`-valued, computing recursor whose
+/// ι-rules are synthesized generically from `n`/`m` rather than hand-written per
+/// HIT. Every constant belonging to one declared HIT shares the same [`CubHit::id`]
+/// (the HIT's own type-former name), so the reducer/NbE only ever fire a HIT's
+/// ι-rules against scrutinees built from *that same* HIT's constructors — two
+/// distinct `declare_cubical_hit` calls never cross-fire, exactly as
+/// [`Hit`]/[`HitRole`] already ensure for the propositional (`Eq`-based) schema.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CubHitRole {
+    /// The type former `H : Type 0`.
+    Type,
+    /// The `i`-th (0-based) nullary point constructor `H.point_i : H`.
+    Point(u32),
+    /// The `j`-th (0-based) cubical path constructor `H.path_j : Path H
+    /// H.point_{lhs} H.point_{rhs}` — a genuine `PathP`/`PLam`-classified path (see
+    /// [`crate::cubical`]), not an inductive `Eq`. `lhs == rhs` is a legal
+    /// self-loop (as `S1cRole::Loop` is a fixed instance of).
+    Path { idx: u32, lhs: u32, rhs: u32 },
+    /// The **`Type`-valued, computing** dependent recursor `H.rec`, generically
+    /// synthesized for `num_points` point constructors and `num_paths` path
+    /// constructors (see [`crate::cubical_hit`] for the exact signature and
+    /// ι-rules — a direct generalization of [`I2Role::Rec`]/[`S1cRole::Rec`]).
+    Rec { num_points: u32, num_paths: u32 },
+}
+
+/// A member of a **general, user-declared cubical HIT**, installed by
+/// [`crate::cubical_hit::declare_cubical_hit`]. See [`CubHitRole`] for the
+/// per-constant breakdown and [`crate::cubical_hit`] for the schema's supported
+/// class and soundness argument.
+#[derive(Clone, Debug)]
+pub struct CubHit {
+    /// The name of this HIT's type former, shared by every constant of the same
+    /// declaration — the reducer/NbE compare this `id` before firing any ι-rule so
+    /// distinct declared cubical HITs never cross-fire.
+    pub id: Name,
+    pub role: CubHitRole,
+    pub num_levels: u32,
+    pub ty: Term,
+}
+
 /// A member of a **user-declared 1-HIT** family, installed by
 /// [`crate::hit::declare_hit`]. See [`HitRole`] for the per-constant breakdown and
 /// [`crate::hit`] for the schema's soundness argument and the supported class of HITs.
@@ -506,6 +550,7 @@ pub enum Decl {
     Hit(Rc<Hit>),
     I2(Rc<I2>),
     S1c(Rc<S1c>),
+    CubHit(Rc<CubHit>),
 }
 
 impl Decl {
@@ -525,6 +570,7 @@ impl Decl {
             Decl::Hit(h) => &h.ty,
             Decl::I2(c) => &c.ty,
             Decl::S1c(c) => &c.ty,
+            Decl::CubHit(c) => &c.ty,
         }
     }
     /// How many universe parameters this entry abstracts over.
@@ -543,6 +589,7 @@ impl Decl {
             Decl::Hit(h) => h.num_levels,
             Decl::I2(c) => c.num_levels,
             Decl::S1c(c) => c.num_levels,
+            Decl::CubHit(c) => c.num_levels,
         }
     }
 }

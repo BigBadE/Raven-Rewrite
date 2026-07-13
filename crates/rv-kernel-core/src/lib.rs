@@ -24,6 +24,7 @@ pub mod circle;
 pub mod circle_cubical;
 pub mod coinductive;
 pub mod cubical;
+pub mod cubical_hit;
 pub mod env;
 pub mod equiv;
 pub mod face;
