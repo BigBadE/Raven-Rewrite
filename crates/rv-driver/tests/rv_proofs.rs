@@ -80,6 +80,14 @@ fn stdlib_list2() {
     check("stdlib_list2.rv");
 }
 
+/// Verified insertion sort over `List<Nat>`: `leb`'s two-way reflection into `Le`
+/// (`leb_true_le`/`leb_false_le`), `insert`/`isort` with their length-preservation lemmas, and
+/// the headline correctness theorem `sorted_isort` — insertion sort produces a sorted list.
+#[test]
+fn alg_sorting() {
+    check("alg_sorting.rv");
+}
+
 #[test]
 fn decide_reflection() {
     check("decide_demo.rv");
