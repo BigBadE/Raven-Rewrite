@@ -126,6 +126,35 @@
 //! no `hcomp`); the remaining work is bookkeeping-heavy 2-path algebra, not a
 //! new primitive.
 //!
+//! **Update -- the groupoid-law library (left-unit closed; right-unit/inverse
+//! laws stated but blocked)**: `crate::cubical`'s "Phase 4.5 (groupoid laws)"
+//! section now supplies `trans_left_unit`/`trans_right_unit`/`trans_inv_right`/
+//! `trans_inv_left`, the standard `J`-derived ∞-groupoid coherences for `trans`
+//! (HoTT book §2.1, Lemma 2.1.4) that `τ'` would compose through. Of these,
+//! **`trans_left_unit` closes and is kernel-checked** — it turns out to hold by
+//! plain `refl` (`trans ty a b (refl a) q` reduces *definitionally* to `q` via
+//! `j`'s own "computation on `refl`" rule, so no `J`-elimination is even needed
+//! for that one law). The other three (`trans_right_unit`/the two inverse
+//! laws) are correctly *stated* and *built* (each a single, well-typed
+//! `J`-elimination, mirroring `nat_sq`'s own pattern) but their base-case check
+//! does not go through: it needs a nested `trans`/`transp` reduction one layer
+//! deeper than `nat_sq`'s own "computation on `refl`" section confirms works —
+//! the same *class* of completeness gap as `trans3`'s documented nested-`trans`
+//! obstruction and `sec_prime`'s literal-`PLam`-data gap above, not a soundness
+//! issue (see `crate::cubical`'s "Phase 4.5" module doc for the full diagnosis,
+//! and `crate::cubical::groupoid_law_tests::right_unit_hits_a_documented_
+//! nested_reduction_gap`/its two siblings for the pinned-down regression
+//! tests). Net effect: `τ'`/`biInvToHAE` remain open past this pass too —
+//! closing them needs either a fix to this nested-reduction gap (which, like
+//! the others, sits in `reduce.rs`/`nbe.rs`/`check.rs`, out of scope here) or a
+//! proof strategy for the unit/inverse laws that avoids the problematic
+//! nesting shape (analogous to how `trans3` itself sidesteps the nested-`trans`
+//! gap by only ever `J`-eliminating one, first-position path). The one closed
+//! law (`trans_left_unit`) is real, useful, additive progress toward `τ'`
+//! regardless: any future combination of `nat_sq` instances that only ever
+//! needs a left-unit rewrite (rather than right-unit/inverse) can already use
+//! it as-is.
+//!
 //! ## Encoding
 //!
 //! Same "hand-built single-constructor inductive, no primitive `Σ`" discipline as

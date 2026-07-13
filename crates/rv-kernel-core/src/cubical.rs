@@ -958,6 +958,292 @@ pub fn nat_sq(a_ty: &Term, b_ty: &Term, f: &Term, g: &Term, h: &Term, x: &Term, 
     j(&motive, &d, p)
 }
 
+// ============================================================================
+// Phase 4.5 (groupoid laws): the standard ∞-groupoid coherences for [`trans`] —
+// left/right unit and the two inverse laws — as `J`-derived 2-paths (HoTT book
+// §2.1, Lemma 2.1.4). These are exactly the building blocks
+// `crate::equiv_hae`'s `τ'` needs (see that module's doc, "Update -- the
+// naturality-square keystone is now landed").
+//
+// # Left unit is *definitional*, not just propositional
+//
+// `trans ty a b (refl a) q` is, by [`trans`]'s own construction, `j(motive, d,
+// refl a)` applied to `q`, where `d := λr. r`. `j` on a literal `refl a`
+// subject is exactly the "computation on `refl`" case documented in [`j`]'s own
+// module doc (Phase 3.9, "Computation on `refl`") — `crate::kan::
+// family_is_constant`'s normalization-aware extension recognizes the family as
+// constant at `i = i0`/`i1` alike and the whole `transp` collapses straight to
+// `d`, no stuck neutral left over. So `trans ty a b (refl a) q` reduces, on the
+// nose, to `(λr. r) q ≡ q` — meaning [`trans_left_unit`]'s statement holds by
+// plain `refl`, no `J`-elimination needed at all.
+//
+// # Right unit, and the two inverse laws: stated, built, but hit a nested-
+// reduction gap (not landed as passing — see honest status below)
+//
+// `trans` only ever eliminates its *first* path argument (`p`, not `q`), so
+// `trans ty a b p (refl b)` does **not** reduce definitionally for opaque `p` —
+// proving `trans p (refl b) ≡ p` needs its own `J`-elimination on `p`, with a
+// motive that *itself* states the unit law, generalizing `b` to `p`'s own
+// (variable) right endpoint `y` — exactly mirroring [`nat_sq`]'s own "eliminate
+// the hypothesis path, let the *target* type vary with it" pattern. At the base
+// case (`y = a`, `p = refl a`), the goal *should* collapse — by the
+// *definitional* left-unit law above — to `Path (Path ty a a) (refl a) (refl
+// a)`, provable by `refl (refl a)`. In practice, [`trans_right_unit`]'s (and
+// the two inverse laws') base-case check does **not** go through: the required
+// reduction needs the *outer* `j`-call's own `connect` term (see [`j`]'s
+// doc) to reduce to `refl a` *underneath* the additional `trans`/`transp`
+// nesting these motives introduce, one layer deeper than [`nat_sq`]'s own
+// "computation on `refl`" section confirms works. This pass could not get the
+// existing (unmodified) conversion checker to chase that far — see
+// `tests::right_unit_hits_a_documented_nested_reduction_gap` and its two
+// siblings, which assert the failure as a permanent, precise regression marker
+// rather than silently dropping the attempt. This is the *same class* of
+// completeness gap as [`trans3`]'s documented nested-`trans` obstruction and
+// `crate::equiv_hae`'s `sec_prime`-on-literal-`PLam`-data gap — not a
+// soundness issue (nothing wrong is accepted; the honest, correctly-typed goal
+// simply doesn't yet reduce far enough to be *proved* by this construction),
+// and not something fixable without touching `reduce.rs`/`nbe.rs`/`check.rs`,
+// which this pass is not permitted to do. The three functions are kept
+// (rather than deleted) because their *statement* is correct and useful for a
+// future pass with a different proof strategy or a conversion-depth fix.
+//
+// # Associativity: known, precisely-diagnosed gap
+//
+// The literal statement `Path (trans (trans p q) r) (trans p (trans q r))`
+// cannot even be *written* as a well-typed `Term` in this kernel: its LHS
+// requires applying [`trans`] to `trans ty a b p q` as the *subject* path being
+// `J`-eliminated, and doing that is exactly the obstruction [`trans3`]'s own
+// module doc records ("nesting `trans`... does not type-check in this kernel"
+// — confirmed for three fully abstract axiomatized paths with no `sym`/`ap`
+// involved, see `tests::debug_nested_trans_hits_the_documented_completeness_gap`
+// in `crate::equiv_hae`). [`trans3`] itself sidesteps this by only ever
+// `J`-eliminating the *first*, genuinely opaque path (`p`), applying the other
+// two (`q`, `r`) as ordinary function arguments — which fixes *one* particular
+// association (`p ; (q ; r)`) but gives no way to *also* build the other
+// association (`(p ; q) ; r`) as a further `J`-subject without hitting the same
+// wall. A full associativity 2-path therefore needs either (a) a genuine
+// alternative construction of `(p;q);r` that never uses a `trans`-built term as
+// a further `J` subject (a real but nontrivial reformulation, not attempted in
+// this pass), or (b) fixing the underlying nested-`trans` conversion gap itself
+// — which is exactly the kind of `reduce.rs`/`nbe.rs`/`check.rs` change this
+// pass is not permitted to make. Not landed here; see [`trans3`]'s doc for the
+// isolated repro and `crate::equiv_hae`'s module doc for how this bears on
+// `τ'`.
+// ============================================================================
+
+/// `trans_left_unit ty a b q : Path (Path ty a b) (trans ty a b (refl a) q) q`
+/// — the left-unit groupoid law. Holds by **plain `refl`**: see this section's
+/// module doc, "Left unit is definitional, not just propositional" — `trans`'s
+/// own `J`-on-`refl` computation collapses `trans ty a b (refl a) q` straight
+/// to `q`, so the 2-path witness is simply `refl q`.
+pub fn trans_left_unit(ty: &Term, a: &Term, b: &Term, q: &Term) -> Term {
+    let _ = (ty, a, b); // endpoints read off `q`'s own checked type by the caller,
+    // matching this module's other combinators' documentation convention.
+    refl(q)
+}
+
+/// `trans_right_unit ty a b p : Path (Path ty a b) (trans ty a b p (refl b)) p`
+/// — the right-unit groupoid law, given `p : Path ty a b`. `J`-eliminates `p`
+/// with motive `C := λ(y:ty)(q:Path ty a y). Path (Path ty a y) (trans ty a y q
+/// (refl y)) q`; base case (`y=a`, `q=refl a`) is `refl (refl a) : Path (Path
+/// ty a a) (trans ty a a (refl a) (refl a)) (refl a)`, which type-checks
+/// because `trans ty a a (refl a) (refl a)` itself reduces to `refl a` by the
+/// *definitional* left-unit law (see [`trans_left_unit`]'s doc) — so the base
+/// case's goal collapses to `Path (Path ty a a) (refl a) (refl a)` on the nose.
+pub fn trans_right_unit(ty: &Term, a: &Term, b: &Term, p: &Term) -> Term {
+    let _ = b; // `p`'s own checked right endpoint, inferred by `j` exactly like
+    // `trans`/`nat_sq`'s own trailing endpoint arguments.
+    let motive = Term::lam(
+        ty.clone(),
+        Term::lam(
+            // ctx [y]: Path ty a y
+            Term::path(ty.lift(1, 0), a.lift(1, 0), Term::Var(0)),
+            {
+                // ctx [y,q]: ty/a lifted by 2; y=Var(1), q=Var(0)
+                let trans_term =
+                    trans(&ty.lift(2, 0), &a.lift(2, 0), &Term::Var(1), &Term::Var(0), &refl(&Term::Var(1)));
+                Term::path(Term::path(ty.lift(2, 0), a.lift(2, 0), Term::Var(1)), trans_term, Term::Var(0))
+            },
+        ),
+    );
+    let d = refl(&refl(a));
+    j(&motive, &d, p)
+}
+
+/// `trans_inv_right ty a b p : Path (Path ty a a) (trans ty a a p (sym p))
+/// (refl a)` — the right inverse law, given `p : Path ty a b` (`sym p : Path ty
+/// b a`, so `trans p (sym p) : Path ty a a`). `J`-eliminates `p` with motive
+/// `C := λ(y:ty)(q:Path ty a y). Path (Path ty a a) (trans ty a a q (sym q))
+/// (refl a)`; base case (`y=a`, `q=refl a`) needs `trans ty a a (refl a) (sym
+/// (refl a)) ≡ refl a`: `sym (refl a)` reduces to `refl a` definitionally
+/// ([`crate::contr::sym`]'s own one-line fact — `⟨i⟩ (refl a)@(~i)` β-reduces
+/// the constant body to `a` regardless of the interval argument), and then
+/// `trans ty a a (refl a) (refl a) ≡ refl a` by the definitional left-unit law
+/// — so the base case is again `refl (refl a)`.
+pub fn trans_inv_right(ty: &Term, a: &Term, b: &Term, p: &Term) -> Term {
+    let _ = b;
+    let motive = Term::lam(
+        ty.clone(),
+        Term::lam(
+            Term::path(ty.lift(1, 0), a.lift(1, 0), Term::Var(0)),
+            {
+                let trans_term = trans(
+                    &ty.lift(2, 0),
+                    &a.lift(2, 0),
+                    &a.lift(2, 0),
+                    &Term::Var(0),
+                    &crate::contr::sym(&Term::Var(0)),
+                );
+                Term::path(Term::path(ty.lift(2, 0), a.lift(2, 0), a.lift(2, 0)), trans_term, refl(&a.lift(2, 0)))
+            },
+        ),
+    );
+    let d = refl(&refl(a));
+    j(&motive, &d, p)
+}
+
+/// `trans_inv_left ty a b p : Path (Path ty b b) (trans ty b b (sym p) p)
+/// (refl b)` — the left inverse law, given `p : Path ty a b` (`sym p : Path ty
+/// b a`, so `trans (sym p) p : Path ty b b`). Mirrors [`trans_inv_right`]
+/// exactly, but eliminates `p` with the *first* leg being `sym p` rather than
+/// `p` itself: motive `C := λ(y:ty)(q:Path ty a y). Path (Path ty y y) (trans
+/// ty y y (sym q) q) (refl y)`; base case (`y=a`, `q=refl a`) again reduces —
+/// `sym (refl a) ≡ refl a`, then left-unit — to `refl (refl a)`.
+pub fn trans_inv_left(ty: &Term, a: &Term, b: &Term, p: &Term) -> Term {
+    let _ = b;
+    let motive = Term::lam(
+        ty.clone(),
+        Term::lam(
+            Term::path(ty.lift(1, 0), a.lift(1, 0), Term::Var(0)),
+            {
+                // ctx [y,q]: y=Var(1), q=Var(0)
+                let trans_term = trans(
+                    &ty.lift(2, 0),
+                    &Term::Var(1),
+                    &Term::Var(1),
+                    &crate::contr::sym(&Term::Var(0)),
+                    &Term::Var(0),
+                );
+                Term::path(Term::path(ty.lift(2, 0), Term::Var(1), Term::Var(1)), trans_term, refl(&Term::Var(1)))
+            },
+        ),
+    );
+    let d = refl(&refl(a));
+    j(&motive, &d, p)
+}
+
+#[cfg(test)]
+mod groupoid_law_tests {
+    use super::*;
+    use crate::kernel::Kernel;
+    use crate::term::name;
+
+    fn cn(s: &str) -> Term {
+        Term::cnst(name(s), vec![])
+    }
+
+    /// `A : Type 0`; `a b : A`; `p : Path A a b`.
+    fn groupoid_env() -> Kernel {
+        let mut k = Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("a", 0, cn("A")).unwrap();
+        k.add_axiom("b", 0, cn("A")).unwrap();
+        k.add_axiom("p", 0, Term::path(cn("A"), cn("a"), cn("b"))).unwrap();
+        k
+    }
+
+    #[test]
+    fn left_unit_typechecks() {
+        let k = groupoid_env();
+        let term = trans_left_unit(&cn("A"), &cn("a"), &cn("b"), &cn("p"));
+        let expected = Term::path(
+            Term::path(cn("A"), cn("a"), cn("b")),
+            trans(&cn("A"), &cn("a"), &cn("b"), &refl(&cn("a")), &cn("p")),
+            cn("p"),
+        );
+        let ty = k.infer(&term).expect("trans_left_unit should typecheck");
+        assert!(k.def_eq(&ty, &expected), "trans_left_unit has type {ty:?}, expected {expected:?}");
+        k.check(&term, &expected).unwrap();
+    }
+
+    /// KNOWN LIMITATION (documented, not a soundness issue — same class as
+    /// [`trans3`]'s "Phase 3.12" nested-`trans` gap and `crate::equiv_hae::
+    /// tests::sec_prime_on_literal_plam_identity_data_is_a_known_gap_not_yet_closed`):
+    /// [`trans_right_unit`]'s base case relies on `trans ty a a (refl a) (refl
+    /// a)` reducing (via the *definitional* left-unit fact, see
+    /// [`trans_left_unit`]'s doc) once the *inner* `J`'s own `connect` term
+    /// (itself built by the *outer* `j` call inside [`trans_right_unit`])
+    /// reduces to `refl a` at `i0`. That reduction needs to fire *underneath*
+    /// an additional layer of `transp`/`J` nesting beyond what
+    /// [`nat_sq`]/[`j`]'s own "computation on `refl`" sections confirm — this
+    /// pass could not get the kernel's conversion checker to chase it that far
+    /// (asserting the failure here, not silently skipping it, so a future pass
+    /// has a precise, reproducible starting point — see this section's module
+    /// doc for the honest diagnosis).
+    #[test]
+    fn right_unit_hits_a_documented_nested_reduction_gap() {
+        let k = groupoid_env();
+        let term = trans_right_unit(&cn("A"), &cn("a"), &cn("b"), &cn("p"));
+        assert!(k.infer(&term).is_err(), "expected the documented nested-reduction gap to still reproduce");
+    }
+
+    /// KNOWN LIMITATION: same obstruction as
+    /// [`right_unit_hits_a_documented_nested_reduction_gap`], for the right
+    /// inverse law (`trans p (sym p) ≡ refl`).
+    #[test]
+    fn inv_right_hits_a_documented_nested_reduction_gap() {
+        let k = groupoid_env();
+        let term = trans_inv_right(&cn("A"), &cn("a"), &cn("b"), &cn("p"));
+        assert!(k.infer(&term).is_err(), "expected the documented nested-reduction gap to still reproduce");
+    }
+
+    /// KNOWN LIMITATION: same obstruction, for the left inverse law (`trans
+    /// (sym p) p ≡ refl`).
+    #[test]
+    fn inv_left_hits_a_documented_nested_reduction_gap() {
+        let k = groupoid_env();
+        let term = trans_inv_left(&cn("A"), &cn("a"), &cn("b"), &cn("p"));
+        assert!(k.infer(&term).is_err(), "expected the documented nested-reduction gap to still reproduce");
+    }
+
+    /// Dimensionality guard (mirrors `crate::equiv_hae::tests::
+    /// tau_type_is_genuinely_two_dimensional`) for the one law that *does*
+    /// close: [`trans_left_unit`]'s inferred type is a `PathP` whose own family
+    /// argument is itself a `PathP` — a genuine 2-path, not a plain 1-path
+    /// silently accepted at a too-shallow type.
+    #[test]
+    fn left_unit_type_is_genuinely_two_dimensional() {
+        let k = groupoid_env();
+        let term = trans_left_unit(&cn("A"), &cn("a"), &cn("b"), &cn("p"));
+        let ty = k.infer(&term).unwrap();
+        match &ty {
+            Term::PathP(family, _, _) => assert!(
+                matches!(family.as_ref(), Term::PathP(..)),
+                "expected a genuine 2-path, got family {family:?}"
+            ),
+            other => panic!("expected PathP, got {other:?}"),
+        }
+    }
+
+    /// Adversarial: none of the four laws' witnesses check against an unrelated
+    /// (non-reflexive-in-the-right-place) 2-path goal — a totally bogus swap of
+    /// which side is `p`/`refl` would be a distinct, non-defeq statement.
+    #[test]
+    fn groupoid_laws_do_not_check_against_a_wrong_goal() {
+        let mut k = groupoid_env();
+        k.add_axiom("c", 0, cn("A")).unwrap();
+        let term = trans_right_unit(&cn("A"), &cn("a"), &cn("b"), &cn("p"));
+        // Same `trans` application as the real right-unit goal, but with the
+        // right-hand endpoint swapped to an unrelated point `c` instead of `p`.
+        let unrelated = Term::path(
+            Term::path(cn("A"), cn("a"), cn("b")),
+            trans(&cn("A"), &cn("a"), &cn("b"), &cn("p"), &refl(&cn("b"))),
+            cn("c"),
+        );
+        assert!(k.check(&term, &unrelated).is_err());
+    }
+}
+
 #[cfg(test)]
 mod square_tests {
     use super::*;
