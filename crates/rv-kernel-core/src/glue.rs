@@ -62,6 +62,18 @@
 //! (needed for the univalence *theorem*, i.e. that `ua` itself is an equivalence)
 //! and any `glue` introduction former beyond what `ua`'s *type-only* use of
 //! `Glue` requires.
+//!
+//! **This was investigated in depth in a later pass** (the "computational
+//! univalence" task): both the fully general `transp^Glue` rule and a rule
+//! scoped to exactly this `ua`-shaped line were designed and then declined as
+//! *not independently derivable* from primitives currently in this kernel (no
+//! `glue` introduction form, no `Glue`-specialized `hcomp`) — see
+//! `crate::kan`'s "Phase 3.12" doc section for the full obstruction argument,
+//! and `crate::kan::kernel_tests::transp_through_ua_line_stays_stuck`/
+//! `transp_through_ua_line_cannot_smuggle_a_false_equation` for the
+//! non-regression pins (still stuck, still safe). Nothing in this module or
+//! `reduce.rs`/`nbe.rs` changed as a result — `transport (ua e) a₀` remains a
+//! stuck `Transp`, exactly as before.
 use crate::face::Cof;
 use crate::level::Level;
 use crate::term::{name, Term};
