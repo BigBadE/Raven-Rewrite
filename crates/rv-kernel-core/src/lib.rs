@@ -28,6 +28,7 @@ pub mod cubical;
 pub mod cubical_hit;
 pub mod env;
 pub mod equiv;
+pub mod equiv_hae;
 pub mod face;
 pub mod glue;
 pub mod hit;
