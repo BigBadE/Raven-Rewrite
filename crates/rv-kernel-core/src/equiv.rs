@@ -46,7 +46,7 @@
 //! no new trusted machinery.
 
 use crate::check::Checker;
-use crate::cubical::j;
+use crate::cubical::{ap, j, refl, trans};
 use crate::env::{Constructor, Decl, Env, Inductive, RecRule, Recursor};
 use crate::inductive::{declare_raw, RawInductive};
 use crate::level::Level;
@@ -516,6 +516,278 @@ pub fn univalence_ty(level: Level) -> Term {
     Term::pi(sortu(), Term::pi(sortu(), body))
 }
 
+// ============================================================================
+// Equivalence algebra: `symEquiv`/`compEquiv` (HoTT book §2.4/§4.1 — `≃` is a
+// symmetric, transitive relation) and the `ap`-functoriality lemmas
+// (`ap_id`/`ap_comp`, HoTT book Lemma 2.2.1/2.2.2, and `ap_trans`, the
+// `ap`/path-composition interchange law those two lemmas' proofs, and any
+// future 2-path naturality argument over `compEquiv`, would build on). These
+// are all **derived** — plain `Term`-builders over the already-installed
+// `Equiv`/`Equiv.f`/`Equiv.g`/`Equiv.sec`/`Equiv.ret` (this module) and
+// `crate::cubical::{ap, j, refl, trans}` (already proven sound elsewhere) —
+// so, exactly like `idToEquiv` above, they add **no new checking or
+// reduction rule**.
+//
+// # `symEquiv`: bi-invertibility is symmetric by construction
+//
+// Given `e : Equiv A B` with fields `f : A→B`, `g : B→A`, `sec : Π(b:B). Path
+// B (f (g b)) b`, `ret : Π(a:A). Path A (g (f a)) a`, the swapped record
+// `Equiv.mk B A g f ret sec` is *already* well-typed at `Equiv B A`: relabel
+// `f' := g`, `g' := f`; then `ret : Π(a:A). Path A (g (f a)) a` is exactly
+// `Π(a:A). Path A (f' (g' a)) a`, the *section* law for `f'`, and `sec : Π
+// (b:B). Path B (f (g b)) b` is exactly the *retraction* law for `f'`. No `J`,
+// no case analysis — bi-invertibility's "the inverse of a bi-invertible map is
+// bi-invertible" (HoTT book Lemma 4.1.4 specialized away from the coherence
+// this kernel's `Equiv` doesn't carry) is *definitional* here, purely a field
+// permutation. Consequently `symEquiv (idEquiv A)` is literally, on the nose,
+// `Equiv.mk A A id id refl_fn refl_fn` again (`idEquiv A`'s own `f`/`g` and
+// `sec`/`ret` already coincide) — see
+// [`tests::equiv_algebra::sym_equiv_of_id_equiv_is_id_equiv`].
+//
+// # `compEquiv`: composing bi-invertible maps
+//
+// Given `e1 : Equiv A B` (`f1`/`g1`/`sec1`/`ret1`) and `e2 : Equiv B C`
+// (`f2`/`g2`/`sec2`/`ret2`), the composite's underlying maps are the obvious
+// `f := f2 ∘ f1 : A→C`, `g := g1 ∘ g2 : C→A`. The two coherence fields are
+// **pasted** from the two equivalences' own coherences via [`ap`]/[`trans`]
+// (HoTT book Lemma 4.1.4's own composition argument, specialized to
+// bi-invertible maps — no `isContr`/half-adjoint machinery needed, matching
+// this module's own "why bi-invertible" doc):
+//
+// ```text
+//   sec (x:C) : Path C (f (g x)) x
+//     := trans (ap f2 (sec1 (g2 x))) (sec2 x)
+//        --------------------------   -------
+//        Path C (f2 (f1 (g1 (g2 x)))) (f2 (g2 x))   Path C (f2 (g2 x)) x
+//
+//   ret (x:A) : Path A (g (f x)) x
+//     := trans (ap g1 (ret2 (f1 x))) (ret1 x)
+// ```
+//
+// i.e. `sec1 (g2 x) : Path B (f1 (g1 (g2 x))) (g2 x)` pushed forward by `f2`
+// (via `ap`) lands exactly at the boundary `sec2 x` starts from, so a single
+// [`trans`] — one `J`-application, the same primitive [`trans`] itself already
+// is, **not** `trans_assoc`'s nested-`J` shape — chains them into the goal
+// `Path C (f (g x)) x`. `ret` is the mirror image, swapping which leg's
+// coherence gets `ap`-pushed. Neither field needs the `ap`-functoriality
+// lemmas below; only `ap`/`trans` themselves.
+//
+// # `ap_id`/`ap_comp`/`ap_trans`
+//
+// Standard `ap`-functoriality (HoTT book Lemma 2.2.1 exhibits `ap` as a
+// functor `(A,x,y) ↦ Path A x y`; Lemma 2.2.2 gives the naturality-square
+// laws used here): `ap id p ≡ p`, `ap (g∘f) p ≡ ap g (ap f p)`, and `ap f
+// (trans p q) ≡ trans (ap f p) (ap f q)`, each proved by a **single**
+// `J`-elimination on `p` (exactly [`crate::cubical::trans`]/`trans3`/`nat_sq`'s
+// own pattern — never `J` applied to an already-`J`-built *subject*, the
+// shape `trans_assoc` gets stuck on per `crate::cubical`'s Phase 4.6 doc). In
+// each case the base case (`p = refl a`) collapses by two purely definitional
+// facts already established elsewhere in this crate: `ap f (refl a) ≡ refl (f
+// a)` (β under `PLam`/`PApp`, [`ap`]'s own one-line definition) and `trans ty
+// a b (refl a) q ≡ q` (`crate::cubical::trans_left_unit`'s "holds by plain
+// refl" fact) — so every base case is literally `refl (refl _)` or `λq. refl
+// (_ q)`, never a bespoke construction.
+//
+// # Soundness
+//
+// Every function below is built entirely from [`Term::apps`]-applications of
+// the *already-installed* `Equiv.mk`/`Equiv.f`/`Equiv.g`/`Equiv.sec`/
+// `Equiv.ret` (this module, proven sound above) and
+// `crate::cubical::{ap, j, refl, trans}` (proven sound in `crate::cubical`/
+// `crate::kan`) — no new inductive, axiom, checking rule, or reduction rule is
+// added anywhere in this section. Soundness is therefore inherited verbatim;
+// the adversarial burden is purely "does the exact stated type check", tested
+// concretely in [`tests::equiv_algebra`] below (including a wrong-goal
+// rejection test in the same spirit as `crate::cubical`'s own
+// `groupoid_laws_do_not_check_against_a_wrong_goal`).
+// ============================================================================
+
+fn equiv_f(level: &Level, a: &Term, b: &Term, e: &Term) -> Term {
+    Term::apps(Term::cnst(name("Equiv.f"), vec![level.clone()]), [a.clone(), b.clone(), e.clone()])
+}
+fn equiv_g(level: &Level, a: &Term, b: &Term, e: &Term) -> Term {
+    Term::apps(Term::cnst(name("Equiv.g"), vec![level.clone()]), [a.clone(), b.clone(), e.clone()])
+}
+fn equiv_sec(level: &Level, a: &Term, b: &Term, e: &Term) -> Term {
+    Term::apps(Term::cnst(name("Equiv.sec"), vec![level.clone()]), [a.clone(), b.clone(), e.clone()])
+}
+fn equiv_ret(level: &Level, a: &Term, b: &Term, e: &Term) -> Term {
+    Term::apps(Term::cnst(name("Equiv.ret"), vec![level.clone()]), [a.clone(), b.clone(), e.clone()])
+}
+
+/// `symEquiv.{u} A B e : Equiv B A`, given `e : Equiv A B` — see this section's
+/// module doc, "`symEquiv`: bi-invertibility is symmetric by construction",
+/// for the field-permutation argument. Closed by construction: no `J`, no
+/// case analysis on `e`.
+pub fn sym_equiv(level: Level, a: &Term, b: &Term, e: &Term) -> Term {
+    let f = equiv_f(&level, a, b, e);
+    let g = equiv_g(&level, a, b, e);
+    let sec = equiv_sec(&level, a, b, e);
+    let ret = equiv_ret(&level, a, b, e);
+    Term::apps(Term::cnst(name("Equiv.mk"), vec![level]), [b.clone(), a.clone(), g, f, ret, sec])
+}
+
+/// `compEquiv.{u} A B C e1 e2 : Equiv A C`, given `e1 : Equiv A B` and `e2 :
+/// Equiv B C` — see this section's module doc, "`compEquiv`: composing
+/// bi-invertible maps", for the `ap`/`trans`-pasted `sec`/`ret` derivation.
+pub fn comp_equiv(level: Level, a: &Term, b: &Term, c: &Term, e1: &Term, e2: &Term) -> Term {
+    let f1 = equiv_f(&level, a, b, e1);
+    let g1 = equiv_g(&level, a, b, e1);
+    let sec1 = equiv_sec(&level, a, b, e1); // Π (x:B). Path B (f1 (g1 x)) x
+    let ret1 = equiv_ret(&level, a, b, e1); // Π (x:A). Path A (g1 (f1 x)) x
+    let f2 = equiv_f(&level, b, c, e2);
+    let g2 = equiv_g(&level, b, c, e2);
+    let sec2 = equiv_sec(&level, b, c, e2); // Π (x:C). Path C (f2 (g2 x)) x
+    let ret2 = equiv_ret(&level, b, c, e2); // Π (x:B). Path B (g2 (f2 x)) x
+
+    // f := λ x:A. f2 (f1 x)
+    let f = Term::lam(a.clone(), Term::app(f2.lift(1, 0), Term::app(f1.lift(1, 0), Term::Var(0))));
+    // g := λ x:C. g1 (g2 x)
+    let g = Term::lam(c.clone(), Term::app(g1.lift(1, 0), Term::app(g2.lift(1, 0), Term::Var(0))));
+
+    // sec := λ x:C. trans C (f2 (f1 (g1 (g2 x)))) x (ap f2 (sec1 (g2 x))) (sec2 x)
+    let sec = {
+        let x = Term::Var(0);
+        let g2x = Term::app(g2.lift(1, 0), x.clone());
+        let sec1_g2x = Term::app(sec1.lift(1, 0), g2x.clone()); // Path B (f1 (g1 (g2 x))) (g2 x)
+        let ap_f2 = ap(&f2.lift(1, 0), &sec1_g2x); // Path C (f2 (f1 (g1 (g2 x)))) (f2 (g2 x))
+        let sec2x = Term::app(sec2.lift(1, 0), x.clone()); // Path C (f2 (g2 x)) x
+        let f1g1g2x = Term::app(f1.lift(1, 0), Term::app(g1.lift(1, 0), g2x));
+        let start = Term::app(f2.lift(1, 0), f1g1g2x); // f2 (f1 (g1 (g2 x)))
+        let trans_term = trans(&c.lift(1, 0), &start, &x, &ap_f2, &sec2x);
+        Term::lam(c.clone(), trans_term)
+    };
+
+    // ret := λ x:A. trans A (g1 (g2 (f2 (f1 x)))) x (ap g1 (ret2 (f1 x))) (ret1 x)
+    let ret = {
+        let x = Term::Var(0);
+        let f1x = Term::app(f1.lift(1, 0), x.clone());
+        let ret2_f1x = Term::app(ret2.lift(1, 0), f1x.clone()); // Path B (g2 (f2 (f1 x))) (f1 x)
+        let ap_g1 = ap(&g1.lift(1, 0), &ret2_f1x); // Path A (g1 (g2 (f2 (f1 x)))) (g1 (f1 x))
+        let ret1x = Term::app(ret1.lift(1, 0), x.clone()); // Path A (g1 (f1 x)) x
+        let g2f2f1x = Term::app(g2.lift(1, 0), Term::app(f2.lift(1, 0), f1x));
+        let start = Term::app(g1.lift(1, 0), g2f2f1x); // g1 (g2 (f2 (f1 x)))
+        let trans_term = trans(&a.lift(1, 0), &start, &x, &ap_g1, &ret1x);
+        Term::lam(a.clone(), trans_term)
+    };
+
+    Term::apps(Term::cnst(name("Equiv.mk"), vec![level]), [a.clone(), c.clone(), f, g, sec, ret])
+}
+
+/// `ap_id ty a b p : Path (Path ty a b) (ap id p) p`, given `p : Path ty a b`
+/// (`id := λx:ty. x`) — `ap`'s identity-functoriality law (HoTT book Lemma
+/// 2.2.1, `id` case). `J`-eliminates `p` with motive `C := λ(y:ty)(q:Path ty a
+/// y). Path (Path ty a y) (ap id q) q`; base case (`y=a`, `q=refl a`) needs
+/// `ap id (refl a) ≡ refl a` (`ap f (refl a) ≡ refl (f a)` definitionally,
+/// then `id a ≡ a` by β), so `d := refl (refl a)` closes it.
+pub fn ap_id(ty: &Term, a: &Term, b: &Term, p: &Term) -> Term {
+    let _ = b; // `p`'s own checked right endpoint, inferred by `j`, matching
+    // this crate's other combinators' trailing-endpoint convention.
+    let id_at = |k: isize| Term::lam(ty.lift(k, 0), Term::Var(0));
+    let motive = Term::lam(
+        ty.clone(),
+        Term::lam(
+            // ctx [y]: Path ty a y
+            Term::path(ty.lift(1, 0), a.lift(1, 0), Term::Var(0)),
+            {
+                // ctx [y,q]: ty/a lifted by 2; y=Var(1), q=Var(0)
+                let inner_path_ty = Term::path(ty.lift(2, 0), a.lift(2, 0), Term::Var(1));
+                let apid_q = ap(&id_at(2), &Term::Var(0));
+                Term::path(inner_path_ty, apid_q, Term::Var(0))
+            },
+        ),
+    );
+    let d = refl(&refl(a));
+    j(&motive, &d, p)
+}
+
+/// `ap_comp a_ty b_ty c_ty f g x y p : Path (Path c_ty (g (f x)) (g (f y)))
+/// (ap (g∘f) p) (ap g (ap f p))`, given `f : a_ty→b_ty`, `g : b_ty→c_ty`, `p :
+/// Path a_ty x y` — `ap`'s composition-functoriality law (HoTT book Lemma
+/// 2.2.2(iv)). `J`-eliminates `p` with motive `C := λ(y':a_ty)(q:Path a_ty x
+/// y'). Path (Path c_ty (g (f x)) (g (f y'))) (ap (g∘f) q) (ap g (ap f q))`;
+/// base case (`y'=x`, `q=refl x`) needs `ap (g∘f) (refl x) ≡ ap g (ap f (refl
+/// x))`: both sides reduce (twice over, via `ap _ (refl _) ≡ refl (_ _)`) to
+/// `refl (g (f x))`, so `d := refl (refl (g (f x)))` closes it.
+pub fn ap_comp(a_ty: &Term, b_ty: &Term, c_ty: &Term, f: &Term, g: &Term, x: &Term, y: &Term, p: &Term) -> Term {
+    let _ = (b_ty, y); // `b_ty` only constrains `f`/`g`'s types at the call
+    // site (never appears in the built term itself); `y` is `p`'s own checked
+    // right endpoint, inferred by `j` as usual.
+    let comp_at = |k: isize| {
+        Term::lam(a_ty.lift(k, 0), Term::app(g.lift(k + 1, 0), Term::app(f.lift(k + 1, 0), Term::Var(0))))
+    };
+    let motive = Term::lam(
+        a_ty.clone(),
+        Term::lam(
+            // ctx [y']: Path a_ty x y'
+            Term::path(a_ty.lift(1, 0), x.lift(1, 0), Term::Var(0)),
+            {
+                // ctx [y',q]: everything lifted by 2; y'=Var(1), q=Var(0)
+                let gfx = Term::app(g.lift(2, 0), Term::app(f.lift(2, 0), x.lift(2, 0)));
+                let gfy = Term::app(g.lift(2, 0), Term::app(f.lift(2, 0), Term::Var(1)));
+                let inner_path_ty = Term::path(c_ty.lift(2, 0), gfx, gfy);
+                let ap_comp_q = ap(&comp_at(2), &Term::Var(0));
+                let ap_g_ap_f_q = ap(&g.lift(2, 0), &ap(&f.lift(2, 0), &Term::Var(0)));
+                Term::path(inner_path_ty, ap_comp_q, ap_g_ap_f_q)
+            },
+        ),
+    );
+    let gfx0 = Term::app(g.clone(), Term::app(f.clone(), x.clone()));
+    let d = refl(&refl(&gfx0));
+    j(&motive, &d, p)
+}
+
+/// `ap_trans ty b_ty f a c p q : Path (Path b_ty (f a) (f c)) (ap f (trans ty
+/// a c p q)) (trans b_ty (f a) (f c) (ap f p) (ap f q))` — a genuine 2-path,
+/// given `f : ty→b_ty`, `p : Path ty a mid` (`mid` inferred from `p`), `q :
+/// Path ty mid c` — `ap`/`trans`
+/// interchange (HoTT book Lemma 2.2.2(iii)). `J`-eliminates only `p` (exactly
+/// [`crate::cubical::trans3`]'s own single-opaque-`J` pattern — nesting `J` on
+/// an already-`trans`-built *subject* is the documented `trans_assoc`
+/// obstruction this deliberately avoids, see this section's module doc)
+/// with motive `C := λ(y:ty)(p':Path ty a y). Π(q':Path ty y c). Path b_ty (ap
+/// f (trans ty a c p' q')) (trans b_ty (f a) (f c) (ap f p') (ap f q'))`; base
+/// case (`y=a`, `p'=refl a`) needs, for every `q'`: `trans ty a c (refl a) q'
+/// ≡ q'` (definitional left-unit) so the LHS is `ap f q'`, and `ap f (refl a)
+/// ≡ refl (f a)` collapses the RHS's `trans` by left-unit again to `ap f q'`
+/// — so `d := λq'. refl (ap f q')` closes every instance at once.
+pub fn ap_trans(ty: &Term, b_ty: &Term, f: &Term, a: &Term, c: &Term, p: &Term, q: &Term) -> Term {
+    let motive = Term::lam(
+        ty.clone(),
+        Term::lam(
+            // ctx [y]: Path ty a y
+            Term::path(ty.lift(1, 0), a.lift(1, 0), Term::Var(0)),
+            {
+                // ctx [y,p']: ty/a/c/f/b_ty lifted by 2; y=Var(1), p'=Var(0)
+                let q_ty = Term::path(ty.lift(2, 0), Term::Var(1), c.lift(2, 0));
+                Term::pi(q_ty, {
+                    // ctx [y,p',q']: lifted by 3; y=Var(2), p'=Var(1), q'=Var(0)
+                    let trans_pq = trans(&ty.lift(3, 0), &a.lift(3, 0), &c.lift(3, 0), &Term::Var(1), &Term::Var(0));
+                    let lhs = ap(&f.lift(3, 0), &trans_pq);
+                    let ap_f_p = ap(&f.lift(3, 0), &Term::Var(1));
+                    let ap_f_q = ap(&f.lift(3, 0), &Term::Var(0));
+                    let fa = Term::app(f.lift(3, 0), a.lift(3, 0));
+                    let fc = Term::app(f.lift(3, 0), c.lift(3, 0));
+                    let rhs = trans(&b_ty.lift(3, 0), &fa, &fc, &ap_f_p, &ap_f_q);
+                    // `lhs`/`rhs` are themselves `Path b_ty (f a) (f c)`
+                    // witnesses (a 1-path each), so the *outer* path's own
+                    // type — the goal is a genuine 2-path — is `Path b_ty (f
+                    // a) (f c)`, not `b_ty` itself.
+                    let one_path_ty = Term::path(b_ty.lift(3, 0), fa, fc);
+                    Term::path(one_path_ty, lhs, rhs)
+                })
+            },
+        ),
+    );
+    let d = {
+        // ctx [q']: ty/f lifted by 1
+        let q_ty = Term::path(ty.clone(), a.clone(), c.clone());
+        let ap_f_q = ap(&f.lift(1, 0), &Term::Var(0));
+        Term::lam(q_ty, refl(&ap_f_q))
+    };
+    Term::app(j(&motive, &d, p), q.clone())
+}
+
 /// Type-check every `Equiv`-related declaration's stated *type* (a well-formedness
 /// sanity pass, mirroring [`crate::inductive::check_env_types`] — this does **not**
 /// check that a `Decl::Def`'s *value* has its declared type; see this module's
@@ -793,6 +1065,277 @@ mod tests {
             let mut ctx = crate::check::LocalCtx::new();
             chk.check(&mut ctx, &ua_line, &path_ty).expect("ua Nat Nat (idEquiv Nat) : Path Type Nat Nat");
             chk.check(&mut ctx, &refl_nat, &path_ty).expect("refl Nat : Path Type Nat Nat");
+        }
+    }
+
+    /// `symEquiv`/`compEquiv`/`ap_id`/`ap_comp`/`ap_trans` — see this module's
+    /// "Equivalence algebra" section doc for the constructions under test.
+    /// Follows this file's established `Env` + `Checker`/`Reducer` test style
+    /// (not `crate::kernel::Kernel`): `Env::insert` with `Decl::Axiom` for
+    /// fully abstract settings, `Checker::infer_closed`/`check` for typing,
+    /// `Reducer::is_def_eq` for definitional equality — exactly what every
+    /// other test in this file already does.
+    mod equiv_algebra {
+        use super::*;
+        use crate::inductive::declare_nat as declare_nat_ty;
+
+        fn cn(s: &str) -> Term {
+            Term::cnst(name(s), vec![])
+        }
+
+        fn axiom(env: &mut Env, n: &str, ty: Term) {
+            env.insert(name(n), Decl::Axiom { num_levels: 0, ty }).unwrap();
+        }
+
+        /// `Equiv`-ready environment: `Nat` plus the whole `Equiv` group.
+        fn equiv_env() -> Env {
+            let mut env = Env::new();
+            declare_nat_ty(&mut env).unwrap();
+            declare_equiv(&mut env).unwrap();
+            env
+        }
+
+        /// A fully abstract two-object setting: `A B : Type 0`, `e : Equiv A
+        /// B`, plus the `Equiv` group.
+        fn ab_env() -> Env {
+            let mut env = Env::new();
+            declare_equiv(&mut env).unwrap();
+            axiom(&mut env, "A", Term::typ(0));
+            axiom(&mut env, "B", Term::typ(0));
+            let equiv_ab = Term::apps(Term::cnst(name("Equiv"), vec![Level::of_nat(1)]), [cn("A"), cn("B")]);
+            axiom(&mut env, "e", equiv_ab);
+            env
+        }
+
+        /// A fully abstract three-object setting: `A B C : Type 0`, `e1 :
+        /// Equiv A B`, `e2 : Equiv B C`, plus the `Equiv` group.
+        fn abc_equiv_env() -> Env {
+            let mut env = Env::new();
+            declare_equiv(&mut env).unwrap();
+            axiom(&mut env, "A", Term::typ(0));
+            axiom(&mut env, "B", Term::typ(0));
+            axiom(&mut env, "C", Term::typ(0));
+            let equiv_ab = Term::apps(Term::cnst(name("Equiv"), vec![Level::of_nat(1)]), [cn("A"), cn("B")]);
+            let equiv_bc = Term::apps(Term::cnst(name("Equiv"), vec![Level::of_nat(1)]), [cn("B"), cn("C")]);
+            axiom(&mut env, "e1", equiv_ab);
+            axiom(&mut env, "e2", equiv_bc);
+            env
+        }
+
+        // ------------------------------------------------------------------
+        // symEquiv
+        // ------------------------------------------------------------------
+
+        /// `symEquiv Nat Nat (idEquiv Nat) : Equiv Nat Nat` type-checks at
+        /// exactly its stated type.
+        #[test]
+        fn sym_equiv_typechecks_at_its_stated_type() {
+            let env = equiv_env();
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let nat = cn("Nat");
+            let id_nat = Term::app(Term::cnst(name("idEquiv"), vec![lvl.clone()]), nat.clone());
+            let term = sym_equiv(lvl.clone(), &nat, &nat, &id_nat);
+            let expected = Term::apps(Term::cnst(name("Equiv"), vec![lvl]), [nat.clone(), nat]);
+            let ty = chk.infer_closed(&term).expect("symEquiv should typecheck");
+            let r = Reducer::new(&env);
+            assert!(r.is_def_eq(&ty, &expected), "symEquiv has type {ty:?}, expected {expected:?}");
+            let mut ctx = crate::check::LocalCtx::new();
+            chk.check(&mut ctx, &term, &expected).unwrap();
+        }
+
+        /// `symEquiv` also type-checks over a fully abstract, opaque `e : Equiv
+        /// A B` (not just the concrete `idEquiv` instance above), at the
+        /// swapped goal `Equiv B A`.
+        #[test]
+        fn sym_equiv_typechecks_for_an_abstract_equiv() {
+            let env = ab_env();
+            let chk = Checker::new(&env);
+            let term = sym_equiv(Level::of_nat(1), &cn("A"), &cn("B"), &cn("e"));
+            let equiv_ba = Term::apps(Term::cnst(name("Equiv"), vec![Level::of_nat(1)]), [cn("B"), cn("A")]);
+            let ty = chk.infer_closed(&term).expect("symEquiv should typecheck over an abstract e");
+            let r = Reducer::new(&env);
+            assert!(r.is_def_eq(&ty, &equiv_ba), "symEquiv has type {ty:?}, expected {equiv_ba:?}");
+        }
+
+        /// `symEquiv (idEquiv A) ≡ idEquiv A` — `idEquiv`'s own `f`/`g` and
+        /// `sec`/`ret` already coincide, so the field permutation `symEquiv`
+        /// performs is invisible on `idEquiv`, on the nose (see this module's
+        /// "Equivalence algebra" doc).
+        #[test]
+        fn sym_equiv_of_id_equiv_is_id_equiv() {
+            let env = equiv_env();
+            let r = Reducer::new(&env);
+            let lvl = Level::of_nat(1);
+            let nat = cn("Nat");
+            let id_nat = Term::app(Term::cnst(name("idEquiv"), vec![lvl.clone()]), nat.clone());
+            let term = sym_equiv(lvl, &nat, &nat, &id_nat);
+            assert!(r.is_def_eq(&term, &id_nat), "symEquiv (idEquiv Nat) did not reduce to idEquiv Nat");
+        }
+
+        /// Adversarial: `symEquiv`'s witness (`: Equiv B A`) does not check
+        /// against the *un*-swapped goal `Equiv A B`.
+        #[test]
+        fn sym_equiv_does_not_check_against_the_unswapped_goal() {
+            let env = ab_env();
+            let chk = Checker::new(&env);
+            let term = sym_equiv(Level::of_nat(1), &cn("A"), &cn("B"), &cn("e"));
+            let equiv_ab = Term::apps(Term::cnst(name("Equiv"), vec![Level::of_nat(1)]), [cn("A"), cn("B")]);
+            let mut ctx = crate::check::LocalCtx::new();
+            assert!(chk.check(&mut ctx, &term, &equiv_ab).is_err());
+        }
+
+        // ------------------------------------------------------------------
+        // compEquiv
+        // ------------------------------------------------------------------
+
+        /// `compEquiv Nat Nat Nat (idEquiv Nat) (idEquiv Nat) : Equiv Nat Nat`
+        /// type-checks at exactly its stated type.
+        #[test]
+        fn comp_equiv_typechecks_at_its_stated_type() {
+            let env = equiv_env();
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let nat = cn("Nat");
+            let id_nat = Term::app(Term::cnst(name("idEquiv"), vec![lvl.clone()]), nat.clone());
+            let term = comp_equiv(lvl.clone(), &nat, &nat, &nat, &id_nat, &id_nat);
+            let expected = Term::apps(Term::cnst(name("Equiv"), vec![lvl]), [nat.clone(), nat]);
+            let ty = chk.infer_closed(&term).expect("compEquiv should typecheck");
+            let r = Reducer::new(&env);
+            assert!(r.is_def_eq(&ty, &expected), "compEquiv has type {ty:?}, expected {expected:?}");
+            let mut ctx = crate::check::LocalCtx::new();
+            chk.check(&mut ctx, &term, &expected).unwrap();
+        }
+
+        /// `compEquiv` also type-checks over two fully abstract, opaque
+        /// equivalences `e1 : Equiv A B`, `e2 : Equiv B C`, at the composed
+        /// goal `Equiv A C` — the genuinely general setting, not just the
+        /// `idEquiv`-degenerate one above.
+        #[test]
+        fn comp_equiv_typechecks_for_abstract_equivs() {
+            let env = abc_equiv_env();
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let term = comp_equiv(lvl.clone(), &cn("A"), &cn("B"), &cn("C"), &cn("e1"), &cn("e2"));
+            let equiv_ac = Term::apps(Term::cnst(name("Equiv"), vec![lvl]), [cn("A"), cn("C")]);
+            let ty = chk.infer_closed(&term).expect("compEquiv should typecheck over abstract e1/e2");
+            let r = Reducer::new(&env);
+            assert!(r.is_def_eq(&ty, &equiv_ac), "compEquiv has type {ty:?}, expected {equiv_ac:?}");
+        }
+
+        /// Adversarial: `compEquiv`'s witness (`: Equiv A C`, built through
+        /// `B`) does not check against a mismatched goal `Equiv A B` (the
+        /// wrong endpoint) — mirrors `crate::cubical`'s own
+        /// `trans_assoc_does_not_check_with_a_mismatched_middle_path`.
+        #[test]
+        fn comp_equiv_does_not_check_against_a_wrong_goal() {
+            let env = abc_equiv_env();
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let term = comp_equiv(lvl.clone(), &cn("A"), &cn("B"), &cn("C"), &cn("e1"), &cn("e2"));
+            let equiv_ab = Term::apps(Term::cnst(name("Equiv"), vec![lvl]), [cn("A"), cn("B")]);
+            let mut ctx = crate::check::LocalCtx::new();
+            assert!(chk.check(&mut ctx, &term, &equiv_ab).is_err());
+        }
+
+        // ------------------------------------------------------------------
+        // ap_id / ap_comp / ap_trans
+        // ------------------------------------------------------------------
+
+        /// `A B C : Type 0`; `a b c : A`; `p : Path A a b`; `q : Path A b c`;
+        /// `f : A→B`, `g : B→C` — a fully abstract, opaque setting, mirroring
+        /// `crate::cubical::groupoid_law_tests`'s own `groupoid_env`/
+        /// `assoc_env` convention.
+        fn abc_path_env() -> Env {
+            let mut env = Env::new();
+            axiom(&mut env, "A", Term::typ(0));
+            axiom(&mut env, "B", Term::typ(0));
+            axiom(&mut env, "C", Term::typ(0));
+            axiom(&mut env, "a", cn("A"));
+            axiom(&mut env, "b", cn("A"));
+            axiom(&mut env, "c", cn("A"));
+            axiom(&mut env, "p", Term::path(cn("A"), cn("a"), cn("b")));
+            axiom(&mut env, "q", Term::path(cn("A"), cn("b"), cn("c")));
+            axiom(&mut env, "f", Term::arrow(cn("A"), cn("B")));
+            axiom(&mut env, "g", Term::arrow(cn("B"), cn("C")));
+            env
+        }
+
+        #[test]
+        fn ap_id_typechecks_at_its_stated_type() {
+            let env = abc_path_env();
+            let chk = Checker::new(&env);
+            let term = ap_id(&cn("A"), &cn("a"), &cn("b"), &cn("p"));
+            let id_fn = Term::lam(cn("A"), Term::Var(0));
+            let expected = Term::path(Term::path(cn("A"), cn("a"), cn("b")), ap(&id_fn, &cn("p")), cn("p"));
+            let ty = chk.infer_closed(&term).expect("ap_id should typecheck");
+            // `Checker::def_eq`, not the plain structural `Reducer::is_def_eq`:
+            // `p`'s own `i1` boundary (`p@i1 ≡ b`) only holds *type-directed*
+            // (via `p`'s declared `Path A a b` type), which the checker's
+            // `compare`/`path_boundary` knows and a type-agnostic reducer does
+            // not, for a fully abstract/opaque `p` like this one.
+            assert!(chk.def_eq(&ty, &expected), "ap_id has type {ty:?}, expected {expected:?}");
+            let mut ctx = crate::check::LocalCtx::new();
+            chk.check(&mut ctx, &term, &expected).unwrap();
+        }
+
+        #[test]
+        fn ap_comp_typechecks_at_its_stated_type() {
+            let env = abc_path_env();
+            let chk = Checker::new(&env);
+            let term = ap_comp(&cn("A"), &cn("B"), &cn("C"), &cn("f"), &cn("g"), &cn("a"), &cn("b"), &cn("p"));
+            let comp_fn = Term::lam(cn("A"), Term::app(cn("g"), Term::app(cn("f"), Term::Var(0))));
+            let gfa = Term::app(cn("g"), Term::app(cn("f"), cn("a")));
+            let gfb = Term::app(cn("g"), Term::app(cn("f"), cn("b")));
+            let expected = Term::path(
+                Term::path(cn("C"), gfa, gfb),
+                ap(&comp_fn, &cn("p")),
+                ap(&cn("g"), &ap(&cn("f"), &cn("p"))),
+            );
+            let ty = chk.infer_closed(&term).expect("ap_comp should typecheck");
+            // See `ap_id_typechecks_at_its_stated_type`'s comment: type-directed
+            // `Checker::def_eq`, needed for opaque `p`'s boundary.
+            assert!(chk.def_eq(&ty, &expected), "ap_comp has type {ty:?}, expected {expected:?}");
+            let mut ctx = crate::check::LocalCtx::new();
+            chk.check(&mut ctx, &term, &expected).unwrap();
+        }
+
+        #[test]
+        fn ap_trans_typechecks_at_its_stated_type() {
+            let env = abc_path_env();
+            let chk = Checker::new(&env);
+            let term = ap_trans(&cn("A"), &cn("B"), &cn("f"), &cn("a"), &cn("c"), &cn("p"), &cn("q"));
+            let trans_pq = trans(&cn("A"), &cn("a"), &cn("c"), &cn("p"), &cn("q"));
+            let fa = Term::app(cn("f"), cn("a"));
+            let fc = Term::app(cn("f"), cn("c"));
+            let expected = Term::path(
+                Term::path(cn("B"), fa.clone(), fc.clone()),
+                ap(&cn("f"), &trans_pq),
+                trans(&cn("B"), &fa, &fc, &ap(&cn("f"), &cn("p")), &ap(&cn("f"), &cn("q"))),
+            );
+            let ty = chk.infer_closed(&term).expect("ap_trans should typecheck");
+            // See `ap_id_typechecks_at_its_stated_type`'s comment: type-directed
+            // `Checker::def_eq`, needed for opaque `p`/`q`'s boundaries.
+            assert!(chk.def_eq(&ty, &expected), "ap_trans has type {ty:?}, expected {expected:?}");
+            let mut ctx = crate::check::LocalCtx::new();
+            chk.check(&mut ctx, &term, &expected).unwrap();
+        }
+
+        /// Adversarial: `ap_id`'s witness does not check against an unrelated
+        /// goal (swapped endpoints).
+        #[test]
+        fn ap_id_does_not_check_against_a_wrong_goal() {
+            let env = abc_path_env();
+            let chk = Checker::new(&env);
+            let term = ap_id(&cn("A"), &cn("a"), &cn("b"), &cn("p"));
+            let id_fn = Term::lam(cn("A"), Term::Var(0));
+            let wrong = Term::path(
+                Term::path(cn("A"), cn("b"), cn("a")), // swapped endpoints
+                ap(&id_fn, &cn("p")),
+                cn("p"),
+            );
+            let mut ctx = crate::check::LocalCtx::new();
+            assert!(chk.check(&mut ctx, &term, &wrong).is_err());
         }
     }
 }
