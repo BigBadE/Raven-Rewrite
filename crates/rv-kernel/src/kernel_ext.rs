@@ -77,6 +77,32 @@ pub trait KernelExt {
     /// higher-path support) plus its recursor `S2.rec`.
     fn install_s2(&mut self) -> Result<(), String>;
 
+    /// Install the **cubical torus** `T²` (one nullary point `T2.base`, two
+    /// distinct self-loops `T2.loopP`/`T2.loopQ`, and a square `T2.surf : PathP
+    /// (λi. Path T2 (loopP@i) (loopP@i)) loopQ loopQ` — the textbook `l = r`,
+    /// `top = bottom` cubical presentation) plus its recursor `T2.rec`. See
+    /// [`rv_kernel_core::cubical_hit::CubSurfSpec`]'s doc comment for the general
+    /// square schema this is built from.
+    fn install_torus(&mut self) -> Result<(), String>;
+
+    /// Install the **cubical 3-sphere** `S³` (one nullary point `S3.base` plus one
+    /// fully-degenerate 3-cell `S3.cube`, generated via
+    /// [`rv_kernel_core::cubical_hit::CubCubeSpec::s3`]) plus its recursor
+    /// `S3.rec`.
+    fn install_s3(&mut self) -> Result<(), String>;
+
+    /// Install a worked **set-quotient-style HIT** `SetQ` — a genuinely cubical,
+    /// computing analogue of `Quot`'s propositional quotient (per
+    /// [`KernelExt::declare_cubical_hit`]'s doc comment). Declares a dedicated
+    /// two-point domain `SQDom` (`SQDom.a`/`SQDom.b`), the "collapse everything"
+    /// relation `SQDom.R : SQDom -> SQDom -> Type 0 := λ _ _. True` (mirroring
+    /// `examples/proofs/quotient_demo.rv`'s `AlwaysR`), and then `SetQ`/`SetQ.mk :
+    /// SQDom -> SetQ`/`SetQ.glue : Π (a b : SQDom) (h : SQDom.R a b), Path SetQ
+    /// (mk a) (mk b)`/`SetQ.rec`. Unlike `Quot.sound`, `SetQ.glue` is a genuinely
+    /// cubical path constructor: `SetQ.rec`'s ι-rule actually *reduces* on
+    /// `glue a b h @ i`, not merely typechecks propositionally.
+    fn install_set_quotient(&mut self) -> Result<(), String>;
+
     /// Declare a general cubical higher-inductive type from `spec` — see
     /// [`rv_kernel_core::cubical_hit::declare_cubical_hit`]/[`rv_kernel_core::cubical_hit::CubHitSpec`].
     /// This is the general escape hatch [`KernelExt::install_s1c`]/
@@ -170,6 +196,90 @@ impl KernelExt for Kernel {
 
     fn declare_cubical_hit(&mut self, spec: &rv_kernel_core::cubical_hit::CubHitSpec) -> Result<(), String> {
         rv_kernel_core::cubical_hit::declare_cubical_hit(self.env_mut(), spec)
+    }
+
+    fn install_torus(&mut self) -> Result<(), String> {
+        use rv_kernel_core::cubical_hit::{CubHitSpec, CubPathSpec, CubPointSpec, CubSurfSpec};
+        let spec = CubHitSpec {
+            name: "T2".to_string(),
+            points: vec![CubPointSpec::nullary("T2.base")],
+            paths: vec![CubPathSpec::simple("T2.loopP", 0, 0), CubPathSpec::simple("T2.loopQ", 0, 0)],
+            surfaces: vec![CubSurfSpec {
+                name: "T2.surf".to_string(),
+                base: 0,
+                left: Some(0),
+                right: Some(0),
+                top: Some(1),
+                bottom: Some(1),
+            }],
+            cubes: vec![],
+        };
+        rv_kernel_core::cubical_hit::declare_cubical_hit(self.env_mut(), &spec)
+    }
+
+    fn install_s3(&mut self) -> Result<(), String> {
+        use rv_kernel_core::cubical_hit::{CubCubeSpec, CubHitSpec, CubPointSpec};
+        let spec = CubHitSpec {
+            name: "S3".to_string(),
+            points: vec![CubPointSpec::nullary("S3.base")],
+            paths: vec![],
+            surfaces: vec![],
+            cubes: vec![CubCubeSpec::s3("S3.cube", 0)],
+        };
+        rv_kernel_core::cubical_hit::declare_cubical_hit(self.env_mut(), &spec)
+    }
+
+    fn install_set_quotient(&mut self) -> Result<(), String> {
+        use rv_kernel_core::cubical_hit::{CubHitSpec, CubPathSpec, CubPointSpec, Field};
+        use rv_kernel_core::term::{name, Term};
+
+        // A dedicated two-point domain `SQDom` for this worked example — a name
+        // unlikely to collide with any user-declared `.rv` `enum`, since this
+        // installer runs before any user source (or `RAVEN_PRELUDE`, which
+        // declares no types of its own) is parsed.
+        let dom_spec = IndSpec {
+            name: name("SQDom"),
+            num_levels: 0,
+            ty: Term::typ(0),
+            num_params: 0,
+            ctors: vec![
+                crate::generate::CtorSpec { name: name("SQDom.a"), ty: Term::cnst(name("SQDom"), vec![]) },
+                crate::generate::CtorSpec { name: name("SQDom.b"), ty: Term::cnst(name("SQDom"), vec![]) },
+            ],
+            rec_name: name("SQDom.rec"),
+        };
+        declare_inductive(self.env_mut(), dom_spec)?;
+
+        // The "collapse everything" relation `SQDom.R : SQDom -> SQDom -> Type 0 :=
+        // λ _ _. True` — mirrors `examples/proofs/quotient_demo.rv`'s `AlwaysR`, but
+        // here backs a genuinely cubical/computing quotient path (`SetQ.glue`)
+        // instead of `Quot.sound`'s propositional one.
+        let dom = Term::cnst(name("SQDom"), vec![]);
+        let true_ty = Term::cnst(name("True"), vec![]);
+        let r_ty = Term::pi(dom.clone(), Term::pi(dom.clone(), Term::prop()));
+        let r_val = Term::lam(dom.clone(), Term::lam(dom.clone(), true_ty));
+        self.env_mut().insert(name("SQDom.R"), Decl::Def { num_levels: 0, ty: r_ty, value: r_val })?;
+
+        // `SetQ.mk : SQDom -> SetQ`, `SetQ.glue : Π (a b : SQDom) (h : SQDom.R a b),
+        // Path SetQ (mk a) (mk b)`.
+        let spec = CubHitSpec {
+            name: "SetQ".to_string(),
+            points: vec![CubPointSpec { name: "SetQ.mk".to_string(), fields: vec![Field::NonRec(dom.clone())] }],
+            paths: vec![CubPathSpec {
+                name: "SetQ.glue".to_string(),
+                // Π (a b : SQDom) (h : SQDom.R a b), .. — innermost = h = Var(0).
+                quantifiers: vec![
+                    dom.clone(),
+                    dom.clone(),
+                    Term::apps(Term::cnst(name("SQDom.R"), vec![]), [Term::Var(1), Term::Var(0)]),
+                ],
+                lhs: (0, vec![Term::Var(2)]),
+                rhs: (0, vec![Term::Var(1)]),
+            }],
+            surfaces: vec![],
+            cubes: vec![],
+        };
+        rv_kernel_core::cubical_hit::declare_cubical_hit(self.env_mut(), &spec)
     }
 
     fn install_equiv(&mut self) -> Result<(), String> {

@@ -297,6 +297,9 @@ pub fn verify_rv_session(src: &str) -> Result<rv_kernel::verify::Session, String
     session.k.install_cubical()?;
     session.k.install_s1c()?;
     session.k.install_s2()?;
+    session.k.install_torus()?;
+    session.k.install_s3()?;
+    session.k.install_set_quotient()?;
     session.k.install_equiv()?;
     session.k.install_contr()?;
     session.k.install_hae()?;
@@ -374,6 +377,9 @@ pub fn vm_eval(src: &str, entry: &str) -> Result<Value, String> {
     session.k.install_cubical()?;
     session.k.install_s1c()?;
     session.k.install_s2()?;
+    session.k.install_torus()?;
+    session.k.install_s3()?;
+    session.k.install_set_quotient()?;
     session.k.install_equiv()?;
     session.k.install_contr()?;
     session.k.install_hae()?;
@@ -396,6 +402,9 @@ pub fn nbe_eval(src: &str, entry: &str) -> Result<Value, String> {
     session.k.install_cubical()?;
     session.k.install_s1c()?;
     session.k.install_s2()?;
+    session.k.install_torus()?;
+    session.k.install_s3()?;
+    session.k.install_set_quotient()?;
     session.k.install_equiv()?;
     session.k.install_contr()?;
     session.k.install_hae()?;
