@@ -1,0 +1,247 @@
+// A verified Nat-ordering library in Rust-like Raven, extending `le.rv`/`le_trans.rv`'s `<=`
+// relation with antisymmetry, `max`/`min` and their algebraic laws, and monotonicity of `plus`
+// with respect to `<=`. (`rvc --verify`.)
+
+enum Nat { Zero, Succ(Nat) }
+
+fn plus(n: Nat, m: Nat) -> Nat {
+    match n { | Nat::Zero => m | Nat::Succ(k) => Nat::Succ(plus(k, m)) }
+}
+
+enum Le(n: Nat, m: Nat) -> Prop {
+    LeZero(x: Nat)                       where n == Nat::Zero,    m == x;
+    LeSucc(a: Nat, b: Nat, h: Le(a, b))  where n == Nat::Succ(a), m == Nat::Succ(b);
+}
+
+// ----- reflexivity / basics (reproved locally so this file stands on its own) ----------------
+
+fn le_zero(n: Nat) -> Le(Nat::Zero, n) { Le::LeZero(n) }
+
+fn le_refl(n: Nat) -> Le(n, n) {
+    match n {
+      | Nat::Zero    => Le::LeZero(Nat::Zero)
+      | Nat::Succ(k) => Le::LeSucc(k, k, le_refl(k))
+    }
+}
+
+fn le_succ(n: Nat) -> Le(n, Nat::Succ(n)) {
+    match n {
+      | Nat::Zero    => Le::LeZero(Nat::Succ(Nat::Zero))
+      | Nat::Succ(k) => Le::LeSucc(k, Nat::Succ(k), le_succ(k))
+    }
+}
+
+// No-confusion + injectivity for Nat (built with the prelude's subst/congr_arg).
+fn is_zero(n: Nat) -> Prop {
+    match n { | Nat::Zero => True | Nat::Succ(k) => False }
+}
+fn zero_ne_succ(b: Nat, h: Nat::Zero == Nat::Succ(b)) -> False {
+    subst(Nat, is_zero, Nat::Zero, Nat::Succ(b), h, True::intro)
+}
+fn pred(n: Nat) -> Nat {
+    match n { | Nat::Zero => Nat::Zero | Nat::Succ(k) => k }
+}
+fn succ_inj(a: Nat, b: Nat, h: Nat::Succ(a) == Nat::Succ(b)) -> a == b {
+    congr_arg(Nat, Nat, pred, Nat::Succ(a), Nat::Succ(b), h)
+}
+
+// Inversion: from `Le(Succ b, c)`, recover `c == Succ cc` and `Le(b, cc)`.
+enum LeSuccInv(b: Nat, c: Nat) -> Prop {
+    MkLSI(cc: Nat, h: Le(b, cc)) where c == Nat::Succ(cc);
+}
+fn le_inv(n: Nat, c: Nat, h: Le(n, c)) -> (b: Nat) -> (n == Nat::Succ(b)) -> LeSuccInv(b, c) {
+    match h {
+      | Le::LeZero(x) => fun (b: Nat) (en: Nat::Zero == Nat::Succ(b)) =>
+          False::rec(fun (z: False) => LeSuccInv(b, x), zero_ne_succ(b, en))
+      | Le::LeSucc(a, bb, hab) => fun (b: Nat) (en: Nat::Succ(a) == Nat::Succ(b)) =>
+          subst(Nat, fun (x: Nat) => LeSuccInv(x, Nat::Succ(bb)), a, b, succ_inj(a, b, en),
+                LeSuccInv::MkLSI(a, bb, hab))
+    }
+}
+
+// TRANSITIVITY, by induction on the first derivation (curried over the second so the IH
+// `hab.rec` is abstracted over the changing indices).
+fn le_trans(a: Nat, b: Nat, h1: Le(a, b)) -> (c: Nat) -> Le(b, c) -> Le(a, c) {
+    match h1 {
+      | Le::LeZero(x) => fun (c: Nat) (h2: Le(x, c)) => le_zero(c)
+      | Le::LeSucc(a2, b2, hab) => fun (c: Nat) (h2: Le(Nat::Succ(b2), c)) =>
+          let cvy : (ih2: (c3: Nat) -> Le(b2, c3) -> Le(a2, c3)) -> Le(Nat::Succ(a2), c) :=
+            match le_inv(Nat::Succ(b2), c, h2)(b2, Eq::refl(Nat, Nat::Succ(b2))) {
+              | LeSuccInv::MkLSI(bx, cc, hbc) =>
+                  fun (ih2: (c3: Nat) -> Le(bx, c3) -> Le(a2, c3)) =>
+                    Le::LeSucc(a2, cc, ih2(cc)(hbc))
+            }
+          in cvy(hab.rec)
+    }
+}
+
+// `Le(n, c) -> c == Zero -> n == Zero`, by cases on the derivation (the `LeSucc` case is
+// impossible: its second index is forced to be `Succ`, contradicting `c == Zero`). Generalized
+// over `c` (convoy style, as in `le_inv`) so the `LeSucc` branch gets an explicit equality
+// witness to derive `False` from.
+fn le_zero_inv_gen(n: Nat, c: Nat, h: Le(n, c)) -> (c == Nat::Zero) -> n == Nat::Zero {
+    match h {
+      | Le::LeZero(x)         => fun (ec: x == Nat::Zero) => Eq::refl(Nat, Nat::Zero)
+      | Le::LeSucc(a, b, hab) => fun (ec: Nat::Succ(b) == Nat::Zero) =>
+          False::rec(fun (z: False) => Nat::Succ(a) == Nat::Zero,
+                     zero_ne_succ(b, symm(Nat, Nat::Succ(b), Nat::Zero, ec)))
+    }
+}
+fn le_zero_inv(n: Nat, h: Le(n, Nat::Zero)) -> n == Nat::Zero {
+    le_zero_inv_gen(n, Nat::Zero, h)(Eq::refl(Nat, Nat::Zero))
+}
+
+// `Le(n, m) -> n == Succ p -> m == Succ q -> Le(p, q)`, by cases on the derivation. Generalized
+// over `n`/`m` (convoy style) with explicit equality witnesses supplied by the caller, matching
+// the `le_inv` idiom above — needed because `le_antisym` below inverts a hypothesis whose
+// indices are *both* concrete `Succ` applications rather than a single free variable.
+fn le_succ_inv(p: Nat, q: Nat, n: Nat, m: Nat, h: Le(n, m))
+    -> (n == Nat::Succ(p)) -> (m == Nat::Succ(q)) -> Le(p, q)
+{
+    match h {
+      | Le::LeZero(x) => fun (en: Nat::Zero == Nat::Succ(p)) (em: x == Nat::Succ(q)) =>
+          False::rec(fun (z: False) => Le(p, q), zero_ne_succ(p, en))
+      | Le::LeSucc(a3, b3, hab3) => fun (en: Nat::Succ(a3) == Nat::Succ(p)) (em: Nat::Succ(b3) == Nat::Succ(q)) =>
+          subst(Nat, fun (x: Nat) => Le(x, q), a3, p, succ_inj(a3, p, en),
+                subst(Nat, fun (y: Nat) => Le(a3, y), b3, q, succ_inj(b3, q, em), hab3))
+    }
+}
+
+// ANTISYMMETRY: Le(a,b) -> Le(b,a) -> a == b, by induction on the first derivation, inverting
+// the second against the shape forced by the first.
+fn le_antisym(a: Nat, b: Nat, h1: Le(a, b)) -> Le(b, a) -> a == b {
+    match h1 {
+      | Le::LeZero(x) => fun (h2: Le(x, Nat::Zero)) =>
+          symm(Nat, x, Nat::Zero, le_zero_inv(x, h2))
+      | Le::LeSucc(a2, b2, hab) => fun (h2: Le(Nat::Succ(b2), Nat::Succ(a2))) =>
+          congr_arg(Nat, Nat, Nat::Succ, a2, b2,
+                    hab.rec(le_succ_inv(b2, a2, Nat::Succ(b2), Nat::Succ(a2), h2)
+                              (Eq::refl(Nat, Nat::Succ(b2)), Eq::refl(Nat, Nat::Succ(a2)))))
+    }
+}
+
+// ----- max / min -----------------------------------------------------------------------------
+
+// `max`/`min` are curried (`Nat -> (Nat -> Nat)`), matching the `nth`/`lookup` idiom used
+// elsewhere in the corpus: a self-recursive call from inside a *second*, nested `match` needs
+// the recursion parameter returned as a function rather than matched directly, so the
+// elaborator can see the self-reference resolve inside the returned closure.
+fn max(n: Nat) -> (Nat -> Nat) {
+    match n {
+      | Nat::Zero    => fun (m: Nat) => m
+      | Nat::Succ(a) => fun (m: Nat) => match m {
+          | Nat::Zero    => Nat::Succ(a)
+          | Nat::Succ(b) => Nat::Succ(max(a)(b))
+        }
+    }
+}
+
+fn min(n: Nat) -> (Nat -> Nat) {
+    match n {
+      | Nat::Zero    => fun (m: Nat) => Nat::Zero
+      | Nat::Succ(a) => fun (m: Nat) => match m {
+          | Nat::Zero    => Nat::Zero
+          | Nat::Succ(b) => Nat::Succ(min(a)(b))
+        }
+    }
+}
+
+// `max n 0 == n` (definitional in both directions once `n` is split), used to close the `Zero`
+// case of `max_comm`.
+fn max_zero_r(n: Nat) -> max(n)(Nat::Zero) == n {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(a) => Eq::refl(Nat, Nat::Succ(a))
+    }
+}
+fn min_zero_r(n: Nat) -> min(n)(Nat::Zero) == Nat::Zero {
+    match n {
+      | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+      | Nat::Succ(a) => Eq::refl(Nat, Nat::Zero)
+    }
+}
+
+// THEOREM: `max` commutes.
+fn max_comm(n: Nat) -> (m: Nat) -> max(n)(m) == max(m)(n) {
+    match n {
+      | Nat::Zero    => fun (m: Nat) => symm(Nat, max(m)(Nat::Zero), m, max_zero_r(m))
+      | Nat::Succ(a) => fun (m: Nat) => match m {
+          | Nat::Zero    => Eq::refl(Nat, Nat::Succ(a))
+          | Nat::Succ(b) => congr_arg(Nat, Nat, Nat::Succ, max(a)(b), max(b)(a), max_comm(a)(b))
+        }
+    }
+}
+
+// THEOREM: `min` commutes.
+fn min_comm(n: Nat) -> (m: Nat) -> min(n)(m) == min(m)(n) {
+    match n {
+      | Nat::Zero    => fun (m: Nat) => symm(Nat, min(m)(Nat::Zero), Nat::Zero, min_zero_r(m))
+      | Nat::Succ(a) => fun (m: Nat) => match m {
+          | Nat::Zero    => Eq::refl(Nat, Nat::Zero)
+          | Nat::Succ(b) => congr_arg(Nat, Nat, Nat::Succ, min(a)(b), min(b)(a), min_comm(a)(b))
+        }
+    }
+}
+
+// `n <= max n m`, by induction.
+fn le_max_l(n: Nat) -> (m: Nat) -> Le(n, max(n)(m)) {
+    match n {
+      | Nat::Zero    => fun (m: Nat) => le_zero(m)
+      | Nat::Succ(a) => fun (m: Nat) => match m {
+          | Nat::Zero    => le_refl(Nat::Succ(a))
+          | Nat::Succ(b) => Le::LeSucc(a, max(a)(b), le_max_l(a)(b))
+        }
+    }
+}
+
+// `m <= max n m`, by induction.
+fn le_max_r(n: Nat) -> (m: Nat) -> Le(m, max(n)(m)) {
+    match n {
+      | Nat::Zero    => fun (m: Nat) => le_refl(m)
+      | Nat::Succ(a) => fun (m: Nat) => match m {
+          | Nat::Zero    => le_zero(Nat::Succ(a))
+          | Nat::Succ(b) => Le::LeSucc(b, max(a)(b), le_max_r(a)(b))
+        }
+    }
+}
+
+// `min n m <= n`, by induction.
+fn min_le_l(n: Nat) -> (m: Nat) -> Le(min(n)(m), n) {
+    match n {
+      | Nat::Zero    => fun (m: Nat) => le_refl(Nat::Zero)
+      | Nat::Succ(a) => fun (m: Nat) => match m {
+          | Nat::Zero    => le_zero(Nat::Succ(a))
+          | Nat::Succ(b) => Le::LeSucc(min(a)(b), a, min_le_l(a)(b))
+        }
+    }
+}
+
+// `min n m <= m`, by induction.
+fn min_le_r(n: Nat) -> (m: Nat) -> Le(min(n)(m), m) {
+    match n {
+      | Nat::Zero    => fun (m: Nat) => le_zero(m)
+      | Nat::Succ(a) => fun (m: Nat) => match m {
+          | Nat::Zero    => le_refl(Nat::Zero)
+          | Nat::Succ(b) => Le::LeSucc(min(a)(b), b, min_le_r(a)(b))
+        }
+    }
+}
+
+// ----- monotonicity of `plus` -----------------------------------------------------------------
+
+// `c <= x + c`, by induction on `x` (using `le_succ`/`le_trans`).
+fn le_plus_r(x: Nat, c: Nat) -> Le(c, plus(x, c)) {
+    match x {
+      | Nat::Zero    => le_refl(c)
+      | Nat::Succ(k) => le_trans(c, plus(k, c), le_plus_r(k, c), Nat::Succ(plus(k, c)), le_succ(plus(k, c)))
+    }
+}
+
+// THEOREM: `plus` is monotone in its left argument w.r.t. `<=`: `a <= b -> a + c <= b + c`, by
+// induction on the `Le` derivation.
+fn plus_le_mono(a: Nat, b: Nat, h: Le(a, b)) -> (c: Nat) -> Le(plus(a, c), plus(b, c)) {
+    match h {
+      | Le::LeZero(x)           => fun (c: Nat) => le_plus_r(x, c)
+      | Le::LeSucc(a2, b2, hab) => fun (c: Nat) => Le::LeSucc(plus(a2, c), plus(b2, c), hab.rec(c))
+    }
+}
