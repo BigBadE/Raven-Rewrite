@@ -29,20 +29,85 @@
 //!   checks against the goal type purely by conversion, no `hcomp`/hand-built
 //!   square needed. This is exactly the task's own stated "easy" fallback.
 //!
-//! * **Deferred**: `biInvToHAE : Equiv A B → IsHAE A B` — upgrading an *arbitrary*
-//!   bi-invertible `Equiv` (whose `sec`/`ret` carry no coherence between them, see
-//!   `crate::equiv`'s module doc) to a half-adjoint one. The standard construction
-//!   (HoTT book proof of Theorem 4.2.3, via Lemma 2.4.3's "whiskering" of `sec` by
-//!   a homotopy built from `ret`) genuinely needs a 2-dimensional square filled by
-//!   `hcomp`/connections — the same obstruction `crate::contr`'s module doc already
-//!   flags for its own `Fiber`-contraction: `id`'s `sec`=`ret`=`refl` collapses the
-//!   whole construction to a one-liner (as `idHAE` shows), but a *general*
-//!   bi-invertible map's `sec`/`ret` do not reduce to anything, so the adjustment
-//!   has to be built explicitly rather than fall out of conversion. Not attempted
-//!   in this pass, to keep this module's soundness argument airtight (see
-//!   `crate::contr`'s doc for the identical judgment call on its own deferred
-//!   piece); a future pass can build it with `hcomp`/`crate::kan`'s box-filling
-//!   machinery, consuming exactly the `tau` field type declared here as its target.
+//! * **Deferred, but with a landed first step**: `biInvToHAE : Equiv A B → IsHAE A
+//!   B` — upgrading an *arbitrary* bi-invertible `Equiv` (whose `sec`/`ret` carry no
+//!   coherence between them, see `crate::equiv`'s module doc) to a half-adjoint one.
+//!   See "`biInvToHAE`: what's landed vs. the precise remaining obstruction" below
+//!   for the full account. In short: the *whiskered section* `sec'` (HoTT Thm
+//!   4.2.3's `ε'`) is now built and kernel-checked — [`sec_prime`], using only
+//!   pre-existing `J`-derived combinators (`crate::cubical::trans`/`ap`,
+//!   `crate::contr::sym`), no `hcomp` needed. What remains is the coherence `τ` for
+//!   this `sec'` (the genuinely 2-dimensional triangle datum), which — unlike
+//!   `sec'` itself — needs a naturality-square argument (HoTT Lemma 2.4.3) that
+//!   this pass does not attempt; see below for its exact type and why it's harder
+//!   than `sec'`.
+//!
+//! ## `biInvToHAE`: what's landed vs. the precise remaining obstruction
+//!
+//! Given `e : Equiv A B` with fields `f`, `g`, `sec : Πb. Path B (f(g b)) b`,
+//! `ret : Πa. Path A (g(f a)) a` (`crate::equiv`'s bi-invertible shape — `sec`/
+//! `ret` uncoupled), the standard `qinv → ishae` construction (HoTT book proof of
+//! Theorem 4.2.3) keeps `f`, `g`, `ret` as-is and replaces `sec` by
+//!
+//! ```text
+//!   sec'(b) :≡ sec(f(g(b)))⁻¹ · ap f (ret(g(b))) · sec(b)
+//!            :  Path B (f (g b)) b
+//! ```
+//!
+//! **Landed**: [`sec_prime`] builds exactly this term — `sym`/`ap`/[`crate::cubical
+//! ::trans3`] composed as `trans3(sym(sec(f(g b))), ap f (ret(g b)), sec(b))`
+//! (a *single* `J`-elimination composing all three legs — **not** two nested calls
+//! to `crate::cubical::trans`, which turns out not to type-check in this kernel;
+//! see [`crate::cubical::trans3`]'s own doc, "Phase 3.12", for the confirmed
+//! obstruction and `tests::debug_nested_trans_hits_the_documented_completeness_gap`
+//! for the isolated repro) — and it is kernel-checked to inhabit precisely `sec`'s
+//! own type, `Path B (f (g b)) b`, for a fully abstract (opaque, axiomatized — no
+//! reduction to lean on) bi-invertible map; see `tests::sec_prime_typechecks_for_an
+//! _abstract_biinvertible_map`/`_at_the_general_pi_type` (positive) and
+//! `tests::sec_prime_does_not_check_against_an_unrelated_endpoint` (adversarial).
+//! This needed **no `hcomp`**: path *concatenation* (`trans`/`trans3`) and
+//! *whiskering by `ap`* are both already expressible as plain `J`-derived terms
+//! (see `crate::cubical::trans`/`trans3`'s own docs), because they only ever
+//! produce/consume **1-dimensional** paths — no square-filling is needed to state
+//! or prove `sec'`'s type. (One further caveat, also documented and tested rather
+//! than silently swept under the rug: `sec_prime` type-checks for opaque/neutral
+//! `f`/`g`/`sec`/`ret` — exactly the shape real `Equiv`-projection terms have — but
+//! *not* yet for literal-`PLam`-built data such as the identity map's own
+//! `sec`/`ret`; see `tests::sec_prime_on_literal_plam_identity_data_is_a_known_gap
+//! _not_yet_closed`.)
+//!
+//! **Not landed**: the coherence `τ' : Πa. Path (Path B (f(g(f a))) (f a)) (ap f
+//! (ret a)) (sec' (f a))` that would let `(f, g, sec', ret, τ')` assemble into an
+//! `IsHAE A B` via `IsHAE.mk`. This is qualitatively different from `sec'` itself:
+//! `sec'`'s *type* is a 1-path (an equation *in* `B`), provable by ordinary
+//! (1-dimensional) path-algebra; `τ'`'s type is a **2-path** — an equation
+//! *between two 1-paths*, both already inhabiting `Path B (f(g(f a))) (f a)`. Its
+//! HoTT-book proof (the remainder of the Theorem 4.2.3 proof, following the `ε'`
+//! definition) is the **naturality square for a homotopy** (Lemma 2.4.3): given
+//! `H : Πx. f x = g x` (a homotopy) and `p : x = y`, `H` is "natural" in the sense
+//! `H(x) · ap g p = ap f p · H(y)` — itself a genuine 2-path, whose *own* proof
+//! (unlike `trans`/`ap`'s straightforward `J`-eliminations) requires filling a
+//! square built from the naturality data at *both* endpoints simultaneously, the
+//! textbook example of the kind of construction `hcomp`/connection-square filling
+//! exists for. Two instances of this naturality square (one for `ret`, applied at
+//! `ap f (ret a)`'s square, one for `sec`, applied at `sec(f(g(f a)))`'s square)
+//! combine, via further path-algebra (associativity/unit laws for `trans`, which
+//! are themselves 2-paths provable by `J` — tractable, but not yet built here
+//! either), to close `τ'`. None of this is attempted in this pass: the risk of a
+//! subtly-mistyped or subtly-wrong 2-path is exactly what this module's "soundness
+//! first" discipline exists to catch *before* landing, and a correctly-typed
+//! `sec'` plus a precise diagnosis of `τ'`'s remaining shape (this section) is a
+//! more valuable, and safer, deliverable than a rushed attempt at the square. A
+//! future pass can build `τ'` either via the naturality-square route above
+//! (needing `hcomp`/`crate::kan`'s box-filling on top of what's here) or by
+//! locating/adapting the equivalent *pure `J`* proof of Lemma 2.4.3 (naturality
+//! squares for homotopies, unlike `τ'` itself, do have a well-known
+//! `J`-elimination proof in the literature — e.g. cubical Agda's
+//! `Cubical.Foundations.GroupoidLaws`/`Path` naturality lemmas — which, if ported,
+//! would let `τ'` land with no `hcomp` either, matching this pass's own
+//! `reduce.rs`/`nbe.rs`-avoidance constraint); either route consumes exactly
+//! `IsHAE.tau`'s field type declared above as its target, instantiated at `sec :=
+//! sec_prime`.
 //!
 //! ## Encoding
 //!
@@ -67,12 +132,70 @@
 //! not verify this on its own) mirror `crate::equiv`'s identically-named checks.
 
 use crate::check::Checker;
-use crate::cubical::{ap, refl};
+use crate::contr::sym;
+use crate::cubical::{ap, refl, trans3};
 use crate::env::{Constructor, Decl, Env, Inductive, RecRule, Recursor};
 use crate::inductive::{declare_raw, RawInductive};
 use crate::level::Level;
 use crate::term::{name, Term};
 use std::collections::HashMap;
+
+// ============================================================================
+// `biInvToHAE` (HoTT book Theorem 4.2.3), STEP 1 OF 2: the whiskered section
+// `sec'`. See this module's doc, "Deferred: biInvToHAE" section, for the full
+// status (what's landed here, and the precise remaining obstruction).
+// ============================================================================
+
+/// `sec_prime a_ty b_ty f g sec ret b : Path b_ty (f (g b)) b` — the *whiskered*
+/// section, Step 1 of the standard `qinv → ishae` construction (HoTT book proof of
+/// Theorem 4.2.3, the formula for `ε'` given `(g, ε, η)` witnessing `qinv(f)`; here
+/// `sec` plays `ε` and `ret` plays `η`):
+///
+/// ```text
+///   ε'(b) :≡ ε(f(g(b)))⁻¹ · ap f (η(g(b))) · ε(b)
+/// ```
+///
+/// i.e., writing `gb := g b`, `fgb := f gb`, `gfgb := g fgb`, `fgfgb := f gfgb`:
+///
+/// ```text
+///   p1 := sym (sec fgb)        : Path B fgb  fgfgb   (sec fgb : Path B fgfgb fgb, flipped)
+///   p2 := ap f (ret gb)        : Path B fgfgb fgb    (ret gb : Path A gfgb gb, pushed under f)
+///   p3 := sec b                : Path B fgb  b
+///   sec_prime := trans (trans p1 p2) p3 : Path B fgb b
+/// ```
+///
+/// Built entirely from [`trans`]/[`ap`]/[`sym`] (all pre-existing `J`-derived
+/// combinators — no new checking or reduction rule; see those functions' own
+/// soundness docs, which this construction adds nothing beyond). `a_ty`/`b_ty` are
+/// `A`/`B`; `f`/`g`/`sec`/`ret` are the bi-invertible map's own four fields
+/// (`Equiv.f`/`.g`/`.sec`/`.ret`, or any terms of the matching types); `b : B` is
+/// the point.
+///
+/// See [`tests::sec_prime_typechecks_for_an_abstract_biinvertible_map`] for the
+/// concrete adversarially-tested confirmation that this checks at exactly the same
+/// type as `sec` itself, `Path B (f (g b)) b` — the type [`crate::equiv::Equiv`]'s
+/// own `sec` field already carries. What's *not* yet supplied is the coherence
+/// `tau` this new `sec'` would need to satisfy to complete an `IsHAE`; see the
+/// module doc's "Deferred: biInvToHAE" section for exactly what that requires.
+pub fn sec_prime(a_ty: &Term, b_ty: &Term, f: &Term, g: &Term, sec: &Term, ret: &Term, b: &Term) -> Term {
+    let gb = Term::app(g.clone(), b.clone());
+    let fgb = Term::app(f.clone(), gb.clone());
+    let gfgb = Term::app(g.clone(), fgb.clone());
+    let fgfgb = Term::app(f.clone(), gfgb);
+    let p1 = sym(&Term::app(sec.clone(), fgb.clone())); // Path B fgb fgfgb
+    let p2 = ap(f, &Term::app(ret.clone(), gb)); // Path B fgfgb fgb
+    let p3 = Term::app(sec.clone(), b.clone()); // Path B fgb b
+    let _ = a_ty; // not needed directly (all paths built here live in `b_ty`), kept
+    // for symmetry with the `(A B f g sec ret b)` calling convention and in case a
+    // future caller wants to assert it (e.g. as a sanity check on `g`'s codomain).
+    //
+    // NOTE: this is built with `crate::cubical::trans3` (a *single* `J`-elimination
+    // composing all three legs at once), not two nested calls to `trans` — nesting
+    // `trans` does not type-check in this kernel (see `trans3`'s own doc for the
+    // confirmed obstruction, and `tests::debug_nested_trans_hits_the_documented_completeness_gap` for the
+    // isolated repro).
+    trans3(b_ty, &fgb, &fgfgb, &fgb, b, &p1, &p2, &p3) // Path B fgb b
+}
 
 /// The five field types `(f_ty, g_ty, sec_ty, ret_ty, tau_ty)` of `IsHAE.mk`,
 /// valid under a context where `A` is at `Var(1 + extra)`, `B` is at `Var(extra)`,
@@ -579,5 +702,137 @@ mod tests {
         let bogus = refl(&a0);
         let mut ctx = crate::check::LocalCtx::new();
         assert!(chk.check(&mut ctx, &bogus, &goal).is_err());
+    }
+
+    // ------------------------------------------------------------------------
+    // `sec_prime` (Step 1 of `biInvToHAE`, HoTT Thm 4.2.3) — see the module doc's
+    // "Deferred: biInvToHAE" section for the full status.
+    // ------------------------------------------------------------------------
+
+    fn cn(s: &str) -> Term {
+        Term::cnst(name(s), vec![])
+    }
+
+    /// An abstract bi-invertible map: `A B : Type 0`, `f : A → B`, `g : B → A`,
+    /// `sec : Πb. Path B (f (g b)) b`, `ret : Πa. Path A (g (f a)) a` — exactly the
+    /// four fields of [`crate::equiv::Equiv`], as axioms (opaque, no reduction
+    /// behaviour), mirroring `crate::cubical::tests::base_env`'s own
+    /// axiomatized-hypothesis discipline.
+    fn qinv_env() -> crate::kernel::Kernel {
+        let mut k = crate::kernel::Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("B", 0, Term::typ(0)).unwrap();
+        k.add_axiom("f", 0, Term::arrow(cn("A"), cn("B"))).unwrap();
+        k.add_axiom("g", 0, Term::arrow(cn("B"), cn("A"))).unwrap();
+        let sec_ty = Term::pi(
+            cn("B"),
+            Term::path(cn("B"), Term::app(cn("f"), Term::app(cn("g"), Term::Var(0))), Term::Var(0)),
+        );
+        k.add_axiom("sec", 0, sec_ty).unwrap();
+        let ret_ty = Term::pi(
+            cn("A"),
+            Term::path(cn("A"), Term::app(cn("g"), Term::app(cn("f"), Term::Var(0))), Term::Var(0)),
+        );
+        k.add_axiom("ret", 0, ret_ty).unwrap();
+        k.add_axiom("b0", 0, cn("B")).unwrap();
+        k
+    }
+
+    /// `sec_prime` checks at *exactly* the same type `sec` itself has, specialized
+    /// at a concrete point `b0` — `Path B (f (g b0)) b0` — for a fully abstract
+    /// (opaque, axiomatized) bi-invertible map. This is the concrete confirmation
+    /// that `sec'` (HoTT book Thm 4.2.3's `ε'`) is a genuine, well-typed whiskered
+    /// section, built purely from [`trans`]/[`ap`]/[`sym`] with no new trusted
+    /// machinery.
+    #[test]
+    fn sec_prime_typechecks_for_an_abstract_biinvertible_map() {
+        let k = qinv_env();
+        let term = sec_prime(&cn("A"), &cn("B"), &cn("f"), &cn("g"), &cn("sec"), &cn("ret"), &cn("b0"));
+        let ty = k.infer(&term).expect("sec_prime should type-check");
+        let expected = Term::path(cn("B"), Term::app(cn("f"), Term::app(cn("g"), cn("b0"))), cn("b0"));
+        assert!(k.def_eq(&ty, &expected), "sec_prime has type {ty:?}, expected {expected:?}");
+        k.check(&term, &expected).unwrap();
+    }
+
+    /// `sec_prime` also checks at the fully general (un-specialized-in-`b`)
+    /// `Πb. Path B (f (g b)) b` type — i.e. `λb. sec_prime(...b)` really has `sec`'s
+    /// own declared Π-type, not merely the one instance checked above.
+    #[test]
+    fn sec_prime_typechecks_at_the_general_pi_type() {
+        let k = qinv_env();
+        let body = sec_prime(&cn("A"), &cn("B"), &cn("f"), &cn("g"), &cn("sec"), &cn("ret"), &Term::Var(0));
+        let fn_term = Term::lam(cn("B"), body);
+        let expected = Term::pi(
+            cn("B"),
+            Term::path(cn("B"), Term::app(cn("f").lift(1, 0), Term::app(cn("g").lift(1, 0), Term::Var(0))), Term::Var(0)),
+        );
+        k.check(&fn_term, &expected).unwrap();
+    }
+
+    /// KNOWN LIMITATION (documented, not a soundness issue): unlike the fully
+    /// *abstract/opaque* case above (`sec_prime_typechecks_for_an_abstract_biinvertible
+    /// _map`, which is the shape `sec_prime` actually sees in real use — `Equiv.f`/
+    /// `.g`/`.sec`/`.ret A B e` are neutral applications of an abstract `e`, exactly
+    /// like this file's axioms), `sec_prime` does *not* currently type-check when
+    /// `f`/`g`/`sec`/`ret` are literal `PLam`/`Lam`-built terms (the identity map's
+    /// own `id`/`refl_fn`, `crate::equiv_hae::declare_id_hae`'s own shape). The
+    /// boundary mismatch surfaces inside `trans3`'s internal `J`-elimination in a
+    /// way that mirrors [`debug_nested_trans_hits_the_documented_completeness_gap`]
+    /// below — some interaction between literal-`PLam` reduction and the nested
+    /// `J`/`transp` connection square that this pass did not track down further.
+    /// Recorded here (asserting the failure, not silently skipping it) so a future
+    /// pass has a precise, reproducible starting point; it does not block
+    /// `sec_prime`'s intended use inside `biInvToHAE` (which only ever supplies
+    /// opaque `Equiv`-projection terms, the case that *does* work).
+    #[test]
+    fn sec_prime_on_literal_plam_identity_data_is_a_known_gap_not_yet_closed() {
+        let mut k = crate::kernel::Kernel::new();
+        let a = cn("A");
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("b0", 0, a.clone()).unwrap();
+        let id_fn = Term::lam(a.clone(), Term::Var(0));
+        let refl_fn = Term::lam(a.clone(), Term::plam(Term::Var(1)));
+        let term = sec_prime(&a, &a, &id_fn, &id_fn, &refl_fn, &refl_fn, &cn("b0"));
+        assert!(k.infer(&term).is_err(), "expected the documented gap to still reproduce");
+    }
+
+    /// KNOWN LIMITATION (documented, not a soundness issue — see [`trans3`]'s own
+    /// doc, "Phase 3.12"): nesting [`crate::cubical::trans`] — feeding one
+    /// `trans`-built term back in as the *subject* of a further `J`-elimination —
+    /// does not type-check in this kernel, even for three fully abstract
+    /// (axiomatized) paths with no `sym`/`ap` involved. This is exactly the
+    /// obstruction `sec_prime` above works around by using
+    /// [`crate::cubical::trans3`] (a single `J`-elimination) instead of two nested
+    /// `trans` calls. Kept as a permanent regression/documentation test (asserting
+    /// the failure, not silently skipping it).
+    #[test]
+    fn debug_nested_trans_hits_the_documented_completeness_gap() {
+        let mut k = crate::kernel::Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        for n in ["w", "x", "y", "z"] {
+            k.add_axiom(n, 0, cn("A")).unwrap();
+        }
+        k.add_axiom("p", 0, Term::path(cn("A"), cn("w"), cn("x"))).unwrap();
+        k.add_axiom("q", 0, Term::path(cn("A"), cn("x"), cn("y"))).unwrap();
+        k.add_axiom("r", 0, Term::path(cn("A"), cn("y"), cn("z"))).unwrap();
+        let pq = crate::cubical::trans(&cn("A"), &cn("w"), &cn("y"), &cn("p"), &cn("q"));
+        // The *first* `trans` call alone type-checks fine, at exactly `Path A w y`.
+        let ty = k.infer(&pq).expect("p;q should typecheck");
+        assert!(k.def_eq(&ty, &Term::path(cn("A"), cn("w"), cn("y"))));
+        // But using its output as the *subject* of a second `trans`/`J` fails.
+        let pqr = crate::cubical::trans(&cn("A"), &cn("w"), &cn("z"), &pq, &cn("r"));
+        assert!(k.infer(&pqr).is_err(), "expected the documented nested-trans gap to still reproduce");
+    }
+
+    /// Adversarial: `sec_prime`'s output is not accidentally checkable against an
+    /// *unrelated* point `c0` — a bogus target would signal the whiskering built the
+    /// wrong endpoints.
+    #[test]
+    fn sec_prime_does_not_check_against_an_unrelated_endpoint() {
+        let mut k = qinv_env();
+        k.add_axiom("c0", 0, cn("B")).unwrap();
+        let term = sec_prime(&cn("A"), &cn("B"), &cn("f"), &cn("g"), &cn("sec"), &cn("ret"), &cn("b0"));
+        let wrong = Term::path(cn("B"), Term::app(cn("f"), Term::app(cn("g"), cn("b0"))), cn("c0"));
+        assert!(k.check(&term, &wrong).is_err());
     }
 }

@@ -670,6 +670,121 @@ pub fn j(c: &Term, d: &Term, p: &Term) -> Term {
     Term::transp(family, Cof::bot(), d.clone())
 }
 
+// ============================================================================
+// Phase 3.11: `trans` (path concatenation/transitivity), as a derived `J` term.
+// ============================================================================
+//
+// `trans ty a c p q : Path ty a c`, given `p : Path ty a b` and `q : Path ty b c`
+// (`b` is *inferred*, exactly like `J`'s own `x` — it is read off `p`'s checked
+// type, not supplied as an argument). Standard `J`-based construction (this exact
+// shape already appeared, hand-inlined and hard-wired to a fixed axiom `A`, as a
+// private test helper `trans` in this module's `#[cfg(test)] mod tests` above —
+// generalized here to an arbitrary `ty`/`a`/`c`, as a public combinator other
+// modules can build on): eliminate `p : Path ty a b` with motive
+//
+// ```text
+//   C := λ (y:ty) (_:Path ty a y). Path ty y c → Path ty a c
+// ```
+//
+// base case `d := λ (r:Path ty a c). r` (at `y = a`, `C a (refl a)` is
+// definitionally `Path ty a c → Path ty a c`, and the identity function inhabits
+// exactly that), giving `J ty a C d b p : Path ty b c → Path ty a c`; applying that
+// to `q` gives the result. Exactly [`j`] applied to a purpose-built motive — **no
+// new checking or reduction rule**, so it inherits `j`'s (hence `transp`'s, hence
+// `crate::kan`'s) soundness argument verbatim: `trans` cannot produce a `Path ty a
+// c` without two actual path witnesses `p`/`q` genuinely composing end-to-end (`J`'s
+// underlying `transp` unconditionally requires `d`'s type to match the family's
+// `i0` boundary — there is no way around that check).
+pub fn trans(ty: &Term, a: &Term, c: &Term, p: &Term, q: &Term) -> Term {
+    // motive, ctx []: λ (y:ty) (_:Path ty a y). Path ty y c → Path ty a c
+    let motive = Term::lam(
+        ty.clone(),
+        Term::lam(
+            // ctx [y]: Path ty a y (ty/a lifted past the fresh `y` binder)
+            Term::path(ty.lift(1, 0), a.lift(1, 0), Term::Var(0)),
+            // ctx [y,_]: Path ty y c → Path ty a c (ty/a/c lifted past both binders)
+            Term::arrow(
+                Term::path(ty.lift(2, 0), Term::Var(1), c.lift(2, 0)),
+                Term::path(ty.lift(2, 0), a.lift(2, 0), c.lift(2, 0)),
+            ),
+        ),
+    );
+    // d := λ (r:Path ty a c). r — the identity function at `C a (refl a)`.
+    let d = Term::lam(Term::path(ty.clone(), a.clone(), c.clone()), Term::Var(0));
+    Term::app(j(&motive, &d, p), q.clone())
+}
+
+// ============================================================================
+// Phase 3.12: `trans3` (three-way path composition) — needed because *nesting*
+// [`trans`] (i.e. feeding one `trans`-built term back in as the *subject* of a
+// further `J`-elimination) does not type-check in this kernel: `trans`'s output is
+// an `App(Transp(..), _)`-headed term, and the path-η rule that lets `J` eliminate
+// an *opaque* subject (see `j`'s own module-doc section, "Payoff of path-η") does
+// not, empirically, extend to that shape — confirmed directly (three axiomatized
+// paths `p:w=x`, `q:x=y`, `r:y=z`; `trans(trans(p,q),r)` fails to type-check with a
+// boundary mismatch inside the *second* `J`'s connection square, even though
+// `trans(p,q)` alone infers exactly `Path A w y`; see this crate's `equiv_hae`
+// module's own diagnostic test, `debug_nested_trans_hits_the_documented_completeness_gap`, kept in that
+// module as the concrete record of this obstruction). This is a *completeness*
+// gap, not a soundness one — `J`/`transp` themselves are unmodified and no new
+// equation is introduced — but it does mean "just call `trans` twice" is not
+// available for building 3-way (or longer) compositions.
+//
+// [`trans3`] works around it by eliminating only the **first**, genuinely opaque
+// path `p` via `J` (exactly [`trans`]'s own pattern, known to work — see
+// [`j`]'s "Payoff of path-η" tests), with a motive whose *base case* itself calls
+// [`trans`] on two **bound variables** (`q'`/`r'`, i.e. `Term::Var`s — themselves
+// opaque/neutral in exactly the shape the path-η rule *does* handle, matching
+// `j_typechecks_on_an_opaque_axiomatized_path`'s pattern) rather than on an
+// already-`J`-built term. The `J`-elimination of `p` then produces a genuine
+// **function** `Path ty n1 n2 → Path ty n2 d → Path ty a d`, which `q`/`r` are
+// applied to via ordinary function application — never as the *subject* of a
+// further `J`, so the problematic shape above never arises.
+pub fn trans3(
+    ty: &Term,
+    a: &Term,
+    // `n1` (`p`'s right endpoint) is *not* threaded into the term below: `j`
+    // infers it directly from `p`'s own checked type (exactly like `trans`'s `b`,
+    // which is likewise never passed explicitly) — kept as a named parameter
+    // purely so the call site documents the full `a --p--> n1 --q--> n2 --r--> d`
+    // chain it's building, matching this function's own doc.
+    _n1: &Term,
+    n2: &Term,
+    d: &Term,
+    p: &Term,
+    q: &Term,
+    r: &Term,
+) -> Term {
+    // motive, ctx []: λ (y:ty) (_:Path ty a y). Path ty y n2 → Path ty n2 d → Path ty a d
+    let motive = Term::lam(
+        ty.clone(),
+        Term::lam(
+            Term::path(ty.lift(1, 0), a.lift(1, 0), Term::Var(0)),
+            Term::arrow(
+                Term::path(ty.lift(2, 0), Term::Var(1), n2.lift(2, 0)),
+                Term::arrow(
+                    Term::path(ty.lift(2, 0), n2.lift(2, 0), d.lift(2, 0)),
+                    Term::path(ty.lift(2, 0), a.lift(2, 0), d.lift(2, 0)),
+                ),
+            ),
+        ),
+    );
+    // base case, ctx []: λ (q':Path ty a n2) (r':Path ty n2 d). trans ty a d q' r'
+    // — `q'`/`r'` are the two *bound* variables `trans` is called on here (not a
+    // previously-`J`-built term), matching the pattern already confirmed to work.
+    let d1 = Term::lam(
+        Term::path(ty.clone(), a.clone(), n2.clone()),
+        Term::lam(
+            Term::path(ty.lift(1, 0), n2.lift(1, 0), d.lift(1, 0)),
+            trans(&ty.lift(2, 0), &a.lift(2, 0), &d.lift(2, 0), &Term::Var(1), &Term::Var(0)),
+        ),
+    );
+    // j_res : Path ty n1 n2 → Path ty n2 d → Path ty a d  (`n1` is `p`'s own
+    // checked right endpoint, inferred by `j` exactly like `trans`'s own `b`).
+    let j_res = j(&motive, &d1, p);
+    Term::app(Term::app(j_res, q.clone()), r.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
