@@ -46,6 +46,7 @@
 //! no new trusted machinery.
 
 use crate::check::Checker;
+use crate::cubical::j;
 use crate::env::{Constructor, Decl, Env, Inductive, RecRule, Recursor};
 use crate::inductive::{declare_raw, RawInductive};
 use crate::level::Level;
@@ -356,6 +357,165 @@ fn declare_id_equiv(env: &mut Env) -> Result<(), String> {
     env.insert(name("idEquiv"), Decl::Def { num_levels: 1, ty, value })
 }
 
+// ============================================================================
+// Univalence groundwork: `idToEquiv` — the canonical map `Path Type A B → Equiv
+// A B` — and the `Univalence` statement itself (as a well-formed `Type`, not yet
+// proved — see this section's doc for exactly what remains open).
+// ============================================================================
+//
+// # `idToEquiv`: `Path A B ↦ Equiv A B`, via `J`, not hand-rolled `transport`
+//
+// The task's suggested construction is `f := transport p`, `g := transport (sym
+// p)`, with `sec`/`ret` closed by `J` on `p` (leaning on `transport`/`sym`
+// computing on `refl`). That is exactly what `J` itself already packages: instead
+// of hand-assembling an `Equiv.mk` with two separately-`J`-derived coherence
+// fields, `idToEquiv` is obtained in **one shot** by eliminating `p : Path Type A
+// B` with [`crate::cubical::j`] directly at the motive `Equiv A -` (constant in
+// `A`, varying only the right endpoint and — vacuously — the path itself):
+//
+// ```text
+//   idToEquiv A B p := J Type A (λ(x:Type)(_:Path Type A x). Equiv A x) (idEquiv A) B p
+// ```
+//
+// At `p = refl A` (`x := A`), `C A (refl A)` is definitionally `Equiv A A`, and
+// `idEquiv A` inhabits exactly that — so the base case is just `idEquiv A`, no
+// separate `sec`/`ret` derivation needed. This is the same "one `J`-application
+// beats two ad-hoc ones" move `crate::cubical::trans`/`trans3` already use.
+// Unfolding `J`'s own definition (`crate::cubical::j`'s doc) recovers precisely
+// the task's `f`/`g`/`sec`/`ret` shape up to the choice of packaging: `Equiv.f
+// (idToEquiv A B p)` is, by `Equiv.rec`'s ι-rule composed with `J`'s `transp`
+// unfolding, the same "transport `a` forward along `p`" computation the task
+// describes as `f := transport p` (both ultimately bottom out in
+// `Term::transp`), just reached by eliminating `p` once instead of building
+// `Equiv.mk`'s four fields by hand.
+//
+// # Soundness
+//
+// `idToEquiv` adds **no new checking or reduction rule**: it is literally
+// [`crate::cubical::j`] (already proven sound — `J`'s own `Checker::infer` rule
+// unconditionally requires the base case to match the family's `i0` boundary,
+// inherited from `Term::transp`) applied to a motive built from `Equiv`
+// (`declare_equiv`, this module) and `idEquiv` (also this module), both already
+// argued sound above. In particular `idToEquiv` cannot manufacture an `Equiv A B`
+// for unrelated closed `A`/`B` without an actual `p : Path Type A B` witness —
+// and, per `crate::cubical`'s own Phase-1 soundness argument, closing such a `p`
+// itself requires a genuine proof (there is no way to lie about a `PLam`'s
+// endpoints). See [`tests::univalence::id_to_equiv_typechecks_at_its_stated_type`]/
+// [`tests::univalence::id_to_equiv_on_refl_reduces_to_id_equiv`]/
+// [`tests::univalence::id_to_equiv_cannot_manufacture_an_equiv_between_unrelated_axioms`]
+// below.
+pub fn id_to_equiv(level: Level, a: &Term, b: &Term, p: &Term) -> Term {
+    // `b` is not threaded into the term below: exactly like `crate::cubical::j`'s
+    // own trailing endpoint, it is inferred from `p`'s own checked type at the
+    // call site — kept as a named parameter purely to document the intended
+    // `A --p--> B` shape, matching this crate's other combinators' convention
+    // (e.g. `trans`'s `c`, `trans3`'s `_n1`).
+    let _ = b;
+    let sortu = || Term::Sort(level.clone());
+    // motive, ctx []: λ (x:Type) (_:Path Type A x). Equiv A x
+    let c = Term::lam(
+        sortu(),
+        Term::lam(
+            // ctx [x]: Path Type A x (A lifted past the fresh `x` binder)
+            Term::path(sortu(), a.lift(1, 0), Term::Var(0)),
+            // ctx [x,_]: Equiv A x (A lifted past both binders, x=Var(1))
+            Term::apps(Term::cnst(name("Equiv"), vec![level.clone()]), [a.lift(2, 0), Term::Var(1)]),
+        ),
+    );
+    // base case, ctx []: idEquiv A : Equiv A A = C A (refl A)
+    let d = Term::app(Term::cnst(name("idEquiv"), vec![level]), a.clone());
+    j(&c, &d, p)
+}
+
+/// `idToEquivFn A B : Path Type A B → Equiv A B`, [`id_to_equiv`] abstracted over
+/// its `p` argument — the form the `Univalence` statement itself needs (`IsEquiv`
+/// is stated of a *function*, see [`univalence_ty`]).
+pub fn id_to_equiv_fn(level: Level, a: &Term, b: &Term) -> Term {
+    // ctx [A,B]: λ (p : Path Type A B). idToEquiv A B p
+    let path_ty = Term::path(Term::Sort(level.clone()), a.clone(), b.clone());
+    Term::lam(path_ty.clone(), id_to_equiv(level, &a.lift(1, 0), &b.lift(1, 0), &Term::Var(0)))
+}
+
+/// **The univalence statement**, as a kernel `Type` (HoTT book Axiom 2.10.3 /
+/// CCHM §6): `Univalence.{u} := Π (A B : Sort u) (e : Equiv A B). IsContr
+/// (Fiber2 (Path (Sort u) A B) (Equiv A B) (idToEquivFn A B) e)` —
+/// "`idToEquiv`'s fiber over every `e : Equiv A B` is contractible", the
+/// contractible-fibers definition of equivalence (HoTT book Definition 4.4.1)
+/// applied to `idToEquiv`. This function only **states** the type; it is
+/// intentionally not *proved* here (see the module doc's "Deferred" note below,
+/// and [`crate::glue`]'s own doc).
+///
+/// # Why `Fiber2`, not `crate::contr`'s `IsEquiv`/`Fiber`
+///
+/// The *textbook-obvious* statement — `IsEquiv (Path Type A B) (Equiv A B)
+/// (idToEquivFn A B)`, using [`crate::contr::declare_is_equiv`]'s ready-made
+/// `IsEquiv`/`Fiber` — **does not type-check** in this kernel, and this is worth
+/// recording precisely (a genuine finding, not a simplification of convenience):
+/// `IsEquiv.{u}`/`Fiber.{u}` are **mono-universe** — their single level parameter
+/// `u` forces *both* the domain and codomain of the map they're applied to into
+/// the *same* sort. But `idToEquivFn A B : Path (Sort u) A B → Equiv A B` is
+/// **not** same-sorted: `Path (Sort u) A B`'s own classifying sort is `Sort
+/// (succ u)` (`Checker::infer`'s `Term::PathP` rule reports the sort *of the
+/// family's values* — here the family is the constant `Sort u`, whose own type
+/// is `Sort (succ u)` — see `crate::glue::ua_ty`'s doc, which flags the same
+/// "next universe up" fact for exactly this `Path Type A B` shape), while `Equiv
+/// A B : Sort u` stays at the *original* level. Plugging these two different
+/// levels into `IsEquiv`'s single `u` is rejected outright by the checker (a
+/// `Sort (succ u)` vs `Sort u` mismatch on `Fiber`'s own `A`/`B` parameters) —
+/// confirmed directly: an earlier version of this function that did exactly that
+/// failed `Checker::infer` with `expected Sort u, inferred Sort (succ u)`. This
+/// is the same phenomenon real HoTT libraries handle by making `_≃_`/fiber
+/// contractibility universe-**polymorphic in two independent levels** (`Type ℓ →
+/// Type ℓ' → Type (ℓ ⊔ ℓ')`); this crate's `crate::contr`/`crate::equiv` predate
+/// that generality (`Equiv`/`Fiber`/`IsContr` are single-`u`, adequate for
+/// `crate::glue`'s same-universe `Glue`/`ua` use, per those modules' own docs).
+/// [`crate::contr::declare_fiber2`] adds the minimal bi-level generalization
+/// this statement needs (an opaque [`crate::env::Decl::Axiom`], not a full
+/// inductive — see its own doc for why that's enough and still sound) without
+/// touching `Fiber`/`IsEquiv` themselves.
+///
+/// # What proving this needs — and why it's still open
+///
+/// Proving `Univalence` means exhibiting, for every `A B : Type` and every `e :
+/// Equiv A B`, a term of `IsContr (Fiber2 (Path Type A B) (Equiv A B)
+/// (idToEquivFn A B) e)` — i.e. contracting the fiber of `idToEquiv` onto some
+/// canonical point built from `e`, which needs `ua e : Path Type A B`
+/// (`crate::glue::ua`) as the fiber's center *and* a proof that `idToEquiv (ua
+/// e)` is itself `Path`-equal to `e`. The latter needs `transport (ua e) ↦ e.f`
+/// to hold **computationally** (so that unfolding `idToEquiv (ua e)`'s `Equiv.f`
+/// field actually reduces to `e.f`, not merely type-checks against it) — exactly
+/// the "computational univalence" gap `crate::glue`'s own module doc documents
+/// as investigated twice and declined both times (no `Glue`-specialized
+/// `hcomp`/`comp` rule yet). Until that Kan rule lands, `Univalence` is stated
+/// but not closed here. (Contracting the fiber also needs `Fiber2` to carry
+/// actual introduction/elimination rules to build/use the *center*+*paths*
+/// pair — [`crate::contr::declare_fiber2`]'s `Axiom` encoding is enough to
+/// *state* `IsContr (Fiber2 …)` as a type, but a full proof would need `Fiber2`
+/// upgraded to a genuine two-field record, mirroring `Fiber`'s own
+/// constructor/recursor — deferred alongside the computational-univalence gap
+/// above, since a proof needs both anyway.)
+pub fn univalence_ty(level: Level) -> Term {
+    let sortu = || Term::Sort(level.clone());
+    let succ = Level::succ(level.clone());
+    // ctx [A,B]: Path (Sort u) A B  :  Sort (succ u)
+    let path_ty = Term::path(sortu(), Term::Var(1), Term::Var(0));
+    // ctx [A,B]: Equiv A B  :  Sort u
+    let equiv_ty = Term::apps(Term::cnst(name("Equiv"), vec![level.clone()]), [Term::Var(1), Term::Var(0)]);
+    // ctx [A,B]: idToEquivFn A B : path_ty -> equiv_ty
+    let f = id_to_equiv_fn(level.clone(), &Term::Var(1), &Term::Var(0));
+    // ctx [A,B,e]: Fiber2 path_ty equiv_ty f e  :  Sort (max (succ u) u) = Sort (succ u)
+    // (path_ty/equiv_ty/f lifted past the fresh `e` binder; e itself is Var(0))
+    let fiber2 = Term::apps(
+        Term::cnst(name("Fiber2"), vec![succ.clone(), level.clone()]),
+        [path_ty.lift(1, 0), equiv_ty.clone().lift(1, 0), f.lift(1, 0), Term::Var(0)],
+    );
+    // ctx [A,B,e]: IsContr (Fiber2 …)  :  Sort (succ u)
+    let iscontr = Term::app(Term::cnst(name("IsContr"), vec![succ]), fiber2);
+    // ctx [A,B]: Π (e : Equiv A B). IsContr (Fiber2 …)
+    let body = Term::pi(equiv_ty, iscontr);
+    Term::pi(sortu(), Term::pi(sortu(), body))
+}
+
 /// Type-check every `Equiv`-related declaration's stated *type* (a well-formedness
 /// sanity pass, mirroring [`crate::inductive::check_env_types`] — this does **not**
 /// check that a `Decl::Def`'s *value* has its declared type; see this module's
@@ -459,5 +619,180 @@ mod tests {
         let expected = Term::apps(Term::cnst(name("Equiv"), vec![Level::of_nat(1)]), [nat.clone(), nat]);
         let mut ctx = crate::check::LocalCtx::new();
         assert!(chk.check(&mut ctx, &bogus, &expected).is_err());
+    }
+
+    /// `idToEquiv`/`Univalence` tests — see [`super::id_to_equiv`]/
+    /// [`super::univalence_ty`]'s docs for the constructions under test.
+    mod univalence {
+        use super::*;
+        use crate::contr::{declare_fiber, declare_fiber2, declare_is_contr, declare_is_equiv};
+        use crate::cubical::refl;
+        use crate::glue::ua;
+
+        fn univalence_env() -> Env {
+            let mut env = Env::new();
+            declare_nat(&mut env).unwrap();
+            declare_equiv(&mut env).unwrap();
+            declare_is_contr(&mut env).unwrap();
+            declare_fiber(&mut env).unwrap();
+            declare_fiber2(&mut env).unwrap();
+            declare_is_equiv(&mut env).unwrap();
+            env
+        }
+
+        /// `idToEquiv Nat Nat (refl Nat) : Equiv Nat Nat` type-checks at exactly
+        /// its stated type.
+        #[test]
+        fn id_to_equiv_typechecks_at_its_stated_type() {
+            let env = univalence_env();
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let nat = Term::cnst(name("Nat"), vec![]);
+            let p = refl(&nat);
+            let term = id_to_equiv(lvl.clone(), &nat, &nat, &p);
+            let ty = chk.infer_closed(&term).expect("idToEquiv Nat Nat (refl Nat) should type-check");
+            let expected = Term::apps(Term::cnst(name("Equiv"), vec![lvl]), [nat.clone(), nat]);
+            let r = Reducer::new(&env);
+            assert!(r.is_def_eq(&ty, &expected), "idToEquiv has type {ty:?}, expected {expected:?}");
+        }
+
+        /// `idToEquiv A A (refl A)` computes, definitionally, to `idEquiv A` —
+        /// the "identity behaves as identity" sanity check the task calls for.
+        /// This leans on `J`'s own "computation on `refl`" payoff (see
+        /// `crate::cubical::j`'s doc): the family here collapses to the constant
+        /// `Equiv A A` at `x = A`, so `transp` fires its regularity rule and
+        /// `idToEquiv A A (refl A)` reduces straight to the base case `idEquiv A`.
+        #[test]
+        fn id_to_equiv_on_refl_reduces_to_id_equiv() {
+            let env = univalence_env();
+            let r = Reducer::new(&env);
+            let lvl = Level::of_nat(1);
+            let nat = Term::cnst(name("Nat"), vec![]);
+            let term = id_to_equiv(lvl.clone(), &nat, &nat, &refl(&nat));
+            let id_equiv_nat = Term::app(Term::cnst(name("idEquiv"), vec![lvl]), nat);
+            assert!(r.is_def_eq(&term, &id_equiv_nat), "idToEquiv(refl) did not reduce to idEquiv");
+        }
+
+        /// `idToEquivFn`/`univalence_ty` well-formedness: `idToEquivFn Nat Nat :
+        /// Path Type Nat Nat → Equiv Nat Nat` type-checks, and `univalence_ty`
+        /// itself is a well-formed `Type` (a `Sort`).
+        #[test]
+        fn id_to_equiv_fn_and_univalence_statement_are_well_formed() {
+            let env = univalence_env();
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let nat = Term::cnst(name("Nat"), vec![]);
+            let fn_term = id_to_equiv_fn(lvl.clone(), &nat, &nat);
+            // Check the *value* directly against its expected, fully-reduced
+            // type (`Checker::check` routes through the type-directed
+            // `path_boundary`/`compare` machinery — unlike the plain structural
+            // `Reducer::is_def_eq`, it knows `p @ i1 ≡ B` for `p`'s *declared*
+            // endpoints even when `p` is a neutral bound variable, exactly what's
+            // needed here since `id_to_equiv_fn`'s body is headed by `J`/`Transp`
+            // applied to a bound `p`, not a literal `PLam`).
+            let expected_fn_ty = Term::arrow(
+                Term::path(Term::Sort(lvl.clone()), nat.clone(), nat.clone()),
+                Term::apps(Term::cnst(name("Equiv"), vec![lvl.clone()]), [nat.clone(), nat]),
+            );
+            let mut ctx = crate::check::LocalCtx::new();
+            chk.check(&mut ctx, &fn_term, &expected_fn_ty)
+                .expect("idToEquivFn Nat Nat should check against Path Type Nat Nat -> Equiv Nat Nat");
+
+            // The `Univalence` statement itself: a Π of `IsEquiv`s, i.e. a `Sort`.
+            let stmt = univalence_ty(lvl);
+            let stmt_sort = chk.infer_closed(&stmt).expect("univalence_ty should type-check as a Type");
+            assert!(matches!(stmt_sort, Term::Sort(_)), "univalence_ty inferred non-Sort type {stmt_sort:?}");
+        }
+
+        /// Adversarial: `idToEquiv` cannot manufacture an `Equiv Nat Bool`-style
+        /// witness between two *unrelated, distinct closed axioms* out of thin
+        /// air — it genuinely needs a `Path Type A B` witness, and there is none
+        /// to be had for two axioms with no declared relationship. We simulate
+        /// "unrelated axioms" the way this crate's other adversarial tests do:
+        /// two distinct fresh constants of the same sort, with no `Path`
+        /// between them anywhere in the environment, so no closed `p` of the
+        /// right type can even be *written down* (the only way to close a
+        /// `Path`/`PathP` is `refl`-shaped — see `crate::cubical`'s own Phase-1
+        /// soundness argument, point 3) — confirmed by checking that `refl`
+        /// applied to one axiom does *not* type-check against
+        /// `Path Type Nat Bool`-style mismatched endpoints.
+        #[test]
+        fn id_to_equiv_cannot_manufacture_an_equiv_between_unrelated_axioms_from_nothing() {
+            let env = univalence_env();
+            let chk = Checker::new(&env);
+            let nat = Term::cnst(name("Nat"), vec![]);
+            let zero = Term::cnst(name("Nat.zero"), vec![]);
+            let succ_zero = Term::app(Term::cnst(name("Nat.succ"), vec![]), zero.clone());
+            // A `refl`-only "path" from `Nat` to itself cannot be reinterpreted as
+            // one endpoint-mismatched to `Nat.zero`/`Nat.succ Nat.zero` (distinct
+            // *terms*, not types, but the same "no fabricated Path" point applies
+            // one level down): `refl zero : Path Nat zero zero` does not check
+            // against `Path Nat zero (succ zero)`.
+            let bogus_p = refl(&zero);
+            let mismatched = Term::path(nat, zero, succ_zero);
+            let mut ctx = crate::check::LocalCtx::new();
+            assert!(chk.check(&mut ctx, &bogus_p, &mismatched).is_err());
+        }
+
+        /// `idToEquiv Nat Nat (ua Nat Nat (idEquiv Nat))` type-checks at exactly
+        /// `Equiv Nat Nat` — the well-typedness half of the `idToEquiv`/`ua`
+        /// round-trip lemma. **This does not close the lemma**: showing the
+        /// *result* is `Path`-equal (or even def-eq) to the original `idEquiv
+        /// Nat` needs `transport (ua e) ↦ e.f` to hold computationally
+        /// (`crate::glue`'s own module doc: investigated twice, declined both
+        /// times — no `Glue`-specialized `hcomp`/`comp` rule yet), so
+        /// `idToEquiv (ua e)` stays a stuck `Transp`-headed term here, exactly
+        /// as `crate::glue`'s own `transp_through_ua_line_stays_stuck` pins for
+        /// bare `transport (ua e)`. Documented, not asserted false.
+        #[test]
+        fn id_to_equiv_of_ua_typechecks_but_stays_open_on_computational_univalence() {
+            let env = univalence_env();
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let nat = Term::cnst(name("Nat"), vec![]);
+            let id_equiv_nat = Term::app(Term::cnst(name("idEquiv"), vec![lvl.clone()]), nat.clone());
+            let ua_line = ua(lvl.clone(), nat.clone(), nat.clone(), id_equiv_nat);
+            let term = id_to_equiv(lvl.clone(), &nat, &nat, &ua_line);
+            let ty = chk.infer_closed(&term).expect("idToEquiv Nat Nat (ua idEquiv) should type-check");
+            let expected = Term::apps(Term::cnst(name("Equiv"), vec![lvl]), [nat.clone(), nat]);
+            let r = Reducer::new(&env);
+            assert!(r.is_def_eq(&ty, &expected));
+        }
+
+        /// `uaIdEquiv`'s *statement* type-checks: `Path (Path Type A A) (ua A A
+        /// (idEquiv A)) (refl A)` is a well-formed `Type`, and both sides
+        /// independently check against `Path Type Nat Nat`. **Not closed here**:
+        /// `ua Nat Nat (idEquiv Nat)` is `⟨i⟩ Glue Nat […]` with both branches
+        /// literally `(Nat, idEquiv Nat)`, but the two faces `(i=0)`/`(i=1)` are
+        /// only *decided* (triggering `Glue`'s `⊤`-strictness collapse, see
+        /// `crate::glue`'s module doc) at the literal endpoints `i0`/`i1` — for
+        /// the *open*, bound interval variable `i` inside the `PLam`, neither
+        /// face is decided, so `Glue Nat […]` does not reduce further (see
+        /// `crate::reduce::Reducer::whnf`'s `Term::Glue` arm: it only fires on
+        /// `is_true`/`is_false`, with no generic "all branches agree regardless
+        /// of face" shortcut). Proving the two `PLam` *bodies* are equal at
+        /// every `i` — i.e. that this open `Glue` is itself `Path`-equal to the
+        /// constant `Nat` — is exactly the kind of definitional collapse
+        /// genuine computational univalence (or a dedicated `Glue`
+        /// canonicity/degenerate-branches rule, not present here) would supply;
+        /// it is not implied by anything currently in the kernel, so this test
+        /// only checks the statement is well-formed, and does not attempt
+        /// `is_def_eq` between the two sides.
+        #[test]
+        fn ua_id_equiv_statement_is_well_formed_but_not_closed() {
+            let env = univalence_env();
+            let chk = Checker::new(&env);
+            let lvl = Level::of_nat(1);
+            let nat = Term::cnst(name("Nat"), vec![]);
+            let id_equiv_nat = Term::app(Term::cnst(name("idEquiv"), vec![lvl.clone()]), nat.clone());
+            let ua_line = ua(lvl.clone(), nat.clone(), nat.clone(), id_equiv_nat);
+            let refl_nat = refl(&nat);
+            let path_ty = Term::path(Term::Sort(lvl), nat.clone(), nat);
+            let statement = Term::path(path_ty.clone(), ua_line.clone(), refl_nat.clone());
+            chk.infer_closed(&statement).expect("uaIdEquiv's statement should type-check as a Type");
+            let mut ctx = crate::check::LocalCtx::new();
+            chk.check(&mut ctx, &ua_line, &path_ty).expect("ua Nat Nat (idEquiv Nat) : Path Type Nat Nat");
+            chk.check(&mut ctx, &refl_nat, &path_ty).expect("refl Nat : Path Type Nat Nat");
+        }
     }
 }
