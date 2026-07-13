@@ -188,6 +188,15 @@ fn opt_simplify() {
     check("opt_simplify.rv");
 }
 
+/// The optimizing-compiler capstone: consolidates `opt_simplify.rv` and `compile_stack.rv` into
+/// one end-to-end theorem, `opt_compile_correct : exec(compile(simplify(e)), Nil) == Cons(eval(e), Nil)`
+/// (compiling the optimized expression on the empty stack still yields the correct result), plus
+/// the bonus `opt_compile_preserves : exec(compile(simplify(e)), Nil) == exec(compile(e), Nil)`.
+#[test]
+fn opt_compile_pipeline() {
+    check("opt_compile_pipeline.rv");
+}
+
 #[test]
 fn le() {
     check("le.rv");
