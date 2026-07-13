@@ -109,6 +109,23 @@
 //! `IsHAE.tau`'s field type declared above as its target, instantiated at `sec :=
 //! sec_prime`.
 //!
+//! **Update -- the naturality-square keystone is now landed** (a later pass):
+//! `crate::cubical::nat_sq` is exactly the "pure `J`, no `hcomp`" route named
+//! above -- `nat_sq a_ty b_ty f g h x p : Square b_ty (h x) (h y) (ap f p) (ap g
+//! p)` (HoTT Lemma 2.4.3), built and kernel-checked (see `crate::cubical`'s
+//! "Phase 4 (square tooling)" section, and its `square_tests::
+//! nat_sq_typechecks_for_an_abstract_homotopy`/`nat_sq_type_is_genuinely_two_
+//! dimensional` for the confirmed 2-dimensional typing). What `tau'` itself
+//! still needs beyond `nat_sq` -- not attempted in this pass, so `tau'`/
+//! `biInvToHAE` remain open -- is combining *two* instances of `nat_sq` (one at
+//! `ret`, one at `sec`) through the associativity/unit 2-path laws for `trans`/
+//! `trans3` (see the paragraph above: "further path-algebra ... themselves
+//! 2-paths provable by `J` -- tractable, but not yet built here either"), plus
+//! routing `sec_prime`'s own `trans3`-built shape through that combination.
+//! `nat_sq` removes the keystone obstruction (a working naturality square with
+//! no `hcomp`); the remaining work is bookkeeping-heavy 2-path algebra, not a
+//! new primitive.
+//!
 //! ## Encoding
 //!
 //! Same "hand-built single-constructor inductive, no primitive `Σ`" discipline as
