@@ -1,3 +1,6 @@
+// `v + 1` uses `wrapping_add`: `v` comes out of `first(x)?` with no upper
+// bound (the `?` desugaring erases `first`'s `x > 0` premise), so a checked
+// `+` here would emit an overflow obligation no proof can discharge.
 enum Opt { None, Some(i64), }
 fn first(x: i64) -> Opt {
   if x > 0 { return Opt::Some(x); }
@@ -5,7 +8,7 @@ fn first(x: i64) -> Opt {
 }
 fn unwrap_add(x: i64) -> Opt {
   let v: i64 = first(x)?;
-  return Opt::Some(v + 1);
+  return Opt::Some(wrapping_add(v, 1));
 }
 fn main() -> i64 {
   let r: Opt = unwrap_add(5);

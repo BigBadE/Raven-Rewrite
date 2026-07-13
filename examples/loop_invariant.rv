@@ -1,14 +1,22 @@
-// Loop-invariant verification: the invariant `i >= 0` holds on entry and is
-// preserved by the body, so it is proved by induction (linear arithmetic).
+// Loop-invariant verification: the invariant holds on entry and is preserved
+// by the body, so it is proved by induction (linear arithmetic).
 // `rvc examples/loop_invariant.rv` reports VERIFIED.
+//
+// Note what the invariant must restate: at a loop header the path resets to
+// *only* the stated invariants (the standard inductive-invariant assumption —
+// see `rv-infer`'s loop-invariant scheme), so a `requires` fact like `n <=
+// 1000` is dropped unless the invariant repeats it. Overflow safety for `i +
+// 1` and `s + i` needs both `n`'s bound and a bound on `s` relative to `i`
+// (`s <= i * 1000`, linear since `1000` is a literal), so both are carried in
+// the invariant explicitly.
 
 fn sum_to(n: i64) -> i64
-  requires n >= 0;
+  requires n >= 0 && n <= 1000;
 {
   let i: i64 = 0;
   let s: i64 = 0;
   while i < n
-    invariant i >= 0;
+    invariant i >= 0 && i <= n && n <= 1000 && s >= 0 && s <= i * 1000;
   {
     i = i + 1;
     s = s + i;

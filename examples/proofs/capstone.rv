@@ -1,0 +1,146 @@
+// capstone.rv — one file, the whole ladder: ownership x dependency.
+//
+// This is the consolidation showcase: it exercises, in a single `.rv` file, the
+// executable fragment (borrow-checked ownership with a strong update, a
+// refinement-typed precondition) AND the dependent proof kernel (inductive
+// proof by recursion, cubical paths, a genuinely-computing HIT recursor, the
+// bi-invertible equivalence algebra, and univalence's STATEMENT — honestly not
+// its proof, see `docs/cubical.md` §6). Each section is independently checked
+// by `rvc examples/proofs/capstone.rv --verify`; the executable section also
+// runs on the VM via `--run --entry main`.
+//
+// Every item here is exercised elsewhere in the corpus in more depth —
+// `examples/mut_ref_spec.rv` (strong update), `examples/refined_alias.rv`
+// (refinement), `examples/proofs/nat_induction.rv` (induction),
+// `examples/proofs/cubical.rv`/`cubical_showcase.rv` (the cubical layer) — this
+// file is the one-stop tour that puts them side by side.
+
+// ============================================================================
+// 1. EXECUTABLE: ownership (a unique &mut licenses a strong update) + a
+//    refinement-typed precondition, both borrow-checked and solved by
+//    `rv-solve` — routed to the VM, not the kernel.
+// ============================================================================
+
+// A unique `&mut` means the verifier knows `*r = 5` changes exactly the
+// pointee, so it can prove `result == 5` even though the value flows through
+// a reference (see `examples/mut_ref_spec.rv`).
+fn set_through_ref() -> i64
+  ensures result == 5;
+{
+  let a: i64 = 1;
+  let r: &mut i64 = &mut a;
+  *r = 5;
+  return a;
+}
+
+// `d: NonZero` supplies `safe_div`'s division-by-zero precondition implicitly;
+// `rv-solve`'s linear-arithmetic decision procedure discharges the call site.
+type NonZero = i64 where self != 0;
+
+fn safe_div(a: i64, d: NonZero) -> i64 {
+  return a / d;
+}
+
+fn main() -> i64 {
+  let five: i64 = set_through_ref();
+  let k: NonZero = 5;
+  let q: i64 = safe_div(10, k);
+  // `safe_div` carries no `ensures` bounding its result, so a checked `+`
+  // against it would emit an unprovable overflow obligation; `wrapping_add`
+  // opts out (same convention as `examples/generic_trait.rv`).
+  return wrapping_add(q, five);   // 2 + 5 = 7
+}
+
+// ============================================================================
+// 2. INDUCTIVE PROOF: a lemma is a `fn` whose return TYPE is the proposition;
+//    induction is recursion (the recursive call IS the induction hypothesis).
+//    Grade-0, so it erases to zero bytes at runtime.
+// ============================================================================
+
+enum Peano { Z, S(Peano) }
+
+fn add(n: Peano, m: Peano) -> Peano {
+  match n { | Peano::Z => m | Peano::S(k) => Peano::S(add(k, m)) }
+}
+
+// n + 0 == n, by induction on n.
+fn add_zero(n: Peano) -> add(n, Peano::Z) == n {
+  match n {
+    | Peano::Z    => Eq::refl(Peano, Peano::Z)
+    | Peano::S(k) => congr_arg(Peano, Peano, Peano::S, add(k, Peano::Z), k, add_zero(k))
+  }
+}
+
+// ============================================================================
+// 3. CUBICAL PATHS: refl / ap / transport / J, over the interval + PathP layer
+//    (`crates/rv-kernel-core/src/cubical.rs`; see docs/cubical.md §1).
+// ============================================================================
+
+def path_refl_z : Path(Peano, Peano::Z, Peano::Z) := refl(Peano, Peano::Z)
+
+// `ap` — a path between inputs gives a path between outputs of any function.
+def path_ap_s : Path(Peano, Peano::S(Peano::Z), Peano::S(Peano::Z)) :=
+    ap(Peano, Peano, Peano::Z, Peano::Z, Peano::S, refl(Peano, Peano::Z))
+
+// `transport` — moving a value along a path between (here, trivially equal)
+// types; specializes `transp` to a `Path` in `Sort u`.
+def path_transported_z : Peano := transport(Peano, Peano, refl(Type, Peano), Peano::Z)
+
+// `J` — path induction, computing genuinely on `refl` (β-reduces through the
+// `Path`/`transp` definition of `J` this kernel uses).
+def path_j_demo : Path(Peano, Peano::Z, Peano::Z) :=
+    J(Peano, Peano::Z,
+      fun (x: Peano) (p: Path(Peano, Peano::Z, x)) => Path(Peano, Peano::Z, Peano::Z),
+      refl(Peano, Peano::Z),
+      Peano::Z, refl(Peano, Peano::Z))
+
+// ============================================================================
+// 4. A GENUINELY-COMPUTING HIT: the cubical circle `S1c` — a real self-loop
+//    (`S1c.loop : Path S1c base base`) whose recursor ι-rule fires ON the path
+//    constructor, not just propositionally (contrast `Quot`/`Trunc`, whose
+//    path constructors classify by `Eq` and hold only propositionally). See
+//    docs/cubical.md §2.
+// ============================================================================
+
+def s1c_at_base : Peano :=
+    S1c.rec(fun (_: S1c) => Peano, Peano::Z, refl(Peano, Peano::Z), S1c.base)
+
+def s1c_loop_at_i0 : Peano :=
+    S1c.rec(fun (_: S1c) => Peano, Peano::Z, refl(Peano, Peano::Z), papp(S1c.loop, i0))
+
+// The loop's `i0` boundary genuinely reduces back to the base-point value —
+// checked by the kernel via `==`, not by inspection.
+def s1c_loop_boundary_coherence : s1c_loop_at_i0 == s1c_at_base := Eq::refl(Peano, Peano::Z)
+
+// ============================================================================
+// 5. THE EQUIVALENCE ALGEBRA: `Equiv` (bi-invertible: f/g/sec/ret, no
+//    coherence required between them) plus its derived operations — idEquiv,
+//    symEquiv (a field swap, no J needed), compEquiv (composition via
+//    ap/trans). See docs/cubical.md §3.
+// ============================================================================
+
+def id_equiv_peano : Equiv(Peano, Peano) := idEquiv(Peano)
+def sym_equiv_peano : Equiv(Peano, Peano) := symEquiv(Peano, Peano, id_equiv_peano)
+def comp_equiv_peano : Equiv(Peano, Peano) := compEquiv(Peano, Peano, Peano, id_equiv_peano, id_equiv_peano)
+def comp_equiv_peano_f_z : Peano := Equiv.f(Peano, Peano, comp_equiv_peano, Peano::Z)
+
+// ============================================================================
+// 6. UNIVALENCE: `ua` STATED and type-checked (CCHM `ua A B e := <i> Glue B
+//    [(i=0)->(A,e), (i=1)->(B,idEquiv B)]`), and `Univalence` — the
+//    contractible-fibers statement, assumed here as an axiom purely to show
+//    the type itself is well-formed and by-name-callable.
+//
+//    HONEST OPEN FRONTIER: computational univalence — `transport (ua e) a`
+//    reducing to `e.f a` — is NOT proved here. It stays a soundly-stuck
+//    `Term::Transp` term, blocked on a generic `hcomp_glue_rule` built from
+//    `IsHAE`'s coherence (not just `Equiv`'s bi-invertibility); three
+//    in-depth attempts are on record and declined (`kan.rs` Phase 3.12-3.14).
+//    See docs/cubical.md §6 for the full diagnosis. `Univalence`'s THEOREM
+//    (not just its statement) sits on the same open item, since proving it
+//    needs that same computation rule. Nothing here overclaims past "stated,
+//    checked well-formed, not closed".
+// ============================================================================
+
+def ua_peano_peano : Path(Type, Peano, Peano) := ua(Peano, Peano, id_equiv_peano)
+
+axiom univalence_axiom : Univalence
