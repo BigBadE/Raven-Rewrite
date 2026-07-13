@@ -1,0 +1,77 @@
+// A comprehensive tour of the cubical layer, exercised end-to-end from `.rv`
+// surface syntax (`rvc --verify`): paths and their derived operators, the
+// interval HIT `I2`, the genuinely-computing cubical circle `S1c` and sphere
+// `S2` (both installed via `rv_kernel_core::cubical_hit::declare_cubical_hit`),
+// univalence stated (`ua`), and the bi-invertible equivalence type
+// (`Equiv`/`idEquiv`). See `crates/rv-kernel/src/cubical_surface.rs` and
+// `crates/rv-kernel/src/kernel_ext.rs` for how each of these is installed, and
+// `docs/cubical.md` for the whole layer's write-up (including what is
+// deliberately NOT computational yet — `transport (ua e)`).
+//
+// This file complements (does not replace) `examples/proofs/cubical.rv`, which
+// already exercises the base `Path`/`PathP`/`I2` layer in more depth; this file
+// focuses on the newer pieces: `S1c`, `S2`, `Equiv`/`idEquiv`, `ua`.
+
+enum Nat { Zero, Succ(Nat) }
+
+def succ : Nat -> Nat := fun (n: Nat) => Nat::Succ(n)
+
+// ---- refl / ap / transport / J / trans, on Path (recap, see cubical.rv) ----
+def refl_zero : Path(Nat, Nat::Zero, Nat::Zero) := refl(Nat, Nat::Zero)
+
+def ap_succ : Path(Nat, Nat::Succ(Nat::Zero), Nat::Succ(Nat::Zero)) :=
+    ap(Nat, Nat, Nat::Zero, Nat::Zero, succ, refl(Nat, Nat::Zero))
+
+def funext_succ : Path(forall (_: Nat), Nat, succ, succ) :=
+    pfunext(Nat, fun (_: Nat) => Nat, succ, succ, fun (x: Nat) => refl(Nat, succ(x)))
+
+def transported_zero : Nat := transport(Nat, Nat, refl(Type, Nat), Nat::Zero)
+
+def j_demo : Path(Nat, Nat::Zero, Nat::Zero) :=
+    J(Nat, Nat::Zero,
+      fun (x: Nat) (p: Path(Nat, Nat::Zero, x)) => Path(Nat, Nat::Zero, Nat::Zero),
+      refl(Nat, Nat::Zero),
+      Nat::Zero, refl(Nat, Nat::Zero))
+
+def trans_demo : Path(Nat, Nat::Zero, Nat::Zero) :=
+    ptrans(Nat, Nat::Zero, Nat::Zero, Nat::Zero, refl(Nat, Nat::Zero), refl(Nat, Nat::Zero))
+
+// ---- I2: the interval HIT, a computing two-point path ----------------------
+def i2_seg_at_i0 : Nat :=
+    I2.rec(fun (_: I2) => Nat, Nat::Zero, Nat::Zero, refl(Nat, Nat::Zero), papp(I2.seg, i0))
+
+def i2_endpoint_coherence : i2_seg_at_i0 == Nat::Zero := Eq::refl(Nat, Nat::Zero)
+
+// ---- S1c: the cubical circle, a genuinely-computing SELF-loop --------------
+// `S1c.rec C b l S1c.base ↝ b` and `S1c.rec C b l (S1c.loop @ r) ↝ l @ r`.
+def s1c_at_base : Nat := S1c.rec(fun (_: S1c) => Nat, Nat::Zero, refl(Nat, Nat::Zero), S1c.base)
+
+def s1c_loop_at_i0 : Nat :=
+    S1c.rec(fun (_: S1c) => Nat, Nat::Zero, refl(Nat, Nat::Zero), papp(S1c.loop, i0))
+
+def s1c_loop_at_i1 : Nat :=
+    S1c.rec(fun (_: S1c) => Nat, Nat::Zero, refl(Nat, Nat::Zero), papp(S1c.loop, i1))
+
+// Both boundaries of the loop genuinely compute back to the same value the
+// point rule gives directly — checked by the kernel via `==`, not inspection.
+def s1c_loop_boundary_coherence_i0 : s1c_loop_at_i0 == s1c_at_base := Eq::refl(Nat, Nat::Zero)
+def s1c_loop_boundary_coherence_i1 : s1c_loop_at_i1 == s1c_at_base := Eq::refl(Nat, Nat::Zero)
+
+// ---- S2: the cubical sphere, a genuinely-computing 2-cell -------------------
+// `S2.rec C b t S2.base ↝ b` and `S2.rec C b t (S2.surf @ i @ j) ↝ (t @ i) @ j`.
+def s2_at_base : Nat := S2.rec(fun (_: S2) => Nat, Nat::Zero, refl(Path(Nat, Nat::Zero, Nat::Zero), refl(Nat, Nat::Zero)), S2.base)
+
+def s2_surf_at_i0_j0 : Nat :=
+    S2.rec(fun (_: S2) => Nat, Nat::Zero, refl(Path(Nat, Nat::Zero, Nat::Zero), refl(Nat, Nat::Zero)), papp(papp(S2.surf, i0), i0))
+
+def s2_surf_boundary_coherence : s2_surf_at_i0_j0 == s2_at_base := Eq::refl(Nat, Nat::Zero)
+
+// ---- Equiv / idEquiv: the bi-invertible equivalence type -------------------
+def id_equiv_nat : Equiv(Nat, Nat) := idEquiv(Nat)
+def id_equiv_nat_f : Nat -> Nat := Equiv.f(Nat, Nat, id_equiv_nat)
+def id_equiv_nat_f_zero : Nat := id_equiv_nat_f(Nat::Zero)
+
+// ---- ua: univalence, STATED (not computational — see docs/cubical.md) ------
+// `ua e : Path Type A B` genuinely type-checks; `transport (ua e) a ↝ e.f a`
+// is the deliberately-deferred piece (transport stays soundly stuck on it).
+def ua_nat_nat : Path(Type, Nat, Nat) := ua(Nat, Nat, id_equiv_nat)

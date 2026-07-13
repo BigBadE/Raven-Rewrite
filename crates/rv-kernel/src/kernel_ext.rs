@@ -66,6 +66,48 @@ pub trait KernelExt {
     /// already be declared.
     fn install_cubical(&mut self) -> Result<(), String>;
 
+    /// Install the **cubical circle** `S1c` (a genuinely-computing self-loop HIT:
+    /// `S1c`/`S1c.base`/`S1c.loop`/`S1c.rec`) — see
+    /// [`rv_kernel_core::circle_cubical`].
+    fn install_s1c(&mut self) -> Result<(), String>;
+
+    /// Install the **cubical sphere** `S²` (one nullary point `S2.base` plus one
+    /// `S2.surf : Path (Path S2 base base) (refl base) (refl base)` 2-cell,
+    /// generated via [`rv_kernel_core::cubical_hit::declare_cubical_hit`]'s "S²"
+    /// higher-path support) plus its recursor `S2.rec`.
+    fn install_s2(&mut self) -> Result<(), String>;
+
+    /// Declare a general cubical higher-inductive type from `spec` — see
+    /// [`rv_kernel_core::cubical_hit::declare_cubical_hit`]/[`rv_kernel_core::cubical_hit::CubHitSpec`].
+    /// This is the general escape hatch [`KernelExt::install_s1c`]/
+    /// [`KernelExt::install_s2`] are themselves built from; it is also how a
+    /// **set-quotient-style HIT** is declared — e.g. a HIT with one fielded point
+    /// constructor `mk : A -> Q` and one quantified path constructor `eq : Π (a b :
+    /// A) (h : R a b). Path Q (mk a) (mk b)` (mirroring `Quot`'s shape, but as a
+    /// genuinely cubical/computing path instead of `Quot.sound`'s propositional
+    /// one) is exactly one `CubHitSpec` with those `points`/`paths` fields.
+    fn declare_cubical_hit(&mut self, spec: &rv_kernel_core::cubical_hit::CubHitSpec) -> Result<(), String>;
+
+    /// Install the **bi-invertible equivalence** type `Equiv A B` (`Equiv`/
+    /// `Equiv.mk`/`Equiv.rec`/`Equiv.f`/`Equiv.g`/`Equiv.sec`/`Equiv.ret`) plus
+    /// `idEquiv` — see [`rv_kernel_core::equiv`].
+    fn install_equiv(&mut self) -> Result<(), String>;
+
+    /// Install `IsContr`/`Fiber`/`IsEquiv`/`idIsEquiv` — the contractible-fibers
+    /// equivalence notion (HoTT book §4.2/§4.4) — see [`rv_kernel_core::contr`].
+    fn install_contr(&mut self) -> Result<(), String>;
+
+    /// Install `IsHAE`/`idHAE` — the half-adjoint equivalence notion (HoTT book
+    /// §4.2.1) — see [`rv_kernel_core::equiv_hae`].
+    fn install_hae(&mut self) -> Result<(), String>;
+
+    /// Install `ua : Π (A B : Sort u) (e : Equiv A B). Path (Sort u) A B` —
+    /// univalence, *stated* (not computational — `transport (ua e) x` does not
+    /// reduce to `e.f x`; see `docs/cubical.md`'s "Known limitation") — as an
+    /// ordinary by-name-callable constant. Requires [`KernelExt::install_equiv`]
+    /// first. See [`rv_kernel_core::glue::ua`]/`ua_ty`.
+    fn install_ua(&mut self) -> Result<(), String>;
+
     /// Check the QTT usage discipline (`crate::graded`) of the stored definition
     /// `name`: a graded binder (linear `1`/erased `0`) in its type must be used
     /// accordingly in its value. Ungraded (`ω`, the default) binders always pass, so
@@ -108,6 +150,43 @@ impl KernelExt for Kernel {
 
     fn install_cubical(&mut self) -> Result<(), String> {
         crate::cubical_surface::install_cubical(self.env_mut())
+    }
+
+    fn install_s1c(&mut self) -> Result<(), String> {
+        rv_kernel_core::circle_cubical::install_circle_cubical(self.env_mut())
+    }
+
+    fn install_s2(&mut self) -> Result<(), String> {
+        use rv_kernel_core::cubical_hit::{CubHitSpec, CubPointSpec, CubSurfSpec};
+        let spec = CubHitSpec {
+            name: "S2".to_string(),
+            points: vec![CubPointSpec::nullary("S2.base")],
+            paths: vec![],
+            surfaces: vec![CubSurfSpec { name: "S2.surf".to_string(), base: 0 }],
+        };
+        rv_kernel_core::cubical_hit::declare_cubical_hit(self.env_mut(), &spec)
+    }
+
+    fn declare_cubical_hit(&mut self, spec: &rv_kernel_core::cubical_hit::CubHitSpec) -> Result<(), String> {
+        rv_kernel_core::cubical_hit::declare_cubical_hit(self.env_mut(), spec)
+    }
+
+    fn install_equiv(&mut self) -> Result<(), String> {
+        rv_kernel_core::equiv::declare_equiv(self.env_mut())
+    }
+
+    fn install_contr(&mut self) -> Result<(), String> {
+        rv_kernel_core::contr::declare_is_contr(self.env_mut())?;
+        rv_kernel_core::contr::declare_fiber(self.env_mut())?;
+        rv_kernel_core::contr::declare_is_equiv(self.env_mut())
+    }
+
+    fn install_hae(&mut self) -> Result<(), String> {
+        rv_kernel_core::equiv_hae::declare_is_hae(self.env_mut())
+    }
+
+    fn install_ua(&mut self) -> Result<(), String> {
+        crate::cubical_surface::install_ua(self.env_mut())
     }
 
     fn check_usage(&self, n: &str) -> Result<(), String> {
