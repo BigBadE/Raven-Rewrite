@@ -19,21 +19,6 @@ use crate::face::{Atom, Cof};
 use crate::level::{self, Level};
 use crate::term::{Grade, Name, Term};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-/// Base offset for [`Nbe::family_is_constant_value`]'s fresh-marker de Bruijn
-/// *levels*: real terms/contexts never come remotely close to `2^40` bound
-/// variables (the standard NbE level scheme always uses small, densely-packed
-/// numbers starting at 0), so any level `>= PROBE_BASE` is, in practice,
-/// unambiguously "one of our fresh markers, not a genuine program variable" — see
-/// that method's doc for the full soundness argument (a hypothetical collision
-/// fails safe regardless).
-const PROBE_BASE: u64 = 1 << 40;
-/// Monotonic counter backing [`Nbe::family_is_constant_value`]'s fresh markers —
-/// guarantees every probe call (including recursively nested ones, e.g. nested
-/// `transp`/`J` redexes) gets a distinct id, so two *different* probes can never be
-/// confused for one another.
-static PROBE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A semantic value (weak-head evaluated, with delayed bodies under closures).
 ///
@@ -270,14 +255,16 @@ impl VEnv {
     }
 
     /// The number of bindings currently in scope (0 for `Nil`) — i.e. the de
-    /// Bruijn *level* the next `cons`ed value would occupy. Used by
-    /// [`Nbe::family_whnf_pi`] to push a fresh marker at the correct, honest
-    /// level (so [`Nbe::quote`]'s level-to-index translation round-trips
-    /// exactly) rather than an artificially huge one — see that method's doc
-    /// for why the two probes (this one and
-    /// [`Nbe::family_is_constant_value`]'s [`PROBE_BASE`]-offset one) need
-    /// different freshness disciplines despite both pushing "one fresh marker
-    /// onto `venv`".
+    /// Bruijn *level* the next `cons`ed value would occupy. Used by both
+    /// [`Nbe::family_whnf_pi`] and [`Nbe::family_is_constant_value`] to push
+    /// their fresh probe marker at the correct, honest level (so
+    /// [`Nbe::quote`]'s level-to-index translation round-trips exactly),
+    /// exactly the same discipline [`Nbe::quote`] itself already uses
+    /// everywhere it forces a closure body (`Head::Var(level)`, then quotes
+    /// the result at `level + 1`) — see those methods' docs for why sharing
+    /// this one discipline (rather than each probe inventing its own
+    /// freshness scheme) is what makes it safe for one probe to fire nested
+    /// inside the other.
     fn depth(&self) -> usize {
         let mut env = self;
         let mut n = 0;
@@ -286,31 +273,6 @@ impl VEnv {
             env = rest;
         }
         n
-    }
-
-    /// Does any binding already in `self` carry one of
-    /// [`Nbe::family_is_constant_value`]'s out-of-band [`PROBE_BASE`]-offset
-    /// markers? Used by [`Nbe::family_whnf_pi`] as a safety guard: that
-    /// method's own position-indexed quoting (see [`Self::depth`]'s doc) is
-    /// only sound when *every* binding in `venv` is a genuine, position-
-    /// indexed value — which a `PROBE_BASE` marker (deliberately *not*
-    /// position-indexed, by [`Nbe::family_is_constant_value`]'s own design) is
-    /// not. This only ever arises when [`Nbe::family_whnf_pi`] is reached
-    /// while already nested inside a `family_is_constant_value` regularity
-    /// probe's own recursive evaluation (that probe pushes exactly such a
-    /// marker before evaluating), so it's cheap to check for directly rather
-    /// than threading extra state through every `eval` call.
-    fn contains_probe_marker(&self) -> bool {
-        let mut env = self;
-        while let VEnv::Cons(v, rest) = env {
-            if let Value::Stuck(Head::Var(k), spine) = &**v {
-                if spine.is_empty() && *k as u64 >= PROBE_BASE {
-                    return true;
-                }
-            }
-            env = rest;
-        }
-        false
     }
 }
 
@@ -822,12 +784,34 @@ impl<'a> Nbe<'a> {
     /// point this term was accepted — this evaluator changes no typing judgement,
     /// only which reductions the (already-sound) evaluator manages to perform.
     ///
-    /// The freshness of the marker itself is guaranteed process-wide by a
-    /// monotonically increasing [`AtomicU64`] counter offset by [`PROBE_BASE`] — see
-    /// that constant's doc for why an accidental collision with a genuine bound
-    /// variable's de Bruijn level is astronomically unlikely and, even in the
-    /// (unreachable in practice) case of a collision, only ever fails *safe* (a
-    /// missed collapse opportunity — a completeness, not soundness, degradation).
+    /// The freshness — and, critically, the **quote-safety** — of the marker
+    /// itself now comes from reusing exactly [`Self::quote`]'s own,
+    /// already-proven-sound discipline (see [`VEnv::depth`]'s doc): the probe
+    /// is pushed as `Head::Var(venv.depth())`, i.e. a genuine, **position-
+    /// indexed** de Bruijn *level* — the same level a real `cons`ed binder at
+    /// that point in `venv` would occupy — not an out-of-band sentinel from a
+    /// disjoint numbering scheme. Concretely this means: (a) it is
+    /// *indistinguishable*, as far as `eval`/`quote` are concerned, from an
+    /// ordinary fresh bound variable introduced at this point (exactly what
+    /// [`Self::quote`] itself pushes, e.g. in its `Value::Pi`/`Value::Lam`
+    /// arms, every time it forces a closure body) — so nothing downstream
+    /// needs to recognize or special-case it; (b) it round-trips through
+    /// `quote(venv.depth() + 1, ..)` correctly by the same level-to-index
+    /// arithmetic (`idx = level - 1 - k`) that already governs every other
+    /// binding in `venv`, with **no risk of underflow or of colliding with a
+    /// genuine bound variable's index** — the two things the old
+    /// `PROBE_BASE`-offset out-of-band scheme could get wrong when this
+    /// probe's marker was later dragged, unresolved, into a *nested* probe's
+    /// own `quote` call (see [`Self::family_whnf_pi`]'s doc for the nested
+    /// case this was blocking); and (c) it composes safely under nesting: a
+    /// probe started while already nested inside another probe simply sees a
+    /// `venv` one binding deeper (`depth` is always the literal, current
+    /// `Cons`-chain length), so its own marker lands at the next level up,
+    /// exactly like two ordinary nested binders would — there is no shared
+    /// mutable counter to reason about, and no possibility of two *different*
+    /// probes' markers being confused for one another (they occupy different,
+    /// non-overlapping levels by construction, just like any other pair of
+    /// nested bound variables).
     ///
     /// # Termination
     ///
@@ -853,19 +837,21 @@ impl<'a> Nbe<'a> {
         if !crate::term::mentions_var(fam, 0) {
             return true;
         }
-        let id = PROBE_BASE + PROBE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let probe = Rc::new(Value::Stuck(Head::Var(id as usize), Vec::new()));
+        // Position-indexed marker (see this method's doc): the exact same
+        // "push `Head::Var(depth)`, then quote at `depth + 1`" discipline
+        // `Self::quote` itself already uses at every closure it forces —
+        // never an out-of-band sentinel, so it is safe to nest.
+        let level = venv.depth();
+        let probe = Rc::new(Value::Stuck(Head::Var(level), Vec::new()));
         let v = self.eval(&venv.cons(probe), fam);
-        // Quote at `level = id + 1`: the probe (at level `id`) reads back as
-        // `Term::Var(0)` — see `Self::quote`'s level-to-index convention (`idx =
-        // level - 1 - k`) — so checking for `Var(0)` in the quoted result is exactly
-        // checking whether the fresh marker survived. Any *other*, unrelated
-        // `Head::Var(k)` already present in `venv` (e.g. from an enclosing
-        // `normalize_open`'s own small, honest levels, always `< PROBE_BASE`, or
-        // from an independently-chosen larger probe id from a *different* call —
-        // impossible to collide with, since `PROBE_COUNTER` never repeats) reads
-        // back as some other index instead, so it can't be mistaken for the probe.
-        let quoted = self.quote(id as usize + 1, &v);
+        // The probe (at level `level`) reads back as `Term::Var(0)` under
+        // `quote(level + 1, ..)` — see `Self::quote`'s level-to-index
+        // convention (`idx = level - 1 - k`) — so checking for `Var(0)` in
+        // the quoted result is exactly checking whether the fresh marker
+        // survived. Any *other* `Head::Var(k)` already present in `venv`
+        // quotes back to a different (smaller) index, exactly as it would
+        // for `Self::quote` itself, so it can't be mistaken for the probe.
+        let quoted = self.quote(level + 1, &v);
         !crate::term::mentions_var(&quoted, 0)
     }
 
@@ -938,44 +924,60 @@ impl<'a> Nbe<'a> {
     /// `Transp` nodes *reduce*, never which *types* something is accepted at
     /// (`Checker::infer`/`check` are untouched by this module).
     ///
-    /// # Why the probe must use the *real* depth, not [`PROBE_BASE`]
+    /// # Why the probe must use the *real* depth
     ///
-    /// [`Self::family_is_constant_value`] can safely push its fresh marker at an
-    /// astronomically large, globally-unique level (`PROBE_BASE + counter`)
-    /// because it only ever asks a yes/no *mention* question of the quoted result
-    /// — the huge level never needs to correctly round-trip back through `venv`.
-    /// This method is different: the `(dom, cod)` it returns get handed to
+    /// The `(dom, cod)` this method returns get handed to
     /// [`crate::kan::transp_pi_rule`] and then *re-evaluated against this same
     /// `venv`* by the caller, so every *other* free variable `fam` mentions (i.e.
     /// every `Head::Var(k)` already present in `venv`, not the freshly pushed
     /// marker) must quote back to the **same** `Term::Var` index that correctly
     /// re-resolves through `venv.get` — which only holds when the quoting level
-    /// matches `venv`'s *actual* depth (see [`VEnv::depth`]'s doc). Using
-    /// `PROBE_BASE` here would silently produce `(dom, cod)` with wildly wrong,
-    /// out-of-range de Bruijn indices for every variable already bound in `venv` —
-    /// not a soundness hole (the re-`eval` would simply panic on the out-of-range
-    /// index, or in the worst case pick up an unrelated binding, on genuinely
-    /// well-typed input), so this method deliberately does **not** reuse that
-    /// probe's freshness discipline.
+    /// matches `venv`'s *actual* depth (see [`VEnv::depth`]'s doc). An
+    /// out-of-band, non-position-indexed level here would silently produce
+    /// `(dom, cod)` with wildly wrong, out-of-range de Bruijn indices for every
+    /// variable already bound in `venv` — not a soundness hole (the re-`eval`
+    /// would simply panic on the out-of-range index, or in the worst case pick
+    /// up an unrelated binding, on genuinely well-typed input), but a completeness
+    /// bug (spurious failures/panics on well-typed terms) — so this method's
+    /// `venv.depth()`-based quoting is the *only* correct freshness discipline
+    /// here. [`Self::family_is_constant_value`] now shares this exact discipline
+    /// too (see its doc) — the two probes are no longer allowed to diverge on
+    /// this point, which is precisely what makes nesting them safe (next section).
+    ///
+    /// # Safe to fire nested inside `family_is_constant_value` (no bail-out needed)
+    ///
+    /// This used to bail out (return `None`) whenever `venv` already carried
+    /// a marker pushed by an enclosing [`Self::family_is_constant_value`]
+    /// probe, because that probe's *old* out-of-band `PROBE_BASE`-offset
+    /// marker was **not** position-indexed — quoting a value that still
+    /// mentioned it at this method's `venv.depth()`-based level could
+    /// underflow `quote`'s `level - 1 - k` arithmetic, or produce a bogus
+    /// small `Term::Var` index that collides with a genuinely bound variable
+    /// (variable capture). [`Self::family_is_constant_value`] now pushes the
+    /// *same* position-indexed `Head::Var(venv.depth())` marker this method
+    /// does (see its doc), so every binding anywhere in `venv` — including
+    /// one contributed by an enclosing `family_is_constant_value` probe — is
+    /// now a genuine, position-indexed value that `quote` round-trips
+    /// correctly, by construction, exactly as it does for any other bound
+    /// variable. There is therefore nothing left to guard against: this
+    /// method's own `venv.depth()`/`quote(level + 1, ..)` pair is sound
+    /// regardless of what pushed the other bindings in `venv`, so it can
+    /// (and, for `trans_assoc`'s base case, must) fire nested inside another
+    /// probe's own recursive evaluation — see
+    /// `crate::nbe::completeness_fix_soundness_tests::
+    /// nested_probe_marker_quoting_does_not_capture_or_panic` for the direct
+    /// adversarial exercise of exactly this nested shape.
     ///
     /// # Termination
     ///
     /// One `self.eval` call plus one `self.quote` call over the result — the exact
     /// same shape (and cost) as [`Self::family_is_constant_value`]'s own probe,
     /// against a `venv` no larger than the enclosing computation's. No new
-    /// recursion scheme.
+    /// recursion scheme — and no risk of the removed guard silently masking
+    /// non-termination either: this method never recurses into itself except
+    /// via the same total `self.eval`/`self.quote` pair every other call site
+    /// already relies on.
     fn family_whnf_pi(&self, venv: &Rc<VEnv>, fam: &Term) -> Option<(Term, Term)> {
-        // Safety guard (see `VEnv::contains_probe_marker`'s doc): if `venv`
-        // already carries a `family_is_constant_value` `PROBE_BASE` marker
-        // (i.e. we're nested inside that probe's own recursive evaluation),
-        // this method's `venv.depth()`-based quoting is not sound — bail out
-        // to the pre-existing stuck behaviour rather than risk quoting a
-        // value that still mentions the out-of-band marker at the wrong
-        // level. Purely a *completeness* trade-off (a missed reduction in an
-        // already-rare, deeply-nested case), never a soundness one.
-        if venv.contains_probe_marker() {
-            return None;
-        }
         let level = venv.depth();
         let probe = Rc::new(Value::Stuck(Head::Var(level), Vec::new()));
         let v = self.eval(&venv.cons(probe), fam);
@@ -2196,11 +2198,10 @@ mod completeness_fix_soundness_tests {
         assert!(!k.def_eq(&ty, &Term::path(cn("A"), cn("w"), cn("w"))));
     }
 
-    /// **Termination adversarial check**: [`Nbe::family_whnf_pi`]'s safety guard
-    /// ([`VEnv::contains_probe_marker`]) must not itself cause the fix to silently
-    /// stop firing on the ordinary (non-nested-probe) path — re-run the same
-    /// nested-`trans` term through a plain top-level `Nbe::normalize` (no
-    /// enclosing `family_is_constant_value` probe in scope) and confirm it
+    /// **Termination adversarial check**: the ordinary (non-nested-probe) path
+    /// through [`Nbe::family_whnf_pi`] terminates and is deterministic — re-run
+    /// the same nested-`trans` term through a plain top-level `Nbe::normalize`
+    /// (no enclosing `family_is_constant_value` probe in scope) and confirm it
     /// terminates and reaches the same normal form both times.
     #[test]
     fn family_whnf_pi_guard_does_not_disable_the_ordinary_path() {
@@ -2284,10 +2285,11 @@ mod completeness_fix_soundness_tests {
         assert!(nbe.conv(&Term::plam(Term::imeet(Term::IOne, Term::Var(0))), &Term::plam(Term::Var(0))));
     }
 
-    /// Sanity that [`Nbe::family_is_constant_value`]'s fresh-marker id counter
-    /// really is process-wide monotonic (no accidental reuse across calls) — a
-    /// direct, minimal exercise of two *nested* probes (mirroring the real nested-
-    /// `Transp` shape this fix targets) to confirm they don't collide.
+    /// Sanity that [`Nbe::family_is_constant_value`]'s position-indexed marker
+    /// scheme (see its doc) really does compose safely under nesting — a
+    /// direct, minimal exercise of two *nested* probes (mirroring the real
+    /// nested-`Transp` shape this fix targets) to confirm they don't collide,
+    /// panic, or hang.
     #[test]
     fn nested_family_is_constant_probes_do_not_collide() {
         let k = nat_kernel();
@@ -2302,5 +2304,53 @@ mod completeness_fix_soundness_tests {
         // Must not panic/hang; the exact reduction result isn't the point here (the
         // shape is deliberately degenerate), just that nested probes coexist safely.
         let _ = nbe.normalize(&outer);
+    }
+
+    /// **Direct adversarial exercise of the nested-probe quoting fix**: forces
+    /// [`Nbe::family_whnf_pi`] to fire *while already nested inside* a
+    /// [`Nbe::family_is_constant_value`] probe's own recursive evaluation —
+    /// exactly the shape the old `contains_probe_marker` guard used to bail
+    /// out of — and confirms (a) no panic (in particular no underflow in
+    /// [`Nbe::quote`]'s `level - 1 - k` arithmetic), (b) the call terminates,
+    /// and (c) no variable capture: a genuinely bound outer variable (`w`,
+    /// opaque, distinct from every axiom the family touches) must still read
+    /// back as itself, never silently aliased to the inner probe's own fresh
+    /// marker or to an unrelated bound index. `trans_assoc`'s base case is
+    /// the real-world instance of exactly this nesting (see
+    /// `crate::cubical`'s "Phase 4.6" doc and
+    /// `crate::cubical::groupoid_law_tests::trans_assoc_closes`).
+    #[test]
+    fn nested_probe_marker_quoting_does_not_capture_or_panic() {
+        let mut k = Kernel::new();
+        k.add_axiom("A", 0, Term::typ(0)).unwrap();
+        k.add_axiom("w", 0, cn("A")).unwrap();
+        k.add_axiom("x", 0, cn("A")).unwrap();
+        k.add_axiom("y", 0, cn("A")).unwrap();
+        k.add_axiom("z", 0, cn("A")).unwrap();
+        k.add_axiom("p", 0, Term::path(cn("A"), cn("w"), cn("x"))).unwrap();
+        k.add_axiom("q", 0, Term::path(cn("A"), cn("x"), cn("y"))).unwrap();
+        k.add_axiom("r", 0, Term::path(cn("A"), cn("y"), cn("z"))).unwrap();
+        let nbe = Nbe::new(k.env());
+        // `trans (trans p q) r` — the inner `trans p q` is itself a `Transp`-
+        // headed term (a `J`-motive application, not a syntactic `Term::Pi`),
+        // used as the *subject* of the outer `trans`'s own `Transp`. Forcing
+        // the outer `Transp`'s regularity probe (`family_is_constant_value`)
+        // evaluates the inner `Transp` underneath it; the inner `Transp`'s own
+        // `Π`-case filling needs `family_whnf_pi` to recognize its motive-
+        // application family as a `Π` — while nested inside the outer probe.
+        let pq = crate::cubical::trans(&cn("A"), &cn("w"), &cn("y"), &cn("p"), &cn("q"));
+        let pqr = crate::cubical::trans(&cn("A"), &cn("w"), &cn("z"), &pq, &cn("r"));
+        // Must not panic (no quote underflow) and must terminate.
+        let n1 = nbe.normalize(&pqr);
+        // Anti-capture: `w` (a genuinely bound/opaque axiom, unrelated to any
+        // probe marker) must still appear, unshadowed, as the term's own left
+        // endpoint once type-checked — i.e. the axiom `w` itself, not some
+        // bogus small `Term::Var` index a captured marker could have produced.
+        let ty = k.infer(&pqr).expect("nested trans (subject of an outer trans) typechecks");
+        assert!(k.def_eq(&ty, &Term::path(cn("A"), cn("w"), cn("z"))));
+        // Determinism: re-normalizing must reach the same result (no capture-
+        // induced nondeterminism from a stray marker leaking into the output).
+        let n2 = nbe.normalize(&pqr);
+        assert_eq!(n1, n2, "nested-probe normalization must be deterministic");
     }
 }
