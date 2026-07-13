@@ -913,6 +913,41 @@ impl<'e> Checker<'e> {
                         }
                     }
                 }
+                // NESTED boundary, THREE levels down (needed by
+                // [`crate::cubical_hit`]'s 4-dimensional/"S⁴" 4-path recursor
+                // case — the exact same move as the two extensions above,
+                // applied once more: `p3` may itself be `p4 @ r4` for a
+                // literal `r4` one level further in (`hyper @ i0 @ j @ k`), so
+                // `p3`'s own declared `PathP` endpoint (read off `p4`'s type)
+                // gives `p3`'s boundary value definitionally, which is then
+                // `@ r3`-then-`@ r2`-then-`@ r` applied to reach `probe`'s
+                // value. Bounded to exactly one extra level beyond the
+                // existing extension (mirrors this schema's own "at most
+                // 4-dimensional" scope) — `p4` is strictly smaller than `p3`,
+                // which is strictly smaller than `p2`, which is strictly
+                // smaller than `p`, so this still cannot loop. Adds no new
+                // equation beyond what `p4`'s own (already-checked) `PathP`
+                // typing judgement forces, for the identical soundness reason
+                // given in this function's own doc comment above.
+                if let Term::PApp(p4, r4) = p3.as_ref() {
+                    let rn4 = crate::cubical::normalize_interval(r4);
+                    let at_zero4 = rn4 == Term::IZero;
+                    let at_one4 = rn4 == Term::IOne;
+                    if at_zero4 || at_one4 {
+                        if let Ok(tp4) = self.infer(ctx, p4) {
+                            if let Term::PathP(_, a0, a1) = self.reducer().whnf(&tp4) {
+                                let endpoint4 = if at_zero4 { a0 } else { a1 };
+                                let step3 =
+                                    self.reducer().whnf(&Term::papp((*endpoint4).clone(), (**r3).clone()));
+                                let step2 = self.reducer().whnf(&Term::papp(step3, (**r2).clone()));
+                                let step1 = self.reducer().whnf(&Term::papp(step2, (**r).clone()));
+                                if self.compare(ctx, &step1, other) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         false

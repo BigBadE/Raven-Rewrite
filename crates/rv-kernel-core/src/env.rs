@@ -519,13 +519,23 @@ pub enum CubHitRole {
     /// Triply `PApp`-applied (`H.cube_l @ i @ j @ k`), never fewer — the
     /// ι-rule matches exactly that triply-applied spine shape.
     Cube { idx: u32, base: u32 },
+    /// The `l`-th (0-based) **4-dimensional ("hyper"/higher) path constructor**
+    /// `H.hyper_l : PathP (λi. PathP (λj. PathP (λk. Path H p p) (refl p) (refl p))
+    /// (refl (refl p)) (refl (refl p))) (refl (refl (refl p))) (refl (refl (refl p)))`
+    /// — a fully-degenerate 4-cell based at a single **nullary** point constructor
+    /// `base` (the "S⁴" shape — see [`crate::cubical_hit::CubHyperSpec`]'s doc
+    /// comment; the literal one-dimension-up generalization of [`Self::Cube`],
+    /// every side still `refl` at this dimension). Quadruply `PApp`-applied
+    /// (`H.hyper_l @ i @ j @ k @ w`), never fewer — the ι-rule matches exactly
+    /// that quadruply-applied spine shape.
+    Hyper { idx: u32, base: u32 },
     /// The **`Type`-valued, computing** dependent recursor `H.rec`, generically
     /// synthesized for `num_points` point constructors, `num_paths` path
-    /// constructors, `num_surfaces` 2-path ("surface") constructors, and
-    /// `num_cubes` 3-path ("cube") constructors (see [`crate::cubical_hit`] for
-    /// the exact signature and ι-rules — a direct generalization of
-    /// [`I2Role::Rec`]/[`S1cRole::Rec`]).
-    Rec { num_points: u32, num_paths: u32, num_surfaces: u32, num_cubes: u32 },
+    /// constructors, `num_surfaces` 2-path ("surface") constructors, `num_cubes`
+    /// 3-path ("cube") constructors, and `num_hypers` 4-path ("hyper") constructors
+    /// (see [`crate::cubical_hit`] for the exact signature and ι-rules — a direct
+    /// generalization of [`I2Role::Rec`]/[`S1cRole::Rec`]).
+    Rec { num_points: u32, num_paths: u32, num_surfaces: u32, num_cubes: u32, num_hypers: u32 },
 }
 
 /// A member of a **general, user-declared cubical HIT**, installed by

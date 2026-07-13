@@ -190,6 +190,7 @@ impl KernelExt for Kernel {
             paths: vec![],
             surfaces: vec![CubSurfSpec::s2("S2.surf", 0)],
             cubes: vec![],
+            hypers: vec![],
         };
         rv_kernel_core::cubical_hit::declare_cubical_hit(self.env_mut(), &spec)
     }
@@ -213,6 +214,7 @@ impl KernelExt for Kernel {
                 bottom: Some(1),
             }],
             cubes: vec![],
+            hypers: vec![],
         };
         rv_kernel_core::cubical_hit::declare_cubical_hit(self.env_mut(), &spec)
     }
@@ -225,6 +227,7 @@ impl KernelExt for Kernel {
             paths: vec![],
             surfaces: vec![],
             cubes: vec![CubCubeSpec::s3("S3.cube", 0)],
+            hypers: vec![],
         };
         rv_kernel_core::cubical_hit::declare_cubical_hit(self.env_mut(), &spec)
     }
@@ -278,6 +281,7 @@ impl KernelExt for Kernel {
             }],
             surfaces: vec![],
             cubes: vec![],
+            hypers: vec![],
         };
         rv_kernel_core::cubical_hit::declare_cubical_hit(self.env_mut(), &spec)
     }
