@@ -97,9 +97,26 @@ impl Session {
     /// `cur_src` should already be set by the caller (to the original source) for span
     /// diagnostics; callers feeding translated commands may set it to the `.rv` source.
     pub fn run_commands(&mut self, cmds: Vec<(Command, (usize, usize))>) -> Result<(), String> {
+        // The full set of names ever declared by this command stream (every `fn`, `def`,
+        // `axiom`, `inductive`, `instance`, and mutual-group member). Used below to tell
+        // a genuine forward reference (a name declared *later* in this very stream) from
+        // a real "unknown name" — only the former is worth deferring and retrying.
+        let mut all_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (cmd, _) in &cmds {
+            collect_declared_names(cmd, &mut all_names);
+        }
+
         let mut pending: Vec<Command> = Vec::new();
         let mut pending_group: Option<Vec<String>> = None;
         let mut group_loc = String::new();
+        // Solo `fn`s whose elaboration hit an "unknown name" for something declared
+        // later in this stream (a forward reference) are deferred here and retried once
+        // every other command has run, in a fixpoint (so chains of forward references —
+        // `f` calls `g` calls `h`, all out of order — resolve too). This gives top-level
+        // proof `fn`s ordinary whole-module name visibility instead of only top-to-bottom
+        // scope, without touching the trusted kernel: every deferred `fn` still goes
+        // through the exact same `run_solo_fn` → kernel re-check path, just later.
+        let mut deferred: Vec<(Command, String, String)> = Vec::new(); // (cmd, loc, label)
         for (cmd, (line, col)) in cmds {
             let loc = format!("{line}:{col}");
             if matches!(cmd, Command::Fn { .. }) {
@@ -124,7 +141,16 @@ impl Session {
                     continue;
                 }
                 let label = cmd_label(&cmd);
-                self.run_solo_fn(cmd).map_err(|e| format!("{loc}: in {label}: {e}"))?;
+                match self.run_solo_fn(cmd.clone()) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        if forward_ref_name(&e, &all_names).is_some() {
+                            deferred.push((cmd, loc, label));
+                        } else {
+                            return Err(format!("{loc}: in {label}: {e}"));
+                        }
+                    }
+                }
                 continue;
             }
             if !pending.is_empty() {
@@ -135,6 +161,33 @@ impl Session {
         }
         if !pending.is_empty() {
             return Err("incomplete mutual function group (a sibling function is missing)".into());
+        }
+
+        // Fixpoint retry of the deferred (forward-referencing) `fn`s: each pass may
+        // unblock others (a chain of forward references), so keep retrying until a full
+        // pass makes no progress.
+        while !deferred.is_empty() {
+            let mut next: Vec<(Command, String, String)> = Vec::new();
+            let mut progress = false;
+            let mut last_err: Option<(String, String, String)> = None;
+            for (cmd, loc, label) in deferred {
+                match self.run_solo_fn(cmd.clone()) {
+                    Ok(()) => progress = true,
+                    Err(e) => {
+                        if forward_ref_name(&e, &all_names).is_some() {
+                            last_err = Some((loc.clone(), label.clone(), e));
+                            next.push((cmd, loc, label));
+                        } else {
+                            return Err(format!("{loc}: in {label}: {e}"));
+                        }
+                    }
+                }
+            }
+            if !progress {
+                let (loc, label, e) = last_err.expect("non-empty `next` implies a recorded error");
+                return Err(format!("{loc}: in {label}: {e}"));
+            }
+            deferred = next;
         }
         Ok(())
     }
@@ -866,6 +919,48 @@ fn cmd_label(cmd: &Command) -> String {
     }
 }
 
+/// Every name `cmd` declares (its own name, plus — for a `mutual` block — each member's).
+/// Used to build the whole-stream name set that tells a genuine forward reference (a name
+/// declared later in the same command stream) from a real "unknown name" error.
+fn collect_declared_names(cmd: &Command, out: &mut std::collections::HashSet<String>) {
+    match cmd {
+        Command::Fn { name, .. }
+        | Command::Prove { name, .. }
+        | Command::Def { name, .. }
+        | Command::Instance { name, .. }
+        | Command::Axiom { name, .. }
+        | Command::Inductive { name, .. } => {
+            out.insert(name.clone());
+        }
+        Command::Class(name) => {
+            out.insert(name.clone());
+        }
+        Command::Mutual(members) => {
+            for m in members {
+                collect_declared_names(m, out);
+            }
+        }
+        Command::Check(_) => {}
+    }
+}
+
+/// If `err` *contains* an "unknown name '<X>'" error and `X` is declared somewhere else in
+/// this command stream (i.e. it is a genuine forward reference, not a real typo/undefined
+/// name), return `X`. The message may carry a trailing caret annotation (`Infer::annotate`,
+/// "…\n  at 3:18\n   | …\n   |    ^^^"), so this searches for the marker rather than
+/// requiring it to be the whole string.
+fn forward_ref_name(err: &str, all_names: &std::collections::HashSet<String>) -> Option<String> {
+    const MARKER: &str = "unknown name '";
+    let start = err.find(MARKER)? + MARKER.len();
+    let end = err[start..].find('\'')? + start;
+    let n = &err[start..end];
+    if all_names.contains(n) {
+        Some(n.to_string())
+    } else {
+        None
+    }
+}
+
 /// The head name of an application spine `f a b …` (the leftmost `Var`), if any. Used to
 /// find the class an `instance`'s result type belongs to.
 fn expr_head_name(e: &Expr) -> Option<String> {
@@ -1416,5 +1511,65 @@ mod tests {
                 "succ_of".to_string(),
             ]
         );
+    }
+
+    /// A plain (non-`mutual`) `fn` may forward-reference a sibling `fn` declared *later*
+    /// in the same command stream — `run_commands` defers a "unknown name" error for a
+    /// name that *is* declared elsewhere in the stream and retries once the rest has run,
+    /// instead of requiring top-to-bottom scope or a `mutual` block.
+    #[test]
+    fn solo_fn_forward_reference_resolves() {
+        let mut s = base();
+        s.run(
+            "fn f(n: Nat) -> Nat { ensures(result == g(n)); g(n) } \
+             fn g(n: Nat) -> Nat { ensures(result == n); n }",
+        )
+        .expect("`f` forward-referencing `g` (declared afterwards) should resolve");
+        assert!(s.verified("f"));
+        assert!(s.verified("g"));
+    }
+
+    /// A longer forward chain (`a` calls `b` calls `c`, all out of dependency order)
+    /// resolves via the fixpoint retry — not just a single hop.
+    #[test]
+    fn solo_fn_forward_reference_chain_resolves() {
+        let mut s = base();
+        s.run(
+            "fn a(n: Nat) -> Nat { ensures(result == n); b(n) } \
+             fn b(n: Nat) -> Nat { ensures(result == n); c(n) } \
+             fn c(n: Nat) -> Nat { ensures(result == n); n }",
+        )
+        .expect("a chain of forward references should resolve in a fixpoint");
+        assert!(s.verified("a"));
+        assert!(s.verified("b"));
+        assert!(s.verified("c"));
+    }
+
+    /// SOUNDNESS / precision: a genuinely undefined name still reports "unknown name" —
+    /// the forward-reference leniency only defers names that *are* declared somewhere
+    /// else in the same command stream, never a real typo.
+    #[test]
+    fn solo_fn_truly_unknown_name_still_errors() {
+        let mut s = base();
+        let err = s
+            .run("fn f(n: Nat) -> Nat { ensures(result == n); totallyUndefinedName(n) }")
+            .unwrap_err();
+        assert!(err.contains("unknown name 'totallyUndefinedName'"), "got: {err}");
+    }
+
+    /// SOUNDNESS: a genuine two-`fn` cycle without a `mutual` block (neither can be
+    /// fully elaborated without the other) is still rejected — the fixpoint retry makes
+    /// no progress and reports the error, rather than looping forever or silently
+    /// admitting one side.
+    #[test]
+    fn solo_fn_genuine_cycle_without_mutual_errors() {
+        let mut s = base();
+        let err = s
+            .run(
+                "fn a(n: Nat) -> Nat { ensures(result == n); b(n) } \
+                 fn b(n: Nat) -> Nat { ensures(result == n); a(n) }",
+            )
+            .unwrap_err();
+        assert!(err.contains("unknown name"), "got: {err}");
     }
 }
